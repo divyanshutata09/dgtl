@@ -1,0 +1,58 @@
+cmake_minimum_required(VERSION 3.28)
+project(DGTL_TITAN_X LANGUAGES CXX)
+
+# --- C++26 BLOC ---
+set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# --- UCRT64 / G++ EXTREME OPTIMIZATION ---
+add_compile_options(
+    -Ofast 
+    -march=native 
+    -flto 
+    -fno-exceptions 
+    -fno-rtti
+    -Wall 
+    -Wextra 
+    -Wpedantic
+)
+
+# Enable Interprocedural Optimization (LTO)
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT error)
+if(ipo_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
+# Static linking for portability
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
+
+# --- SOURCE COLLECTION ---
+file(GLOB_RECURSE DGTL_SOURCES "src/*.cpp")
+
+# --- TARGETS ---
+
+# 1. Define DGTLIR FIRST
+add_library(DGTLIR INTERFACE)
+
+# 2. THEN apply directories (Fixes the "target not found" error)
+target_include_directories(DGTLIR INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# 3. Define Pipeline
+add_library(DGTLPipeline INTERFACE)
+target_link_libraries(DGTLPipeline INTERFACE DGTLIR)
+
+# 4. Main Executable
+add_executable(DGTLCore ${DGTL_SOURCES})
+target_link_libraries(DGTLCore PRIVATE DGTLPipeline)
+
+# Map the output name so your existing scripts don't break
+set_target_properties(DGTLCore PROPERTIES OUTPUT_NAME "AuraCore")
+
+# --- BUILD LOG ---
+message(STATUS "----------------------------------------------------------")
+message(STATUS " DGTL-TITAN ENGINE: C++26 [ENABLED]")
+message(STATUS " TOOLCHAIN: UCRT64 / G++")
+message(STATUS " OPTIMIZATION: -Ofast -march=native -flto")
+message(STATUS " TARGET: AI/HFT/CLOUD/FULLSTACK DOMINATION")
+message(STATUS "----------------------------------------------------------")
