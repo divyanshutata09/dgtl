@@ -11,6 +11,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <iostream>
 #include "../ir/Global_IR.hpp"
 
 
@@ -63,7 +64,7 @@ public:
         ranges = static_cast<LivenessRange*>(std::aligned_alloc(64, total_size));
 #endif
 
-        if (!ranges) [[unlikely]] throw std::bad_alloc();
+        if (!ranges) [[unlikely]] std::abort();
         
         active_ids.reserve(max_results / 128); 
         cold_reset();
@@ -79,22 +80,21 @@ public:
 
     /**
      * @brief High-Velocity Analysis with Invariant Validation.
-     * PILLAR 3: Implements reverse-pass analysis to detect "Dangling IDs" 
+     * PILLAR 3: Implements reverse-opt analysis to detect "Dangling IDs" 
      * where an operand is used without a preceding definition.
      */
     void analyze_stream(const ir::IRStream& stream) {
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
 
-        // 1. Sparse Reset: Only clear IDs used in the previous pass to maintain O(N)
+        // 1. Sparse Reset: Only clear IDs used in the previous opt to maintain O(N)
         for (uint32_t id : active_ids) {
-            ranges[id].start = 0xFFFFFFFF;
-            ranges[id].end = 0;
+            ranges[id] = LivenessRange{}; // Safe replacement for manual reset
         }
         active_ids.clear();
 
         const uint32_t count = static_cast<uint32_t>(stream.size());
 
-        // 2. Reverse Pass with Dangling-ID Detection
+        // 2. Reverse opt with Dangling-ID Detection
         for (int32_t i = static_cast<int32_t>(count) - 1; i >= 0; --i) {
             const auto& node = stream.get_node(static_cast<size_t>(i));
             const uint32_t current_idx = static_cast<uint32_t>(i);
@@ -115,7 +115,7 @@ public:
                 }
                 
                 track_id(node.result_id);
-                // In reverse pass, the first time we see the result_id is its definition.
+                // In reverse opt, the first time we see the result_id is its definition.
                 ranges[node.result_id].start = current_idx;
             }
         }
@@ -135,8 +135,8 @@ private:
      * @brief Full-memory sweep to initialize the range table.
      */
     void cold_reset() noexcept {
-        std::memset(ranges, 0xFF, sizeof(LivenessRange) * max_results);
-        for(size_t i = 0; i < max_results; ++i) ranges[i].end = 0;
+        // Replaced memset with std::fill to satisfy -Wclass-memaccess
+        std::fill(ranges, ranges + max_results, LivenessRange{});
     }
 
     /**
@@ -149,7 +149,7 @@ private:
     }
 
     /**
-     * @brief Marks the last usage index of an ID (first found in reverse pass).
+     * @brief Marks the last usage index of an ID (first found in reverse opt).
      */
     inline void track_and_mark_use(uint32_t id, uint32_t idx) noexcept {
         if (id >= max_results) [[unlikely]] return;
@@ -163,7 +163,7 @@ private:
      */
     void verify_consistency() {
         for (uint32_t id : active_ids) {
-            // If start is still 0xFFFFFFFF after the pass, the ID was used but never defined.
+            // If start is still 0xFFFFFFFF after the opt, the ID was used but never defined.
             if (ranges[id].start == 0xFFFFFFFF) [[unlikely]] {
                 trigger_corruption_trap(id, "DANGLING_ID_DETECTED");
             }
@@ -174,8 +174,8 @@ private:
      * @brief Triggers a fatal halt on IR corruption.
      */
     [[noreturn]] void trigger_corruption_trap(uint32_t id, const char* msg) {
-        throw std::runtime_error(std::string("DGTL_CORRUPTION_TRAP: ") + msg + 
-                                 " [ResultID: " + std::to_string(id) + "]");
+        std::cerr << "DGTL_CORRUPTION_TRAP: " << msg << " [ResultID: " << id << "]\n";
+        std::abort();
     }
 };
 

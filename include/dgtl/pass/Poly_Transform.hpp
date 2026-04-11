@@ -38,38 +38,34 @@ public:
         // PILLAR 2: Open Transactional Shadow Buffer
         stream.begin_transaction();
 
-        try {
-            for (uint32_t i = 0; i < stream_size; ++i) {
-                const ir::IRNode node = stream.get_node_readonly(i);
-                ir::IRAtom& s_atom = stream.get_shadow_atom(i);
-                ir::IRCore& s_core = stream.get_shadow_core(i);
+        for (uint32_t i = 0; i < stream_size; ++i) {
+            const ir::IRNode node = stream.get_node_readonly(i);
+            ir::IRAtom& s_atom = stream.get_shadow_atom(i);
+            ir::IRCore& s_core = stream.get_shadow_core(i);
 
-                // Initial sync to shadow
-                s_atom = {node.opcode, node.flags};
-                s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash};
+            // Initial sync to shadow
+            s_atom = {node.opcode, node.flags};
+            s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash};
 
-                for (uint32_t d = 0; d < nest.depth; ++d) {
-                    if (node.op_a == nest.induction_vars[d] || node.result_id == nest.induction_vars[d]) {
-                        // Cast applied to handle potential 16/32-bit flag width mismatch
-                        s_atom.flags |= static_cast<decltype(s_atom.flags)>(ir::ExtendedFlags::IS_TILING_OPTIMIZED);
-                        
-                        // PILLAR 3: Refresh Intent Hash via node proxy
-                        ir::IRNode proxy = stream.get_node(i);
-                        proxy.refresh_intent_hash();
-                        s_core.intent_hash = proxy.intent_hash;
-                    }
+            for (uint32_t d = 0; d < nest.depth; ++d) {
+                if (node.op_a == nest.induction_vars[d] || node.result_id == nest.induction_vars[d]) {
+                    // Cast applied to handle potential 16/32-bit flag width mismatch
+                    s_atom.flags |= static_cast<decltype(s_atom.flags)>(ir::ExtendedFlags::IS_TILING_OPTIMIZED);
+                    
+                    // PILLAR 3: Refresh Intent Hash via node proxy
+                    ir::IRNode proxy = stream.get_node(i);
+                    proxy.refresh_intent_hash();
+                    s_core.intent_hash = proxy.intent_hash;
                 }
             }
-
-            if (has_dependency_violation(nest)) {
-                throw std::runtime_error("Polyhedral Dependency Violation");
-            }
-
-            stream.commit_transaction();
-
-        } catch (...) {
-            stream.rollback_transaction();
         }
+
+        if (has_dependency_violation(nest)) {
+            stream.rollback_transaction();
+            return;
+        }
+
+        stream.commit_transaction();
     }
 
     /**

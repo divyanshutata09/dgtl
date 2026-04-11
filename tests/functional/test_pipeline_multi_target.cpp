@@ -23,7 +23,7 @@ int main() {
         { opt::TargetArch::WASM_SIMD128, 0x404, "WASM_SIMD128" }
     };
 
-    bool all_pass = true;
+    bool all_opt = true;
 
     for (auto& c : cases) {
         core::DGTLArena a(2);
@@ -35,14 +35,14 @@ int main() {
 
         uint32_t result_op = static_cast<uint32_t>(s.get_node(0).opcode);
         if (result_op == c.expected) {
-            std::cout << "[PASS] " << c.name << " fused to 0x" << std::hex << c.expected << std::endl;
+            std::cout << "[opt] " << c.name << " fused to 0x" << std::hex << c.expected << std::endl;
         } else {
             std::cout << "[FAIL] " << c.name << " expected 0x" << std::hex << c.expected 
                       << " but got 0x" << result_op << std::endl;
-            all_pass = false;
+            all_opt = false;
         }
     }
 
-    if(all_pass) std::cout << "GLOBAL_SUCCESS";
+    if(all_opt) std::cout << "GLOBAL_SUCCESS";
     return 0;
 }

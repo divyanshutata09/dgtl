@@ -1,13 +1,16 @@
 /* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
  * STEP 18: TRANSACTIONAL DEAD CODE ELIMINATION (DCE-SOLVER)
- * STRATEGY: Reverse-Pass Liveness + Transactional Shadow Compaction.
+ * STRATEGY: Reverse-opt Liveness + Transactional Shadow Compaction.
  * GUARANTEE: Zero-Corruption Strike via Pillar 3 Sentinel.
  */
 
 #pragma once
 #include <vector>
 #include <bitset>
-#include "../ir/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/core/Arena.hpp"
+#include "dgtl/pipeline/pass_Manager.hpp" 
+#include "dgtl/analysis/AI_Cost_Model.hpp"
 
 namespace dgtl::opt {
 
@@ -19,7 +22,7 @@ public:
     DGTLDCESolver() = default;
 
     /**
-     * @brief Executes the DCE pass using the Tri-Tier Transactional Stream.
+     * @brief Executes the DCE opt using the Tri-Tier Transactional Stream.
      */
     void execute(ir::IRStream& stream) {
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
@@ -50,7 +53,7 @@ public:
 
 private:
     /**
-     * @brief Reverse-pass to populate the liveness bitset.
+     * @brief Reverse-opt to populate the liveness bitset.
      */
     void mark_live_instructions(const ir::IRStream& src, std::bitset<MAX_TRACKED_IDS>& live_map) {
         const size_t sz = src.size();

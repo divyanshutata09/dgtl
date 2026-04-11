@@ -23,7 +23,7 @@ class X64StrikeEmitter {
 public:
     /**
      * @brief Transforms IRStream into raw x86_64 Machine Code.
-     * PERFORMANCE: O(N) single-pass emission locked at 70M+ Nodes/sec.
+     * PERFORMANCE: O(N) single-opt emission locked at 70M+ Nodes/sec.
      * Direct buffer writing avoids internal fragmentation.
      */
     void process_stream(const ir::IRStream& stream, ByteStream& out) {

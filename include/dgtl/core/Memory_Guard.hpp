@@ -84,11 +84,11 @@ private:
                          [[maybe_unused]] size_t req_size,
                          [[maybe_unused]] const std::source_location& loc) const {
         if (m_base == 0) [[unlikely]] {
-            throw std::runtime_error("MemoryGuard: Null pointer access at " + std::string(loc.function_name()));
+            std::abort();
         }
 
         if (offset + req_size > m_size) [[unlikely]] {
-            throw std::out_of_range("MemoryGuard: Buffer Overflow detected in " + std::string(loc.function_name()));
+            std::abort();
         }
     }
 };

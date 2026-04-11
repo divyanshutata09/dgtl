@@ -84,7 +84,7 @@ int main() {
         return 1;
     }
     
-    std::cout << "[TEST PASSED] JIT-to-AOT Bridge Verified." << std::endl;
+    std::cout << "[TEST optED] JIT-to-AOT Bridge Verified." << std::endl;
 
     return 0;
 }

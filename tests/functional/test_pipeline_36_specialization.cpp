@@ -12,7 +12,7 @@ int main() {
     // Push a Guard Node: If this fails at runtime, it triggers a deoptimization
     stream.push_node(
         dgtl::ir::OpCode::GUARD_VALUE, 
-        dgtl::ir::Flags::REQUIRES_DEOPT_TARGET, 
+        dgtl::ir::Flags::REQUIRES_DEpass_TARGET, 
         0, 0, 0, 0, 0xBEEF // Intent Hash (the value we are guarding)
     );
     

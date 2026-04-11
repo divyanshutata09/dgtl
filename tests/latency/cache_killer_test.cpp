@@ -38,7 +38,7 @@ int main() {
     std::cout << "\033[1;33m[RESULT]\033[0m Cold-Cache GVN Latency: " << latency << " cycles" << std::endl;
 
     if (latency < 2500) {
-        std::cout << "\033[1;32m[PASS]\033[0m Stability Verified. Zero-Latency pillars held under pressure." << std::endl;
+        std::cout << "\033[1;32m[opt]\033[0m Stability Verified. Zero-Latency pillars held under pressure." << std::endl;
     } else {
         std::cout << "\033[1;31m[WARN]\033[0m Cache-miss penalty detected. Analyze TLB pressure." << std::endl;
     }

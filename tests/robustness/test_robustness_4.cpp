@@ -1,29 +1,39 @@
 #include <iostream>
 #include <vector>
 #include <atomic>
-#include "detail/ir_impl/BitPacked_IR.hpp"
-#include "Include/core/Pass_Manager.hpp"
+#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/pipeline/pass_Manager.hpp"
 
 using namespace dgtl;
 
-// A mock pass that marks nodes with a "processed" flag
-struct PassA {
-    void run(ir::IRStream& s) {
-        for(size_t i = 0; i < s.count; ++i) {
-            s.buffer[i].flags |= 0x8000; // Set a high bit flag
+// A mock opt that marks nodes with a "processed" flag
+struct optA : public pipeline::DGTLOptimizationPass {
+    void execute(ir::IRStream& s) override {
+        for (size_t i = 0; i < s.count; ++i) {
+            s.get_node_ref(i).flags |= 0x8000; // Set a high bit flag
         }
+    }
+
+    [[nodiscard]] const char* get_pass_name() const noexcept override {
+        return "optA Barrier Marker";
     }
 };
 
-// A mock pass that checks if the flag is set
-struct PassB {
+// A mock opt that checks if the flag is set
+struct optB : public pipeline::DGTLOptimizationPass {
     std::atomic<size_t>& fail_count;
-    void run(ir::IRStream& s) {
-        for(size_t i = 0; i < s.count; ++i) {
-            if (!(s.buffer[i].flags & 0x8000)) {
-                fail_count.fetch_add(1);
+    optB(std::atomic<size_t>& failures) : fail_count(failures) {}
+
+    void execute(ir::IRStream& s) override {
+        for (size_t i = 0; i < s.count; ++i) {
+            if (!(s.get_node_ref(i).flags & 0x8000)) {
+                fail_count.fetch_add(1, std::memory_order_relaxed);
             }
         }
+    }
+
+    [[nodiscard]] const char* get_pass_name() const noexcept override {
+        return "optB Barrier Verifier";
     }
 };
 
@@ -32,17 +42,16 @@ void run_barrier_race_test() {
     
     const size_t NODE_COUNT = 524288; // Half a million nodes
     std::vector<ir::IRNode> mem(NODE_COUNT);
-    ir::IRStream stream = { mem.data(), NODE_COUNT, NODE_COUNT };
+    ir::IRStream stream(mem.data(), NODE_COUNT);
+    stream.set_count(NODE_COUNT);
 
-    pipeline::DGTLPassManager pm;
+    pipeline::DGTLoptManager pm;
     std::atomic<size_t> failures{0};
 
-    PassA a;
-    PassB b{failures};
+    pm.add_opt(std::make_unique<optA>());
+    pm.add_opt(std::make_unique<optB>(failures));
 
-    std::cout << "[Step 1] Queuing Dependent Passes (A -> Barrier -> B)... ";
-    pm.add_pass(a);
-    pm.add_pass(b);
+    std::cout << "[Step 1] Queuing Dependent optes (A -> Barrier -> B)... ";
     
     // Execute multiple times to catch intermittent timing issues
     for(int i = 0; i < 10; ++i) {
@@ -59,7 +68,7 @@ void run_barrier_race_test() {
         }
     }
 
-    std::cout << "PASSED.\n";
+    std::cout << "optED.\n";
     std::cout << "RESULT: TEST 4 SUCCESSFUL. Barrier synchronization is atomic and tight.\n";
 }
 

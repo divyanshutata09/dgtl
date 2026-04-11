@@ -1,0 +1,284 @@
+[
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/DGTL_CORE.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\DGTL_CORE.dir\\src\\ir\\Bitpacked_IR_Full.cpp.obj -c D:\\TataG\\DGTL\\src\\ir\\Bitpacked_IR_Full.cpp",
+  "file": "D:/TataG/DGTL/src/ir/Bitpacked_IR_Full.cpp",
+  "output": "CMakeFiles/DGTL_CORE.dir/src/ir/Bitpacked_IR_Full.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/AuraCore.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\AuraCore.dir\\src\\main.cpp.obj -c D:\\TataG\\DGTL\\src\\main.cpp",
+  "file": "D:/TataG/DGTL/src/main.cpp",
+  "output": "CMakeFiles/AuraCore.dir/src/main.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/baked_kernel.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\baked_kernel.dir\\tests\\functional\\baked_kernel.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\baked_kernel.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/baked_kernel.cpp",
+  "output": "CMakeFiles/baked_kernel.dir/tests/functional/baked_kernel.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/mt_stress.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\mt_stress.dir\\tests\\functional\\mt_stress.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\mt_stress.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/mt_stress.cpp",
+  "output": "CMakeFiles/mt_stress.dir/tests/functional/mt_stress.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline1.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline1.dir\\tests\\functional\\test_pipeline1.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline1.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline1.cpp",
+  "output": "CMakeFiles/test_pipeline1.dir/tests/functional/test_pipeline1.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_0.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_0.dir\\tests\\functional\\test_pipeline_0.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_0.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_0.cpp",
+  "output": "CMakeFiles/test_pipeline_0.dir/tests/functional/test_pipeline_0.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_01_identity_merge.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_01_identity_merge.dir\\tests\\functional\\test_pipeline_01_identity_merge.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_01_identity_merge.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_01_identity_merge.cpp",
+  "output": "CMakeFiles/test_pipeline_01_identity_merge.dir/tests/functional/test_pipeline_01_identity_merge.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_02_chain_reaction.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_02_chain_reaction.dir\\tests\\functional\\test_pipeline_02_chain_reaction.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_02_chain_reaction.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_02_chain_reaction.cpp",
+  "output": "CMakeFiles/test_pipeline_02_chain_reaction.dir/tests/functional/test_pipeline_02_chain_reaction.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_03_side_effect_anchor.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_03_side_effect_anchor.dir\\tests\\functional\\test_pipeline_03_side_effect_anchor.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_03_side_effect_anchor.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_03_side_effect_anchor.cpp",
+  "output": "CMakeFiles/test_pipeline_03_side_effect_anchor.dir/tests/functional/test_pipeline_03_side_effect_anchor.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_04_cross_block_ssa.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_04_cross_block_ssa.dir\\tests\\functional\\test_pipeline_04_cross_block_ssa.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_04_cross_block_ssa.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_04_cross_block_ssa.cpp",
+  "output": "CMakeFiles/test_pipeline_04_cross_block_ssa.dir/tests/functional/test_pipeline_04_cross_block_ssa.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_05_nop_absorption.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_05_nop_absorption.dir\\tests\\functional\\test_pipeline_05_nop_absorption.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_05_nop_absorption.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_05_nop_absorption.cpp",
+  "output": "CMakeFiles/test_pipeline_05_nop_absorption.dir/tests/functional/test_pipeline_05_nop_absorption.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_06_quad_add_fusion.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_06_quad_add_fusion.dir\\tests\\functional\\test_pipeline_06_quad_add_fusion.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_06_quad_add_fusion.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_06_quad_add_fusion.cpp",
+  "output": "CMakeFiles/test_pipeline_06_quad_add_fusion.dir/tests/functional/test_pipeline_06_quad_add_fusion.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_07_dependency_trap.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_07_dependency_trap.dir\\tests\\functional\\test_pipeline_07_dependency_trap.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_07_dependency_trap.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_07_dependency_trap.cpp",
+  "output": "CMakeFiles/test_pipeline_07_dependency_trap.dir/tests/functional/test_pipeline_07_dependency_trap.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_08_partial_window.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_08_partial_window.dir\\tests\\functional\\test_pipeline_08_partial_window.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_08_partial_window.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_08_partial_window.cpp",
+  "output": "CMakeFiles/test_pipeline_08_partial_window.dir/tests/functional/test_pipeline_08_partial_window.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_09_mixed_precision.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_09_mixed_precision.dir\\tests\\functional\\test_pipeline_09_mixed_precision.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_09_mixed_precision.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_09_mixed_precision.cpp",
+  "output": "CMakeFiles/test_pipeline_09_mixed_precision.dir/tests/functional/test_pipeline_09_mixed_precision.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_10_simd_hash_sentinel.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_10_simd_hash_sentinel.dir\\tests\\functional\\test_pipeline_10_simd_hash_sentinel.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_10_simd_hash_sentinel.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_10_simd_hash_sentinel.cpp",
+  "output": "CMakeFiles/test_pipeline_10_simd_hash_sentinel.dir/tests/functional/test_pipeline_10_simd_hash_sentinel.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_11_gather_16_strike.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_11_gather_16_strike.dir\\tests\\functional\\test_pipeline_11_gather_16_strike.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_11_gather_16_strike.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_11_gather_16_strike.cpp",
+  "output": "CMakeFiles/test_pipeline_11_gather_16_strike.dir/tests/functional/test_pipeline_11_gather_16_strike.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_12_ai_cost_rejection.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_12_ai_cost_rejection.dir\\tests\\functional\\test_pipeline_12_ai_cost_rejection.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_12_ai_cost_rejection.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_12_ai_cost_rejection.cpp",
+  "output": "CMakeFiles/test_pipeline_12_ai_cost_rejection.dir/tests/functional/test_pipeline_12_ai_cost_rejection.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_13_memory_smash.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_13_memory_smash.dir\\tests\\functional\\test_pipeline_13_memory_smash.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_13_memory_smash.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_13_memory_smash.cpp",
+  "output": "CMakeFiles/test_pipeline_13_memory_smash.dir/tests/functional/test_pipeline_13_memory_smash.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_14_unaligned_load.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_14_unaligned_load.dir\\tests\\functional\\test_pipeline_14_unaligned_load.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_14_unaligned_load.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_14_unaligned_load.cpp",
+  "output": "CMakeFiles/test_pipeline_14_unaligned_load.dir/tests/functional/test_pipeline_14_unaligned_load.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_15_transactional_rollback.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_15_transactional_rollback.dir\\tests\\functional\\test_pipeline_15_transactional_rollback.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_15_transactional_rollback.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_15_transactional_rollback.cpp",
+  "output": "CMakeFiles/test_pipeline_15_transactional_rollback.dir/tests/functional/test_pipeline_15_transactional_rollback.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_16_the_megabuffer.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_16_the_megabuffer.dir\\tests\\functional\\test_pipeline_16_the_megabuffer.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_16_the_megabuffer.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_16_the_megabuffer.cpp",
+  "output": "CMakeFiles/test_pipeline_16_the_megabuffer.dir/tests/functional/test_pipeline_16_the_megabuffer.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_17_zero_node_strike.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_17_zero_node_strike.dir\\tests\\functional\\test_pipeline_17_zero_node_strike.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_17_zero_node_strike.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_17_zero_node_strike.cpp",
+  "output": "CMakeFiles/test_pipeline_17_zero_node_strike.dir/tests/functional/test_pipeline_17_zero_node_strike.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_18_intent_collision.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_18_intent_collision.dir\\tests\\functional\\test_pipeline_18_intent_collision.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_18_intent_collision.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_18_intent_collision.cpp",
+  "output": "CMakeFiles/test_pipeline_18_intent_collision.dir/tests/functional/test_pipeline_18_intent_collision.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_19_register_exhaustion.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_19_register_exhaustion.dir\\tests\\functional\\test_pipeline_19_register_exhaustion.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_19_register_exhaustion.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_19_register_exhaustion.cpp",
+  "output": "CMakeFiles/test_pipeline_19_register_exhaustion.dir/tests/functional/test_pipeline_19_register_exhaustion.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_20_hybrid_tiering.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_20_hybrid_tiering.dir\\tests\\functional\\test_pipeline_20_hybrid_tiering.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_20_hybrid_tiering.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_20_hybrid_tiering.cpp",
+  "output": "CMakeFiles/test_pipeline_20_hybrid_tiering.dir/tests/functional/test_pipeline_20_hybrid_tiering.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_20_the_gauntlet.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_20_the_gauntlet.dir\\tests\\functional\\test_pipeline_20_the_gauntlet.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_20_the_gauntlet.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_20_the_gauntlet.cpp",
+  "output": "CMakeFiles/test_pipeline_20_the_gauntlet.dir/tests/functional/test_pipeline_20_the_gauntlet.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_21_dual_bank.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_21_dual_bank.dir\\tests\\functional\\test_pipeline_21_dual_bank.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_21_dual_bank.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_21_dual_bank.cpp",
+  "output": "CMakeFiles/test_pipeline_21_dual_bank.dir/tests/functional/test_pipeline_21_dual_bank.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_36_specialization.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_36_specialization.dir\\tests\\functional\\test_pipeline_36_specialization.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_36_specialization.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_36_specialization.cpp",
+  "output": "CMakeFiles/test_pipeline_36_specialization.dir/tests/functional/test_pipeline_36_specialization.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_pipeline_multi_target.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_pipeline_multi_target.dir\\tests\\functional\\test_pipeline_multi_target.cpp.obj -c D:\\TataG\\DGTL\\tests\\functional\\test_pipeline_multi_target.cpp",
+  "file": "D:/TataG/DGTL/tests/functional/test_pipeline_multi_target.cpp",
+  "output": "CMakeFiles/test_pipeline_multi_target.dir/tests/functional/test_pipeline_multi_target.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/cache_killer_test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\cache_killer_test.dir\\tests\\latency\\cache_killer_test.cpp.obj -c D:\\TataG\\DGTL\\tests\\latency\\cache_killer_test.cpp",
+  "file": "D:/TataG/DGTL/tests/latency/cache_killer_test.cpp",
+  "output": "CMakeFiles/cache_killer_test.dir/tests/latency/cache_killer_test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/fractal_torture_test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\fractal_torture_test.dir\\tests\\latency\\fractal_torture_test.cpp.obj -c D:\\TataG\\DGTL\\tests\\latency\\fractal_torture_test.cpp",
+  "file": "D:/TataG/DGTL/tests/latency/fractal_torture_test.cpp",
+  "output": "CMakeFiles/fractal_torture_test.dir/tests/latency/fractal_torture_test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/ghost_test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\ghost_test.dir\\tests\\latency\\ghost_test.cpp.obj -c D:\\TataG\\DGTL\\tests\\latency\\ghost_test.cpp",
+  "file": "D:/TataG/DGTL/tests/latency/ghost_test.cpp",
+  "output": "CMakeFiles/ghost_test.dir/tests/latency/ghost_test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/latency_micro_test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\latency_micro_test.dir\\tests\\latency\\latency_micro_test.cpp.obj -c D:\\TataG\\DGTL\\tests\\latency\\latency_micro_test.cpp",
+  "file": "D:/TataG/DGTL/tests/latency/latency_micro_test.cpp",
+  "output": "CMakeFiles/latency_micro_test.dir/tests/latency/latency_micro_test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/reg_exhaustion_test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\reg_exhaustion_test.dir\\tests\\latency\\reg_exhaustion_test.cpp.obj -c D:\\TataG\\DGTL\\tests\\latency\\reg_exhaustion_test.cpp",
+  "file": "D:/TataG/DGTL/tests/latency/reg_exhaustion_test.cpp",
+  "output": "CMakeFiles/reg_exhaustion_test.dir/tests/latency/reg_exhaustion_test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/X64_Emitter_Test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\X64_Emitter_Test.dir\\tests\\performance\\X64_Emitter_Test.cpp.obj -c D:\\TataG\\DGTL\\tests\\performance\\X64_Emitter_Test.cpp",
+  "file": "D:/TataG/DGTL/tests/performance/X64_Emitter_Test.cpp",
+  "output": "CMakeFiles/X64_Emitter_Test.dir/tests/performance/X64_Emitter_Test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_opt_strike.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_opt_strike.dir\\tests\\performance\\test_opt_strike.cpp.obj -c D:\\TataG\\DGTL\\tests\\performance\\test_opt_strike.cpp",
+  "file": "D:/TataG/DGTL/tests/performance/test_opt_strike.cpp",
+  "output": "CMakeFiles/test_opt_strike.dir/tests/performance/test_opt_strike.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_performance_mt_arena.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_performance_mt_arena.dir\\tests\\performance\\test_performance_mt_arena.cpp.obj -c D:\\TataG\\DGTL\\tests\\performance\\test_performance_mt_arena.cpp",
+  "file": "D:/TataG/DGTL/tests/performance/test_performance_mt_arena.cpp",
+  "output": "CMakeFiles/test_performance_mt_arena.dir/tests/performance/test_performance_mt_arena.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_simd_5.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_simd_5.dir\\tests\\performance\\test_simd_5.cpp.obj -c D:\\TataG\\DGTL\\tests\\performance\\test_simd_5.cpp",
+  "file": "D:/TataG/DGTL/tests/performance/test_simd_5.cpp",
+  "output": "CMakeFiles/test_simd_5.dir/tests/performance/test_simd_5.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_simd_6.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_simd_6.dir\\tests\\performance\\test_simd_6.cpp.obj -c D:\\TataG\\DGTL\\tests\\performance\\test_simd_6.cpp",
+  "file": "D:/TataG/DGTL/tests/performance/test_simd_6.cpp",
+  "output": "CMakeFiles/test_simd_6.dir/tests/performance/test_simd_6.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/stress_test.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\stress_test.dir\\tests\\robustness\\stress_test.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\stress_test.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/stress_test.cpp",
+  "output": "CMakeFiles/stress_test.dir/tests/robustness/stress_test.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_inliner_safety.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_inliner_safety.dir\\tests\\robustness\\test_inliner_safety.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\test_inliner_safety.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/test_inliner_safety.cpp",
+  "output": "CMakeFiles/test_inliner_safety.dir/tests/robustness/test_inliner_safety.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_robustness_1.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_robustness_1.dir\\tests\\robustness\\test_robustness_1.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\test_robustness_1.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/test_robustness_1.cpp",
+  "output": "CMakeFiles/test_robustness_1.dir/tests/robustness/test_robustness_1.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_robustness_2.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_robustness_2.dir\\tests\\robustness\\test_robustness_2.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\test_robustness_2.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/test_robustness_2.cpp",
+  "output": "CMakeFiles/test_robustness_2.dir/tests/robustness/test_robustness_2.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_robustness_3.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_robustness_3.dir\\tests\\robustness\\test_robustness_3.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\test_robustness_3.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/test_robustness_3.cpp",
+  "output": "CMakeFiles/test_robustness_3.dir/tests/robustness/test_robustness_3.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_robustness_4.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_robustness_4.dir\\tests\\robustness\\test_robustness_4.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\test_robustness_4.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/test_robustness_4.cpp",
+  "output": "CMakeFiles/test_robustness_4.dir/tests/robustness/test_robustness_4.cpp.obj"
+},
+{
+  "directory": "D:/TataG/DGTL/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/test_speculative_inliner.dir/includes_CXX.rsp -g -std=gnu++26 -Ofast -march=native -flto=auto -fexceptions -fpermissive -Wall -Wno-unused-parameter -o CMakeFiles\\test_speculative_inliner.dir\\tests\\robustness\\test_speculative_inliner.cpp.obj -c D:\\TataG\\DGTL\\tests\\robustness\\test_speculative_inliner.cpp",
+  "file": "D:/TataG/DGTL/tests/robustness/test_speculative_inliner.cpp",
+  "output": "CMakeFiles/test_speculative_inliner.dir/tests/robustness/test_speculative_inliner.cpp.obj"
+}
+]

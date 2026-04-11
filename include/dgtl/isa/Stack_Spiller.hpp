@@ -20,7 +20,7 @@ namespace dgtl::opt {
 /**
  * @class StackSpiller
  * @brief Manages "Virtual Register" overflow by mapping ResultIDs to the physical stack.
- * Operates as a transformation pass on the IRStream.
+ * Operates as a transformation opt on the IRStream.
  */
 class alignas(64) StackSpiller {
     struct SpillSlot {

@@ -98,7 +98,7 @@ struct IRTraits {
     }
 
     /**
-     * @brief Heuristic for inlining benefit during optimization passes.
+     * @brief Heuristic for inlining benefit during optimization optes.
      */
     [[nodiscard]] static constexpr double get_inline_weight(OpCode op) noexcept {
         if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return 50.0;

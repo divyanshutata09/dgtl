@@ -16,7 +16,7 @@ int main() {
     uint32_t hash2 = (opcode * 31u) ^ (b * 17u) ^ (a * 7u); // Swapped operands
 
     if (hash1 != hash2) {
-        std::cout << "[PASS] Intent hash differentiates operand order." << std::endl;
+        std::cout << "[opt] Intent hash differentiates operand order." << std::endl;
         std::cout << "SUCCESS" << std::endl;
     } else {
         std::cout << "[FAIL] Hash collision on operand swap!" << std::endl;

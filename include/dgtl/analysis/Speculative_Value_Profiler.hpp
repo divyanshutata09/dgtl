@@ -10,9 +10,9 @@
 #pragma once
 #include <atomic>
 #include <stdexcept>
-#include "detail/ir_impl/BitPacked_IR.hpp"
+#include "ir/Global_IR.hpp"
 #include "core/Arena.hpp"
-#include "exec/JIT_Executor.hpp"
+#include "jit/JIT_Executor.hpp"
 #include "AI_Cost_Model.hpp"
 
 namespace dgtl::opt {
@@ -27,7 +27,7 @@ public:
         : jit(j), ai_model(ai), global_arena(arena) {}
 
     /**
-     * @brief DGTLPassManager Bridge.
+     * @brief DGTLoptManager Bridge.
      * Uses Shadow-Buffering to ensure specialization doesn't corrupt the base IR.
      */
     void execute(ir::IRStream& stream) {
@@ -36,28 +36,23 @@ public:
         // PILLAR 2: Start transaction. This clones Primary -> Shadow Tier.
         stream.begin_transaction();
 
-        try {
-            bool specialized = false;
-            const size_t count = stream.size();
-            
-            for (uint32_t i = 0; i < count; ++i) {
-                // Accessing shadow tier atoms/cores for non-destructive inspection
-                if (stream.get_shadow_atom(i).opcode == ir::OpCode::GUARD_VALUE) {
-                    specialized = specialize_on_value(stream, i);
-                    break; 
-                }
+        bool specialized = false;
+        const size_t count = stream.size();
+        
+        for (uint32_t i = 0; i < count; ++i) {
+            // Accessing shadow tier atoms/cores for non-destructive inspection
+            if (stream.get_shadow_atom(i).opcode == ir::OpCode::GUARD_VALUE) {
+                specialized = specialize_on_value(stream, i);
+                break; 
             }
+        }
 
-            // PILLAR 3: THE SENTINEL
-            // Validate the CRC-32/Intent of the specialized shadow tier.
-            if (specialized && stream.validate_shadow_integrity()) {
-                stream.commit_transaction();
-            } else {
-                stream.rollback_transaction();
-            }
-        } catch (...) {
+        // PILLAR 3: THE SENTINEL
+        // Validate the CRC-32/Intent of the specialized shadow tier.
+        if (specialized && stream.validate_shadow_integrity()) {
+            stream.commit_transaction();
+        } else {
             stream.rollback_transaction();
-            throw;
         }
     }
 

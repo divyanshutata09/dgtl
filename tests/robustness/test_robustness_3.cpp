@@ -1,48 +1,81 @@
+/* * DGTL-MLIR-X v1.0 
+ * TEST SUITE: ROBUSTNESS_03 (VOLATILE-SAFETY)
+ * TARGET: SIDE-EFFECT ISOLATION (HFT/HARDWARE ATOMICITY)
+ */
+
 #include <iostream>
 #include <vector>
-#include "detail/ir_impl/BitPacked_IR.hpp"
-#include "Include/opt/Instruction_Fusion_Synth.hpp"
-#include "Include/opt/AI_Cost_Model.hpp"
+#include <cassert>
+#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/pass/Instruction_Fusion_Synth.hpp"
+#include "dgtl/core/Verified_Formal.hpp"
 
 using namespace dgtl;
 
 void run_volatile_safety_test() {
     std::cout << "--- ROBUSTNESS TEST 3: Volatile Side-Effect Isolation ---\n";
     
-    ir::IRStream stream;
-    std::vector<ir::IRNode> mem(10);
-    stream.buffer = mem.data();
-    stream.count = 2;
+    // 1. Initialize memory with alignment awareness
+    std::vector<ir::IRNode> mem(32);
+    ir::IRStream stream(mem.data(), mem.size());
+    stream.set_count(2);
 
-    // Node 0: MUL (Standard)
-    stream.buffer[0] = {ir::OpCode::MUL_F32, 0, 1, 10, 11};
-    
-    // Node 1: ADD (Marked as VOLATILE)
-    // This could be a hardware accumulator write - MUST NOT BE FUSED into FMA
-    stream.buffer[1] = {ir::OpCode::ADD_F32, 0, 2, 1, 12};
-    stream.buffer[1].flags |= static_cast<uint16_t>(ir::Flags::IS_VOLATILE);
+    // Node 0: MUL_F32 (Standard math)
+    // Args: OpCode, Flags, ResultID, OpA, OpB
+    stream.get_node_ref(0).opcode = ir::OpCode::MUL_F32;
+    stream.get_node_ref(0).result_id = 100;
+    stream.get_node_ref(0).op_a = 10;
+    stream.get_node_ref(0).op_b = 11;
+    stream.get_node_ref(0).flags = ir::Flags::NONE;
 
-    opt::DGTLAICostModel ai;
-    opt::DGTLInstructionFusionSynth fusion(ai);
+    // Node 1: ADD_F32 (Marked VOLATILE - e.g., a hardware CSR write or accumulator)
+    stream.get_node_ref(1).opcode = ir::OpCode::ADD_F32;
+    stream.get_node_ref(1).result_id = 101;
+    stream.get_node_ref(1).op_a = 100; // Depends on Node 0
+    stream.get_node_ref(1).op_b = 12;
+    // CRITICAL: Set Volatile flag to prevent Fusion into FMA
+    stream.get_node_ref(1).flags = ir::Flags::IS_VOLATILE;
+
+    core::DGTLFormalVerifier formal_verifier;
+    opt::DGTLInstructionFusionSynth fusion(formal_verifier);
 
     std::cout << "[Step 1] Attempting Fusion on Volatile Node... ";
-    fusion.synthesize_fusions(stream);
+    
+    try {
+        fusion.synthesize(stream);
+        
+        // VERIFICATION LOGIC
+        // If the optimizer is correct, it MUST NOT fuse Node 0 and Node 1 into an FMA
+        // because Node 1 has side effects that must remain visible to the system.
+        
+        bool is_fused = (stream.get_node_ref(0).opcode == ir::OpCode::FMA_F32);
+        bool is_safe = (stream.get_node_ref(0).opcode == ir::OpCode::MUL_F32 && 
+                        stream.get_node_ref(1).opcode == ir::OpCode::ADD_F32);
 
-    // If fusion happened, opcode 0 would be FMA and opcode 1 would be NOP.
-    // SUCCESS = They remain MUL and ADD.
-    if (stream.buffer[0].opcode == ir::OpCode::MUL_F32 && 
-        stream.buffer[1].opcode == ir::OpCode::ADD_I32) { // Logic: ADD_F32/I32 check
-        std::cout << "PASSED.\n";
-    } else if (stream.buffer[0].opcode == ir::OpCode::FMA_F32) {
-        std::cout << "FAILED: Optimizer fused a Volatile side-effect!\n";
-    } else {
-        std::cout << "PASSED (No fusion occurred).\n";
+        if (is_safe) {
+            std::cout << "PASSED.\n";
+            std::cout << ">> Integrity Confirmed: Volatile boundary maintained.\n";
+        } else if (is_fused) {
+            std::cerr << "FAILED!\n";
+            std::cerr << ">> Critical Error: Optimizer fused a Volatile side-effect into FMA!\n";
+            exit(1); 
+        } else {
+            std::cout << "SKIPPED (No pattern match).\n";
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "CRASH: " << e.what() << std::endl;
+        throw;
     }
 
-    std::cout << "\nRESULT: TEST 3 COMPLETE. Checking logic integrity.\n";
+    std::cout << "RESULT: TEST 3 COMPLETE.\n";
 }
 
 int main() {
-    run_volatile_safety_test();
+    try {
+        run_volatile_safety_test();
+    } catch (...) {
+        return 1;
+    }
     return 0;
 }

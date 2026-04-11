@@ -50,7 +50,7 @@ public:
     /**
      * @brief The "Fire" Strike.
      * Transitions IR from the stream into a live execution result.
-     * PILLAR 4: Single-pass pipeline with zero mid-strike heap allocation.
+     * PILLAR 4: Single-opt pipeline with zero mid-strike heap allocation.
      * * @param stream The BitPacked IR stream to be compiled.
      * @param data_payload Pointer to SVM or context data for the kernel.
      * @return StrikeMetrics containing execution time and result codes.

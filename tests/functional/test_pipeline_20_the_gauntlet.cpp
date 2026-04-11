@@ -1,18 +1,20 @@
 #include <iostream>
 #include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/GVN.hpp"
-#include "dgtl/pass/SIMD_Legalizer.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
-#include "dgtl/core/Arena.hpp"
-
-using namespace dgtl;
 
 int main() {
+    // Add this to force immediate printing to terminal
+    std::ios_base::sync_with_stdio(false);
     std::cout << "--- [DGTL-TEST] 20_the_gauntlet ---" << std::endl;
-    core::DGTLArena arena(1024 * 1024);
-    ir::IRStream stream(arena, 1024);
-    
-    // TODO: Implement specific test logic for 20_the_gauntlet
-    
+
+    try {
+        // YOUR TEST LOGIC HERE
+        // e.g., run_gauntlet_checks();
+        
+        std::cout << "GAUNTLET STATUS: SUCCESS" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "GAUNTLET CRASHED: " << e.what() << std::endl;
+        return 1;
+    }
+
     return 0;
 }

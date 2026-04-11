@@ -46,7 +46,7 @@ public:
             // PILLAR 3: THE SENTINEL (DGTL-Invariant Guard)
             // Verify bit-level consistency of the unrolled IR before sending it to the JIT sandbox.
             if (!validate_shadow_integrity(shadow_candidate)) {
-                // TRAP: The unrolling pass created a logic-hole (e.g., ID collision).
+                // TRAP: The unrolling opt created a logic-hole (e.g., ID collision).
                 // We discard the shadow buffer and fallback to factor 1.
                 continue; 
             }

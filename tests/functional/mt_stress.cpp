@@ -5,15 +5,13 @@
 #include <atomic>
 
 void thread_work(int id) {
-    try {
-        dgtl::core::DGTLArena local_arena(64); // 64MB
-        uint8_t* ptr = (uint8_t*)local_arena.raw_data();
-        if (!ptr) return;
+    dgtl::core::DGTLArena local_arena(64); // 64MB
+    uint8_t* ptr = (uint8_t*)local_arena.raw_data();
+    if (!ptr) return;
 
-        for(size_t j = 0; j < (64ULL * 1024 * 1024); j += 4096) {
-            ptr[j] = static_cast<uint8_t>(id); 
-        }
-    } catch (...) {}
+    for(size_t j = 0; j < (64ULL * 1024 * 1024); j += 4096) {
+        ptr[j] = static_cast<uint8_t>(id); 
+    }
 }
 
 int main() {
@@ -26,6 +24,6 @@ int main() {
     }
 
     for(auto& t : workers) t.join();
-    std::cout << "\033[1;32m[PASS]\033[0m Concurrency verified. No heap contention." << std::endl;
+    std::cout << "\033[1;32m[opt]\033[0m Concurrency verified. No heap contention." << std::endl;
     return 0;
 }

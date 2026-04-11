@@ -46,7 +46,7 @@ int main() {
     std::cout << "[INFO] Stack/Shadow References detected: " << spills << " (Lower is better)" << std::endl;
 
     if (spills < 10) {
-        std::cout << "\033[1;32m[PASS]\033[0m High-density register allocation verified." << std::endl;
+        std::cout << "\033[1;32m[opt]\033[0m High-density register allocation verified." << std::endl;
     } else {
         std::cout << "\033[1;35m[NOTE]\033[0m Stack spilling detected. This is a Tier-3 optimization target." << std::endl;
     }

@@ -54,6 +54,7 @@ public:
         append_line("    sub  rsp, 32 ; Allocate Shadow Space");
         append_line("");
 
+        (void)symbols;
         for (size_t i = 0; i < stream.size(); ++i) {
             const auto& node = stream.get_node(i);
             if (node.opcode == ir::OpCode::NOP) continue;

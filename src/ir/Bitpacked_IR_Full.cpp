@@ -449,7 +449,7 @@ uint64_t IRStream::generate_logic_hash() const noexcept {
     return h;
 }
 
-// --- Optimization Passes (From Files 4, 5) ---
+// --- Optimization optes (From Files 4, 5) ---
 
 void IRStream::push_shadow_fold(const IRNode& node) noexcept {
     IRNode folded = node.clone();

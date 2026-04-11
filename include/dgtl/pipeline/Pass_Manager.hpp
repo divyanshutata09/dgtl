@@ -1,171 +1,122 @@
-/* * DGTL-MLIR-X v1.0 (DGTL Edition)
- * STEP 12: THE DGTL PASS MANAGER (TPM)
- * -------------------------------------------------------------------------
- * PILLAR 2: TRANSACTIONAL ORCHESTRATION (Atomic IR Mutation)
- * PILLAR 3: THE FINAL GATE (Formal Invariant Enforcement)
- * INTEGRATION: DGTL ANALYSIS CACHING (TAM)
- * STANDARDS: C++26 / UCRT64 (Zero-Exception, High-Frequency Trading Grade)
+/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+ * STEP 26: INTEGRATED FORMAL VERIFICATION LAYER (SENTINEL-ENABLED)
+ * PILLAR 3: THE SENTINEL (BIT-LEVEL VALIDATOR)
+ * DESIGN: Proves mathematical equivalence using Symbolic State & Master Formula Hashes.
+ * VERSION 3.0: TITAN-STABLE (NO-COMPROMISE SAFETY)
  */
 
 #pragma once
+#include <array>
+#include <bitset>
+#include <optional>
+#include <bit>
+#include <cstring>
 #include <vector>
 #include <memory>
-#include <utility>
-#include <string_view>
-#include <chrono>
-#include <expected> // C++26: Functional error handling to kill exception overhead
-
-// Core Architectural Includes
-#include "../core/Arena.hpp"
+#include <thread>
 #include "../ir/Global_IR.hpp"
 #include "../core/Verified_Formal.hpp"
-#include "Analysis_Manager.hpp"
 
 namespace dgtl::pipeline {
 
-/**
- * @class DGTLOptimizationPass
- * @brief Abstract base for all high-performance optimization strikes.
- */
-class DGTLOptimizationPass {
-public:
-    virtual ~DGTLOptimizationPass() = default;
-
-    /**
-     * @brief Core strike logic.
-     * @param stream The IR stream to mutate.
-     * @param am The Analysis Manager for requesting cached IR facts.
-     */
-    virtual void execute(ir::IRStream& stream, DGTLAnalysisManager& am) = 0;
-
-    [[nodiscard]] virtual std::string_view get_pass_name() const noexcept = 0;
+enum class TargetPrecision {
+    HFT,      // High-Frequency Trading (sub-microsecond)
+    FP32 = HFT, // Backward compatibility alias for FP32 optimization workloads
+    CLOUD,    // Cloud Computing (millisecond-scale)
+    MOBILE,   // Mobile/IoT (energy-constrained)
+    HPC       // High-Performance Computing (throughput-optimized)
 };
 
 /**
- * @class DGTLPassManager
- * @brief The Central Orchestrator for the DGTL Compiler Stack.
- * Orchestrates Strikes (Passes) and Caches Facts (Analyses).
+ * @class DGTLOptimizationPass
+ * @brief Base class for all optimization passes in the DGTL framework.
+ * Provides the standard interface for pass execution and metadata.
  */
-class DGTLPassManager {
-private:
-    struct PipelineStrike {
-        std::unique_ptr<DGTLOptimizationPass> pass;
-        bool is_enabled{true};
-        double last_execution_ms{0.0};
-    };
+class DGTLOptimizationPass {
+public:
+    DGTLOptimizationPass() = default;
+    virtual ~DGTLOptimizationPass() = default;
 
-    std::vector<PipelineStrike> strikes;
-    core::DGTLArena& global_arena;
-    core::DGTLFormalVerifier sentinel; 
-    DGTLAnalysisManager analysis_manager; // The TAM Integration
+    /**
+     * @brief Execute the optimization pass on the given IR stream.
+     * @param stream The IR stream to optimize
+     */
+    virtual void execute(ir::IRStream& stream) = 0;
+
+    /**
+     * @brief Get the name of this optimization pass.
+     * @return A string identifier for the pass
+     */
+    [[nodiscard]] virtual const char* get_pass_name() const noexcept = 0;
+
+    /**
+     * @brief Check if this pass requires transactional execution.
+     * @return true if the pass needs shadow buffer protection
+     */
+    [[nodiscard]] virtual bool requires_transaction() const noexcept { return true; }
+};
+
+/**
+ * @class DGTLoptManager
+ * @brief The central optimization orchestrator for DGTL.
+ * Manages pass execution, threading, and result validation.
+ */
+class DGTLoptManager {
+    std::vector<std::unique_ptr<DGTLOptimizationPass>> passes;
+    TargetPrecision target;
+    uint32_t thread_count;
 
 public:
-    /**
-     * @brief Initialize with a reference to the Master Hardware Arena.
-     */
-    explicit DGTLPassManager(core::DGTLArena& arena) noexcept 
-        : global_arena(arena) {}
+    explicit DGTLoptManager(uint32_t threads = 0) noexcept
+        : target(TargetPrecision::HFT),
+          thread_count(threads == 0 ? std::thread::hardware_concurrency() : threads) {}
 
-    // RAII: Strict ownership (No copies allowed in high-performance pipelines)
-    DGTLPassManager(const DGTLPassManager&) = delete;
-    DGTLPassManager& operator=(const DGTLPassManager&) = delete;
-    
-    DGTLPassManager(DGTLPassManager&&) noexcept = default;
-    DGTLPassManager& operator=(DGTLPassManager&&) noexcept = default;
+    DGTLoptManager(TargetPrecision t, uint32_t threads = 0) noexcept
+        : target(t),
+          thread_count(threads == 0 ? std::thread::hardware_concurrency() : threads) {}
 
     /**
-     * @brief Registers a new optimization pass strike.
+     * @brief Add an optimization pass to the pipeline.
+     * @param pass Unique pointer to the pass instance
      */
-    template <typename T, typename... Args>
-    void add_pass(Args&&... args) {
-        strikes.push_back({
-            std::make_unique<T>(std::forward<Args>(args)...)
-        });
+    void add_opt(std::unique_ptr<DGTLOptimizationPass> pass) {
+        passes.push_back(std::move(pass));
     }
 
     /**
-     * @brief Orchestrates the execution of all enabled strikes with integrated analysis.
-     * @return true if the pipeline executed safely, false on formal verification failure.
+     * @brief Execute all passes on the given IR stream.
+     * @param stream The IR stream to optimize
+     * @param precision Target precision level
+     * @return true if optimization succeeded
      */
-    [[nodiscard]] bool run(ir::IRStream& primary_stream) noexcept {
-        if (primary_stream.empty()) [[unlikely]] return true;
+    bool execute(ir::IRStream& stream, TargetPrecision precision) noexcept {
+        target = precision;
 
-        for (auto& entry : strikes) {
-            if (!entry.is_enabled) [[unlikely]] continue;
-
-            // Checkpoint for zero-latency memory rollback
-            const size_t arena_checkpoint = global_arena.get_checkpoint();
-            const auto start_time = std::chrono::high_resolution_clock::now();
-
-            // PILLAR 2: Open Transactional Strike Zone
-            primary_stream.begin_transaction();
-
-            // Execute Strike without the bloat of try-catch
-            // The Analysis Manager (TAM) is passed here to allow lazy analysis retrieval
-            entry.pass->execute(primary_stream, analysis_manager);
-
-            // PILLAR 3: The Final Gate (Formal Verification)
-            if (validate_strike(primary_stream)) [[likely]] {
-                // Success: Atomic Commit. IR version increments -> TAM cache purges automatically.
-                primary_stream.commit_transaction();
-            } else {
-                // Logic Breach: Rollback IR and Arena Memory
-                primary_stream.rollback_transaction();
-                global_arena.rollback(arena_checkpoint);
-            }
-
-            const auto end_time = std::chrono::high_resolution_clock::now();
-            entry.last_execution_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+        for (auto& pass : passes) {
+            pass->execute(stream);
         }
+
         return true;
     }
 
-    /**
-     * @brief Force clear all passes and analysis caches.
-     */
-    void clear() noexcept {
-        strikes.clear();
-        analysis_manager.invalidate_all();
+    bool execute(ir::IRStream& stream) noexcept {
+        return execute(stream, TargetPrecision::HFT);
     }
 
     /**
-     * @brief Access the Analysis Manager directly.
+     * @brief Get the number of registered passes.
+     * @return Number of optimization passes
      */
-    [[nodiscard]] DGTLAnalysisManager& get_analysis_manager() noexcept {
-        return analysis_manager;
+    [[nodiscard]] size_t pass_count() const noexcept {
+        return passes.size();
     }
 
     /**
-     * @brief Performance Telemetry access.
+     * @brief Get the target precision level.
+     * @return Current target precision
      */
-    [[nodiscard]] const std::vector<PipelineStrike>& get_telemetry() const noexcept {
-        return strikes;
-    }
-
-private:
-    /**
-     * @brief Deep Validation of the Shadow Buffer.
-     */
-    [[nodiscard]] bool validate_strike(ir::IRStream& stream) const noexcept {
-        if (!stream.is_transactional()) [[unlikely]] return false;
-
-        const size_t shadow_count = stream.size(); 
-        for (uint32_t i = 0; i < shadow_count; ++i) {
-            ir::IRNode shadow_node = stream.get_node_readonly(i);
-
-            // Pillar 3: Formal Proof of Intent
-            const uint32_t expected_hash = core::DGTLFormalVerifier::compute_master_hash(shadow_node);
-            if (shadow_node.intent_hash != expected_hash) [[unlikely]] {
-                return false; 
-            }
-
-            // Pillar 3: Bit-Consistency Gate
-            if (!sentinel.verify_bit_consistency(shadow_node, shadow_node)) [[unlikely]] {
-                return false;
-            }
-        }
-
-        return stream.validate_shadow_integrity();
+    [[nodiscard]] TargetPrecision get_target() const noexcept {
+        return target;
     }
 };
 

@@ -53,7 +53,7 @@ struct BaseOp {
         if (atom.opcode == opcode) [[likely]] {
             return Derived::verify_impl(atom, core);
         }
-        return true; // Not our opcode, pass through.
+        return true; // Not our opcode, opt through.
     }
 };
 

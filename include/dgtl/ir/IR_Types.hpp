@@ -108,7 +108,7 @@ struct Flags {
     static constexpr uint16_t BRANCH_UNLIKELY         = 0x8000; 
     
     // High-performance hints
-    static constexpr uint16_t REQUIRES_DEOPT_TARGET   = 0x1000; 
+    static constexpr uint16_t REQUIRES_DEpass_TARGET   = 0x1000; 
     static constexpr uint16_t IS_HOISTED              = 0x2000;
 };
 

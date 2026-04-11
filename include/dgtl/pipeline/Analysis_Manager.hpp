@@ -9,11 +9,25 @@
 #pragma once
 #include <unordered_map>
 #include <memory>
-#include <typeindex>
 #include <string_view>
+#include <cstdint>
 #include "../ir/Global_IR.hpp"
 
 namespace dgtl::pipeline {
+
+/**
+ * @brief Zero-overhead Type ID Generator.
+ * Replaces std::type_index to support -fno-rtti environments.
+ */
+using AnalysisID = uintptr_t;
+
+template <typename T>
+struct AnalysisTypeKey {
+    static inline char dummy;
+    static AnalysisID get() noexcept {
+        return reinterpret_cast<AnalysisID>(&dummy);
+    }
+};
 
 /**
  * @class DGTLAnalysis
@@ -37,7 +51,8 @@ private:
         uint64_t ir_version_at_compute;
     };
 
-    std::unordered_map<std::type_index, AnalysisCacheEntry> cache;
+    // Using uintptr_t as key is faster than std::type_index/string hashing
+    std::unordered_map<AnalysisID, AnalysisCacheEntry> cache;
     uint64_t last_known_ir_version = 0;
 
 public:
@@ -57,6 +72,7 @@ public:
      */
     template <typename AnalysisT>
     [[nodiscard]] const AnalysisT& get_result(ir::IRStream& stream) {
+        // NOTE: Ensure IRStream has get_version() implemented in Global_IR.hpp
         const uint64_t current_version = stream.get_version();
 
         // 1. Version Gate: If IR changed, purge all stale facts immediately
@@ -65,7 +81,7 @@ public:
             last_known_ir_version = current_version;
         }
 
-        const std::type_index id = std::type_index(typeid(AnalysisT));
+        const AnalysisID id = AnalysisTypeKey<AnalysisT>::get();
         
         // 2. Optimized Lookup: Use find() to avoid double-hashing
         auto it = cache.find(id);
@@ -86,7 +102,7 @@ public:
     }
 
     /**
-     * @brief Total Invalidation. Used when a Pass Manager transaction commits.
+     * @brief Total Invalidation. Used when a opt Manager transaction commits.
      */
     void invalidate_all() noexcept {
         cache.clear();
@@ -97,16 +113,16 @@ public:
      */
     template <typename AnalysisT>
     [[nodiscard]] bool is_cached() const noexcept {
-        return cache.contains(std::type_index(typeid(AnalysisT)));
+        return cache.contains(AnalysisTypeKey<AnalysisT>::get());
     }
 
     /**
-     * @brief Direct removal of a specific analysis if a pass knows it only 
+     * @brief Direct removal of a specific analysis if a opt knows it only 
      * invalidated one specific property (e.g., CFG preserved, but Liveness broken).
      */
     template <typename AnalysisT>
     void invalidate_specific() noexcept {
-        cache.erase(std::type_index(typeid(AnalysisT)));
+        cache.erase(AnalysisTypeKey<AnalysisT>::get());
     }
 };
 

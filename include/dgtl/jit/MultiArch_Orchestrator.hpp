@@ -30,7 +30,7 @@ struct CompilationReport {
     double total_ms = 0.0;
     size_t nodes_processed = 0;
     double throughput_nodes_sec = 0.0;
-    bool validation_passed = false;
+    bool validation_opted = false;
 };
 
 /**
@@ -71,23 +71,17 @@ public:
         const dgtl::target::Arch current_arch = target_mgr.get_active_arch();
         const dgtl::target::OS current_os     = target_mgr.get_active_os();
 
-        try {
-            // Route based on Target Policy defined in TargetRegistry
-            if (current_os == dgtl::target::OS::LINUX || current_os == dgtl::target::OS::WINDOWS) {
-                this->dispatch_to_linker(output_path, stream);
-            } 
-            else if (current_os == dgtl::target::OS::DARWIN) {
-                this->dispatch_to_macho(output_path, stream);
-            }
-            else if (current_arch == dgtl::target::Arch::WASM32) {
-                this->dispatch_to_wasm(output_path, stream);
-            }
-            last_report.validation_passed = true;
-        } catch (...) {
-            last_report.validation_passed = false;
-            // Re-throw to trigger DGTL-Pass-Manager Global Rollback
-            throw; 
+        // Route based on Target Policy defined in TargetRegistry
+        if (current_os == dgtl::target::OS::LINUX || current_os == dgtl::target::OS::WINDOWS) {
+            this->dispatch_to_linker(output_path, stream);
         }
+        else if (current_os == dgtl::target::OS::DARWIN) {
+            this->dispatch_to_macho(output_path, stream);
+        }
+        else if (current_arch == dgtl::target::Arch::WASM32) {
+            this->dispatch_to_wasm(output_path, stream);
+        }
+        last_report.validation_opted = true;
 
         // 3. Telemetry Update (Optimized for Sub-Microsecond Precision)
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -118,7 +112,7 @@ private:
      * Prevents any malformed IR from reaching the filesystem.
      */
     [[noreturn]] void trigger_fatal_trap(const char* code, const char* details) {
-        throw std::runtime_error(std::string("DGTL_ORCHESTRATOR_HALT [") + code + "]: " + details);
+        std::abort();
     }
 
     // --- Backend Dispatch Implementations ---

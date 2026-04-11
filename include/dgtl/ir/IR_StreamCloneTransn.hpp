@@ -192,6 +192,8 @@ public:
     // --- NODE ACCESSORS ---
     [[nodiscard]] IRNode get_node(size_t idx) const noexcept;
     [[nodiscard]] IRNode get_node_readonly(size_t idx) const noexcept { return get_node(idx); }
+    [[nodiscard]] IRNode& get_node_ref(size_t idx) noexcept { return get_buffer_ptr()[idx]; }
+    [[nodiscard]] const IRNode& get_node_ref(size_t idx) const noexcept { return get_buffer_ptr()[idx]; }
 
     [[nodiscard]] const IRCore& get_core_readonly(size_t idx) const noexcept;
     [[nodiscard]] const IRAtom& get_atom_readonly(size_t idx) const noexcept;
@@ -222,7 +224,7 @@ public:
     void set_shadow_count(size_t val) noexcept;
     void update_shadow_size(size_t new_size) noexcept;
 
-    // --- PERFORMANCE PASSES ---
+    // --- PERFORMANCE optES ---
     void perform_dead_code_elimination() noexcept;
     void perform_gvn() noexcept;
 

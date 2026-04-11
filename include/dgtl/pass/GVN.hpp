@@ -57,7 +57,7 @@ class DGTLGVN {
     std::unique_ptr<Entry[]> secondary_table;
     std::vector<uint32_t> id_map;
 
-    // SIMD Fingerprint Helpers (from dgtl::passes::GVNPass logic)
+    // SIMD Fingerprint Helpers (from dgtl::optes::GVNopt logic)
     struct NodeHash {
         size_t operator()(const dgtl::ir::IRNode& n) const noexcept {
             __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&n));
@@ -88,9 +88,9 @@ public:
         const size_t original_count = stream.size();
         if (original_count == 0) return;
 
-        std::memset(primary_table.get(), 0, sizeof(Entry) * TableSize);
-        std::memset(secondary_table.get(), 0, sizeof(Entry) * TableSize);
-
+        std::fill_n(primary_table.get(), TableSize, Entry{});
+        std::fill_n(secondary_table.get(), TableSize, Entry{});
+        
         stream.begin_strike();
         stream.prune_shadow_buffer();
 
@@ -285,13 +285,13 @@ private:
 
 } // namespace dgtl::opt
 
-namespace dgtl::passes {
+namespace dgtl::optes {
 
 /**
- * @class GVNPass
+ * @class GVNopt
  * @brief Logic migrated from scalar GVN to utilize SIMD fingerprinting directly on the stream.
  */
-class GVNPass {
+class GVNopt {
     struct NodeHash {
         size_t operator()(const dgtl::ir::IRNode& n) const noexcept {
             __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&n));
@@ -318,7 +318,7 @@ public:
         
         for (size_t i = 0; i < stream.size(); ++i) {
             auto node = stream.get_node(i);
-            if (value_table.contains(node)) {
+            if (value_table.find(node) != value_table.end()) {
                 // Redundant node found via SIMD comparison
             } else {
                 value_table[node] = static_cast<uint32_t>(i);
@@ -329,4 +329,4 @@ public:
     }
 };
 
-} // namespace dgtl::passes
+} // namespace dgtl::optes

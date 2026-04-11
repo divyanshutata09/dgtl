@@ -65,7 +65,7 @@ public:
 
     /**
      * @brief Linear Scan Allocation Strike.
-     * Operates on the Shadow Buffer during the DGTLPassManager strike phase.
+     * Operates on the Shadow Buffer during the DGTLoptManager strike phase.
      */
     void execute(ir::IRStream& stream, const dgtl::core::LivenessAnalyzer& liveness) {
         // [DGTL CRITICAL] Must be in a transaction to modify shadow buffers

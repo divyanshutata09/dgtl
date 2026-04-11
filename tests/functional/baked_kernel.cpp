@@ -39,7 +39,7 @@ int main() {
         std::cout << "--- BAKED ASM END ---" << std::endl;
         
         assert(aot.get_output().find("DGTL_kernel_entry") != std::string::npos);
-        std::cout << "[TEST PASSED] Hybrid Handover Verified." << std::endl;
+        std::cout << "[TEST optED] Hybrid Handover Verified." << std::endl;
     }
 
     return 0;

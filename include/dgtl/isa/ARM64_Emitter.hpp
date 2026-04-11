@@ -35,7 +35,7 @@ public:
 
     /**
      * @brief Generates AArch64 Assembly.
-     * Fixed: Use brace-init for default to bypass GCC's incomplete type check on default params.
+     * Fixed: Use brace-init for default to byopt GCC's incomplete type check on default params.
      */
     void emit_assembly(std::ostream& out, const Config config = {}) {
         if (m_stream.is_null() || m_stream.size() == 0) return;

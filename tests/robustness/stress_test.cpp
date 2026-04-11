@@ -1,4 +1,4 @@
-#include "core/Arena.hpp"
+#include "dgtl/core/Arena.hpp"
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -24,7 +24,7 @@ void run_stress_test() {
                 ptr[j] = 0xAA; 
             }
         }
-        std::cout << "\033[1;32m[PASS]\033[0m Locked 6400MB via Huge-Pages." << std::endl;
+        std::cout << "\033[1;32m[opt]\033[0m Locked 6400MB via Huge-Pages." << std::endl;
     } catch (...) {
         std::cout << "[CRITICAL] Memory Manager Faulted under pressure." << std::endl;
     }

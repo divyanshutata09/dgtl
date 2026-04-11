@@ -3,8 +3,8 @@
 #include <chrono>
 #include <vector>
 #include <memory>
-#include "Include/pipeline/Pass_Manager.hpp" 
-#include "detail/ir_impl/BitPacked_IR.hpp"
+#include "dgtl/pipeline/Pass_Manager.hpp" 
+#include "dgtl/ir/Global_IR.hpp"
 
 using namespace dgtl;
 
@@ -12,8 +12,16 @@ using namespace dgtl;
  * @brief SIMD Folding Strike for Bit-Packed IR.
  * Operates on op_a (result) and op_b (factor) using AVX2.
  */
-class SIMDFoldingPass {
+class SIMDFoldingopt : public dgtl::pipeline::DGTLOptimizationPass {
 public:
+    void execute(ir::IRStream& stream) override {
+        fold_stream(stream);
+    }
+
+    [[nodiscard]] const char* get_pass_name() const noexcept override {
+        return "SIMD Folding Optimization";
+    }
+
     void fold_stream(ir::IRStream& stream) {
         // IRNode is 16 bytes. Process 4 nodes (64 bytes) per iteration to hit the cache line.
         size_t i = 0;
@@ -23,11 +31,11 @@ public:
             // op_a is at offset 4, op_b at offset 8 within each 16-byte node.
             
             // Extract op_a (uint32_t) from 4 nodes into one __m128i, then convert to __m256d
-            __m128i a_raw = _mm_set_epi32(stream.buffer[i+3].op_a, stream.buffer[i+2].op_a, 
-                                          stream.buffer[i+1].op_a, stream.buffer[i].op_a);
+            __m128i a_raw = _mm_set_epi32(stream.get_node_readonly(i+3).op_a, stream.get_node_readonly(i+2).op_a, 
+                                          stream.get_node_readonly(i+1).op_a, stream.get_node_readonly(i).op_a);
             
-            __m128i b_raw = _mm_set_epi32(stream.buffer[i+3].op_b, stream.buffer[i+2].op_b, 
-                                          stream.buffer[i+1].op_b, stream.buffer[i].op_b);
+            __m128i b_raw = _mm_set_epi32(stream.get_node_readonly(i+3).op_b, stream.get_node_readonly(i+2).op_b, 
+                                          stream.get_node_readonly(i+1).op_b, stream.get_node_readonly(i).op_b);
 
             // Convert integer operands to double for high-precision folding
             __m256d va = _mm256_cvtepi32_pd(a_raw);
@@ -40,15 +48,20 @@ public:
             __m128i res_i32 = _mm256_cvtpd_epi32(res);
             
             // Scalar-shuttle back to Bit-Packed fields (Final 1% bottleneck removal)
-            stream.buffer[i].op_a   = _mm_extract_epi32(res_i32, 0);
-            stream.buffer[i+1].op_a = _mm_extract_epi32(res_i32, 1);
-            stream.buffer[i+2].op_a = _mm_extract_epi32(res_i32, 2);
-            stream.buffer[i+3].op_a = _mm_extract_epi32(res_i32, 3);
+            auto& n0 = stream.get_node_ref(i);
+            auto& n1 = stream.get_node_ref(i+1);
+            auto& n2 = stream.get_node_ref(i+2);
+            auto& n3 = stream.get_node_ref(i+3);
+            n0.op_a = _mm_extract_epi32(res_i32, 0);
+            n1.op_a = _mm_extract_epi32(res_i32, 1);
+            n2.op_a = _mm_extract_epi32(res_i32, 2);
+            n3.op_a = _mm_extract_epi32(res_i32, 3);
         }
 
         // Cleanup for non-multiple of 4
-        for (; i < stream.count; ++i) {
-            stream.buffer[i].op_a *= stream.buffer[i].op_b;
+        for (; i < stream.size(); ++i) {
+            auto& node = stream.get_node_ref(i);
+            node.op_a *= node.op_b;
         }
     }
 };
@@ -57,7 +70,7 @@ int main() {
     std::cout << "--- DGTL-X: BIT-PACKED SIMD STRIKE (V1.0) ---" << std::endl;
     
     constexpr size_t NODE_COUNT = 1000000;
-    // Aligning to 64 bytes for the PassManager's Prefetcher
+    // Aligning to 64 bytes for the optManager's Prefetcher
     // FLAG FIXED: Using _aligned_malloc for Windows/MinGW stability
     void* raw_ptr = _aligned_malloc(NODE_COUNT * sizeof(ir::IRNode), 64);
     ir::IRNode* buffer = static_cast<ir::IRNode*>(raw_ptr);
@@ -70,17 +83,14 @@ int main() {
         buffer[i].op_b = 2; // Factor of 2
     }
 
-    ir::IRStream global_stream;
-    global_stream.buffer = buffer;
-    global_stream.count = NODE_COUNT;
-    global_stream.capacity = NODE_COUNT;
+    ir::IRStream global_stream(buffer, NODE_COUNT);
 
-    pipeline::DGTLPassManager manager;
-    SIMDFoldingPass fold_pass;
-    manager.add_pass(fold_pass);
+    dgtl::pipeline::DGTLoptManager manager;
+    auto fold_opt = std::make_unique<SIMDFoldingopt>();
+    manager.add_opt(std::move(fold_opt));
 
     auto start = std::chrono::high_resolution_clock::now();
-    manager.execute(global_stream);
+    manager.execute(global_stream, dgtl::pipeline::TargetPrecision::HFT);
     auto end = std::chrono::high_resolution_clock::now();
 
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();

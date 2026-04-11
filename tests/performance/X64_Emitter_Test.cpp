@@ -1,8 +1,8 @@
 #include <iostream>
 #include <iomanip>
 #include <vector>
-#include "X64_Strike_Emitter.hpp"
-#include "BitPacked_IR.hpp"
+#include "dgtl/isa/X64_Strike_Emitter.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 using namespace dgtl;
 
@@ -21,7 +21,7 @@ int main() {
     exec::X64StrikeEmitter emitter;
     
     // FIX: Explicitly initialize the stream with a capacity (e.g., 1024 nodes)
-    // Passing nullptr as the first argument triggers internal allocation.
+    // opting nullptr as the first argument triggers internal allocation.
     ir::IRStream stream(nullptr, 1024); 
     
     std::vector<uint8_t> machine_code;

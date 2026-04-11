@@ -38,7 +38,7 @@ private:
 public:
     /**
      * @brief Default Constructor.
-     * Initializes a 256MB strike zone by default for standard compiler passes.
+     * Initializes a 256MB strike zone by default for standard compiler optes.
      */
     DGTLArena() : DGTLArena(256) {}
 
@@ -152,7 +152,7 @@ public:
     // --- Transactional Strike Controls ---
 
     /**
-     * @brief Captures current offset for potential rollback if a compiler pass fails validation.
+     * @brief Captures current offset for potential rollback if a compiler opt fails validation.
      */
     [[nodiscard]] size_t get_checkpoint() const noexcept { return offset; }
 

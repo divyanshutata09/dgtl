@@ -48,7 +48,7 @@ int main() {
     std::cout << "[INFO] Total Injected: " << total_nodes << " | Active after GVN: " << active_nodes << std::endl;
 
     if (active_nodes <= 51) {
-        std::cout << "\033[1;32m[PASS]\033[0m GVN successfully collapsed 50 redundant fractal branches." << std::endl;
+        std::cout << "\033[1;32m[opt]\033[0m GVN successfully collapsed 50 redundant fractal branches." << std::endl;
     } else {
         std::cout << "\033[1;31m[FAIL]\033[0m Redundant nodes leaked through GVN." << std::endl;
     }

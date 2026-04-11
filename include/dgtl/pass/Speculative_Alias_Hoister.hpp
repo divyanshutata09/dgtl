@@ -22,22 +22,19 @@ public:
         : smasher(s), ai_model(ai) {}
 
     /**
-     * @brief DGTLPassManager Bridge.
+     * @brief DGTLoptManager Bridge.
      * Uses your IRStream Transactional API for local block safety.
      */
     void execute(ir::IRStream& stream) {
         if (stream.size() == 0) [[unlikely]] return;
         
         stream.begin_transaction();
-        try {
-            // Local optimization logic using BIR 2.0 accessors
-            if (!stream.validate_shadow_integrity()) {
-                throw std::runtime_error("Sentinel: Local Hoist Failure");
-            }
-            stream.commit_transaction();
-        } catch (...) {
+        // Local optimization logic using BIR 2.0 accessors
+        if (!stream.validate_shadow_integrity()) {
             stream.rollback_transaction();
+            return;
         }
+        stream.commit_transaction();
     }
 
     /**
@@ -51,54 +48,50 @@ public:
         loop_body.begin_transaction();
         pre_header.begin_transaction();
 
-        try {
-            const size_t body_count = loop_body.size();
-            for (uint32_t i = 0; i < body_count; ++i) {
-                // Accessing Stream A via your read-only accessor
-                ir::IRNode node = loop_body.get_node_readonly(i);
+        const size_t body_count = loop_body.size();
+        for (uint32_t i = 0; i < body_count; ++i) {
+            // Accessing Stream A via your read-only accessor
+            ir::IRNode node = loop_body.get_node_readonly(i);
 
-                if (node.opcode == ir::OpCode::LOAD && !(node.flags & ir::Flags::IS_VOLATILE)) {
-                    bool should_hoist = false;
+            if (node.opcode == ir::OpCode::LOAD && !(node.flags & ir::Flags::IS_VOLATILE)) {
+                bool should_hoist = false;
 
-                    // FIX: Passing index 'i' instead of the 'node' object
-                    if (smasher.is_guaranteed_invariant(loop_body, i)) {
-                        should_hoist = true;
-                    } else {
-                        // Check probability of index 'i' aliasing within the current loop stream
-                        float alias_prob = smasher.predict_alias_probability(loop_body, i, i);
-                        if (alias_prob < 0.0001f) {
-                            inject_runtime_alias_guard_transactional(pre_header, node);
-                            should_hoist = true;
-                        }
-                    }
-
-                    if (should_hoist) {
-                        move_to_preheader_transactional(loop_body, i, pre_header);
-                    } else {
-                        // Not hoisted: Ensure Shadow Tier B still contains the original node
-                        sync_shadow_node(loop_body, i, node);
-                    }
+                // FIX: opting index 'i' instead of the 'node' object
+                if (smasher.is_guaranteed_invariant(loop_body, i)) {
+                    should_hoist = true;
                 } else {
-                    // Regular instruction: Sync to Shadow Tier B
+                    // Check probability of index 'i' aliasing within the current loop stream
+                    float alias_prob = smasher.predict_alias_probability(loop_body, i, i);
+                    if (alias_prob < 0.0001f) {
+                        inject_runtime_alias_guard_transactional(pre_header, node);
+                        should_hoist = true;
+                    }
+                }
+
+                if (should_hoist) {
+                    move_to_preheader_transactional(loop_body, i, pre_header);
+                } else {
+                    // Not hoisted: Ensure Shadow Tier B still contains the original node
                     sync_shadow_node(loop_body, i, node);
                 }
+            } else {
+                // Regular instruction: Sync to Shadow Tier B
+                sync_shadow_node(loop_body, i, node);
             }
+        }
 
-            // Update Shadow Stream counts
-            loop_body.set_shadow_count(body_count);
+        // Update Shadow Stream counts
+        loop_body.set_shadow_count(body_count);
 
-            // PILLAR 3: Validate both streams before atomic swap
-            if (!loop_body.validate_shadow_integrity() || !pre_header.validate_shadow_integrity()) {
-                throw std::runtime_error("Sentinel Trap: LICM produced Inconsistent IR IDs.");
-            }
-
-            loop_body.commit_transaction();
-            pre_header.commit_transaction();
-
-        } catch (...) {
+        // PILLAR 3: Validate both streams before atomic swap
+        if (!loop_body.validate_shadow_integrity() || !pre_header.validate_shadow_integrity()) {
             loop_body.rollback_transaction();
             pre_header.rollback_transaction();
+            return;
         }
+
+        loop_body.commit_transaction();
+        pre_header.commit_transaction();
     }
 
 private:
@@ -119,7 +112,7 @@ private:
         ir::IRAtom& s_atom = pre.get_shadow_atom(cursor);
         ir::IRCore& s_core = pre.get_shadow_core(cursor);
 
-        s_atom = {ir::OpCode::GUARD_ALIAS, ir::Flags::REQUIRES_DEOPT_TARGET};
+        s_atom = {ir::OpCode::GUARD_ALIAS, ir::Flags::REQUIRES_DEpass_TARGET};
         s_core = {ir::INVALID_SLOT, load_node.op_a, 0, 0, 0};
         
         ir::IRNode temp = pre.get_node(cursor); // Construct temp from shadow for hash

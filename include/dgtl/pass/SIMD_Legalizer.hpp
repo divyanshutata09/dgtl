@@ -7,8 +7,8 @@
 
 #pragma once
 #include <immintrin.h> 
-#include <stdexcept>
 #include <algorithm>
+#include <cstdio>
 #include "../ir/Global_IR.hpp"
 
 namespace dgtl::opt {
@@ -22,8 +22,9 @@ public:
     explicit DGTLSIMDLegalizer(TargetArch arch) : target(arch) {}
 
     /**
-     * @brief The "Zero-Corruption" Legalization Pass.
+     * @brief The "Zero-Corruption" Legalization opt.
      * Scans for "Vertical Scalar Chains" and converts them via Shadow-Writing.
+     * Updated to support -fno-exceptions via boolean transaction flow.
      */
     void legalize(ir::IRStream& stream) {
         const size_t stream_size = stream.size();
@@ -32,34 +33,37 @@ public:
         // PILLAR 2: Open Shadow Buffer (Stream B)
         stream.begin_transaction();
 
-        try {
-            // Initial sync: Move Primary state to Shadow before mutation
-            // Updated to use internal sync to ensure metadata consistency
-            for (uint32_t i = 0; i < stream_size; ++i) {
-                sync_node_to_shadow(stream, i);
-            }
+        // Initial sync: Move Primary state to Shadow before mutation
+        for (uint32_t i = 0; i < (uint32_t)stream_size; ++i) {
+            sync_node_to_shadow(stream, i);
+        }
 
-            for (uint32_t i = 0; i <= static_cast<uint32_t>(stream_size) - 4; ++i) {
-                // Sliding Window Inspection on Primary (ReadOnly)
-                if (is_vectorizable_quad(stream, i)) {
-                    
-                    // PILLAR 3: Atomic Fusion in Shadow Buffer
-                    fuse_to_simd_v4_transactional(stream, i);
-                    
-                    // Jump ahead to avoid re-scanning fused block
-                    i += 3;
-                }
-            }
+        bool transaction_valid = true;
 
-            // PILLAR 3 Sentinel: Validate Shadow integrity before swap
-            if (!stream.validate_shadow_integrity()) {
-                throw std::runtime_error("Sentinel Trap: SIMD Legalization produced inconsistent IR bit-logic.");
+        for (uint32_t i = 0; i <= static_cast<uint32_t>(stream_size) - 4; ++i) {
+            // Sliding Window Inspection on Primary (ReadOnly)
+            if (is_vectorizable_quad(stream, i)) {
+                
+                // PILLAR 3: Atomic Fusion in Shadow Buffer
+                fuse_to_simd_v4_transactional(stream, i);
+                
+                // Jump ahead to avoid re-scanning fused block
+                i += 3;
             }
+        }
 
+        // PILLAR 3 Sentinel: Validate Shadow integrity before swap
+        if (!stream.validate_shadow_integrity()) {
+            // Log the violation (HFT style) without throwing an exception
+            printf("[SENTINEL TRAP] SIMD Legalization produced inconsistent IR bit-logic.\n");
+            transaction_valid = false;
+        }
+
+        // Final Transaction Check
+        if (transaction_valid) {
             // Success: Commit Shadow to Primary
             stream.commit_transaction();
-
-        } catch (...) {
+        } else {
             // Failure: Rollback to safe scalar state
             stream.rollback_transaction();
         }
@@ -83,13 +87,16 @@ private:
         const ir::IRNode n2 = stream.get_node_readonly(start + 2);
         const ir::IRNode n3 = stream.get_node_readonly(start + 3);
 
-        // OpCode Sync: ADD_I32 = 20
+        // OpCode Sync: ADD_I32
         if (n0.opcode != ir::OpCode::ADD_I32 || n1.opcode != ir::OpCode::ADD_I32 ||
             n2.opcode != ir::OpCode::ADD_I32 || n3.opcode != ir::OpCode::ADD_I32) return false;
 
         // SSA Independence Check within window
+        // Ensure none of the later nodes depend on the result of the first node in the quad
         uint32_t r0 = n0.result_id;
-        if (n1.op_a == r0 || n1.op_b == r0 || n2.op_a == r0 || n3.op_a == r0) return false;
+        if (n1.op_a == r0 || n1.op_b == r0 || 
+            n2.op_a == r0 || n2.op_b == r0 || 
+            n3.op_a == r0 || n3.op_b == r0) return false;
 
         return true;
     }
@@ -104,8 +111,8 @@ private:
         // Target-specific OpCode Selection
         ir::OpCode fused_op;
         switch (target) {
-            case TargetArch::X86_AVX512:  fused_op = static_cast<ir::OpCode>(0x204); break;
-            case TargetArch::ARM_NEON:    fused_op = static_cast<ir::OpCode>(0x304); break;
+            case TargetArch::X86_AVX512:   fused_op = static_cast<ir::OpCode>(0x204); break;
+            case TargetArch::ARM_NEON:     fused_op = static_cast<ir::OpCode>(0x304); break;
             case TargetArch::WASM_SIMD128: fused_op = static_cast<ir::OpCode>(0x404); break;
             default: fused_op = ir::OpCode::ADD_I32; break; 
         }
@@ -115,7 +122,6 @@ private:
         v_atom.flags |= (ir::Flags::IS_SIMD_BURST | ir::Flags::REQUIRES_VEC_PORT | ir::Flags::IS_FUSED);
         
         // Refresh Intent Hash using node proxy for CRC-32 update
-        // Using standardized hash calculation to maintain Pillar 3 integrity
         v_core.intent_hash = ir::IRNode::calculate_hash(
             v_atom.opcode, 
             v_core.op_a, 
@@ -128,7 +134,7 @@ private:
             ir::IRAtom& f_atom = stream.get_shadow_atom(start + j);
             ir::IRCore& f_core = stream.get_shadow_core(start + j);
             
-            f_atom = {ir::OpCode::NOP, ir::Flags::NONE};
+            f_atom = {ir::OpCode::NOP, ir::Flags::IS_DEAD};
             f_core = {ir::INVALID_SLOT, 0, 0, 0, 0};
             
             // Recalculate hash for NOP to ensure validate_shadow_integrity succeeds

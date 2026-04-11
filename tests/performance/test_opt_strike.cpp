@@ -1,6 +1,6 @@
 /* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
  * TEST SUITE: PARALLEL OPTIMIZATION STRIKE (1M NODE STRESS TEST)
- * EMERGENCY BYPASS: RAW POINTER INITIALIZATION
+ * EMERGENCY BYopt: RAW POINTER INITIALIZATION
  * STATUS: PILLAR 3 COMPLIANT (MASTER ARCHITECT)
  */
 
@@ -22,8 +22,8 @@
 #endif
 
 #include "dgtl/ir/Global_IR.hpp"               
-#include "dgtl/pipeline/Pass_Manager.hpp"        
-#include "opt/Instruction_Fusion_Synth.hpp"
+#include "dgtl/pipeline/pass_Manager.hpp"        
+// #include "opt/Instruction_Fusion_Synth.hpp"
 #include "dgtl/pass/Speculative_DCE.hpp"
 #include "dgtl/analysis/AI_Cost_Model.hpp"
 
@@ -91,27 +91,21 @@ int main(int argc, char** argv) {
     const uint32_t workers = std::thread::hardware_concurrency();
     std::cout << "[INFO] Initializing Pipeline Manager (" << workers << " workers)..." << std::endl;
     
-    pipeline::DGTLPassManager manager(workers);
+    pipeline::DGTLoptManager manager(workers);
 
     // Setup Optimization Chain with AI-Gating
     auto ai_model = std::make_shared<opt::DGTLAICostModel>();
     
-    manager.add_pass(std::make_unique<opt::DGTLInstructionFusionSynth>(ai_model));
-    manager.add_pass(std::make_unique<opt::DGTLSpeculativeDCE>());
+    // manager.add_opt(std::make_unique<opt::DGTLInstructionFusionSynth>(ai_model)); // Not implemented
+    manager.add_opt(std::make_unique<opt::DGTLSpeculativeDCE>());
 
     // --- STEP 4: THE STRIKE ---
     std::cout << "[INFO] Striking 1M Nodes (Precision: HFT 8-byte Stride)..." << std::endl;
 
     auto start = std::chrono::high_resolution_clock::now();
     
-    try {
-        // Execute the parallel transactional pipeline.
-        manager.execute(*stream, pipeline::TargetPrecision::HFT);
-    } catch (const std::exception& e) {
-        std::cerr << "\033[1;31m[DGTL CRITICAL] STRIKE ABORTED: " << e.what() << "\033[0m\n";
-        _aligned_free(buffer);
-        return 1;
-    } 
+    // Execute the parallel transactional pipeline.
+    manager.execute(*stream, pipeline::TargetPrecision::HFT); 
     
     auto end = std::chrono::high_resolution_clock::now();
 

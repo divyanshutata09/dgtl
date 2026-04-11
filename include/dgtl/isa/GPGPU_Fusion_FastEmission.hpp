@@ -19,7 +19,7 @@ namespace dgtl::ir {
 
 /**
  * @enum DeviceType
- * @brief Identifies the target accelerator for the Fusion pass.
+ * @brief Identifies the target accelerator for the Fusion opt.
  */
 enum class DeviceType : uint8_t {
     NVIDIA_PTX,     // Tesla/Ampere/Hopper
@@ -78,7 +78,7 @@ public:
 
     /**
      * @brief Directly dispatches a BIR stream to the accelerator.
-     * Logic: Bypasses standard drivers using DGTL's "Direct-to-Silicon" protocol.
+     * Logic: Byoptes standard drivers using DGTL's "Direct-to-Silicon" protocol.
      */
     FusionResult dispatch_fusion(const IRStream& stream, const GridConfig& config) {
         // Implementation: Calls lower-level device drivers (CUdriver/HSA)

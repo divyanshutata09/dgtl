@@ -12,7 +12,7 @@
 #include <optional>
 #include <unordered_map>
 #include <span>
-#include <memory> // Added for internal arena management
+#include <memory> 
 
 #include "dgtl/ir/IR_Types.hpp"
 #include "dgtl/core/Arena.hpp"
@@ -124,6 +124,45 @@ public:
     }
 
     /**
+     * @brief Direct pointer access for the Emitter via Name.
+     */
+    [[nodiscard]] SymbolEntry* get(std::string_view name) noexcept {
+        uint64_t hash = compute_hash(name);
+        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
+            if (auto entry_it = it->find(hash); entry_it != it->end()) {
+                return &(entry_it->second);
+            }
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Direct access via slot_id to prevent uint32_t to string_view conversion errors.
+     */
+    [[nodiscard]] SymbolEntry* get(uint32_t slot_id) noexcept {
+        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
+            for (auto& [hash, entry] : *it) {
+                if (entry.slot_id == slot_id) return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Specialized getter for IR-linked function nodes.
+     * Fixed: Added explicit pointer return. The caller must cast to ir::IRStream&.
+     */
+    [[nodiscard]] void* get_function_ir(std::string_view name) const noexcept {
+        uint64_t hash = compute_hash(name);
+        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
+            if (auto entry_it = it->find(hash); entry_it != it->end()) {
+                return entry_it->second.metadata;
+            }
+        }
+        return nullptr;
+    }
+
+    /**
      * @brief Updates an existing symbol's metadata or slot.
      */
     bool update(std::string_view name, uint32_t new_slot) {
@@ -175,7 +214,6 @@ private:
 
 /**
  * @brief Legacy and Emitter-specific Aliases
- * Ensures NASM_Emitter.hpp and test_pipeline_*.cpp find the expected types.
  */
 using DGTLSymbolTable = dgtl::core::SymbolTable;
 

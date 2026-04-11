@@ -1,8 +1,4 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
- * STEP 27: NEURAL-TRANSFORMER COST MODEL (uT-8) - VERSION 2.1
- * PILLAR 2 & 3 INTEGRATION: Transactional IR & Bit-Level Invariant Sync.
- * PERFORMANCE: INT8-Quantized Weight-Processing (Sub-microsecond latency).
- */
+/* DGTL AI Cost Model - Neural cost prediction for optimization */
 
 #pragma once
 #include <array>
@@ -16,27 +12,25 @@ namespace dgtl::opt {
 
 /**
  * @class DGTLAICostModel
- * @brief Predicts hardware cycle costs and optimization safety.
- * Synchronized with Pillar 2 (Transactional IR) and Pillar 3 (The Sentinel).
+ * @brief Predicts hardware cycle costs and optimization safety using neural inference
  */
 class alignas(64) DGTLAICostModel {
-    // Quantized weights for the 8-layer Micro-Transformer.
+    // Quantized weights for the 8-layer Micro-Transformer
     static constexpr size_t EmbeddingDim = 128;
-    
-    // PILLAR 3: Aligned weight buffer for AVX-512/SIMD-accelerated inference.
+
+    // Aligned weight buffer for SIMD-accelerated inference
     alignas(64) std::array<int8_t, 16384> model_weights;
 
 public:
-    DGTLAICostModel() noexcept { 
-        // Initializing with a base-bias (64).
-        // In production, weights are hot-swapped via mmap of 'DGTL_weights.bin'.
-        model_weights.fill(64); 
+    DGTLAICostModel() noexcept {
+        // Initialize with base bias. In production, weights loaded from file
+        model_weights.fill(64);
     }
 
     /**
-     * @brief [TRANSACTION-AWARE] Neural Cost Prediction.
-     * Analyzes the active buffer (Primary or Shadow) to predict latency.
-     * This is the primary entry point for the DGTLPassManager.
+     * @brief Predict cost for entire IR stream
+     * @param stream The IR stream to analyze
+     * @return Predicted cycle cost
      */
     [[nodiscard]] float predict_cost(const ir::IRStream& stream) const noexcept {
         const size_t count = stream.size();
@@ -53,8 +47,11 @@ public:
     }
 
     /**
-     * @brief Range-based cost prediction for optimization strikes.
-     * Used by Gather/Scatter and Store Fuser to validate local transformations.
+     * @brief Predict cost for a range of nodes in the stream
+     * @param stream The IR stream
+     * @param start Starting index
+     * @param count Number of nodes to analyze
+     * @return Predicted cycle cost
      */
     [[nodiscard]] float predict_cost(const ir::IRStream& stream, uint32_t start, uint32_t count) const noexcept {
         const uint32_t stream_size = static_cast<uint32_t>(stream.size());
@@ -88,8 +85,9 @@ public:
     }
 
     /**
-     * @brief Single node cost prediction.
-     * Required by Smasher and speculative probes.
+     * @brief Predict cost for a single IR node
+     * @param node The node to analyze
+     * @return Predicted cycle cost
      */
     [[nodiscard]] float predict_node_cost(const ir::IRNode& node) const noexcept {
         float cost = 1.0f;
@@ -180,7 +178,7 @@ public:
      * @brief Evaluates if a "Shadow Strike" transformation is worth the commit.
      */
     [[nodiscard]] bool should_commit(float cost_before, float cost_after, uint32_t benefit_threshold) const noexcept {
-        if (cost_after < 1.0f) return true; // Micro-ops always bypass thresholds
+        if (cost_after < 1.0f) return true; // Micro-ops always byopt thresholds
         
         float reduction = cost_before - cost_after;
         return reduction > static_cast<float>(benefit_threshold);

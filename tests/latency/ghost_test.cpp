@@ -36,7 +36,7 @@ int main() {
     if (final_size == 2) {
         auto node2 = stream.get_node(1);
         if (node2.opcode == dgtl::ir::OpCode::SYSCALL) {
-            std::cout << "\033[1;32m[PASS]\033[0m Transactional integrity verified. Ghost nodes purged." << std::endl;
+            std::cout << "\033[1;32m[opt]\033[0m Transactional integrity verified. Ghost nodes purged." << std::endl;
         } else {
             std::cout << "\033[1;31m[FAIL]\033[0m Opcode mismatch at index 1. Got: " << (int)node2.opcode << std::endl;
         }

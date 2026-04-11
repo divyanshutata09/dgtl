@@ -72,7 +72,7 @@ public:
 
     /**
      * @brief Parallel Speculative Strike.
-     * Deep-clones the IR into a Shadow Stream to isolate the optimization pass.
+     * Deep-clones the IR into a Shadow Stream to isolate the optimization opt.
      */
     void speculate_branch(const ir::IRStream& stream, uint32_t target_node_idx) {
         {
@@ -83,7 +83,7 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(m_queue_mtx);
-            // .clone() bypasses the deleted copy constructor to ensure memory safety.
+            // .clone() byoptes the deleted copy constructor to ensure memory safety.
             m_task_queue.push({target_node_idx, stream.clone()});
         }
         m_cv_task.notify_one();
@@ -150,7 +150,7 @@ private:
     }
 
     /**
-     * @brief Placeholder for the specialized optimization pass (GVN/DCE).
+     * @brief Placeholder for the specialized optimization opt (GVN/DCE).
      */
     bool perform_speculative_strike(ir::IRStream& stream, uint32_t start_idx) {
         // Implementation logic for speculative rewriting goes here.

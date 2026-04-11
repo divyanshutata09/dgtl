@@ -9,19 +9,19 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include "ir/Global_IR.hpp"
-#include "core/Arena.hpp"
-#include "pipeline/Pass_Manager.hpp" 
-#include "analysis/AI_Cost_Model.hpp"
+#include "../ir/Global_IR.hpp"
+#include "../pipeline/pass_Manager.hpp" 
+#include "../analysis/AI_Cost_Model.hpp"
+#include "../core/Verified_Formal.hpp"
 
 namespace dgtl::opt {
 
 /**
  * @class DGTLSpeculativeDCE
  * @brief Performs speculative path pruning and CFG reordering on the Shadow Tier.
- * Inherits from DGTLOptimizationPass for polymorphic execution in the TPM.
+ * Inherits from DGTLOptimization to integrate with the Task Pipeline Manager.
  */
-class DGTLSpeculativeDCE : public DGTLOptimizationPass {
+class DGTLSpeculativeDCE : public pipeline::DGTLOptimizationPass {
     struct BlockProfile {
         uint32_t start_idx;
         uint32_t len;
@@ -31,12 +31,13 @@ class DGTLSpeculativeDCE : public DGTLOptimizationPass {
     const DGTLAICostModel* internal_model = nullptr;
 
 public:
+    [[nodiscard]] const char* get_pass_name() const noexcept override { return "SpeculativeDCE"; }
     DGTLSpeculativeDCE() = default;
     explicit DGTLSpeculativeDCE(const DGTLAICostModel& model) : internal_model(&model) {}
 
     /**
-     * @brief DGTLPassManager Entry Point.
-     * Implements the "Double-Buffered Safety Net" for BIR 2.0.
+     * @brief Entry Point for the Pipeline Manager.
+     * Implements the "Double-Buffered Safety Net" for BIR 2.1.
      */
     void execute(ir::IRStream& stream) override {
         if (stream.size() == 0) [[unlikely]] return;
@@ -44,63 +45,48 @@ public:
         // PILLAR 2: Enter Transactional Mode
         stream.begin_transaction();
 
-        try {
-            // If no model provided, we perform basic liveness/integrity check
-            bool success = false;
-            if (internal_model) {
-                success = prune_and_reorder_transactional(stream, *internal_model);
-            } else {
-                success = stream.validate_shadow_integrity();
-            }
-
-            // PILLAR 3: THE SENTINEL - Local verification before PassManager final gate
-            if (!success || !stream.validate_shadow_integrity()) {
-                stream.rollback_transaction();
-            }
-        } catch (...) {
-            stream.rollback_transaction();
-        }
-    }
-
-    /**
-     * @brief Speculative Bridge for Loop Unswitching.
-     * Operates directly on an existing transaction started by another pass.
-     */
-    bool execute_speculative(ir::IRStream& stream) {
-        if (!stream.is_transactional() || stream.size() == 0) [[unlikely]] return false;
-
+        bool success = false;
         if (internal_model) {
-            return prune_and_reorder_transactional(stream, *internal_model);
+            success = prune_and_reorder_transactional(stream, *internal_model);
+        } else {
+            // If no AI model, we simply validate existing stream integrity
+            success = stream.validate_shadow_integrity();
         }
-        
-        return stream.validate_shadow_integrity();
+
+        // PILLAR 3: THE SENTINEL - Final validation before commit
+        if (!success || !stream.validate_shadow_integrity()) {
+            stream.rollback_transaction();
+        } else {
+            stream.commit_transaction();
+        }
     }
 
 private:
     /**
-     * @brief High-performance CFG Reordering on Shadow Tiers.
+     * @brief High-performance CFG Reordering.
+     * Reorganizes the Shadow Tier so Hot Paths are contiguous.
      */
     bool prune_and_reorder_transactional(ir::IRStream& stream, const DGTLAICostModel& ai_model) {
         std::vector<BlockProfile> blocks = analyze_cfg_probability(stream, ai_model);
         if (blocks.empty()) return false;
         
-        // Partition Hot vs Cold blocks based on probability threshold
+        // Partition blocks: Hot blocks first, Cold blocks (prob < 0.01%) last
         auto frozen_it = std::stable_partition(blocks.begin(), blocks.end(), [](const auto& b) {
             return b.probability > 0.0001f;
         });
 
         uint32_t shadow_cursor = 0;
 
-        // 1. Write Hot Path to Shadow
+        // 1. Write Hot Path to Shadow Buffer
         for (auto it = blocks.begin(); it != frozen_it; ++it) {
             append_block_to_shadow(stream, shadow_cursor, *it);
             inject_branch_hint_shadow(stream, shadow_cursor, true);
         }
 
-        // 2. Align to Cache Line for TSO-Spin optimization (Pillar 1/2)
+        // 2. Align to Cache Line (4-node stride for 128-byte cache lines)
         align_shadow_to_cache_line(stream, shadow_cursor);
 
-        // 3. Write Cold Path to Shadow
+        // 3. Write Cold Path
         for (auto it = frozen_it; it != blocks.end(); ++it) {
             append_block_to_shadow(stream, shadow_cursor, *it);
             inject_branch_hint_shadow(stream, shadow_cursor, false);
@@ -117,7 +103,13 @@ private:
         
         for (uint32_t i = 0; i < count; ++i) {
             ir::IRNode node = s.get_node_readonly(i); 
-            if (node.is_terminator() || i == (count - 1)) {
+            
+            bool is_term = (node.opcode == ir::OpCode::GOTO || 
+                            node.opcode == ir::OpCode::BRANCH || 
+                            node.opcode == ir::OpCode::RET ||
+                            node.opcode == ir::OpCode::BRANCH_COND);
+
+            if (is_term || i == (count - 1)) {
                 float prob = 1.0f; 
                 if (node.flags & ir::Flags::BRANCH_UNLIKELY) prob = 0.0000001f;
                 else if (node.flags & ir::Flags::BRANCH_LIKELY) prob = 1.0f;
@@ -129,13 +121,14 @@ private:
         return blocks; 
     }
 
-    /**
-     * @brief PILLAR 3: Finalizes the node hash in the shadow buffer.
-     */
     void finalize_shadow_node(ir::IRStream& s, uint32_t idx) noexcept {
-        auto proxy = s.get_shadow_node_proxy(idx);
-        proxy.refresh_intent_hash();
-        s.get_shadow_core(idx).intent_hash = proxy.intent_hash;
+        ir::IRAtom& atom = s.get_shadow_atom(idx);
+        ir::IRCore& core = s.get_shadow_core(idx);
+        
+        // Re-calculate Master Sentinel Hash to reflect reordered state
+        core.intent_hash = core::DGTLFormalVerifier::compute_master_hash_bits(
+            atom.opcode, core.op_a, core.op_b, core.op_c
+        );
     }
 
     void append_block_to_shadow(ir::IRStream& s, uint32_t& cursor, const BlockProfile& p) noexcept {
@@ -144,8 +137,15 @@ private:
         for (uint32_t i = 0; i < p.len; ++i) {
             ir::IRNode node = s.get_node_readonly(p.start_idx + i);
             
-            s.get_shadow_atom(cursor) = {node.opcode, node.flags};
-            s.get_shadow_core(cursor) = {node.result_id, node.op_a, node.op_b, node.op_c, 0};
+            ir::IRAtom& s_atom = s.get_shadow_atom(cursor);
+            ir::IRCore& s_core = s.get_shadow_core(cursor);
+
+            s_atom.opcode = node.opcode;
+            s_atom.flags = node.flags;
+            s_core.result_id = node.result_id;
+            s_core.op_a = node.op_a;
+            s_core.op_b = node.op_b;
+            s_core.op_c = node.op_c;
             
             finalize_shadow_node(s, cursor);
             cursor++;
@@ -153,11 +153,18 @@ private:
     }
 
     void align_shadow_to_cache_line(ir::IRStream& s, uint32_t& cursor) noexcept {
-        // BIR 2.0 alignment: Ensure blocks start on 4-node boundaries
+        // BIR 2.1: Align to 4-atom (16-byte) boundaries for vector dispatch
         uint32_t align_gap = (4 - (cursor & 3)) & 3; 
         for (uint32_t i = 0; i < align_gap && (cursor < s.capacity()); ++i) {
-            s.get_shadow_atom(cursor) = {ir::OpCode::NOP, ir::Flags::NONE};
-            s.get_shadow_core(cursor) = {0, 0, 0, 0, 0};
+            ir::IRAtom& s_atom = s.get_shadow_atom(cursor);
+            ir::IRCore& s_core = s.get_shadow_core(cursor);
+
+            s_atom.opcode = ir::OpCode::NOP;
+            s_atom.flags = ir::Flags::NONE;
+            s_core.result_id = 0;
+            s_core.op_a = 0;
+            s_core.op_b = 0;
+            s_core.op_c = ir::INVALID_SLOT; // Consistent with BIR Return Fix
             
             finalize_shadow_node(s, cursor);
             cursor++;
@@ -170,10 +177,12 @@ private:
         const uint32_t target_idx = cursor - 1;
         auto& s_atom = s.get_shadow_atom(target_idx);
         
-        // FIX: Replaced non-existent get_shadow_node_readonly with standard get_node_readonly
-        auto node_checker = s.get_node_readonly(target_idx);
+        // Internal check for terminator type
+        bool is_term = (s_atom.opcode == ir::OpCode::GOTO || 
+                        s_atom.opcode == ir::OpCode::BRANCH || 
+                        s_atom.opcode == ir::OpCode::BRANCH_COND);
 
-        if (node_checker.is_terminator()) {
+        if (is_term) {
             if (likely) {
                 s_atom.flags |= ir::Flags::BRANCH_LIKELY;
                 s_atom.flags &= ~ir::Flags::BRANCH_UNLIKELY;

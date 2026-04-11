@@ -32,49 +32,45 @@ public:
         // PILLAR 2: Open Transactional Tier
         stream.begin_transaction();
 
-        try {
-            // Initial sync to Shadow Tier
-            for (uint32_t i = 0; i < stream_size; ++i) {
-                sync_node_to_shadow(stream, i);
-            }
+        // Initial sync to Shadow Tier
+        for (uint32_t i = 0; i < stream_size; ++i) {
+            sync_node_to_shadow(stream, i);
+        }
 
-            for (uint32_t i = 0; i <= static_cast<uint32_t>(stream_size) - 16; ++i) {
-                ir::IRNode node = stream.get_node_readonly(i); 
+        for (uint32_t i = 0; i <= static_cast<uint32_t>(stream_size) - 16; ++i) {
+            ir::IRNode node = stream.get_node_readonly(i); 
+            
+            // OpCode Sync: LOAD = 10
+            if (node.opcode == ir::OpCode::LOAD && is_indirect_address(node)) {
                 
-                // OpCode Sync: LOAD = 10
-                if (node.opcode == ir::OpCode::LOAD && is_indirect_address(node)) {
-                    
-                    // 1. Dependency Check: Can we group 16 scalar loads?
-                    if (!smasher.can_group_access(stream, i, 16)) continue;
+                // 1. Dependency Check: Can we group 16 scalar loads?
+                if (!smasher.can_group_access(stream, i, 16)) continue;
 
-                    // 2. AI Cost Validation: Compare Scalar vs. SIMD
-                    // We use a temporary node for cost probing to avoid primary mutation
-                    ir::IRNode probe = node;
-                    convert_to_gather_node(probe);
-                    
-                    float scalar_cost = ai_model.predict_cost(stream, i, 16); 
-                    float gather_cost = ai_model.predict_node_cost(probe);
+                // 2. AI Cost Validation: Compare Scalar vs. SIMD
+                // We use a temporary node for cost probing to avoid primary mutation
+                ir::IRNode probe = node;
+                convert_to_gather_node(probe);
+                
+                float scalar_cost = ai_model.predict_cost(stream, i, 16); 
+                float gather_cost = ai_model.predict_node_cost(probe);
 
-                    if (gather_cost < scalar_cost) {
-                        // PILLAR 3: Shadow Synthesis (Mutates Stream B)
-                        apply_gather_transaction(stream, i);
-                        
-                        // Advance index to skip absorbed scalar slots
-                        i += 15; 
-                    }
+                if (gather_cost < scalar_cost) {
+                    // PILLAR 3: Shadow Synthesis (Mutates Stream B)
+                    apply_gather_transaction(stream, i);
+                    
+                    // Advance index to skip absorbed scalar slots
+                    i += 15; 
                 }
             }
-
-            // PILLAR 3 Sentinel: Validate Shadow integrity before swapping
-            if (!stream.validate_shadow_integrity()) {
-                throw std::runtime_error("Sentinel Trap: Gather strike violated IR invariants.");
-            }
-
-            stream.commit_transaction();
-
-        } catch (...) {
-            stream.rollback_transaction();
         }
+
+        // PILLAR 3 Sentinel: Validate Shadow integrity before swapping
+        if (!stream.validate_shadow_integrity()) {
+            stream.rollback_transaction();
+            return;
+        }
+
+        stream.commit_transaction();
     }
 
 private:

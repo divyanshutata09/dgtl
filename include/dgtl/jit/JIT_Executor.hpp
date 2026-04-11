@@ -74,7 +74,7 @@ public:
         if (!code_buffer || code_buffer == (void*)-1) [[unlikely]] {
             std::cerr << "\033[1;31m[DGTL-FATAL]\033[0m JIT memory allocation failed\n";
             std::cerr.flush();
-            throw std::bad_alloc();
+            std::abort();
         }
     }
 
@@ -161,7 +161,7 @@ private:
 
             if (!VirtualProtect(reinterpret_cast<LPVOID>(pageStart), pageEnd - pageStart, PAGE_EXECUTE_READ, &oldProtect)) {
                 std::cerr << "[DGTL-FATAL] VirtualProtect W^X Failure. Error: " << GetLastError() << "\n";
-                throw std::runtime_error("DGTLJit: VirtualProtect Failed");
+                std::abort();
             }
         #else
             long pagesize = sysconf(_SC_PAGESIZE);
@@ -172,7 +172,8 @@ private:
             uintptr_t end_page = (addr + size + pagesize - 1) & ~(static_cast<uintptr_t>(pagesize) - 1);
             
             if (mprotect(reinterpret_cast<void*>(start_page), end_page - start_page, PROT_READ | PROT_EXEC) != 0) {
-                throw std::runtime_error("DGTLJit: mprotect Failed during W^X transition");
+                std::cerr << "[DGTL-FATAL] mprotect W^X Failure\n";
+                std::abort();
             }
         #endif
     }

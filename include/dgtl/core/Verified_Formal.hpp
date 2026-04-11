@@ -13,7 +13,7 @@
 #include <cstring>
 #include "../ir/Global_IR.hpp"
 
-namespace dgtl::opt {
+namespace dgtl::core {
 
 struct SymbolicVal {
     uint64_t fixed_bits;   // Invariant bits (0 or 1)
@@ -33,6 +33,8 @@ struct ConstantResult {
  */
 class DGTLFormalVerifier {
 public:
+    DGTLFormalVerifier() = default;
+
     /**
      * @brief [LINKER FIX] Static authority for low-level hash calculation.
      * Matches the internal BIR formula for HFT-stride consistency.
@@ -48,16 +50,21 @@ public:
     }
 
     /**
+     * @brief Utility for external components to generate a Pillar 3 compliant hash.
+     */
+    [[nodiscard]] static uint32_t compute_master_hash(const ir::IRNode& n) noexcept {
+        return compute_master_hash_bits(n.opcode, n.op_a, n.op_b, n.op_c);
+    }
+
+    /**
      * @brief PILLAR 3: The Sentinel Guard.
      * Validates that an optimization strike hasn't altered logic or introduced UB.
      */
     [[nodiscard]] bool verify_pass_integrity(const ir::IRNode& original, const ir::IRNode& optimized) const noexcept {
         // 1. Bit-Level Invariant Check (Symbolic Execution)
-        // Ensures that known bits in the original are not contradicted in the optimized version.
         if (!verify_transform(original, optimized)) [[unlikely]] return false;
 
         // 2. Master Formula Intent-Hash Check (Anti-Hallucination)
-        // This is the bit-level lock that prevents unauthorized IR mutations.
         if (optimized.intent_hash != compute_master_hash(optimized)) [[unlikely]] {
             return false;
         }
@@ -70,7 +77,6 @@ public:
      * Hardened against UB and precision loss.
      */
     [[nodiscard]] std::optional<ConstantResult> solve_static_math(const ir::IRNode& node) const noexcept {
-        // Only attempt folding if operands are flagged as specific constants
         const bool is_const = (node.flags & ir::Flags::IS_SPEC_CONST);
         if (!is_const) return std::nullopt;
 
@@ -137,11 +143,8 @@ public:
         SymbolicVal v_before = compute_symbolic(before);
         SymbolicVal v_after  = compute_symbolic(after);
 
-        // STABILITY RULE 1: Never introduce UB where none existed.
         if (!v_before.has_ub && v_after.has_ub) return false;
         
-        // STABILITY RULE 2: Fixed bits must remain invariant.
-        // (Conflict exists if a bit is fixed in 'before' and 'after' but they differ).
         uint64_t mask = (~v_before.unknown_mask) & (~v_after.unknown_mask);
         uint64_t conflict = (v_before.fixed_bits ^ v_after.fixed_bits) & mask;
         
@@ -150,15 +153,12 @@ public:
 
     /**
      * @brief Memory Disambiguation Proof.
-     * Proves that two memory accesses do not overlap.
      */
     [[nodiscard]] bool verify_disjoint(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) const noexcept {
         const ir::IRCore& core_a = stream.get_core_readonly(idx_a);
         const ir::IRCore& core_b = stream.get_core_readonly(idx_b);
 
-        // Simple proving logic: If they are the same base but have constant different offsets
         if (core_a.op_a == core_b.op_a) {
-            // op_b often represents the immediate offset in LOAD/STORE
             if (core_a.op_b != core_b.op_b) return true; 
         }
         return false;
@@ -166,15 +166,12 @@ public:
 
     /**
      * @brief Physical Continuity Proof.
-     * Essential for AVX-512 grouping. Proves node B follows node A.
      */
     [[nodiscard]] bool is_contiguous(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) const noexcept {
         const ir::IRCore& core_a = stream.get_core_readonly(idx_a);
         const ir::IRCore& core_b = stream.get_core_readonly(idx_b);
 
-        // Check for sequential offsets on the same base pointer
         if (core_a.op_a == core_b.op_a) {
-            // Assumes 4-byte stride for standard I32/F32 access
             return (core_b.op_b == core_a.op_b + 4);
         }
         return false;
@@ -185,29 +182,19 @@ public:
      * Deep-verifies that bitwise invariants are preserved between two states.
      */
     [[nodiscard]] bool verify_bit_consistency(const ir::IRNode& before, const ir::IRNode& after) const noexcept {
-        // 1. Compute symbolic states for both nodes
         SymbolicVal sym_before = compute_symbolic(before);
         SymbolicVal sym_after  = compute_symbolic(after);
 
-        // 2. Conflict Check: Known bits in 'before' must match 'after' if 'after' also knows them.
         uint64_t known_in_both = (~sym_before.unknown_mask) & (~sym_after.unknown_mask);
         uint64_t conflict = (sym_before.fixed_bits ^ sym_after.fixed_bits) & known_in_both;
 
         if (conflict != 0) [[unlikely]] return false;
 
-        // 3. Safety Check: Optimized code must not be "less certain" than original if original was a constant.
         if (sym_before.unknown_mask == 0 && sym_after.unknown_mask != 0) {
             return false;
         }
 
         return true;
-    }
-
-    /**
-     * @brief Utility for external components to generate a Pillar 3 compliant hash.
-     */
-    [[nodiscard]] static uint32_t compute_master_hash(const ir::IRNode& n) noexcept {
-        return compute_master_hash_bits(n.opcode, n.op_a, n.op_b, n.op_c);
     }
 
 private:
@@ -218,20 +205,17 @@ private:
     SymbolicVal compute_symbolic(const ir::IRNode& node) const noexcept {
         SymbolicVal res{0, 0xFFFFFFFFFFFFFFFF, false};
         
-        // Constant Evaluation
         if (node.opcode == ir::OpCode::LOAD_IMM || (node.flags & ir::Flags::IS_SPEC_CONST)) {
             res.fixed_bits = node.op_a;
             res.unknown_mask = 0;
         }
 
-        // Division by Zero UB Detection
         if (node.opcode == ir::OpCode::DIV_I32 && (node.flags & ir::Flags::IS_SPEC_CONST) && node.op_b == 0) {
             res.has_ub = true;
         }
 
-        // Placeholder for more complex bitwise symbolic propagation (e.g., AND/OR mask tracking)
         return res;
     }
 };
 
-} // namespace dgtl::opt
+} // namespace dgtl::core

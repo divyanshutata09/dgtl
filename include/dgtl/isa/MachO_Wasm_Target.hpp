@@ -81,7 +81,7 @@ public:
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
 
         // --- PILLAR 3: THE SENTINEL PRE-CHECK ---
-        // Ensures IR hasn't been corrupted by previous optimization passes.
+        // Ensures IR hasn't been corrupted by previous optimization optes.
         verify_DGTL_invariants(stream);
 
         out.reserve(stream.size() * 80); 
@@ -156,12 +156,12 @@ private:
             
             // ResultID 0 is reserved for invalid/null states in BIR 2.0.
             if (n.result_id == 0 && n.opcode != ir::OpCode::NOP) [[unlikely]] {
-                throw std::runtime_error("DGTL_SENTINEL_ERROR: Illegal Null ResultID in active node.");
+                std::abort();
             }
             
             // Check for op_a/op_b out of bounds relative to 24-bit addressable limit (0xFFFFFF).
             if (n.op_a > 16777215 || n.op_b > 16777215) [[unlikely]] {
-                throw std::runtime_error("DGTL_SENTINEL_ERROR: Operand address exceeds 24-bit IR limit.");
+                std::abort();
             }
         }
     }
