@@ -25,6 +25,10 @@ tests/latency/*.exe
 .vscode/
 out/
 build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
 
 # Windows system files
 Thumbs.db
