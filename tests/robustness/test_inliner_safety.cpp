@@ -6,10 +6,10 @@
 #include <iostream>
 #include <vector>
 #include <cassert>
-#include "dgtl/pass/Speculative_Inliner.hpp"
-#include "dgtl/analysis/AI_Cost_Model.hpp"
-#include "dgtl/core/Symbol_Table.hpp"
-#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/pass/speculative/Speculative_Inliner.hpp"
+#include "dgtl/analysis/cost/AI_Cost_Model.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/core/Arena.hpp"
 
 using namespace dgtl;
 
@@ -17,18 +17,16 @@ void run_inliner_transaction_test() {
     std::cout << "--- ROBUSTNESS TEST 4: Speculative Inlining & Rollback ---\n";
 
     // 1. Setup Dependencies
+    core::DGTL_Arena arena(64); // 64 MB arena
     analysis::DGTLAICostModel ai_model;
-    core::SymbolTable symbols;
-    opt::DGTLSpeculativeInliner inliner(ai_model, symbols);
+    ir::SymbolTable symbols(arena);
+    dgtl::pass::DGTLSpeculativeInliner inliner(&ai_model, &symbols);
 
     // 2. Create a Caller Stream with 1 Node
-    std::vector<ir::IRNode> caller_mem(10);
-    ir::IRStream caller_stream(caller_mem.data(), 1);
+    ir::IRStream caller_stream(arena, 10);
     
-    caller_stream.buffer[0].opcode = ir::OpCode::ADD_I32;
-    caller_stream.buffer[0].result_id = 50; // Original VREG
-    caller_stream.buffer[0].op_a = 10;
-    caller_stream.buffer[0].op_b = 20;
+    // Use push_node API instead of direct buffer access
+    caller_stream.push_node(ir::OpCode::ADD_I32, 0, 50, 10, 20, 0);
 
     // 3. SCENARIO: Execute Inliner
     // Since our current process_inlining_shadow() just copies to shadow,
@@ -45,18 +43,14 @@ void run_inliner_transaction_test() {
     // 4. SCENARIO: Verify Alpha-Renaming Logic (Manual Trigger)
     std::cout << "[Step 2] Testing Alpha-Renaming / SSA Isolation... ";
     
-    std::vector<ir::IRNode> callee_mem(5);
-    ir::IRStream callee_stream(callee_mem.data(), 1);
-    callee_stream.buffer[0].opcode = ir::OpCode::MUL_I32;
-    callee_stream.buffer[0].result_id = 1; // Low ID, should be renamed
-    callee_stream.buffer[0].op_a = 10;
-    callee_stream.buffer[0].op_b = 11;
+    ir::IRStream callee_stream(arena, 5);
+    callee_stream.push_node(ir::OpCode::MUL_I32, 0, 1, 10, 11, 0);
 
     // We manually simulate the append to check the VREG_THRESHOLD logic
-    uint32_t cursor = 0;
     // Note: We access the private method via a test-friend or check the public effect
     // For this test, we verify the logic provided in your .hpp
-    if (callee_stream.buffer[0].result_id < 0x80000000U) {
+    ir::IRNode node = callee_stream.get_node(0);
+    if (node.result_id < 0x80000000U) {
         std::cout << "Verified (VREG ID Check).\n";
     } else {
         std::cout << "FAILED (Threshold logic).\n";
@@ -66,7 +60,10 @@ void run_inliner_transaction_test() {
     std::cout << "\nRESULT: TEST 4 SUCCESSFUL. Speculative Inliner is Transaction-Safe.\n";
 }
 
-int main() {
+void run_test_inliner_safety() {
     run_inliner_transaction_test();
-    return 0;
+    return;
 }
+
+
+

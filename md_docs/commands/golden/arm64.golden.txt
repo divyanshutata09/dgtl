@@ -1,0 +1,19 @@
+[DGTL] Starting production smoke pipeline
+[DGTL] Backend=arm64 (text)
+[DGTL] Nodes=5 LogicHash=0x1540ebb430bfb3c7
+// --- DGTL-MLIR-X ARM64 BACKEND ---
+.arch armv8-a
+.text
+.align 4
+.global _DGTL_entry
+
+_DGTL_entry:
+    mov x1, #21               // TR_HASH:0x98786E77E3ACA65E
+    mov x2, #21               // TR_HASH:0x98786E77E3B74E93
+    add x3, x1, x2               // TR_HASH:0x98786E77E04410B6
+    add x4, x3, x3               // TR_HASH:0x98786E77EA69E6D0
+    mov x0, x4
+                   // TR_HASH:0x98786E7779E73E5B
+    ret
+[DGTL] Pipeline completed successfully
+

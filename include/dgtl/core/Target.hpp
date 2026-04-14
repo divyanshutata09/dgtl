@@ -9,9 +9,12 @@
 #include <cstdint>
 #include <string_view>
 #include <vector>
-#include "../ir/Global_IR.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
 
-namespace dgtl::ir {
+namespace dgtl::core {
+
+// Bring in IR types for local scope visibility (without full namespace import)
+using dgtl::ir::OpCode;
 
 /**
  * @enum ArchType
@@ -99,6 +102,16 @@ public:
         return m_arch == ArchType::X86_64_AVX512;
     }
 
+    [[nodiscard]] bool prefers_vector_heavy_schedule() const noexcept {
+        return m_caps.has_avx512 || m_arch == ArchType::AARCH64_SVE;
+    }
+
+    [[nodiscard]] float memory_latency_bias() const noexcept {
+        if (m_arch == ArchType::AARCH64_SVE) return 1.05f;
+        if (m_arch == ArchType::WASM_SIMD) return 1.12f;
+        return 1.0f;
+    }
+
 private:
     ArchType m_arch;
     Capabilities m_caps;
@@ -122,16 +135,25 @@ struct TargetPipeline {
     bool enable_gvn       = true;
     bool enable_dce       = true;
     bool enable_loop_unroll = true;
+    bool run_dce_pre_inlining = true;
+    bool run_dce_post_inlining = true;
+    bool run_dce_post_specialization = true;
+    bool run_dce_late_cleanup = true;
+    bool deterministic_mode = true;
+    bool safety_hardening_mode = true;
+    bool minimize_binary_size = false;
     uint32_t optimization_level = 3; // 0 to 3 (DGTL Extreme)
 };
 
-} // namespace dgtl::ir
+} // namespace dgtl::core
 
 /**
  * @brief Backward Compatibility Alias for Legacy DGTL/Zenith Logic.
  */
 namespace dgtl::ir {
-    using ArchType      = dgtl::ir::ArchType;
-    using TargetMachine = dgtl::ir::TargetMachine;
-    using TargetPipeline = dgtl::ir::TargetPipeline;
+    using ArchType      = dgtl::core::ArchType;
+    using TargetMachine = dgtl::core::TargetMachine;
+    using TargetPipeline = dgtl::core::TargetPipeline;
 }
+
+

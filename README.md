@@ -19,50 +19,116 @@ DGTL (DGTL-MLIR-X / DGTL-TITAN ENGINE) is a high-performance, retargetable compi
 
 ## Building
 
+### Quick Start (Recommended)
+```powershell
+dgtl build
+```
+Builds the full project with guard protection (prevents hangs).
+
+**Single target:**
+```powershell
+dgtl build test_pipeline1.cpp
+```
+
+### Manual Build
 1. Clone or navigate to the project directory.
 
 2. Create a build directory:
    ```
-   mkdir build
-   cd build
+   mkdir build-gcc
+   cd build-gcc
    ```
 
 3. Configure with CMake:
    ```
-   cmake ..
+   cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Debug
    ```
 
 4. Build the project:
    ```
-   cmake --build . --config Release
+   cmake --build . -j 4
    ```
 
-This will compile the main executable `AuraCore` and all test executables.
+This will compile all test executables into `build-gcc/bin/`.
 
 ## Running
 
-After building, run the main executable:
+### Quick Start (Recommended)
+```powershell
+dgtl run
 ```
-./AuraCore
+Runs all tests with guard protection.
+
+**Single executable:**
+```powershell
+dgtl run test_pipeline1.cpp
+```
+
+### Manual Test Execution
+```powershell
+ctest --test-dir build-gcc --output-on-failure
+```
+
+Or run individual executables directly:
+```powershell
+./build-gcc/bin/test_pipeline1.exe
 ```
 
 ## Testing
 
-Run the automated test suite:
+### Full Workflow
+```powershell
+dgtl crun
 ```
-ctest
+Clean + build + run all (each step guarded).
+
+**Single target:**
+```powershell
+dgtl crun test_pipeline1.cpp
 ```
 
-Or run individual tests by executing the test executables in the build directory.
+### Strict Mode (CI/Final Validation)
+```powershell
+dgtl strict
+dgtl srun
+```
+
+### Manual CTest
+```powershell
+ctest --test-dir build-gcc --output-on-failure
+ctest --test-dir build-gcc-strict --output-on-failure
+```
+
+## Comparison and Release Readiness
+
+Use measured local results only. Avoid claiming superiority over LLVM/MLIR without same-machine, same-workload A/B runs.
+
+- Comparison harness: `test_comparison_suite.ps1`
+- Detailed methodology: [docs/COMPARISON_TEST_SUITE.md](docs/COMPARISON_TEST_SUITE.md)
+- Independent rerun guide: [docs/VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md)
+- Current release gate status: [docs/RELEASE_READINESS_REPORT.md](docs/RELEASE_READINESS_REPORT.md)
+
+## Command Reference
+
+See [docs/commands/build_guard_commands.md](docs/commands/build_guard_commands.md) for full command reference.
+
+| Action | Usage | Purpose |
+|--------|-------|---------|
+| `dgtl build` | Build all or single target | Compile with guard protection |
+| `dgtl run` | Run all or single executable | Execute tests with guard |
+| `dgtl clean` | Remove binaries | Delete all/single exe from `build-gcc/bin/` |
+| `dgtl crun` | Clean + build + run | Full workflow (each step guarded) |
+| `dgtl strict` | Build with strict warnings | Catch all warnings before merge |
+| `dgtl srun` | Run strict-built tests | Execute tests from strict build |
 
 ## Project Structure
 
 - `include/`: Header files organized by module (core, ir, analysis, etc.)
 - `src/`: Source files
 - `tests/`: Test suites (functional and latency)
-- `docs/`: Documentation (currently contains code; to be updated)
+- `docs/`: Project documentation, release notes, and validation reports
 - `tools/`: Additional tools
 
 ## Contributing
 
-Ensure all tests opt before submitting changes. Add new tests for new features.
+Ensure all tests pass before submitting changes. Add new tests for new features.

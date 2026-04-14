@@ -1,11 +1,11 @@
 #include <iostream>
 #include <intrin.h>
-#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 
-int main() {
+void run_latency_micro_test() {
     // 10MB Arena Strike Zone
-    dgtl::core::DGTLArena arena(10); 
+    dgtl::core::DGTL_Arena arena(10); 
     dgtl::ir::IRStream stream(arena, 1000);
 
     // Warm up the cache/TLB to ensure stable cycle counts
@@ -27,5 +27,6 @@ int main() {
     uint64_t end = __rdtsc();
     
     std::cout << "\n\033[1;33m[DGTL-PROFILER]\033[0m GVN Transaction Latency: " << (end - start) << " cycles" << std::endl;
-    return 0;
+    return;
 }
+

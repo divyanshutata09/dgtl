@@ -11,8 +11,9 @@
 #include <cmath>
 #include <atomic>
 #include <cstring>
-#include "../ir/Global_IR.hpp"
-#include "core/Arena.hpp"
+#include <algorithm>
+#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/core/Arena.hpp"
 
 namespace dgtl::debug {
 
@@ -49,14 +50,16 @@ class DGTLDebugStore {
 
 public:
     /**
-     * @brief Allocates paired Metadata slices from the DGTLArena.
+     * @brief Allocates paired Metadata slices from the DGTL_Arena.
      * PILLAR 2: Dual-allocation supports atomic rollbacks and shadow validation.
      */
-    explicit DGTLDebugStore(core::DGTLArena& arena, size_t max_nodes) {
+    explicit DGTLDebugStore(core::DGTL_Arena& arena, size_t max_nodes) {
         capacity = max_nodes;
-        // 64-byte alignment for cache-line optimization
-        locations = arena.allocate<SourceLoc>(max_nodes, 64);
-        shadow_locations = arena.allocate<SourceLoc>(max_nodes, 64);
+        
+        // Corrected allocation: passing alignment if the Arena signature supports it, 
+        // or using the standard T, count pattern.
+        locations = arena.allocate<SourceLoc>(max_nodes);
+        shadow_locations = arena.allocate<SourceLoc>(max_nodes);
         
         if (!locations || !shadow_locations) [[unlikely]] {
             capacity = 0;
@@ -141,7 +144,6 @@ public:
 
     /**
      * @brief Generates DWARF-compatible .debug_line deltas.
-     * Operates strictly on validated primary storage.
      */
     std::vector<uint8_t> emit_dwarf_line_table() const {
         std::vector<uint8_t> buffer;
@@ -164,7 +166,7 @@ public:
                 buffer.insert(buffer.end(), temp_leb, temp_leb + n);
                 last_line = loc.line;
             }
-            // DW_LNS_copy (0x01): Append a row to the line table matrix
+            // DW_LNS_copy (0x01)
             buffer.push_back(0x01); 
         }
         return buffer;

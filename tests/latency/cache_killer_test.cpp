@@ -3,13 +3,13 @@
 #include <algorithm>
 #include <random>
 #include <intrin.h>
-#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 
-int main() {
+void run_cache_killer_test() {
     // PILLAR 1: Allocate a massive 512MB Strike Zone
     size_t arena_size_mb = 512;
-    dgtl::core::DGTLArena arena(arena_size_mb); 
+    dgtl::core::DGTL_Arena arena(arena_size_mb); 
     dgtl::ir::IRStream stream(arena, 10000);
 
     std::cout << "\033[1;36m[DGTL-STRESS]\033[0m Initialized " << arena_size_mb << "MB Arena." << std::endl;
@@ -43,5 +43,6 @@ int main() {
         std::cout << "\033[1;31m[WARN]\033[0m Cache-miss penalty detected. Analyze TLB pressure." << std::endl;
     }
 
-    return 0;
+    return;
 }
+

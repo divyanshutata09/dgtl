@@ -1,0 +1,42 @@
+[DGTL] Starting production smoke pipeline
+[DGTL] Backend=nasm (text)
+[DGTL] Nodes=5 LogicHash=0x1540ebb430bfb3c7
+; -----------------------------------------------------------
+; DGTL-MLIR-X TIER-2 PERSISTENT KERNEL
+; Logic Hash: 0x1540EBB430BFB3C7
+; -----------------------------------------------------------
+section .text
+    global DGTL_kernel_entry
+
+DGTL_kernel_entry:
+    push rbp
+    mov  rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub  rsp, 32 ; Allocate Shadow Space
+
+    mov rbx, 21                                   ; [Node 000] Hash:0x98786E77E3ACA65E
+    mov rcx, 21                                   ; [Node 001] Hash:0x98786E77E3B74E93
+    mov rdx, rbx 
+    add rdx, rcx                ; [Node 002] Hash:0x98786E77E04410B6
+    mov rsi, rdx 
+    add rsi, rdx                ; [Node 003] Hash:0x98786E77EA69E6D0
+    mov rax, rsi                                  ; [Node 004] Hash:0x98786E7779E73E5B
+
+    add  rsp, 32
+    pop  r15
+    pop  r14
+    pop  r13
+    pop  r12
+    pop  rdi
+    pop  rsi
+    pop  rbx
+    pop  rbp
+    ret
+[DGTL] Pipeline completed successfully
+

@@ -14,13 +14,10 @@
 #include <span>
 #include <memory> 
 
-#include "dgtl/ir/IR_Types.hpp"
+#include "dgtl/ir/base/IR_Types.hpp"
 #include "dgtl/core/Arena.hpp"
 
 namespace dgtl::core {
-
-// Using internal aliases for cleaner logic
-namespace ir = dgtl::ir;
 
 /**
  * @struct SymbolEntry
@@ -28,9 +25,9 @@ namespace ir = dgtl::ir;
  * Packed to 32 bytes to ensure dual-entry cache line alignment.
  */
 struct alignas(16) SymbolEntry {
-    uint32_t slot_id      = ir::INVALID_SLOT;
+    uint32_t slot_id      = dgtl::ir::INVALID_SLOT;
     uint32_t flags        = 0;
-    ir::OpCode type_hint  = ir::OpCode::NOP;
+    dgtl::ir::OpCode type_hint  = dgtl::ir::OpCode::NOP;
     uint32_t version      = 0;
     uint64_t name_hash    = 0;
     void* metadata        = nullptr; // External attributes (Type metadata)
@@ -50,12 +47,12 @@ public:
      * Initializes an internal fallback arena.
      */
     SymbolTable() 
-        : m_fallback_arena(std::make_unique<dgtl::core::DGTLArena>()), 
+        : m_fallback_arena(std::make_unique<dgtl::core::DGTL_Arena>()), 
           m_arena(*m_fallback_arena) {
         m_scopes.emplace_back();
     }
 
-    explicit SymbolTable(dgtl::core::DGTLArena& arena) 
+    explicit SymbolTable(dgtl::core::DGTL_Arena& arena) 
         : m_arena(arena) {
         // Initialize global scope
         m_scopes.emplace_back(); 
@@ -86,7 +83,7 @@ public:
      * @brief Defines a new symbol in the current scope.
      * @return true if defined, false if redefinition occurs in the same scope.
      */
-    bool define(std::string_view name, uint32_t slot_id, ir::OpCode type = ir::OpCode::NOP) {
+    bool define(std::string_view name, uint32_t slot_id, dgtl::ir::OpCode type = dgtl::ir::OpCode::NOP) {
         uint64_t hash = compute_hash(name);
         auto& current_scope = m_scopes.back();
 
@@ -207,8 +204,8 @@ public:
     }
 
 private:
-    std::unique_ptr<dgtl::core::DGTLArena> m_fallback_arena; // Standalone support
-    dgtl::core::DGTLArena& m_arena;
+    std::unique_ptr<dgtl::core::DGTL_Arena> m_fallback_arena; // Standalone support
+    dgtl::core::DGTL_Arena& m_arena;
     std::vector<ScopeMap> m_scopes; // Stack of scopes
 };
 
@@ -224,3 +221,5 @@ namespace dgtl::ir {
     using SymbolEntry = dgtl::core::SymbolEntry;
     using SymbolTable = dgtl::core::SymbolTable;
 }
+
+

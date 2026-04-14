@@ -1,15 +1,15 @@
 #include <iostream>
 #include <vector>
 #include <intrin.h>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/isa/emitter/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 
-int main() {
-    dgtl::core::DGTLArena arena(10); 
+void run_reg_exhaustion_test() {
+    dgtl::core::DGTL_Arena arena(10); 
     dgtl::ir::IRStream stream(arena, 5000);
-    dgtl::exec::DGTLNasmEmitter nasm;
+    dgtl::isa::DGTLNasmEmitter nasm;
     dgtl::core::DGTLSymbolTable symbols;
 
     std::cout << "\033[1;36m[DGTL-REG-TEST]\033[0m Starting Register Exhaustion (32 Live Vars)..." << std::endl;
@@ -51,5 +51,8 @@ int main() {
         std::cout << "\033[1;35m[NOTE]\033[0m Stack spilling detected. This is a Tier-3 optimization target." << std::endl;
     }
 
-    return 0;
+    return;
 }
+
+
+

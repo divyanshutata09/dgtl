@@ -1,14 +1,14 @@
 #include <iostream>
 #include <intrin.h>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/isa/emitter/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 
-int main() {
-    dgtl::core::DGTLArena arena(20); 
+void run_fractal_torture_test() {
+    dgtl::core::DGTL_Arena arena(20); 
     dgtl::ir::IRStream stream(arena, 10000);
-    dgtl::exec::DGTLNasmEmitter nasm;
+    dgtl::isa::DGTLNasmEmitter nasm;
     dgtl::core::DGTLSymbolTable symbols;
 
     std::cout << "\033[1;36m[DGTL-FRACTAL]\033[0m Starting Non-Linear Dependency Torture..." << std::endl;
@@ -53,5 +53,8 @@ int main() {
         std::cout << "\033[1;31m[FAIL]\033[0m Redundant nodes leaked through GVN." << std::endl;
     }
 
-    return 0;
+    return;
 }
+
+
+

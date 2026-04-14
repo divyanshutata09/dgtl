@@ -11,7 +11,7 @@
 #include <memory>
 #include <string_view>
 #include <cstdint>
-#include "../ir/Global_IR.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
 
 namespace dgtl::pipeline {
 
@@ -127,3 +127,5 @@ public:
 };
 
 } // namespace dgtl::pipeline
+
+

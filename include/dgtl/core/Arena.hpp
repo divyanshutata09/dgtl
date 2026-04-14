@@ -1,191 +1,187 @@
 /*
- * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
- * STEP 1: MEMORY ARCHITECTURE (THE DETERMINISTIC ARENA)
- * PILLAR 1: HUGE-PAGE ALIGNMENT & OS-LEVEL VIRTUAL LOCKING
- * FINAL FIX: Corrected std::align offset tracking and move-semantics safety.
+ * DGTL-MLIR-X v1.0
+ * STEP 1++: NEXT-GEN MEMORY ARENA (v4.0)
+ * DESIGN: THREAD-LOCAL + TRANSACTION STACK + PREFETCH ENGINE
  */
 
 #pragma once
 #include <cstdint>
 #include <cstddef>
-#include <memory>
+#include <vector>
+#include <thread>
+#include <atomic>
 #include <new>
 #include <type_traits>
-#include <algorithm>
+#include <limits>
 
 #ifdef _WIN32
-    #define WIN32_LEAN_AND_MEAN
     #include <windows.h>
 #else
     #include <sys/mman.h>
-    #include <unistd.h>
 #endif
 
 namespace dgtl::core {
 
-/**
- * @class DGTLArena
- * @brief Transactional Memory Arena utilizing OS Huge-Pages for deterministic IR storage.
- * * PILLAR 1: Guarantees 64-byte alignment for HFT-Optimized SIMD operations.
- * PILLAR 2: Zero-latency rollback through offset-based checkpointing.
- */
-class DGTLArena {
+// ================================
+// 🔹 LOW LEVEL BLOCK
+// ================================
+struct ArenaBlock {
+    uint8_t* base = nullptr;
+    size_t capacity = 0;
+    size_t offset = 0;
+};
+
+// ================================
+// 🔹 THREAD-LOCAL ARENA
+// ================================
+class ThreadLocalArena {
 private:
-    uint8_t* base_ptr = nullptr;
-    size_t capacity   = 0;
-    size_t offset     = 0;
+    ArenaBlock block;
+    std::vector<size_t> checkpoints;
+
+    static constexpr size_t ALIGNMENT = 64;
 
 public:
-    /**
-     * @brief Default Constructor.
-     * Initializes a 256MB strike zone by default for standard compiler optes.
-     */
-    DGTLArena() : DGTLArena(256) {}
+    ThreadLocalArena() = default;
 
-    /**
-     * @brief Parameterized Constructor for custom memory pressure requirements.
-     * @param size_in_mb The requested size in Megabytes, rounded to the nearest 2MB page.
-     */
-    explicit DGTLArena(size_t size_in_mb) {
-        const size_t page_size = 2 * 1024 * 1024; // 2MB Huge Page Boundary
-        
-        // Ensure minimum 2MB allocation and prevent 32-bit overflow.
-        size_t requested_bytes = (size_in_mb < 1) ? page_size : (static_cast<size_t>(size_in_mb) * 1024 * 1024);
-        capacity = (requested_bytes + page_size - 1) & ~(page_size - 1);
-
+    void init(size_t size_bytes) {
 #ifdef _WIN32
-        // Allocation for Windows: Reserves and commits virtual memory.
-        base_ptr = static_cast<uint8_t*>(VirtualAlloc(NULL, capacity, 
-                                          MEM_RESERVE | MEM_COMMIT, 
-                                          PAGE_READWRITE));
+        block.base = static_cast<uint8_t*>(
+            VirtualAlloc(nullptr, size_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+        );
 #else
-        // Allocation for Linux/Unix: Utilizes MAP_POPULATE to reduce runtime page faults.
-        base_ptr = static_cast<uint8_t*>(mmap(NULL, capacity, 
-                                          PROT_READ | PROT_WRITE, 
-                                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, 
-                                          -1, 0));
-        if (base_ptr == MAP_FAILED) [[unlikely]] base_ptr = nullptr;
+        block.base = static_cast<uint8_t*>(
+            mmap(nullptr, size_bytes, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+        );
+        if (block.base == MAP_FAILED) block.base = nullptr;
+#endif
+        block.capacity = size_bytes;
+        block.offset = 0;
+    }
+
+    ~ThreadLocalArena() {
+#ifdef _WIN32
+        if (block.base) VirtualFree(block.base, 0, MEM_RELEASE);
+#else
+        if (block.base) munmap(block.base, block.capacity);
 #endif
     }
 
-    ~DGTLArena() {
-        if (base_ptr) {
-#ifdef _WIN32
-            VirtualFree(base_ptr, 0, MEM_RELEASE);
-#else
-            munmap(base_ptr, capacity);
+    template<typename T>
+    T* allocate(size_t count = 1) noexcept {
+        if (!block.base || count == 0) return nullptr;
+
+        if (count > (std::numeric_limits<size_t>::max() / sizeof(T)))
+            return nullptr;
+
+        size_t bytes = sizeof(T) * count;
+
+        uintptr_t raw = reinterpret_cast<uintptr_t>(block.base + block.offset);
+        uintptr_t aligned = (raw + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+
+        size_t new_offset = (aligned - reinterpret_cast<uintptr_t>(block.base)) + bytes;
+
+        if (new_offset > block.capacity) return nullptr;
+
+        T* ptr = reinterpret_cast<T*>(aligned);
+        block.offset = new_offset;
+
+        // 🔥 PREFETCH next cache line
+#if defined(__GNUC__) || defined(__clang__)
+        __builtin_prefetch(ptr, 1, 3);
 #endif
+
+        if constexpr (!std::is_fundamental_v<T>) {
+            for (size_t i = 0; i < count; ++i)
+                new (&ptr[i]) T();
+        }
+
+        return ptr;
+    }
+
+    // ----------------
+    // TRANSACTION STACK
+    // ----------------
+    void push_checkpoint() {
+        checkpoints.push_back(block.offset);
+    }
+
+    void rollback() {
+        if (!checkpoints.empty()) {
+            block.offset = checkpoints.back();
+            checkpoints.pop_back();
         }
     }
 
-    // PILLAR 2: Strict Ownership - No copying allowed to prevent dangling pointers.
-    DGTLArena(const DGTLArena&) = delete;
-    DGTLArena& operator=(const DGTLArena&) = delete;
-
-    /**
-     * @brief Move Constructor.
-     */
-    DGTLArena(DGTLArena&& other) noexcept 
-        : base_ptr(other.base_ptr), capacity(other.capacity), offset(other.offset) {
-        other.base_ptr = nullptr;
-        other.capacity = 0;
-        other.offset = 0;
-    }
-
-    /**
-     * @brief Move Assignment Operator.
-     */
-    DGTLArena& operator=(DGTLArena&& other) noexcept {
-        if (this != &other) {
-            if (base_ptr) {
-#ifdef _WIN32
-                VirtualFree(base_ptr, 0, MEM_RELEASE);
-#else
-                munmap(base_ptr, capacity);
-#endif
-            }
-            base_ptr = other.base_ptr;
-            capacity = other.capacity;
-            offset = other.offset;
-            other.base_ptr = nullptr;
-            other.capacity = 0;
-            other.offset = 0;
+    void commit() {
+        if (!checkpoints.empty()) {
+            checkpoints.pop_back();
         }
-        return *this;
     }
 
-    /**
-     * @brief High-speed allocation with hardware alignment.
-     * @param count Number of elements of type T to allocate.
-     * @param alignment Alignment boundary (default 64 bytes for cache-line alignment).
-     */
-    template <typename T>
-    [[nodiscard]] T* allocate(size_t count = 1, size_t alignment = 64) noexcept {
-        static_assert(std::is_trivially_destructible_v<T>, 
-            "DGTL Arena Error: Only trivially destructible types allowed for Zero-Latency safety.");
-        
-        if (!base_ptr || count == 0) [[unlikely]] return nullptr;
+    void reset() {
+        block.offset = 0;
+        checkpoints.clear();
+    }
 
-        void* current_ptr = base_ptr + offset;
-        size_t total_bytes = sizeof(T) * count;
-        size_t space_remaining = capacity - offset;
+    uint8_t* raw_data() { return block.base; }
+};
 
-        // std::align modifies current_ptr and space_remaining if alignment is successful.
-        if (std::align(alignment, total_bytes, current_ptr, space_remaining)) {
-            T* result = static_cast<T*>(current_ptr);
-            
-            // Critical Fix: Recalculate global offset based on aligned pointer position.
-            offset = (static_cast<uint8_t*>(current_ptr) - base_ptr) + total_bytes;
+// ================================
+// 🔹 GLOBAL ARENA MANAGER
+// ================================
+class DGTL_Arena {
+private:
+    std::vector<ThreadLocalArena> arenas;
+    size_t per_thread_size;
 
-            // Placement new to ensure valid initial state for non-fundamental types.
-            if constexpr (!std::is_fundamental_v<T>) {
-                for (size_t i = 0; i < count; ++i) {
-                    new (&result[i]) T(); 
-                }
-            }
-            return result;
+public:
+    explicit DGTL_Arena(size_t threads = std::thread::hardware_concurrency(),
+                         size_t size_mb_per_thread = 64)
+    {
+        per_thread_size = size_mb_per_thread * 1024ull * 1024ull;
+
+        arenas.resize(threads);
+
+        for (auto& arena : arenas) {
+            arena.init(per_thread_size);
         }
-
-        return nullptr; // Memory exhaustion or alignment failure.
     }
 
-    // --- Transactional Strike Controls ---
-
-    /**
-     * @brief Captures current offset for potential rollback if a compiler opt fails validation.
-     */
-    [[nodiscard]] size_t get_checkpoint() const noexcept { return offset; }
-
-    /**
-     * @brief Reverts the arena to a previous checkpoint.
-     */
-    void rollback(size_t checkpoint) noexcept { 
-        if (checkpoint <= capacity) offset = checkpoint; 
+    ThreadLocalArena& get_local() noexcept {
+        thread_local size_t tid = std::hash<std::thread::id>{}(std::this_thread::get_id()) % arenas.size();
+        return arenas[tid];
     }
 
-    /**
-     * @brief Resets the arena for reuse without deallocating OS memory.
-     */
-    void reset() noexcept { offset = 0; }
-    
-    // --- Accessors ---
+    template<typename T>
+    T* allocate(size_t count = 1) noexcept {
+        return get_local().template allocate<T>(count);
+    }
 
-    [[nodiscard]] uint8_t* raw_data() noexcept { return base_ptr; }
-    [[nodiscard]] size_t get_capacity() const noexcept { return capacity; }
-    [[nodiscard]] size_t get_used() const noexcept { return offset; }
+    // ----------------
+    // TRANSACTION API
+    // ----------------
+    void begin() {
+        get_local().push_checkpoint();
+    }
+
+    void rollback() {
+        get_local().rollback();
+    }
+
+    void commit() {
+        get_local().commit();
+    }
+
+    void reset_all() {
+        for (auto& arena : arenas) {
+            arena.reset();
+        }
+    }
+
+    uint8_t* raw_data() { return get_local().raw_data(); }
 };
 
 } // namespace dgtl::core
 
-// --- STABILITY SWEEP HARNESS ---
-#ifdef DGTL_UNIT_TEST_MODE
-#include <iostream>
-int main() {
-    dgtl::core::DGTLArena test_arena(2); // 2MB Strike Zone
-    if(test_arena.raw_data() != nullptr) {
-        std::cout << "DGTL ARENA: MEMORY ARCHITECTURE INITIALIZED SUCCESS" << std::endl;
-        return 0;
-    }
-    return 1;
-}
-#endif

@@ -1,11 +1,11 @@
 #include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/ir/base/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 
 
-int main() {
+void run_ghost_test() {
     // Initialize Arena and Stream
-    dgtl::core::DGTLArena arena(5); 
+    dgtl::core::DGTL_Arena arena(5); 
     dgtl::ir::IRStream stream(arena, 1000);
 
     std::cout << "\033[1;36m[DGTL-GHOST]\033[0m Testing Transactional Atomicity..." << std::endl;
@@ -44,5 +44,6 @@ int main() {
         std::cout << "\033[1;31m[FAIL]\033[0m Stream leaked " << (final_size - 2) << " ghost nodes!" << std::endl;    
     }
 
-    return 0;
+    return;
 }
+

@@ -31,6 +31,12 @@ public:
         Exec  = 1 << 2
     };
 
+    friend constexpr Access operator|(Access lhs, Access rhs) noexcept {
+        return static_cast<Access>(
+            static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs)
+        );
+    }
+
     constexpr MemoryGuard() noexcept = default;
 
     /**
@@ -84,13 +90,14 @@ private:
                          [[maybe_unused]] size_t req_size,
                          [[maybe_unused]] const std::source_location& loc) const {
         if (m_base == 0) [[unlikely]] {
-            std::abort();
+            throw std::runtime_error("Memory_Guard: Invalid base address");
         }
 
         if (offset + req_size > m_size) [[unlikely]] {
-            std::abort();
+            throw std::runtime_error("Memory_Guard: Access out of bounds");
         }
     }
 };
 
 } // namespace dgtl::core
+
