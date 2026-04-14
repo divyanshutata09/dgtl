@@ -77,6 +77,25 @@ struct alignas(32) IRNode {
         return h;
     }
 
+    // Semantic hash deliberately excludes result_id so CSE/GVN can match
+    // equivalent expressions produced into different virtual registers.
+    static constexpr uint64_t calculate_semantic_hash(
+        OpCode op,
+        uint32_t a,
+        uint32_t b,
+        uint32_t c,
+        uint16_t flags = Flags::NONE) noexcept {
+        uint64_t h = static_cast<uint64_t>(op) ^ 0xD6E8FEB86659FD93ULL;
+        auto mix = [&](uint64_t val) {
+            h ^= val + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+        };
+        mix(static_cast<uint64_t>(flags));
+        mix(static_cast<uint64_t>(a));
+        mix(static_cast<uint64_t>(b));
+        mix(static_cast<uint64_t>(c));
+        return h;
+    }
+
     // --- Mutators ---
 
     inline void refresh_intent_hash() noexcept {

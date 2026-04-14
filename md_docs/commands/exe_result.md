@@ -1,1 +1,0 @@
-./build/vnext_integration_test.exe | Tee-Object -FilePath "docs/test_results_$(Get-Date -Format 'HHmm').log"

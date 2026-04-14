@@ -71,6 +71,7 @@ public:
     [[nodiscard]] uint64_t get_version() const noexcept { return generate_logic_hash(); }
 
     void set_count(size_t v) noexcept;
+    void reset() noexcept;
 
     // ======================================================
     // 🔹 ACCESS

@@ -12,6 +12,18 @@
 
 namespace dgtl::ir {
 
+namespace {
+constexpr bool is_commutative_opcode(const OpCode op) noexcept {
+    return op == OpCode::ADD_I32 ||
+           op == OpCode::MUL_I32 ||
+           op == OpCode::AND_I32 ||
+           op == OpCode::OR_I32 ||
+           op == OpCode::XOR_I32 ||
+           op == OpCode::ADD_F32 ||
+           op == OpCode::MUL_F32;
+}
+} // namespace
+
 // --- Optimization optes (From Files 4, 5) ---
 
 void IRStream::push_shadow_fold(const IRNode& node) noexcept {
@@ -82,28 +94,86 @@ void IRStream::perform_gvn() noexcept {
 
     std::unordered_map<uint64_t, uint32_t> expression_map;
     std::unordered_map<uint32_t, uint32_t> register_remap;
+    std::unordered_map<uint32_t, uint64_t> const_values;
 
     for (size_t i = 0; i < shadow_count; ++i) {
+        IRAtom& atom = shadow_atoms[i];
         IRCore& core = shadow_cores[i];
         if (core.op_a != INVALID_SLOT && register_remap.count(core.op_a)) core.op_a = register_remap[core.op_a];
         if (core.op_b != INVALID_SLOT && register_remap.count(core.op_b)) core.op_b = register_remap[core.op_b];
         if (core.op_c != INVALID_SLOT && register_remap.count(core.op_c)) core.op_c = register_remap[core.op_c];
 
-        core.intent_hash = IRNode::calculate_hash(shadow_atoms[i].opcode, core.result_id, core.op_a, core.op_b, core.op_c);
+        // Local constant folding for integer arithmetic.
+        if (atom.opcode == OpCode::ADD_I32 || atom.opcode == OpCode::SUB_I32 ||
+            atom.opcode == OpCode::MUL_I32 || atom.opcode == OpCode::DIV_I32 ||
+            atom.opcode == OpCode::AND_I32 || atom.opcode == OpCode::OR_I32 ||
+            atom.opcode == OpCode::XOR_I32 || atom.opcode == OpCode::SHL_I32) {
+            const auto ita = const_values.find(core.op_a);
+            const auto itb = const_values.find(core.op_b);
+            if (ita != const_values.end() && itb != const_values.end()) {
+                const uint32_t lhs = static_cast<uint32_t>(ita->second);
+                const uint32_t rhs = static_cast<uint32_t>(itb->second);
+                bool folded = true;
+                uint32_t folded_val = 0;
 
-        const bool is_blocking = IRTraits::has_side_effects(shadow_atoms[i].opcode, shadow_atoms[i].flags) ||
-                                 IRTraits::is_terminator(shadow_atoms[i].opcode) ||
-                                 (shadow_atoms[i].flags & Flags::IS_VOLATILE);
+                switch (atom.opcode) {
+                    case OpCode::ADD_I32: folded_val = lhs + rhs; break;
+                    case OpCode::SUB_I32: folded_val = lhs - rhs; break;
+                    case OpCode::MUL_I32: folded_val = lhs * rhs; break;
+                    case OpCode::DIV_I32:
+                        if (rhs == 0) folded = false;
+                        else folded_val = lhs / rhs;
+                        break;
+                    case OpCode::AND_I32: folded_val = lhs & rhs; break;
+                    case OpCode::OR_I32: folded_val = lhs | rhs; break;
+                    case OpCode::XOR_I32: folded_val = lhs ^ rhs; break;
+                    case OpCode::SHL_I32: folded_val = lhs << (rhs & 31U); break;
+                    default: folded = false; break;
+                }
 
-        if (!is_blocking) {
-            auto it = expression_map.find(core.intent_hash);
-            if (it != expression_map.end()) {
-                register_remap[core.result_id] = it->second;
-                shadow_atoms[i].flags |= Flags::IS_DEAD;
-                continue;
+                if (folded) {
+                    atom.opcode = OpCode::LOAD_IMM;
+                    atom.flags = static_cast<uint16_t>(atom.flags | Flags::IS_CONST | Flags::IS_SPEC_CONST);
+                    core.op_a = 0;
+                    core.op_b = folded_val;
+                    core.op_c = INVALID_SLOT;
+                }
             }
         }
-        expression_map[core.intent_hash] = core.result_id;
+
+        if (is_commutative_opcode(atom.opcode) && core.op_a > core.op_b) {
+            std::swap(core.op_a, core.op_b);
+        }
+
+        core.intent_hash = IRNode::calculate_hash(atom.opcode, core.result_id, core.op_a, core.op_b, core.op_c);
+
+        const bool is_const_like = atom.opcode == OpCode::LOAD_IMM || atom.opcode == OpCode::IMMEDIATE;
+        if (is_const_like) {
+            const uint64_t imm = (static_cast<uint64_t>(core.op_a) << 32) | core.op_b;
+            const_values[core.result_id] = imm;
+        }
+
+        const bool is_blocking = IRTraits::has_side_effects(atom.opcode, atom.flags) ||
+                                 IRTraits::is_terminator(atom.opcode) ||
+                                 (atom.flags & Flags::IS_VOLATILE);
+
+        if (!is_blocking) {
+            const uint64_t semantic_hash = IRNode::calculate_semantic_hash(
+                atom.opcode,
+                core.op_a,
+                core.op_b,
+                core.op_c,
+                atom.flags
+            );
+
+            auto it = expression_map.find(semantic_hash);
+            if (it != expression_map.end()) {
+                register_remap[core.result_id] = it->second;
+                atom.flags |= Flags::IS_DEAD;
+                continue;
+            }
+            expression_map[semantic_hash] = core.result_id;
+        }
     }
 
     size_t write_idx = 0;
@@ -113,6 +183,13 @@ void IRStream::perform_gvn() noexcept {
                 shadow_atoms[write_idx] = shadow_atoms[i];
                 shadow_cores[write_idx] = shadow_cores[i];
             }
+            shadow_cores[write_idx].intent_hash = IRNode::calculate_hash(
+                shadow_atoms[write_idx].opcode,
+                shadow_cores[write_idx].result_id,
+                shadow_cores[write_idx].op_a,
+                shadow_cores[write_idx].op_b,
+                shadow_cores[write_idx].op_c
+            );
             write_idx++;
         }
     }

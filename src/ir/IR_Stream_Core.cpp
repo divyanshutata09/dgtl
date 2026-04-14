@@ -353,6 +353,13 @@ void IRStream::set_count(size_t val) noexcept {
     }
 }
 
+void IRStream::reset() noexcept {
+    count = 0;
+    shadow_count = 0;
+    in_transaction.store(false, std::memory_order_release);
+    joined_valid = false;
+}
+
 bool IRStream::is_null() const noexcept {
     return atoms == nullptr || cores == nullptr;
 }

@@ -55,6 +55,10 @@ public:
             const auto& core = m_stream.get_core_readonly(i);
             
             if (atom.opcode == OpCode::NOP) continue;
+            if ((atom.opcode == OpCode::LOAD_IMM || atom.opcode == OpCode::IMMEDIATE) &&
+                is_foldable_ret_immediate(i, core)) {
+                continue;
+            }
 
             out << "    "; 
             
@@ -111,6 +115,47 @@ public:
 private:
     const IRStream& m_stream;
     const SymbolTable& m_symbols;
+
+    bool is_foldable_ret_immediate(size_t load_idx, const IRCore& load_core) const {
+        if (load_core.result_id == INVALID_SLOT) return false;
+        bool used_by_ret = false;
+
+        for (size_t i = load_idx + 1; i < m_stream.size(); ++i) {
+            const auto& atom = m_stream.get_atom_readonly(i);
+            const auto& core = m_stream.get_core_readonly(i);
+            if (atom.opcode == OpCode::NOP) continue;
+
+            const bool references_reg =
+                core.op_a == load_core.result_id ||
+                core.op_b == load_core.result_id ||
+                core.op_c == load_core.result_id;
+
+            if (!references_reg) continue;
+
+            if (atom.opcode == OpCode::RET && core.op_a == load_core.result_id && !used_by_ret) {
+                used_by_ret = true;
+                continue;
+            }
+
+            return false;
+        }
+
+        return used_by_ret;
+    }
+
+    bool resolve_ret_immediate(uint32_t reg, uint64_t& imm_out) const {
+        for (size_t i = m_stream.size(); i-- > 0;) {
+            const auto& atom = m_stream.get_atom_readonly(i);
+            if (atom.opcode != OpCode::LOAD_IMM && atom.opcode != OpCode::IMMEDIATE) continue;
+
+            const auto& core = m_stream.get_core_readonly(i);
+            if (core.result_id != reg) continue;
+
+            imm_out = (static_cast<uint64_t>(core.op_a) << 32) | core.op_b;
+            return true;
+        }
+        return false;
+    }
 
     void emit_header(std::ostream& out, const Config& config) {
         out << "// --- DGTL-MLIR-X ARM64 BACKEND ---\n";
@@ -193,7 +238,12 @@ private:
 
     void emit_ret(std::ostream& out, const IRCore& core) {
         if (core.op_a != 0xFF && core.op_a != 0) {
-            out << "mov x0, x" << core.op_a << "\n    ";
+            uint64_t ret_imm = 0;
+            if (resolve_ret_immediate(core.op_a, ret_imm)) {
+                out << "mov x0, #" << ret_imm << "\n    ";
+            } else {
+                out << "mov x0, x" << core.op_a << "\n    ";
+            }
         }
     }
 };

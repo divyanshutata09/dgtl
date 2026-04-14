@@ -204,12 +204,30 @@ bool IRStream::validate_shadow_integrity() const noexcept {
 }
 
 uint64_t IRStream::generate_logic_hash() const noexcept {
-    uint64_t h = 0x1337;
-    bool trans = in_transaction.load(std::memory_order_acquire);
+    constexpr uint64_t seed = 0x243F6A8885A308D3ULL;
+    uint64_t h = seed;
+
+    const bool trans = in_transaction.load(std::memory_order_acquire);
+    const auto* a_ptr = trans ? shadow_atoms : atoms;
     const auto* c_ptr = trans ? shadow_cores : cores;
     const size_t current_count = trans ? shadow_count : count;
-    if (!c_ptr || current_count == 0) return h;
-    for(size_t i = 0; i < current_count; ++i) h ^= c_ptr[i].intent_hash ^ (h << 13);
+
+    if (!a_ptr || !c_ptr || current_count == 0) {
+        return h;
+    }
+
+    for (size_t i = 0; i < current_count; ++i) {
+        const uint64_t node_hash = IRNode::calculate_hash(
+            a_ptr[i].opcode,
+            c_ptr[i].result_id,
+            c_ptr[i].op_a,
+            c_ptr[i].op_b,
+            c_ptr[i].op_c
+        ) ^ (static_cast<uint64_t>(a_ptr[i].flags) << 48)
+          ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
+
+        h ^= node_hash + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+    }
     return h;
 }
 } // namespace dgtl::ir

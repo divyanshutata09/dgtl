@@ -261,8 +261,12 @@ private:
         p_core.op_b = 0;
         p_core.op_c = ir::INVALID_SLOT;
 
-        p_core.intent_hash = core::DGTLFormalVerifier::compute_master_hash_bits(
-            ir::OpCode::NOP, 0, 0, 0
+        p_core.intent_hash = ir::IRNode::calculate_hash(
+            ir::OpCode::NOP,
+            p_core.result_id,
+            p_core.op_a,
+            p_core.op_b,
+            p_core.op_c
         );
 
         // --- fused consumer ---
@@ -278,13 +282,13 @@ private:
         c_core.op_c = m.op_c;
         c_core.result_id = m.result_id;
 
-        c_core.intent_hash =
-            core::DGTLFormalVerifier::compute_master_hash_bits(
-                c_atom.opcode,
-                c_core.op_a,
-                c_core.op_b,
-                c_core.op_c
-            );
+        c_core.intent_hash = ir::IRNode::calculate_hash(
+            c_atom.opcode,
+            c_core.result_id,
+            c_core.op_a,
+            c_core.op_b,
+            c_core.op_c
+        );
     }
 };
 
