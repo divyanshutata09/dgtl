@@ -1,13 +1,25 @@
 param(
-    [switch]$UpdateGolden
+    [switch]$UpdateGolden,
+    [string]$Executable = '.\build\dgtl_main.exe'
 )
 
 $ErrorActionPreference = 'Stop'
 
-New-Item -ItemType Directory -Force .\build\logs | Out-Null
-New-Item -ItemType Directory -Force .\md_docs\commands\golden | Out-Null
+function Normalize-ConformanceText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
 
-$exe = '.\build\dgtl_main.exe'
+    $normalized = $Text -replace "`r", ""
+    $normalized = [regex]::Replace($normalized, '(avg_us|opt_us|emit_us|total_us|exec_us)=[0-9]+(?:\.[0-9]+)?', '$1=<normalized>')
+    return $normalized.TrimEnd()
+}
+
+New-Item -ItemType Directory -Force .\build\logs | Out-Null
+New-Item -ItemType Directory -Force .\My_Docs\commands\golden | Out-Null
+
+$exe = $Executable
 if (-not (Test-Path $exe)) {
     throw "Missing $exe. Build first."
 }
@@ -43,12 +55,12 @@ $failed = @()
 
 foreach ($c in $checks) {
     $log = ".\build\logs\conformance_$($c.Name).log"
-    $golden = ".\md_docs\commands\golden\$($c.Name).golden.txt"
+    $golden = ".\My_Docs\commands\golden\$($c.Name).golden.txt"
     Write-Host "[CHECK] $($c.Name)"
 
     $output = & $exe @($c.Args) 2>&1 | Out-String
-    $normalized = ($output -replace "`r","")
-    $normalized | Set-Content -Path $log
+    $normalized = Normalize-ConformanceText -Text $output
+    ($output -replace "`r","") | Set-Content -Path $log
 
     if ($UpdateGolden) {
         $normalized | Set-Content -Path $golden
@@ -62,13 +74,12 @@ foreach ($c in $checks) {
         continue
     }
 
-    $goldenText = (Get-Content $golden -Raw) -replace "`r", ""
-    $normalizedCompare = $normalized.TrimEnd()
-    $goldenCompare = $goldenText.TrimEnd()
+    $goldenText = Get-Content $golden -Raw
+    $goldenCompare = Normalize-ConformanceText -Text $goldenText
 
     $ok = $true
 
-    if ($normalizedCompare -ne $goldenCompare) {
+    if ($normalized -ne $goldenCompare) {
         Write-Host "  golden mismatch" -ForegroundColor Red
         $ok = $false
     }

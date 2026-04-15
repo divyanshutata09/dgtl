@@ -42,6 +42,8 @@ private:
     size_t max_results;
     LivenessRange* ranges;
     std::vector<uint32_t> active_ids;
+    bool corruption_detected = false;
+    std::string corruption_reason;
 
 public:
     /**
@@ -84,6 +86,9 @@ public:
      * where an operand is used without a preceding definition.
      */
     void analyze_stream(const ir::IRStream& stream) {
+        corruption_detected = false;
+        corruption_reason.clear();
+
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
 
         // 1. Sparse Reset: Only clear IDs used in the previous opt to maintain O(N)
@@ -112,6 +117,7 @@ public:
             if (node.result_id != 0) {
                 if (node.result_id >= max_results) [[unlikely]] {
                     trigger_corruption_trap(node.result_id, "ID_OVERFLOW");
+                    return;
                 }
                 
                 track_id(node.result_id);
@@ -128,6 +134,14 @@ public:
         if (result_id >= max_results) [[unlikely]] return false;
         const auto& r = ranges[result_id];
         return (ins_idx >= r.start && ins_idx <= r.end);
+    }
+
+    [[nodiscard]] bool has_corruption() const noexcept {
+        return corruption_detected;
+    }
+
+    [[nodiscard]] const std::string& last_error() const noexcept {
+        return corruption_reason;
     }
 
 private:
@@ -166,6 +180,7 @@ private:
             // If start is still 0xFFFFFFFF after the opt, the ID was used but never defined.
             if (ranges[id].start == 0xFFFFFFFF) [[unlikely]] {
                 trigger_corruption_trap(id, "DANGLING_ID_DETECTED");
+                return;
             }
         }
     }
@@ -173,8 +188,9 @@ private:
     /**
      * @brief Triggers a fatal halt on IR corruption.
      */
-    [[noreturn]] void trigger_corruption_trap(uint32_t id, const char* msg) {
-        throw std::runtime_error(std::string("DGTL_CORRUPTION_TRAP: ") + msg + " [ResultID: " + std::to_string(id) + "]");
+    void trigger_corruption_trap(uint32_t id, const char* msg) noexcept {
+        corruption_detected = true;
+        corruption_reason = std::string("DGTL_CORRUPTION_TRAP: ") + msg + " [ResultID: " + std::to_string(id) + "]";
     }
 };
 

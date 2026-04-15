@@ -56,6 +56,9 @@ public:
                                    std::source_location loc = std::source_location::current()) const {
         #ifdef _DEBUG
         validate_access(offset, requested_size, loc);
+        #else
+        (void)requested_size;
+        (void)loc;
         #endif
 
         return reinterpret_cast<void*>(m_base + offset);

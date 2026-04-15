@@ -25,6 +25,7 @@ using exec::X64Encoding;
 
 class X64StrikeEmitter {
     using ByteStream = std::vector<uint8_t>;
+    size_t unhandled_fallback_hits_ = 0;
 
 public:
     /**
@@ -33,6 +34,7 @@ public:
      * Direct buffer writing avoids internal fragmentation.
      */
     void process_stream(const ir::IRStream& stream, ByteStream& out) {
+        unhandled_fallback_hits_ = 0;
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
 
         const size_t count = stream.size();
@@ -41,12 +43,68 @@ public:
 
         for (size_t i = 0; i < count; ++i) {
             const auto& node = stream.get_node(i);
-            emit_node(node, out);
+            if ((node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::IMMEDIATE) &&
+                is_foldable_ret_immediate(stream, i, node)) {
+                continue;
+            }
+            emit_node(stream, i, node, out);
         }
     }
 
+    [[nodiscard]] size_t fallback_hits() const noexcept {
+        return unhandled_fallback_hits_;
+    }
+
 private:
-    void emit_node(const ir::IRNode& node, ByteStream& out) {
+    static bool is_foldable_ret_immediate(const ir::IRStream& stream, size_t load_idx, const ir::IRNode& load_node) {
+        if (load_node.result_id == ir::INVALID_SLOT) {
+            return false;
+        }
+
+        bool used_by_ret = false;
+        for (size_t i = load_idx + 1; i < stream.size(); ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::NOP) {
+                continue;
+            }
+
+            const bool references_reg =
+                node.op_a == load_node.result_id ||
+                node.op_b == load_node.result_id ||
+                node.op_c == load_node.result_id;
+
+            if (!references_reg) {
+                continue;
+            }
+
+            if (node.opcode == ir::OpCode::RET && node.op_a == load_node.result_id && !used_by_ret) {
+                used_by_ret = true;
+                continue;
+            }
+
+            return false;
+        }
+
+        return used_by_ret;
+    }
+
+    static bool resolve_ret_immediate(const ir::IRStream& stream, uint32_t reg, uint64_t& imm_out) {
+        for (size_t i = stream.size(); i-- > 0;) {
+            const auto& n = stream.get_node(i);
+            if ((n.opcode != ir::OpCode::LOAD_IMM) && (n.opcode != ir::OpCode::IMMEDIATE)) {
+                continue;
+            }
+            if (n.result_id != reg) {
+                continue;
+            }
+            imm_out = (static_cast<uint64_t>(n.op_a) << 32) | (n.op_b & 0xFFFFFFFFULL);
+            return true;
+        }
+        return false;
+    }
+
+    void emit_node(const ir::IRStream& stream, size_t idx, const ir::IRNode& node, ByteStream& out) {
+        (void)idx;
         switch (node.opcode) {
             // [DGTL SYNC]: Map BIR 2.1 REG_MOVE to reg-to-reg emission
             case ir::OpCode::REG_MOVE:
@@ -59,6 +117,18 @@ private:
 
             case ir::OpCode::SUB_I32:
                 emit_sub_i32(node, out);
+                break;
+
+            case ir::OpCode::ADD_F32:
+                emit_add_f32_scalar(node, out);
+                break;
+
+            case ir::OpCode::MUL_F32:
+                emit_mul_f32_scalar(node, out);
+                break;
+
+            case ir::OpCode::FMA_F32:
+                emit_fma_f32_scalar(node, out);
                 break;
 
             case ir::OpCode::MUL_I32:
@@ -114,9 +184,28 @@ private:
 
             // [FIX]: Both RET and RETURN are 101. Stacking them as one case 
             // avoids the "case label value already appeared" error.
-            case ir::OpCode::RET:
+            case ir::OpCode::RET: {
+                if (node.op_a != 0 && node.op_a != ir::INVALID_SLOT) {
+                    uint64_t imm = 0;
+                    if (resolve_ret_immediate(stream, node.op_a, imm)) {
+                        // mov rax, imm64
+                        out.push_back(X64Encoding::rex(true, 0, 0, static_cast<uint8_t>(X64Reg::RAX)));
+                        out.push_back(0xB8);
+                        const size_t pos = out.size();
+                        out.resize(pos + 8);
+                        std::memcpy(&out[pos], &imm, 8);
+                    } else {
+                        // mov rax, src
+                        X64Reg src = X64Encoding::map_DGTL_to_phys(node.op_a);
+                        uint8_t s_idx = static_cast<uint8_t>(src);
+                        out.push_back(X64Encoding::rex(true, s_idx, 0, static_cast<uint8_t>(X64Reg::RAX)));
+                        out.push_back(0x89);
+                        out.push_back(X64Encoding::modrm(0b11, s_idx, static_cast<uint8_t>(X64Reg::RAX)));
+                    }
+                }
                 out.push_back(0xC3); // ret
                 break;
+            }
 
             case ir::OpCode::NOP:
                 out.push_back(0x90); // nop
@@ -138,6 +227,7 @@ private:
      */
     void emit_unhandled(const ir::IRNode& node, ByteStream& out) {
         (void)node;
+        ++unhandled_fallback_hits_;
         // Stable fallback: preserve stream execution continuity.
         out.push_back(0x90);
     }
@@ -270,6 +360,106 @@ private:
         out.push_back(0xC1);
         out.push_back(X64Encoding::modrm(0b11, 0b100, d_idx));
         out.push_back(imm);
+    }
+
+    // Scalar FP fallback strategy:
+    // - Keep fusion profile meaningful even before full AVX/FMA ISA lowering.
+    // - Lower ADD_F32/MUL_F32/FMA_F32 with SSE scalar ops on XMM registers.
+    // - FMA uses a 2-op fallback sequence: movaps + mulss + addss.
+    static uint8_t map_fp_reg(uint32_t id) {
+        return static_cast<uint8_t>(id & 0xF);
+    }
+
+    void emit_xmm_movaps_rr(uint8_t dst, uint8_t src, ByteStream& out) {
+        if (dst >= 8 || src >= 8) {
+            out.push_back(X64Encoding::rex(false, dst, 0, src));
+        }
+        out.push_back(0x0F);
+        out.push_back(0x28);
+        out.push_back(X64Encoding::modrm(0b11, dst, src));
+    }
+
+    void emit_xmm_addss_rr(uint8_t dst, uint8_t src, ByteStream& out) {
+        if (dst >= 8 || src >= 8) {
+            out.push_back(X64Encoding::rex(false, dst, 0, src));
+        }
+        out.push_back(0xF3);
+        out.push_back(0x0F);
+        out.push_back(0x58);
+        out.push_back(X64Encoding::modrm(0b11, dst, src));
+    }
+
+    void emit_xmm_mulss_rr(uint8_t dst, uint8_t src, ByteStream& out) {
+        if (dst >= 8 || src >= 8) {
+            out.push_back(X64Encoding::rex(false, dst, 0, src));
+        }
+        out.push_back(0xF3);
+        out.push_back(0x0F);
+        out.push_back(0x59);
+        out.push_back(X64Encoding::modrm(0b11, dst, src));
+    }
+
+    void emit_vex3(uint8_t modrm_reg,
+                   uint8_t vvvv_src,
+                   uint8_t modrm_rm,
+                   uint8_t map_select,
+                   uint8_t pp,
+                   bool vector_len_256,
+                   bool w_bit,
+                   ByteStream& out) {
+        out.push_back(0xC4);
+
+        const uint8_t r_inv = (modrm_reg >= 8) ? 0u : 1u;
+        const uint8_t x_inv = 1u; // no SIB index extension in this encoder path
+        const uint8_t b_inv = (modrm_rm >= 8) ? 0u : 1u;
+        out.push_back(static_cast<uint8_t>((r_inv << 7) | (x_inv << 6) | (b_inv << 5) | (map_select & 0x1F)));
+
+        const uint8_t v_inv = static_cast<uint8_t>((~vvvv_src) & 0x0F);
+        out.push_back(static_cast<uint8_t>(((w_bit ? 1u : 0u) << 7) |
+                                           ((v_inv & 0x0F) << 3) |
+                                           ((vector_len_256 ? 1u : 0u) << 2) |
+                                           (pp & 0x03)));
+    }
+
+    void emit_vfmadd213ss_rrr(uint8_t dst, uint8_t src_mul, uint8_t src_add, ByteStream& out) {
+        // VEX.NDS.128.F3.0F38.W0 A9 /r
+        // vfmadd213ss dst, src_mul, src_add
+        // semantics: dst = (dst * src_mul) + src_add
+        emit_vex3(dst, src_mul, src_add, 0x02, 0x02, false, false, out);
+        out.push_back(0xA9);
+        out.push_back(X64Encoding::modrm(0b11, dst, src_add));
+    }
+
+    void emit_add_f32_scalar(const ir::IRNode& node, ByteStream& out) {
+        const uint8_t dst = map_fp_reg(node.result_id);
+        const uint8_t a = map_fp_reg(node.op_a);
+        const uint8_t b = map_fp_reg(node.op_b);
+        if (dst != a) {
+            emit_xmm_movaps_rr(dst, a, out);
+        }
+        emit_xmm_addss_rr(dst, b, out);
+    }
+
+    void emit_mul_f32_scalar(const ir::IRNode& node, ByteStream& out) {
+        const uint8_t dst = map_fp_reg(node.result_id);
+        const uint8_t a = map_fp_reg(node.op_a);
+        const uint8_t b = map_fp_reg(node.op_b);
+        if (dst != a) {
+            emit_xmm_movaps_rr(dst, a, out);
+        }
+        emit_xmm_mulss_rr(dst, b, out);
+    }
+
+    void emit_fma_f32_scalar(const ir::IRNode& node, ByteStream& out) {
+        const uint8_t dst = map_fp_reg(node.result_id);
+        const uint8_t a = map_fp_reg(node.op_a);
+        const uint8_t b = map_fp_reg(node.op_b);
+        const uint8_t c = map_fp_reg(node.op_c);
+
+        if (dst != a) {
+            emit_xmm_movaps_rr(dst, a, out);
+        }
+        emit_vfmadd213ss_rrr(dst, b, c, out);
     }
 
     /**

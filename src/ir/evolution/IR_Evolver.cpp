@@ -134,9 +134,9 @@ void IREvolver::apply_register_reassignment(dgtl::ir::IRNode* node) {
         return;
     }
 
-    if (node->result_id != dgtl::ir::INVALID_SLOT && node->result_id != 0) {
-        node->result_id = (node->result_id % 24U) + 1U;
-    }
+    // Node-local SSA id rewrites are unsafe because use-sites are not rewritten here.
+    // Keep IDs stable to preserve def-use integrity in backend lowering.
+    node->flags |= dgtl::ir::Flags::IS_OPTIMIZED;
     node->refresh_intent_hash();
 }
 

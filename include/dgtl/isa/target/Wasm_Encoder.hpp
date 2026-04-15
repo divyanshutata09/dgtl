@@ -43,7 +43,8 @@ public:
             this->emit_leb128(1);    // 1 Type
             this->emit_byte(0x60);   // func type
             this->emit_leb128(0);    // 0 params
-            this->emit_leb128(0);    // 0 results
+            this->emit_leb128(1);    // 1 result
+            this->emit_byte(0x7F);   // i32 result
         });
 
         // 3. Function Section (ID 3): Declares func 0 uses type 0
@@ -84,11 +85,15 @@ public:
 
             for (size_t i = 0; i < stream.size(); ++i) {
                 const auto& node = stream.get_node(i);
+                if ((node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::IMMEDIATE) &&
+                    this->is_foldable_ret_immediate(stream, i, node)) {
+                    continue;
+                }
                 
                 switch (node.opcode) {
                     case ir::OpCode::LOAD_IMM:
                         body.push_back(0x41); // i32.const
-                        this->emit_leb128_to(body, node.op_a);
+                        this->emit_leb128_to(body, node.op_b);
                         body.push_back(0x21); // local.set
                         this->emit_leb128_to(body, node.result_id);
                         break;
@@ -137,6 +142,20 @@ public:
                         break;
 
                     case ir::OpCode::RET:
+                        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0) {
+                            uint64_t imm = 0;
+                            if (this->resolve_ret_immediate(stream, node.op_a, imm)) {
+                                body.push_back(0x41); // i32.const
+                                this->emit_leb128_to(body, static_cast<uint32_t>(imm & 0xFFFFFFFFU));
+                                body.push_back(0x0F); // return
+                                break;
+                            }
+                            body.push_back(0x20); // local.get
+                            this->emit_leb128_to(body, node.op_a);
+                        } else {
+                            body.push_back(0x41); // i32.const 0 fallback
+                            this->emit_leb128_to(body, 0);
+                        }
                         body.push_back(0x0F); // return
                         break;
 
@@ -161,6 +180,43 @@ public:
     [[nodiscard]] const std::vector<uint8_t>& get_binary() const noexcept { return _binary_buffer; }
 
 private:
+    bool is_foldable_ret_immediate(const ir::IRStream& stream, size_t load_idx, const ir::IRNode& load_node) const {
+        if (load_node.result_id == ir::INVALID_SLOT) return false;
+
+        bool used_by_ret = false;
+        for (size_t i = load_idx + 1; i < stream.size(); ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::NOP) continue;
+
+            const bool references_reg =
+                node.op_a == load_node.result_id ||
+                node.op_b == load_node.result_id ||
+                node.op_c == load_node.result_id;
+
+            if (!references_reg) continue;
+
+            if (node.opcode == ir::OpCode::RET && node.op_a == load_node.result_id && !used_by_ret) {
+                used_by_ret = true;
+                continue;
+            }
+
+            return false;
+        }
+
+        return used_by_ret;
+    }
+
+    bool resolve_ret_immediate(const ir::IRStream& stream, uint32_t reg, uint64_t& imm_out) const {
+        for (size_t i = stream.size(); i-- > 0;) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode != ir::OpCode::LOAD_IMM && node.opcode != ir::OpCode::IMMEDIATE) continue;
+            if (node.result_id != reg) continue;
+            imm_out = (static_cast<uint64_t>(node.op_a) << 32) | (node.op_b & 0xFFFFFFFFULL);
+            return true;
+        }
+        return false;
+    }
+
     void emit_byte(uint8_t b) { _binary_buffer.push_back(b); }
     
     void emit_bytes(std::initializer_list<uint8_t> bytes) { 

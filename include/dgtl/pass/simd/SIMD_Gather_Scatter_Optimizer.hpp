@@ -82,7 +82,7 @@ private:
         ir::IRAtom& s_atom = s.get_shadow_atom(idx);
         ir::IRCore& s_core = s.get_shadow_core(idx);
         s_atom = {node.opcode, node.flags};
-        s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash};
+        s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash, 0, 0};
     }
 
     [[nodiscard]] bool is_indirect_address(const ir::IRNode& node) const noexcept {
@@ -117,7 +117,7 @@ private:
             ir::IRCore& f_core = stream.get_shadow_core(head_idx + j);
             
             f_atom = {ir::OpCode::NOP, ir::Flags::NONE};
-            f_core = {ir::INVALID_SLOT, 0, 0, 0, 0};
+            f_core = {ir::INVALID_SLOT, 0, 0, 0, 0, 0, 0};
             
             // Recalculate hash for Shadow NOP slots
             f_core.intent_hash = ir::IRNode::calculate_hash(

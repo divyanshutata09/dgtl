@@ -43,6 +43,7 @@ class StrikeOrchestrator {
     // Closed-loop learning components
     dgtl::analysis::DGTLAICostModel cost_model;
     dgtl::isa::DGTLJitExecutor executor;
+    dgtl::exec::StrikeRunner strike_runner;
 
     // PRE-ALLOCATED SCRATCH PAD: 16MB Initial Reserve
     // Used to build the machine code before injecting into the executable Arena.
@@ -87,20 +88,20 @@ public:
 
         // 3. INJECTION PHASE: Move to Huge-Page Aligned Arena
         // Copies the scratch buffer into the executable memory segment.
-        size_t injected_size = dgtl::exec::StrikeRunner::inject_code(arena, machine_code_buffer);
+        size_t injected_size = strike_runner.inject_code(arena, machine_code_buffer);
         if (injected_size == 0) {
             return dgtl::exec::StrikeMetrics{0, STRIKE_INJECT_FAILED};
         }
 
         // 4. EXECUTION PHASE: The JIT Jump
         // Flushes Instruction Cache (I-Cache) and executes the generated code.
-        auto metrics = dgtl::exec::StrikeRunner::execute(arena, injected_size, data_payload);
+        auto metrics = strike_runner.execute(arena, injected_size, data_payload);
 
         // CLOSED-LOOP FEEDBACK: Collect runtime metrics and update cost model
         // This enables the AI cost model to learn from actual execution
         if (!stream.is_null() && stream.size() > 0) {
             // Use the injected code address as function ID.
-            uintptr_t function_id = dgtl::exec::StrikeRunner::last_injected_address();
+            uintptr_t function_id = strike_runner.last_injected_address();
             auto feedback = executor.collect_feedback(function_id);
             
             // Update cost model for each IR node in the stream

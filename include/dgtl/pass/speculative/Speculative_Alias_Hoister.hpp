@@ -102,7 +102,7 @@ private:
         ir::IRAtom& s_atom = s.get_shadow_atom(idx);
         ir::IRCore& s_core = s.get_shadow_core(idx);
         s_atom = {node.opcode, node.flags};
-        s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash};
+        s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash, 0, 0};
     }
 
     void inject_runtime_alias_guard_transactional(ir::IRStream& pre, const ir::IRNode& load_node) {
@@ -113,7 +113,7 @@ private:
         ir::IRCore& s_core = pre.get_shadow_core(cursor);
 
         s_atom = {ir::OpCode::GUARD_ALIAS, ir::Flags::REQUIRES_DEPASS_TARGET};
-        s_core = {ir::INVALID_SLOT, load_node.op_a, 0, 0, 0};
+        s_core = {ir::INVALID_SLOT, load_node.op_a, 0, 0, 0, 0, 0};
         
         ir::IRNode temp = pre.get_node(cursor); // Construct temp from shadow for hash
         temp.refresh_intent_hash();
@@ -132,7 +132,7 @@ private:
         ir::IRAtom& p_atom = pre.get_shadow_atom(pre_cursor);
         ir::IRCore& p_core = pre.get_shadow_core(pre_cursor);
         p_atom = {original.opcode, original.flags};
-        p_core = {original.result_id, original.op_a, original.op_b, original.op_c, original.intent_hash};
+        p_core = {original.result_id, original.op_a, original.op_b, original.op_c, original.intent_hash, 0, 0};
         
         ir::IRNode p_temp = pre.get_node(pre_cursor);
         p_temp.refresh_intent_hash();
@@ -143,7 +143,7 @@ private:
         ir::IRAtom& b_atom = body.get_shadow_atom(body_idx);
         ir::IRCore& b_core = body.get_shadow_core(body_idx);
         b_atom = {ir::OpCode::REG_MOVE, static_cast<uint16_t>(original.flags | ir::Flags::IS_OPTIMIZED)};
-        b_core = {original.result_id, original.result_id, 0, 0, 0};
+        b_core = {original.result_id, original.result_id, 0, 0, 0, 0, 0};
         
         ir::IRNode b_temp = body.get_node(body_idx);
         b_temp.refresh_intent_hash();

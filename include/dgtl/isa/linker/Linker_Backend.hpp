@@ -59,6 +59,39 @@ protected:
     uint8_t* output_ptr = nullptr;
     size_t file_size = 0;
 
+    void reset_mapping_state() noexcept {
+        output_ptr = nullptr;
+        fd_handle = -1;
+        file_size = 0;
+    }
+
+    void release_mapping() noexcept {
+        if (!output_ptr || output_ptr == DGTL_MAP_FAILED) {
+            output_ptr = nullptr;
+            if (fd_handle != -1) {
+#if defined(_WIN32)
+                CloseHandle(reinterpret_cast<HANDLE>(fd_handle));
+#else
+                close(static_cast<int>(fd_handle));
+#endif
+                fd_handle = -1;
+            }
+            return;
+        }
+
+#if defined(_WIN32)
+        UnmapViewOfFile(output_ptr);
+        if (fd_handle != -1) CloseHandle(reinterpret_cast<HANDLE>(fd_handle));
+#else
+        munmap(output_ptr, file_size);
+        if (fd_handle != -1) close(static_cast<int>(fd_handle));
+#endif
+
+        output_ptr = nullptr;
+        fd_handle = -1;
+        file_size = 0;
+    }
+
     /**
      * @brief Encodes values into Little-Endian Base 128 for WASM compatibility.
      */
@@ -73,15 +106,7 @@ protected:
 
 public:
     virtual ~DGTLLinker() {
-        if (output_ptr && output_ptr != DGTL_MAP_FAILED) {
-#if defined(_WIN32)
-            UnmapViewOfFile(output_ptr);
-            if (fd_handle != -1) CloseHandle(reinterpret_cast<HANDLE>(fd_handle));
-#else
-            munmap(output_ptr, file_size);
-            if (fd_handle != -1) close(static_cast<int>(fd_handle));
-#endif
-        }
+    release_mapping();
     }
 
     /**
@@ -89,6 +114,8 @@ public:
      */
     void emit_elf64(std::string_view path, const ir::IRStream& ir_stream) {
         if (ir_stream.is_null()) [[unlikely]] return;
+        release_mapping();
+        reset_mapping_state();
         
         // Calculate file size: Header + Code Segment (aligned to 4KB page)
         file_size = (ir_stream.size() * 16) + 0x2000; 
@@ -100,6 +127,10 @@ public:
         if (hFile == INVALID_HANDLE_VALUE) return;
 
         HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, (DWORD)file_size, NULL);
+        if (!hMap) {
+            CloseHandle(hFile);
+            return;
+        }
         output_ptr = (uint8_t*)MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, file_size);
         fd_handle = reinterpret_cast<intptr_t>(hFile);
         CloseHandle(hMap);
@@ -114,7 +145,18 @@ public:
         fd_handle = static_cast<intptr_t>(fd);
 #endif
 
-        if (output_ptr == DGTL_MAP_FAILED) return;
+        if (output_ptr == DGTL_MAP_FAILED || !output_ptr) {
+            output_ptr = nullptr;
+            if (fd_handle != -1) {
+#if defined(_WIN32)
+                CloseHandle(reinterpret_cast<HANDLE>(fd_handle));
+#else
+                close(static_cast<int>(fd_handle));
+#endif
+                fd_handle = -1;
+            }
+            return;
+        }
 
         // --- ELF Header Strike ---
         auto* elf_hdr = reinterpret_cast<Elf64_Ehdr*>(output_ptr);
@@ -137,12 +179,18 @@ public:
         prog_hdr->p_type = PT_LOAD;
         prog_hdr->p_offset = 0x1000; 
         prog_hdr->p_vaddr = 0x401000;
-        prog_hdr->p_filesz = static_cast<uint64_t>(ir_stream.size()) * 4; 
+        prog_hdr->p_filesz = static_cast<uint64_t>(ir_stream.size()) * 16;
         prog_hdr->p_memsz = prog_hdr->p_filesz;
         prog_hdr->p_flags = PF_R | PF_X;
         prog_hdr->p_align = 0x1000;
 
-        emit_machine_code(output_ptr + prog_hdr->p_offset, ir_stream);
+        const bool ok = emit_machine_code(output_ptr + prog_hdr->p_offset,
+                                          static_cast<size_t>(prog_hdr->p_filesz),
+                                          ir_stream);
+        if (!ok) {
+            release_mapping();
+            return;
+        }
 
 #if !defined(_WIN32)
         msync(output_ptr, file_size, MS_SYNC);
@@ -150,27 +198,63 @@ public:
     }
 
 protected:
-    void emit_machine_code(uint8_t* dest, const ir::IRStream& stream) {
-        if (stream.is_null()) return;
+    bool emit_machine_code(uint8_t* dest, size_t dest_capacity, const ir::IRStream& stream) {
+        if (stream.is_null() || !dest) return false;
         size_t offset = 0;
         const uint32_t count = stream.size();
 
         for (uint32_t i = 0; i < count; ++i) {
             const auto& node = stream.get_node(i);
             switch (node.opcode) {
+                case ir::OpCode::LOAD_IMM: {
+                    if (offset + 7 > dest_capacity) return false;
+                    // mov rax, imm32 (sign-extended)
+                    dest[offset++] = 0x48;
+                    dest[offset++] = 0xC7;
+                    dest[offset++] = 0xC0;
+                    const uint32_t imm = node.op_b;
+                    std::memcpy(dest + offset, &imm, sizeof(imm));
+                    offset += sizeof(imm);
+                    break;
+                }
+                case ir::OpCode::REG_MOVE:
+                    if (offset + 3 > dest_capacity) return false;
+                    // mov rax, rbx
+                    dest[offset++] = 0x48;
+                    dest[offset++] = 0x89;
+                    dest[offset++] = 0xD8;
+                    break;
                 case ir::OpCode::ADD_I32:
+                    if (offset + 2 > dest_capacity) return false;
                     dest[offset++] = 0x01; 
                     dest[offset++] = 0xD8; // x86_64: ADD EAX, EBX
                     break;
+                case ir::OpCode::SUB_I32:
+                    if (offset + 2 > dest_capacity) return false;
+                    dest[offset++] = 0x29;
+                    dest[offset++] = 0xD8; // SUB EAX, EBX
+                    break;
+                case ir::OpCode::MUL_I32:
+                    if (offset + 3 > dest_capacity) return false;
+                    dest[offset++] = 0x0F;
+                    dest[offset++] = 0xAF;
+                    dest[offset++] = 0xC3; // IMUL EAX, EBX
+                    break;
                 case ir::OpCode::RET:
+                    if (offset + 1 > dest_capacity) return false;
                     dest[offset++] = 0xC3; // x86_64: RET
                     break;
-                default:
-                    // Pad with NOP (0x90) for alignment
+                case ir::OpCode::NOP:
+                    if (offset + 1 > dest_capacity) return false;
                     dest[offset++] = 0x90;
                     break;
+                default:
+                    // Reject unsupported opcode to avoid generating semantically invalid binaries.
+                    return false;
             }
         }
+
+        return true;
     }
 };
 

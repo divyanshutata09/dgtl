@@ -1,9 +1,24 @@
 [DGTL] Starting production smoke pipeline
+[DGTL] running constant-fold
+[DGTL] running fusion
+[DGTL] running simd-legalize
+[DGTL] running ai-cost
+[DGTL] running pressure-zero-spill
+[DGTL] running determinism
+[DGTL] running latency
+[DGTL] Release smoke checks
+  [PASS] constant-fold :: nodes=2 cost=27.5->11.6
+  [PASS] fusion :: mul+add -> fma structural check
+  [PASS] simd-legalize :: expected=0x204 legalized_nodes=1
+  [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
+  [PASS] pressure-zero-spill :: spill_candidates=0
+  [PASS] determinism :: hash=0xe3d73dc41db3d3ec
+  [PASS] latency :: opt_us=1.73906 emit_us=9.25469 total_us=10.9938 output_size=640 iterations=64
 [DGTL] Backend=nasm (text)
-[DGTL] Nodes=5 LogicHash=0x1540ebb430bfb3c7
+[DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
 ; -----------------------------------------------------------
 ; DGTL-MLIR-X TIER-2 PERSISTENT KERNEL
-; Logic Hash: 0x1540EBB430BFB3C7
+; Logic Hash: 0xE3D73DC41DB3D3EC
 ; -----------------------------------------------------------
 section .text
     global DGTL_kernel_entry
@@ -20,13 +35,7 @@ DGTL_kernel_entry:
     push r15
     sub  rsp, 32 ; Allocate Shadow Space
 
-    mov rbx, 21                                   ; [Node 000] Hash:0x98786E77E3ACA65E
-    mov rcx, 21                                   ; [Node 001] Hash:0x98786E77E3B74E93
-    mov rdx, rbx 
-    add rdx, rcx                ; [Node 002] Hash:0x98786E77E04410B6
-    mov rsi, rdx 
-    add rsi, rdx                ; [Node 003] Hash:0x98786E77EA69E6D0
-    mov rax, rsi                                  ; [Node 004] Hash:0x98786E7779E73E5B
+    mov rax, 84                                   ; [Node 001] Hash:0x98786E3739E73E1D
 
     add  rsp, 32
     pop  r15
@@ -39,4 +48,3 @@ DGTL_kernel_entry:
     pop  rbp
     ret
 [DGTL] Pipeline completed successfully
-

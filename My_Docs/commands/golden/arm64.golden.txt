@@ -1,6 +1,21 @@
 [DGTL] Starting production smoke pipeline
+[DGTL] running constant-fold
+[DGTL] running fusion
+[DGTL] running simd-legalize
+[DGTL] running ai-cost
+[DGTL] running pressure-zero-spill
+[DGTL] running determinism
+[DGTL] running latency
+[DGTL] Release smoke checks
+  [PASS] constant-fold :: nodes=2 cost=27.5->11.6
+  [PASS] fusion :: mul+add -> fma structural check
+  [PASS] simd-legalize :: expected=0x304 legalized_nodes=1
+  [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
+  [PASS] pressure-zero-spill :: spill_candidates=0
+  [PASS] determinism :: hash=0xe3d73dc41db3d3ec
+  [PASS] latency :: opt_us=1.69844 emit_us=0.840625 total_us=2.53906 output_size=173 iterations=64
 [DGTL] Backend=arm64 (text)
-[DGTL] Nodes=5 LogicHash=0x1540ebb430bfb3c7
+[DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
 // --- DGTL-MLIR-X ARM64 BACKEND ---
 .arch armv8-a
 .text
@@ -8,12 +23,7 @@
 .global _DGTL_entry
 
 _DGTL_entry:
-    mov x1, #21               // TR_HASH:0x98786E77E3ACA65E
-    mov x2, #21               // TR_HASH:0x98786E77E3B74E93
-    add x3, x1, x2               // TR_HASH:0x98786E77E04410B6
-    add x4, x3, x3               // TR_HASH:0x98786E77EA69E6D0
-    mov x0, x4
-                   // TR_HASH:0x98786E7779E73E5B
+    mov x0, #84
+                   // TR_HASH:0x98786E3739E73E1D
     ret
 [DGTL] Pipeline completed successfully
-

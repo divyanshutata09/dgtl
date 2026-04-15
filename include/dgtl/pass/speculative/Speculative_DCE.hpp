@@ -107,6 +107,7 @@ private:
     }
 
     std::vector<BlockProfile> analyze_cfg_probability(const ir::IRStream& s, const analysis::DGTLAICostModel& ai) {
+        (void)ai;
         std::vector<BlockProfile> blocks;
         uint32_t last_start = 0;
         const size_t count = s.size();

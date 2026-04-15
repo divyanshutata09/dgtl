@@ -79,7 +79,9 @@ public:
         if ((!tls.in_strike && tls.remaining_primary == 0) ||
             (tls.in_strike && tls.remaining_shadow == 0)) [[unlikely]]
         {
-            refresh_thread_pages();
+            if (!refresh_thread_pages()) {
+                return;
+            }
         }
 
         ir::IRAtom* atom;
@@ -160,7 +162,7 @@ private:
 #else
     __attribute__((noinline))
 #endif
-    void refresh_thread_pages() {
+    [[nodiscard]] bool refresh_thread_pages() noexcept {
         auto& tls = g_tls_buffer;
 
         // ===== PRIMARY =====
@@ -189,8 +191,13 @@ private:
         if (!tls.atom_ptr || !tls.core_ptr ||
             !tls.shadow_atom_ptr || !tls.shadow_core_ptr)
         {
-            throw std::runtime_error("DGTL Context initialization failed: Arena allocation exhaustion");
+            tls.remaining_primary = 0;
+            tls.remaining_shadow = 0;
+            tls.in_strike = false;
+            return false;
         }
+
+        return true;
     }
 };
 

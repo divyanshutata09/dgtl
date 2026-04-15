@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <cstdlib>
 #include <vector>
 
 #include "dgtl/all.hpp"
@@ -45,19 +46,69 @@ enum class BackendKind : uint8_t {
     wasm,
 };
 
+enum class BenchmarkProfile : uint8_t {
+    fold,
+    fusion,
+    simd,
+    pressure,
+};
+
 struct AppOptions {
     bool verbose = true;
     bool print_asm = true;
-    bool run_evolution = true;
+    bool run_evolution = false;
+    bool benchmark_mode = false;
     BackendKind backend = BackendKind::arm64;
     std::string backend_name = "arm64";
     std::string asm_output_path;
+    size_t benchmark_iterations = 256;
+    BenchmarkProfile benchmark_profile = BenchmarkProfile::fold;
+    uint32_t pressure_vars = 25;
+    bool benchmark_dump = false;
 };
 
 struct SmokeCheck {
     std::string name;
     bool passed = false;
     std::string detail;
+};
+
+struct EmissionResult {
+    bool ok = false;
+    bool emitted_binary = false;
+    size_t fallback_ops = 0;
+    std::string emitted_text;
+    std::vector<uint8_t> emitted_bytes;
+};
+
+struct TimedEmissionResult {
+    bool ok = false;
+    double optimize_us = 0.0;
+    double emit_us = 0.0;
+    double total_us = 0.0;
+    size_t output_size = 0;
+    size_t fallback_ops = 0;
+    size_t nodes_built = 0;
+    size_t nodes_after_profile = 0;
+    size_t nodes_after_core_opt = 0;
+    EmissionResult emission;
+};
+
+struct BackendBenchmark {
+    bool ok = false;
+    bool runtime_supported = false;
+    double optimize_us = 0.0;
+    double emit_us = 0.0;
+    double total_us = 0.0;
+    double runtime_us = 0.0;
+    size_t output_size = 0;
+    size_t fallback_ops = 0;
+    size_t nodes_built = 0;
+    size_t nodes_after_profile = 0;
+    size_t nodes_after_core_opt = 0;
+    std::string detail;
+    std::string dump_text;
+    bool dump_is_binary = false;
 };
 
 bool emit_arm64(const dgtl::ir::IRStream& stream,
@@ -67,7 +118,8 @@ bool emit_arm64(const dgtl::ir::IRStream& stream,
 
 bool emit_x64(const dgtl::ir::IRStream& stream,
               std::vector<uint8_t>& out_bytes,
-              std::string& out_text);
+              std::string& out_text,
+              size_t* out_fallback_ops = nullptr);
 
 bool emit_nasm(const dgtl::ir::IRStream& stream,
                const dgtl::core::SymbolTable& symbols,
@@ -77,6 +129,27 @@ bool emit_wasm(const dgtl::ir::IRStream& stream,
                std::vector<uint8_t>& out_bytes,
                std::string& out_text);
 
+bool emit_backend(BackendKind backend,
+                  const dgtl::ir::IRStream& stream,
+                  const dgtl::core::SymbolTable& symbols,
+                  bool verbose_asm,
+                  EmissionResult& result);
+
+TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
+                                         dgtl::core::SymbolTable& symbols,
+                                         BackendKind backend,
+                                         bool verbose_asm,
+                                         BenchmarkProfile profile = BenchmarkProfile::fold,
+                                         uint32_t pressure_vars = 25);
+
+BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
+                                       dgtl::core::SymbolTable& symbols,
+                                       BackendKind backend,
+                                       size_t iterations,
+                                       bool verbose_asm,
+                                       BenchmarkProfile profile = BenchmarkProfile::fold,
+                                       uint32_t pressure_vars = 25);
+
 void print_usage(const char* argv0) {
     std::cout
         << "DGTL Compiler Smoke Driver\n"
@@ -85,7 +158,13 @@ void print_usage(const char* argv0) {
         << "  --help                 Show this help\n"
         << "  --quiet                Reduce terminal output\n"
         << "  --no-asm-print         Do not print assembly to stdout\n"
+        << "  --evolution            Enable IR evolution mutate step\n"
         << "  --no-evolution         Skip IREvolver mutate step\n"
+        << "  --benchmark            Print benchmark breakdown for selected backend\n"
+        << "  --benchmark-iterations <n>  Benchmark iteration count\n"
+        << "  --benchmark-profile <p> IR workload profile: fold|fusion|simd|pressure\n"
+        << "  --pressure-vars <n>    Variable count for pressure profile (default: 25)\n"
+        << "  --benchmark-dump       Print benchmark-emitted artifact (hex or text)\n"
         << "  --backend <name>       Select backend: arm64|x64|nasm|wasm\n"
         << "  --emit-asm <path>      Write emitted output to file\n";
 }
@@ -137,8 +216,76 @@ ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {
             opts.print_asm = false;
             continue;
         }
+        if (arg == "--evolution") {
+            opts.run_evolution = true;
+            continue;
+        }
         if (arg == "--no-evolution") {
             opts.run_evolution = false;
+            continue;
+        }
+        if (arg == "--benchmark") {
+            opts.benchmark_mode = true;
+            continue;
+        }
+        if (arg == "--benchmark-dump") {
+            opts.benchmark_dump = true;
+            continue;
+        }
+        if (arg == "--benchmark-iterations") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --benchmark-iterations\n";
+                return ParseStatus::error;
+            }
+            try {
+                const unsigned long long parsed = std::stoull(argv[++i]);
+                if (parsed == 0) {
+                    std::cerr << "--benchmark-iterations must be > 0\n";
+                    return ParseStatus::error;
+                }
+                opts.benchmark_iterations = static_cast<size_t>(parsed);
+            } catch (const std::exception&) {
+                std::cerr << "Invalid value for --benchmark-iterations: " << argv[i] << "\n";
+                return ParseStatus::error;
+            }
+            continue;
+        }
+        if (arg == "--benchmark-profile") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --benchmark-profile\n";
+                return ParseStatus::error;
+            }
+            const std::string_view p(argv[++i]);
+            if (p == "fold") {
+                opts.benchmark_profile = BenchmarkProfile::fold;
+            } else if (p == "fusion") {
+                opts.benchmark_profile = BenchmarkProfile::fusion;
+            } else if (p == "simd") {
+                opts.benchmark_profile = BenchmarkProfile::simd;
+            } else if (p == "pressure") {
+                opts.benchmark_profile = BenchmarkProfile::pressure;
+            } else {
+                std::cerr << "Unknown benchmark profile: " << p << " (expected fold|fusion|simd|pressure)\n";
+                return ParseStatus::error;
+            }
+            continue;
+        }
+        if (arg == "--pressure-vars") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --pressure-vars\n";
+                return ParseStatus::error;
+            }
+            try {
+                const unsigned long long parsed = std::stoull(argv[++i]);
+                if (parsed < 2) {
+                    std::cerr << "--pressure-vars must be >= 2\n";
+                    return ParseStatus::error;
+                }
+                opts.pressure_vars = static_cast<uint32_t>(parsed);
+            } catch (const std::exception&) {
+                std::cerr << "Invalid value for --pressure-vars: " << argv[i] << "\n";
+                return ParseStatus::error;
+            }
             continue;
         }
         if (arg == "--backend") {
@@ -250,6 +397,64 @@ bool build_pressure_ir(dgtl::ir::IRStream& stream, uint32_t vars) {
     return stream.size() != 0;
 }
 
+// Bench-specific variants: same IR as the smoke builders but include a RET so
+// the full chain stays live through DCE and emission does not fail.
+bool build_fusion_bench_ir(dgtl::ir::IRStream& stream) {
+    stream.reset();
+    stream.begin_transaction();
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 10, dgtl::ir::INVALID_SLOT, 2, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 11, dgtl::ir::INVALID_SLOT, 3, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 12, dgtl::ir::INVALID_SLOT, 4, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::MUL_F32,  dgtl::ir::Flags::NONE, 20, 10, 11, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::ADD_F32,  dgtl::ir::Flags::NONE, 21, 20, 12, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 21, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
+    stream.commit_transaction();
+    return stream.size() == 6;
+}
+
+bool build_simd_bench_ir(dgtl::ir::IRStream& stream) {
+    stream.reset();
+    stream.begin_transaction();
+    for (uint32_t i = 0; i < 8; ++i) {
+        stream.push_node(dgtl::ir::OpCode::LOAD_IMM,
+                         dgtl::ir::Flags::IS_CONST,
+                         i + 1,
+                         dgtl::ir::INVALID_SLOT,
+                         i + 1,
+                         dgtl::ir::INVALID_SLOT,
+                         0);
+    }
+    for (uint32_t i = 0; i < 4; ++i) {
+        const uint32_t lhs = (i * 2) + 1;
+        const uint32_t rhs = lhs + 1;
+        stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 100 + i, lhs, rhs, dgtl::ir::INVALID_SLOT, 0);
+    }
+    // RET references the last accumulated result (id=103) to keep the chain live.
+    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 103, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
+    stream.commit_transaction();
+    return stream.size() == 13;
+}
+
+std::string_view profile_name(BenchmarkProfile profile) {
+    switch (profile) {
+        case BenchmarkProfile::fold:     return "fold";
+        case BenchmarkProfile::fusion:   return "fusion";
+        case BenchmarkProfile::simd:     return "simd";
+        case BenchmarkProfile::pressure: return "pressure";
+    }
+    return "unknown";
+}
+
+bool build_ir_for_profile(dgtl::ir::IRStream& stream, BenchmarkProfile profile, uint32_t vars) {
+    switch (profile) {
+        case BenchmarkProfile::fold:     return build_release_emit_ir(stream);
+        case BenchmarkProfile::fusion:   return build_fusion_bench_ir(stream);
+        case BenchmarkProfile::simd:     return build_simd_bench_ir(stream);
+        case BenchmarkProfile::pressure: return build_pressure_ir(stream, vars);
+    }
+    return false;
+}
+
 void run_core_optimizations(dgtl::ir::IRStream& stream) {
     stream.perform_gvn();
     stream.perform_dead_code_elimination();
@@ -265,7 +470,7 @@ std::optional<dgtl::ir::IRNode> find_node_by_result(const dgtl::ir::IRStream& st
     return std::nullopt;
 }
 
-void append_check(std::vector<SmokeCheck>& checks, std::string name, bool passed, std::string detail) {
+[[maybe_unused]] void append_check(std::vector<SmokeCheck>& checks, std::string name, bool passed, std::string detail) {
     checks.push_back({std::move(name), passed, std::move(detail)});
 }
 
@@ -402,6 +607,9 @@ SmokeCheck run_pressure_check(dgtl::core::DGTL_Arena& arena) {
 
     dgtl::analysis::LivenessAnalyzer liveness;
     liveness.analyze_stream(stream);
+    if (liveness.has_corruption()) {
+        return {"pressure-zero-spill", false, liveness.last_error()};
+    }
 
     dgtl::isa::DGTLARM64RegAlloc regalloc;
     regalloc.execute(stream, liveness);
@@ -421,7 +629,9 @@ SmokeCheck run_pressure_check(dgtl::core::DGTL_Arena& arena) {
     return {"pressure-zero-spill", integrity_ok && spill_candidates == 0, oss.str()};
 }
 
-SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena, dgtl::core::SymbolTable& symbols) {
+SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
+                                 dgtl::core::SymbolTable& symbols,
+                                 BackendKind backend) {
     dgtl::ir::IRStream a(arena, 64);
     dgtl::ir::IRStream b(arena, 64);
     build_release_emit_ir(a);
@@ -431,7 +641,25 @@ SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena, dgtl::core::Symb
 
     std::string asm_a;
     std::string asm_b;
-    const bool emit_ok = emit_arm64(a, symbols, true, asm_a) && emit_arm64(b, symbols, true, asm_b);
+    std::vector<uint8_t> bytes_a;
+    std::vector<uint8_t> bytes_b;
+    bool emit_ok = false;
+
+    switch (backend) {
+        case BackendKind::arm64:
+            emit_ok = emit_arm64(a, symbols, true, asm_a) && emit_arm64(b, symbols, true, asm_b);
+            break;
+        case BackendKind::x64:
+            emit_ok = emit_x64(a, bytes_a, asm_a) && emit_x64(b, bytes_b, asm_b);
+            break;
+        case BackendKind::nasm:
+            emit_ok = emit_nasm(a, symbols, asm_a) && emit_nasm(b, symbols, asm_b);
+            break;
+        case BackendKind::wasm:
+            emit_ok = emit_wasm(a, bytes_a, asm_a) && emit_wasm(b, bytes_b, asm_b);
+            break;
+    }
+
     const bool deterministic = emit_ok && a.generate_logic_hash() == b.generate_logic_hash() && asm_a == asm_b;
 
     std::ostringstream oss;
@@ -443,46 +671,33 @@ SmokeCheck run_latency_check(dgtl::core::DGTL_Arena& arena,
                              dgtl::core::SymbolTable& symbols,
                              BackendKind backend) {
     constexpr size_t iterations = 64;
+    double total_opt_us = 0.0;
+    double total_emit_us = 0.0;
     double total_us = 0.0;
+    size_t last_output_size = 0;
     bool ok = true;
 
     for (size_t i = 0; i < iterations; ++i) {
-        dgtl::ir::IRStream stream(arena, 64);
-        build_release_emit_ir(stream);
-
-        const auto start = std::chrono::high_resolution_clock::now();
-        run_core_optimizations(stream);
-
-        std::string emitted_text;
-        std::vector<uint8_t> emitted_bytes;
-        bool emitted = false;
-
-        switch (backend) {
-            case BackendKind::arm64:
-                emitted = emit_arm64(stream, symbols, true, emitted_text);
-                break;
-            case BackendKind::x64:
-                emitted = emit_x64(stream, emitted_bytes, emitted_text);
-                break;
-            case BackendKind::nasm:
-                emitted = emit_nasm(stream, symbols, emitted_text);
-                break;
-            case BackendKind::wasm:
-                emitted = emit_wasm(stream, emitted_bytes, emitted_text);
-                break;
-        }
-
-        const auto end = std::chrono::high_resolution_clock::now();
-        total_us += std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(end - start).count();
-        if (!emitted) {
+        const TimedEmissionResult timed = time_backend_pipeline(arena, symbols, backend, true);
+        total_opt_us += timed.optimize_us;
+        total_emit_us += timed.emit_us;
+        total_us += timed.total_us;
+        last_output_size = timed.output_size;
+        if (!timed.ok) {
             ok = false;
             break;
         }
     }
 
+    const double avg_opt_us = total_opt_us / static_cast<double>(iterations);
+    const double avg_emit_us = total_emit_us / static_cast<double>(iterations);
     const double avg_us = total_us / static_cast<double>(iterations);
     std::ostringstream oss;
-    oss << "avg_us=" << avg_us << " iterations=" << iterations;
+    oss << "opt_us=" << avg_opt_us
+        << " emit_us=" << avg_emit_us
+        << " total_us=" << avg_us
+        << " output_size=" << last_output_size
+        << " iterations=" << iterations;
     return {"latency", ok && std::isfinite(avg_us) && avg_us >= 0.0, oss.str()};
 }
 
@@ -504,7 +719,7 @@ bool run_release_smoke_suite(const AppOptions& opts,
     run_check("simd-legalize", [&] { return run_simd_check(arena, opts.backend); });
     run_check("ai-cost", [&] { return run_ai_cost_check(); });
     run_check("pressure-zero-spill", [&] { return run_pressure_check(arena); });
-    run_check("determinism", [&] { return run_determinism_check(arena, symbols); });
+    run_check("determinism", [&] { return run_determinism_check(arena, symbols, opts.backend); });
     run_check("latency", [&] { return run_latency_check(arena, symbols, opts.backend); });
 
     bool all_pass = true;
@@ -524,9 +739,192 @@ void run_evolution_step(dgtl::ir::IRStream& stream) {
         if (!node.is_terminator() && node.opcode != dgtl::ir::OpCode::NOP) {
             auto& node_ref = stream.get_node_ref(i);
             evolver.mutate(&node_ref);
+            stream.set_node(i, node_ref);
             return;
         }
     }
+}
+
+bool emit_backend(BackendKind backend,
+                  const dgtl::ir::IRStream& stream,
+                  const dgtl::core::SymbolTable& symbols,
+                  bool verbose_asm,
+                  EmissionResult& result) {
+    result = EmissionResult{};
+
+    switch (backend) {
+        case BackendKind::arm64:
+            result.ok = emit_arm64(stream, symbols, verbose_asm, result.emitted_text);
+            result.emitted_binary = false;
+            return result.ok;
+        case BackendKind::x64:
+            result.ok = emit_x64(stream,
+                                 result.emitted_bytes,
+                                 result.emitted_text,
+                                 &result.fallback_ops);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::nasm:
+            result.ok = emit_nasm(stream, symbols, result.emitted_text);
+            result.emitted_binary = false;
+            return result.ok;
+        case BackendKind::wasm:
+            result.ok = emit_wasm(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+    }
+
+    return false;
+}
+
+TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
+                                         dgtl::core::SymbolTable& symbols,
+                                         BackendKind backend,
+                                         bool verbose_asm,
+                                         BenchmarkProfile profile,
+                                         uint32_t pressure_vars) {
+    TimedEmissionResult timed{};
+    const size_t capacity = (profile == BenchmarkProfile::pressure)
+        ? static_cast<size_t>(pressure_vars) * 3 + 16
+        : 128;
+    dgtl::ir::IRStream stream(arena, capacity);
+    if (!build_ir_for_profile(stream, profile, pressure_vars)) {
+        return timed;
+    }
+    timed.nodes_built = stream.size();
+
+    const auto optimize_start = std::chrono::high_resolution_clock::now();
+
+    // Run the profile-specific optimization pass first (timed inside opt_us),
+    // then follow with the standard GVN + DCE cleanup.
+    if (profile == BenchmarkProfile::fusion) {
+        dgtl::core::DGTLFormalVerifier verifier;
+        dgtl::pass::DGTLInstructionFusionSynth fusion_pass(verifier);
+        fusion_pass.execute(stream);
+    } else if (profile == BenchmarkProfile::simd) {
+        dgtl::pass::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+        legalizer.legalize(stream);
+    }
+    timed.nodes_after_profile = stream.size();
+    run_core_optimizations(stream);
+    timed.nodes_after_core_opt = stream.size();
+
+    const auto optimize_end = std::chrono::high_resolution_clock::now();
+
+    timed.ok = emit_backend(backend, stream, symbols, verbose_asm, timed.emission);
+    const auto emit_end = std::chrono::high_resolution_clock::now();
+
+    timed.optimize_us = std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(optimize_end - optimize_start).count();
+    timed.emit_us = std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(emit_end - optimize_end).count();
+    timed.total_us = std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(emit_end - optimize_start).count();
+    timed.output_size = timed.emission.emitted_binary ? timed.emission.emitted_bytes.size() : timed.emission.emitted_text.size();
+    timed.fallback_ops = timed.emission.fallback_ops;
+    return timed;
+}
+
+BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
+                                       dgtl::core::SymbolTable& symbols,
+                                       BackendKind backend,
+                                       size_t iterations,
+                                       bool verbose_asm,
+                                       BenchmarkProfile profile,
+                                       uint32_t pressure_vars) {
+    BackendBenchmark result{};
+    if (iterations == 0) {
+        result.detail = "iterations must be > 0";
+        return result;
+    }
+
+    double total_opt_us = 0.0;
+    double total_emit_us = 0.0;
+    double total_total_us = 0.0;
+    size_t output_size = 0;
+    EmissionResult last_emission;
+
+    for (size_t i = 0; i < iterations; ++i) {
+        const TimedEmissionResult timed = time_backend_pipeline(arena, symbols, backend, verbose_asm, profile, pressure_vars);
+        if (!timed.ok) {
+            result.detail = "backend emission failed during benchmark";
+            return result;
+        }
+        total_opt_us += timed.optimize_us;
+        total_emit_us += timed.emit_us;
+        total_total_us += timed.total_us;
+        output_size = timed.output_size;
+        result.fallback_ops = timed.fallback_ops;
+        result.nodes_built = timed.nodes_built;
+        result.nodes_after_profile = timed.nodes_after_profile;
+        result.nodes_after_core_opt = timed.nodes_after_core_opt;
+        last_emission = timed.emission;
+    }
+
+    result.ok = true;
+    result.optimize_us = total_opt_us / static_cast<double>(iterations);
+    result.emit_us = total_emit_us / static_cast<double>(iterations);
+    result.total_us = total_total_us / static_cast<double>(iterations);
+    result.output_size = output_size;
+    result.dump_text = last_emission.emitted_text;
+    result.dump_is_binary = last_emission.emitted_binary;
+
+    // JIT execution is only safe for the fold profile: the emitted code is a clean
+    // movabs rax, imm64 + ret that respects the x64 calling convention.
+    // Other profiles emit code that references callee-saved registers (R12-R15)
+    // without the prologue/epilogue needed to preserve them.
+    if (backend == BackendKind::x64 && profile == BenchmarkProfile::fold &&
+        !last_emission.emitted_bytes.empty()) {
+        dgtl::exec::StrikeRunner runner;
+        const size_t injected = runner.inject_code(arena, last_emission.emitted_bytes);
+        if (injected != 0) {
+#if defined(_WIN32) || defined(_WIN64)
+            _putenv_s("DGTL_STRIKE_EXECUTE", "1");
+#else
+            setenv("DGTL_STRIKE_EXECUTE", "1", 1);
+#endif
+            result.runtime_supported = true;
+            double total_exec_us = 0.0;
+            bool exec_ok = true;
+            for (size_t i = 0; i < iterations; ++i) {
+                const auto exec_start = std::chrono::high_resolution_clock::now();
+                const auto metrics = runner.execute(arena, injected, nullptr);
+                const auto exec_end = std::chrono::high_resolution_clock::now();
+                if (metrics.status_code != static_cast<uint32_t>(dgtl::exec::StrikeStatus::Ok)) {
+                    exec_ok = false;
+                    break;
+                }
+                total_exec_us += std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(exec_end - exec_start).count();
+            }
+#if defined(_WIN32) || defined(_WIN64)
+            _putenv_s("DGTL_STRIKE_EXECUTE", "");
+#else
+            unsetenv("DGTL_STRIKE_EXECUTE");
+#endif
+            if (!exec_ok) {
+                result.ok = false;
+                result.detail = "x64 runtime execution failed during benchmark";
+                return result;
+            }
+            result.runtime_us = total_exec_us / static_cast<double>(iterations);
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "profile=" << profile_name(profile)
+        << " opt_us=" << result.optimize_us
+        << " emit_us=" << result.emit_us
+        << " total_us=" << result.total_us
+        << " output_size=" << result.output_size
+        << " fallback_ops=" << result.fallback_ops
+        << " nodes=" << result.nodes_built
+        << "->" << result.nodes_after_profile
+        << "->" << result.nodes_after_core_opt;
+    if (result.runtime_supported) {
+        oss << " exec_us=" << result.runtime_us;
+    } else {
+        oss << " exec_us=n/a";
+    }
+    oss << " iterations=" << iterations;
+    result.detail = oss.str();
+    return result;
 }
 
 bool emit_arm64(const dgtl::ir::IRStream& stream,
@@ -560,11 +958,18 @@ std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
 
 bool emit_x64(const dgtl::ir::IRStream& stream,
               std::vector<uint8_t>& out_bytes,
-              std::string& out_text) {
+              std::string& out_text,
+              size_t* out_fallback_ops) {
     out_bytes.clear();
     out_text.clear();
+    if (out_fallback_ops != nullptr) {
+        *out_fallback_ops = 0;
+    }
     dgtl::isa::X64StrikeEmitter emitter;
     emitter.process_stream(stream, out_bytes);
+    if (out_fallback_ops != nullptr) {
+        *out_fallback_ops = emitter.fallback_hits();
+    }
     if (out_bytes.empty()) {
         return false;
     }
@@ -672,46 +1077,18 @@ int main(int argc, char** argv) {
             run_evolution_step(stream);
         }
 
-        std::string emitted_text;
-        std::vector<uint8_t> emitted_bytes;
-        bool emitted_binary = false;
-
-        switch (opts.backend) {
-            case BackendKind::arm64:
-                if (!emit_arm64(stream, symbols, opts.verbose, emitted_text)) {
-                    std::cerr << "[DGTL] ARM64 emission produced no output (code=0x"
-                              << std::hex << static_cast<uint32_t>(BackendErrorCode::emit_empty_output)
-                              << std::dec << ")\n";
-                    return static_cast<int>(ExitCode::emit_failure);
-                }
-                break;
-            case BackendKind::x64:
-                emitted_binary = true;
-                if (!emit_x64(stream, emitted_bytes, emitted_text)) {
-                    std::cerr << "[DGTL] x64 emission produced no output (code=0x"
-                              << std::hex << static_cast<uint32_t>(BackendErrorCode::emit_empty_output)
-                              << std::dec << ")\n";
-                    return static_cast<int>(ExitCode::emit_failure);
-                }
-                break;
-            case BackendKind::nasm:
-                if (!emit_nasm(stream, symbols, emitted_text)) {
-                    std::cerr << "[DGTL] NASM emission produced no output (code=0x"
-                              << std::hex << static_cast<uint32_t>(BackendErrorCode::emit_empty_output)
-                              << std::dec << ")\n";
-                    return static_cast<int>(ExitCode::emit_failure);
-                }
-                break;
-            case BackendKind::wasm:
-                emitted_binary = true;
-                if (!emit_wasm(stream, emitted_bytes, emitted_text)) {
-                    std::cerr << "[DGTL] WASM emission produced no output (code=0x"
-                              << std::hex << static_cast<uint32_t>(BackendErrorCode::emit_empty_output)
-                              << std::dec << ")\n";
-                    return static_cast<int>(ExitCode::emit_failure);
-                }
-                break;
+        EmissionResult emission;
+        if (!emit_backend(opts.backend, stream, symbols, opts.verbose, emission)) {
+            std::cerr << "[DGTL] " << opts.backend_name
+                      << " emission produced no output (code=0x"
+                      << std::hex << static_cast<uint32_t>(BackendErrorCode::emit_empty_output)
+                      << std::dec << ")\n";
+            return static_cast<int>(ExitCode::emit_failure);
         }
+
+        std::string emitted_text = std::move(emission.emitted_text);
+        std::vector<uint8_t> emitted_bytes = std::move(emission.emitted_bytes);
+        const bool emitted_binary = emission.emitted_binary;
 
         if (!opts.asm_output_path.empty()) {
             const bool ok = emitted_binary
@@ -730,6 +1107,29 @@ int main(int argc, char** argv) {
         if (opts.verbose) {
             std::cout << "[DGTL] Backend=" << opts.backend_name
                       << (emitted_binary ? " (binary)" : " (text)") << "\n";
+        }
+
+        if (opts.benchmark_mode) {
+            const BackendBenchmark benchmark = run_backend_benchmark(arena,
+                                                                    symbols,
+                                                                    opts.backend,
+                                                                    opts.benchmark_iterations,
+                                                                    false,
+                                                                    opts.benchmark_profile,
+                                                                    opts.pressure_vars);
+            if (!benchmark.ok) {
+                std::cerr << "[DGTL] Benchmark failed: " << benchmark.detail << "\n";
+                return static_cast<int>(ExitCode::pipeline_failure);
+            }
+            std::cout << "[DGTL] Benchmark :: " << benchmark.detail << "\n";
+            if (opts.benchmark_dump) {
+                std::cout << "[DGTL] BenchmarkDump "
+                          << (benchmark.dump_is_binary ? "(hex)" : "(text)") << "\n";
+                std::cout << benchmark.dump_text;
+                if (!benchmark.dump_text.empty() && benchmark.dump_text.back() != '\n') {
+                    std::cout << '\n';
+                }
+            }
         }
 
         std::cout << "[DGTL] Nodes=" << stream.size()

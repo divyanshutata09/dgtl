@@ -92,9 +92,10 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
     const bool vector_bias = target.prefers_vector_heavy_schedule();
     const float mem_bias = target.memory_latency_bias();
 
-    std::stable_sort(regions.begin(), regions.end(), [vector_bias, mem_bias](const auto& lhs, const auto& rhs) {
-        const Region* a = lhs.get();
-        const Region* b = rhs.get();
+    auto better = [vector_bias, mem_bias](const Region* a, const Region* b) {
+        if (!a || !b) {
+            return a != nullptr;
+        }
 
         const double a_pressure = a->live_range_pressure();
         const double b_pressure = b->live_range_pressure();
@@ -126,7 +127,77 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
             return a->vectorizable;
         }
         return a->estimated_cycles > b->estimated_cycles;
-    });
+    };
+
+    std::unordered_map<Region*, size_t> indegree;
+    indegree.reserve(regions.size());
+    for (const auto& r : regions) {
+        indegree[r.get()] = 0;
+    }
+
+    for (const auto& r : regions) {
+        for (Region* dep : r->dependencies) {
+            if (dep && indegree.contains(r.get())) {
+                indegree[r.get()] += 1;
+            }
+        }
+    }
+
+    std::vector<Region*> ready;
+    ready.reserve(regions.size());
+    for (const auto& r : regions) {
+        if (indegree[r.get()] == 0) {
+            ready.push_back(r.get());
+        }
+    }
+
+    std::vector<std::unique_ptr<Region>> ordered;
+    ordered.reserve(regions.size());
+
+    auto take_best_ready = [&]() -> Region* {
+        if (ready.empty()) return nullptr;
+        auto it = std::max_element(ready.begin(), ready.end(), [&](Region* lhs, Region* rhs) {
+            return !better(lhs, rhs);
+        });
+        Region* best = *it;
+        ready.erase(it);
+        return best;
+    };
+
+    while (!ready.empty()) {
+        Region* chosen = take_best_ready();
+        if (!chosen) {
+            break;
+        }
+
+        auto pos = std::find_if(regions.begin(), regions.end(), [chosen](const auto& ptr) {
+            return ptr.get() == chosen;
+        });
+        if (pos == regions.end()) {
+            continue;
+        }
+
+        ordered.push_back(std::move(*pos));
+        regions.erase(pos);
+
+        for (Region* dependent : chosen->dependents) {
+            if (!dependent || !indegree.contains(dependent)) {
+                continue;
+            }
+            if (indegree[dependent] > 0) {
+                indegree[dependent] -= 1;
+                if (indegree[dependent] == 0) {
+                    ready.push_back(dependent);
+                }
+            }
+        }
+    }
+
+    // Cycle fallback: keep any remaining regions in prior relative order.
+    for (auto& leftover : regions) {
+        ordered.push_back(std::move(leftover));
+    }
+    regions = std::move(ordered);
 }
 
 std::vector<std::vector<Region*>> ExecutionGraph::find_fusion_candidates() const {

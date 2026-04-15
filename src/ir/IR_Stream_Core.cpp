@@ -312,6 +312,7 @@ IRStream IRStream::clone() const {
 // --- Transaction Management & State (From Files 1, 6) ---
 
 void IRStream::begin_transaction() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     joined_valid = false;
     if (in_transaction.exchange(true, std::memory_order_acq_rel)) {
         shadow_count = std::min(count, _capacity);
@@ -325,6 +326,7 @@ void IRStream::begin_transaction() noexcept {
 }
 
 void IRStream::commit_transaction() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (!in_transaction.load(std::memory_order_acquire)) return;
     count = shadow_count;
     if (count > 0 && atoms && shadow_atoms && cores && shadow_cores) {
@@ -336,6 +338,7 @@ void IRStream::commit_transaction() noexcept {
 }
 
 void IRStream::abort_transaction() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     in_transaction.store(false, std::memory_order_release);
     shadow_count = count;
     joined_valid = false;
@@ -346,6 +349,7 @@ void IRStream::rollback_transaction() noexcept {
 }
 
 void IRStream::set_count(size_t val) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (val <= _capacity) [[likely]] {
         count = val;
         shadow_count = val;
@@ -354,6 +358,7 @@ void IRStream::set_count(size_t val) noexcept {
 }
 
 void IRStream::reset() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     count = 0;
     shadow_count = 0;
     in_transaction.store(false, std::memory_order_release);
@@ -365,6 +370,7 @@ bool IRStream::is_null() const noexcept {
 }
 
 void IRStream::prune_shadow_buffer() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     shadow_count = count;
     if (shadow_atoms && shadow_cores) [[likely]] {
         size_t clear_size = (_capacity - count);
@@ -376,6 +382,7 @@ void IRStream::prune_shadow_buffer() noexcept {
 }
 
 void IRStream::push_full_to_shadow() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (!shadow_atoms || !shadow_cores || !atoms || !cores) return;
     std::memcpy(shadow_atoms, atoms, count * sizeof(IRAtom));
     std::memcpy(shadow_cores, cores, count * sizeof(IRCore));
@@ -383,6 +390,7 @@ void IRStream::push_full_to_shadow() noexcept {
 }
 
 void IRStream::commit_from_shadow(IRStream& shadow_stream) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (shadow_stream.is_null()) [[unlikely]] return;
     shadow_stream.commit_transaction();
 

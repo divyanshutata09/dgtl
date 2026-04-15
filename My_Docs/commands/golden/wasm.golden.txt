@@ -1,6 +1,20 @@
 [DGTL] Starting production smoke pipeline
+[DGTL] running constant-fold
+[DGTL] running fusion
+[DGTL] running simd-legalize
+[DGTL] running ai-cost
+[DGTL] running pressure-zero-spill
+[DGTL] running determinism
+[DGTL] running latency
+[DGTL] Release smoke checks
+  [PASS] constant-fold :: nodes=2 cost=27.5->11.6
+  [PASS] fusion :: mul+add -> fma structural check
+  [PASS] simd-legalize :: expected=0x404 legalized_nodes=1
+  [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
+  [PASS] pressure-zero-spill :: spill_candidates=0
+  [PASS] determinism :: hash=0xe3d73dc41db3d3ec
+  [PASS] latency :: opt_us=1.1375 emit_us=1.00937 total_us=2.14687 output_size=70 iterations=64
 [DGTL] Backend=wasm (binary)
-[DGTL] Nodes=5 LogicHash=0x1540ebb430bfb3c7
-00 61 73 6D 01 00 00 00 01 84 80 80 80 00 01 60 00 00 03 82 80 80 80 00 01 00 05 83 80 80 80 00 01 00 01 07 8D 80 80 80 00 01 09 44 47 54 4C 5F 6D 61 69 6E 00 00 0A 9D 80 80 80 00 01 1B 01 05 7F 41 00 21 01 41 00 21 02 20 01 20 02 6A 21 03 20 03 20 03 6A 21 04 0F 0B
+[DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
+00 61 73 6D 01 00 00 00 01 85 80 80 80 00 01 60 00 01 7F 03 82 80 80 80 00 01 00 05 83 80 80 80 00 01 00 01 07 8D 80 80 80 00 01 09 44 47 54 4C 5F 6D 61 69 6E 00 00 0A 89 80 80 80 00 01 07 01 05 7F 41 54 0F 0B
 [DGTL] Pipeline completed successfully
-

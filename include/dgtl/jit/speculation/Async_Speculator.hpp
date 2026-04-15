@@ -208,6 +208,7 @@ private:
      * @brief Generates raw machine code for the speculative branch.
      */
     std::vector<uint8_t> emit_speculative_code(const ir::IRStream& stream) {
+        (void)stream;
         // Return a standard x64 prologue/nop/epilogue as template.
         return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 }; 
     }

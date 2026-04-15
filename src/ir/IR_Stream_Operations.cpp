@@ -16,6 +16,7 @@ extern dgtl::core::DGTL_Arena local_transaction_arena;
 // --- Hot Path Operations (From File 3) ---
 
 void IRStream::push_back(const IRNode& node) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     const uint64_t final_hash = (node.intent_hash == 0)
         ? IRNode::calculate_hash(node.opcode, node.result_id, node.op_a, node.op_b, node.op_c)
         : node.intent_hash;
@@ -41,10 +42,11 @@ void IRStream::push_back(const IRNode& node) noexcept {
     }
 }
 
-void IRStream::push_node(OpCode op, uint16_t fl, uint32_t res, uint32_t a, uint32_t b, uint32_t c, uint32_t h) noexcept {
+void IRStream::push_node(OpCode op, uint16_t fl, uint32_t res, uint32_t a, uint32_t b, uint32_t c, uint64_t h) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     const uint64_t sync_hash = (h == 0)
         ? IRNode::calculate_hash(op, res, a, b, c)
-        : static_cast<uint64_t>(h);
+        : h;
     bool trans = in_transaction.load(std::memory_order_acquire);
 
     if (trans) {
@@ -63,6 +65,7 @@ void IRStream::push_node(OpCode op, uint16_t fl, uint32_t res, uint32_t a, uint3
 }
 
 uint32_t IRStream::reserve_shadow_slot() noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (shadow_count >= _capacity || !shadow_atoms) [[unlikely]] {
         std::cerr << "[DGTL FATAL] IRStream Shadow Overflow at " << _capacity << "\n";
         return 0xFFFFFFFF;
@@ -73,6 +76,7 @@ uint32_t IRStream::reserve_shadow_slot() noexcept {
 }
 
 void IRStream::push_to_shadow(const IRNode& node) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (!in_transaction.load(std::memory_order_acquire)) {
         begin_transaction();
     }
@@ -82,6 +86,7 @@ void IRStream::push_to_shadow(const IRNode& node) noexcept {
 // --- Accessors (From File 3, 6) ---
 
 IRNode IRStream::get_node(size_t idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     bool trans = in_transaction.load(std::memory_order_acquire);
     const auto* a = trans ? shadow_atoms : atoms;
     const auto* c = trans ? shadow_cores : cores;
@@ -92,12 +97,12 @@ IRNode IRStream::get_node(size_t idx) const noexcept {
 }
 
 IRNode& IRStream::get_node_ref(size_t idx) noexcept {
-    static IRNode fallback{};
-
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     const bool trans = in_transaction.load(std::memory_order_acquire);
     const size_t current_count = trans ? shadow_count : count;
     if (idx >= current_count || !joined_buffer) {
-        return fallback;
+        fallback_node = IRNode{};
+        return fallback_node;
     }
 
     if (!joined_valid) {
@@ -110,7 +115,34 @@ IRNode& IRStream::get_node_ref(size_t idx) noexcept {
     return joined_buffer[idx];
 }
 
+void IRStream::set_node(size_t idx, const IRNode& node) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    const bool trans = in_transaction.load(std::memory_order_acquire);
+    IRAtom* atom_ptr = trans ? shadow_atoms : atoms;
+    IRCore* core_ptr = trans ? shadow_cores : cores;
+    const size_t limit = trans ? shadow_count : count;
+
+    if (!atom_ptr || !core_ptr || idx >= limit) {
+        return;
+    }
+
+    const uint64_t final_hash = (node.intent_hash == 0)
+        ? IRNode::calculate_hash(node.opcode, node.result_id, node.op_a, node.op_b, node.op_c)
+        : node.intent_hash;
+
+    atom_ptr[idx] = {node.opcode, node.flags};
+    core_ptr[idx] = {node.result_id, node.op_a, node.op_b, node.op_c, final_hash, node.flags, 0};
+
+    if (joined_buffer && idx < _capacity) {
+        joined_buffer[idx] = node;
+        joined_buffer[idx].intent_hash = final_hash;
+        joined_buffer_in_transaction = trans;
+    }
+    joined_valid = false;
+}
+
 const IRCore& IRStream::get_core_readonly(size_t idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     bool trans = in_transaction.load(std::memory_order_acquire);
     if (idx >= (trans ? shadow_count : count)) {
         static const IRCore null_core = {0u, 0u, 0u, 0u, 0ull, 0u, 0u};
@@ -120,6 +152,7 @@ const IRCore& IRStream::get_core_readonly(size_t idx) const noexcept {
 }
 
 const IRAtom& IRStream::get_atom_readonly(size_t idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     static const IRAtom null_atom{OpCode::NOP, Flags::NONE};
 
     const bool trans = in_transaction.load(std::memory_order_acquire);
@@ -132,6 +165,7 @@ const IRAtom& IRStream::get_atom_readonly(size_t idx) const noexcept {
 }
 
 IRNode IRStream::get_shadow_node_proxy(size_t idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (idx >= _capacity || !shadow_atoms || !shadow_cores) return {};
     return { shadow_atoms[idx].opcode, shadow_atoms[idx].flags, shadow_cores[idx].result_id,
              shadow_cores[idx].op_a, shadow_cores[idx].op_b, shadow_cores[idx].op_c, shadow_cores[idx].intent_hash, 0u };
@@ -174,6 +208,7 @@ inline void sync_joined_buffer_simd(IRNode* __restrict dst,
 }
 
 IRNode* IRStream::get_buffer_ptr() const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     bool trans = in_transaction.load(std::memory_order_acquire);
     const auto* a = trans ? shadow_atoms : atoms;
     const auto* c = trans ? shadow_cores : cores;
@@ -189,6 +224,7 @@ IRNode* IRStream::get_buffer_ptr() const noexcept {
 }
 
 bool IRStream::validate_shadow_integrity() const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (!in_transaction.load(std::memory_order_acquire)) return true;
     for (size_t i = 0; i < shadow_count; ++i) {
         const uint64_t expected = IRNode::calculate_hash(
@@ -204,6 +240,7 @@ bool IRStream::validate_shadow_integrity() const noexcept {
 }
 
 uint64_t IRStream::generate_logic_hash() const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     constexpr uint64_t seed = 0x243F6A8885A308D3ULL;
     uint64_t h = seed;
 

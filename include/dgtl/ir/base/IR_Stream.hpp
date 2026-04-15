@@ -17,6 +17,8 @@
 #include "IR_Traits.hpp"
 #include "IR_Storage.hpp"
 #include "dgtl/core/Arena.hpp"
+#include <cstdint>
+#include <mutex>
 
 
 namespace dgtl::ir {
@@ -45,6 +47,8 @@ private:
     // AoS fallback buffer (optional)
     mutable IRNode* joined_buffer = nullptr;
     mutable bool joined_valid = false;
+    mutable IRNode fallback_node{};
+    mutable std::recursive_mutex stream_mutex;
 
     // For external buffer ownership
     bool owns_aligned_alloc_storage = false;
@@ -95,8 +99,9 @@ public:
     // 🔹 EMIT
     // ======================================================
     void push_node(const IRAtom& atom, const IRCore& core) noexcept;
-    void push_node(OpCode op, uint16_t fl, uint32_t res, uint32_t a, uint32_t b, uint32_t c, uint32_t h = 0) noexcept;
+    void push_node(OpCode op, uint16_t fl, uint32_t res, uint32_t a, uint32_t b, uint32_t c, uint64_t h = 0) noexcept;
     void push_back(const IRNode& node) noexcept;
+    void set_node(size_t idx, const IRNode& node) noexcept;
 
     // ======================================================
     // 🔹 TRANSACTION CORE

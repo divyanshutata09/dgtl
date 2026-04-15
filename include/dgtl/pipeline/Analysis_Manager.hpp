@@ -11,6 +11,7 @@
 #include <memory>
 #include <string_view>
 #include <cstdint>
+#include <type_traits>
 #include "dgtl/ir/base/Global_IR.hpp"
 
 namespace dgtl::pipeline {
@@ -72,6 +73,9 @@ public:
      */
     template <typename AnalysisT>
     [[nodiscard]] const AnalysisT& get_result(ir::IRStream& stream) {
+        static_assert(std::is_base_of_v<DGTLAnalysis, AnalysisT>,
+                      "AnalysisT must derive from dgtl::pipeline::DGTLAnalysis");
+
         // NOTE: Ensure IRStream has get_version() implemented in Global_IR.hpp
         const uint64_t current_version = stream.get_version();
 
@@ -113,6 +117,8 @@ public:
      */
     template <typename AnalysisT>
     [[nodiscard]] bool is_cached() const noexcept {
+        static_assert(std::is_base_of_v<DGTLAnalysis, AnalysisT>,
+                      "AnalysisT must derive from dgtl::pipeline::DGTLAnalysis");
         return cache.contains(AnalysisTypeKey<AnalysisT>::get());
     }
 
@@ -122,6 +128,8 @@ public:
      */
     template <typename AnalysisT>
     void invalidate_specific() noexcept {
+        static_assert(std::is_base_of_v<DGTLAnalysis, AnalysisT>,
+                      "AnalysisT must derive from dgtl::pipeline::DGTLAnalysis");
         cache.erase(AnalysisTypeKey<AnalysisT>::get());
     }
 };

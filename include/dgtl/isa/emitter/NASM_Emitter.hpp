@@ -62,8 +62,12 @@ public:
         for (size_t i = 0; i < stream.size(); ++i) {
             const auto& node = stream.get_node(i);
             if (node.opcode == ir::OpCode::NOP) continue;
+            if ((node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::IMMEDIATE) &&
+                is_foldable_ret_immediate(stream, i, node)) {
+                continue;
+            }
 
-            std::string asm_code = translate_node(node);
+            std::string asm_code = translate_node(stream, node);
             
             // Format intent hash for debugging within the ASM
             std::string comment = std::format(" ; [Node {:03d}] Hash:0x{:08X}", i, node.intent_hash);
@@ -91,18 +95,63 @@ public:
     }
 
 private:
+    bool is_foldable_ret_immediate(const ir::IRStream& stream, size_t load_idx, const ir::IRNode& load_node) const {
+        if (load_node.result_id == ir::INVALID_SLOT) return false;
+
+        bool used_by_ret = false;
+        for (size_t i = load_idx + 1; i < stream.size(); ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::NOP) continue;
+
+            const bool references_reg =
+                node.op_a == load_node.result_id ||
+                node.op_b == load_node.result_id ||
+                node.op_c == load_node.result_id;
+
+            if (!references_reg) continue;
+
+            if (node.opcode == ir::OpCode::RET && node.op_a == load_node.result_id && !used_by_ret) {
+                used_by_ret = true;
+                continue;
+            }
+
+            return false;
+        }
+
+        return used_by_ret;
+    }
+
+    bool resolve_ret_immediate(const ir::IRStream& stream, uint32_t reg, uint64_t& imm_out) const {
+        for (size_t i = stream.size(); i-- > 0;) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode != ir::OpCode::LOAD_IMM && node.opcode != ir::OpCode::IMMEDIATE) continue;
+            if (node.result_id != reg) continue;
+            imm_out = (static_cast<uint64_t>(node.op_a) << 32) | (node.op_b & 0xFFFFFFFFULL);
+            return true;
+        }
+        return false;
+    }
+
     void append_line(std::string_view line) {
         _asm_buffer.append(line);
         _asm_buffer.append("\n");
     }
 
-    std::string translate_node(const ir::IRNode& node) {
+    std::string translate_node(const ir::IRStream& stream, const ir::IRNode& node) {
         auto r = [](uint32_t idx) -> const char* {
             static constexpr const char* regs[] = { 
                 "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", 
                 "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" 
             };
             return regs[idx & 0xF];
+        };
+
+        auto xr = [](uint32_t idx) -> const char* {
+            static constexpr const char* xregs[] = {
+                "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+                "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15"
+            };
+            return xregs[idx & 0xF];
         };
 
         switch (node.opcode) {
@@ -135,6 +184,17 @@ private:
                                        r(node.result_id), r(node.op_a), r(node.op_b));
                 }
                 return std::format("imul {}, {}", r(node.result_id), r(node.op_b));
+            }
+
+            case ir::OpCode::FMA_F32: {
+                // Preserve fused lowering in text backend: dst = (a * b) + c
+                // using scalar FMA when available.
+                if (node.result_id != node.op_a) {
+                    return std::format("movaps {0}, {1} \n    vfmadd213ss {0}, {2}, {3}",
+                                       xr(node.result_id), xr(node.op_a), xr(node.op_b), xr(node.op_c));
+                }
+                return std::format("vfmadd213ss {0}, {1}, {2}",
+                                   xr(node.result_id), xr(node.op_b), xr(node.op_c));
             }
 
             case ir::OpCode::DIV_I32: {
@@ -186,7 +246,11 @@ private:
             }
 
             case ir::OpCode::RET: {
-                if (node.op_a != 0) { 
+                if (node.op_a != 0) {
+                    uint64_t imm = 0;
+                    if (resolve_ret_immediate(stream, node.op_a, imm)) {
+                        return std::format("mov rax, {}", imm);
+                    }
                     return std::format("mov rax, {}", r(node.op_a));
                 }
                 return "; Return (already in rax)";

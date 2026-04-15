@@ -32,6 +32,7 @@ public:
      * @brief Loop Tiling (Transactional Shadow-Writing).
      */
     void apply_tiling(ir::IRStream& stream, const LoopNest& nest, uint32_t tile_size) {
+        (void)tile_size;
         const size_t stream_size = stream.size();
         if (nest.depth < 2 || stream_size == 0) return;
 
@@ -45,7 +46,7 @@ public:
 
             // Initial sync to shadow
             s_atom = {node.opcode, node.flags};
-            s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash};
+            s_core = {node.result_id, node.op_a, node.op_b, node.op_c, node.intent_hash, 0, 0};
 
             for (uint32_t d = 0; d < nest.depth; ++d) {
                 if (node.op_a == nest.induction_vars[d] || node.result_id == nest.induction_vars[d]) {
@@ -132,6 +133,7 @@ private:
      * @brief Dependency Matrix Check (AVX-512 Accelerated).
      */
     bool has_dependency_violation(const LoopNest& nest) {
+        (void)nest;
         // Implementation for linear algebra safety check
         return false; 
     }

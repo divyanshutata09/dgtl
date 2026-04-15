@@ -70,6 +70,11 @@ public:
 
     template<typename T>
     T* allocate(size_t count = 1) noexcept {
+        static_assert(std::is_trivially_default_constructible_v<T>,
+                      "DGTL_Arena supports only trivially default-constructible types");
+        static_assert(std::is_trivially_destructible_v<T>,
+                      "DGTL_Arena supports only trivially destructible types");
+
         if (!block.base || count == 0) return nullptr;
 
         if (count > (std::numeric_limits<size_t>::max() / sizeof(T)))
@@ -91,11 +96,6 @@ public:
 #if defined(__GNUC__) || defined(__clang__)
         __builtin_prefetch(ptr, 1, 3);
 #endif
-
-        if constexpr (!std::is_fundamental_v<T>) {
-            for (size_t i = 0; i < count; ++i)
-                new (&ptr[i]) T();
-        }
 
         return ptr;
     }
@@ -135,11 +135,25 @@ class DGTL_Arena {
 private:
     std::vector<ThreadLocalArena> arenas;
     size_t per_thread_size;
+    std::atomic<size_t> next_thread_slot{0};
+
+    [[nodiscard]] size_t acquire_thread_slot() noexcept {
+        const size_t arena_count = arenas.size();
+        if (arena_count == 0) return 0;
+        return next_thread_slot.fetch_add(1, std::memory_order_relaxed) % arena_count;
+    }
 
 public:
     explicit DGTL_Arena(size_t threads = std::thread::hardware_concurrency(),
                          size_t size_mb_per_thread = 64)
     {
+        if (threads == 0) {
+            threads = 1;
+        }
+        if (size_mb_per_thread == 0) {
+            size_mb_per_thread = 1;
+        }
+
         per_thread_size = size_mb_per_thread * 1024ull * 1024ull;
 
         arenas.resize(threads);
@@ -150,7 +164,7 @@ public:
     }
 
     ThreadLocalArena& get_local() noexcept {
-        thread_local size_t tid = std::hash<std::thread::id>{}(std::this_thread::get_id()) % arenas.size();
+        thread_local size_t tid = acquire_thread_slot();
         return arenas[tid];
     }
 

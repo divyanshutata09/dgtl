@@ -117,6 +117,9 @@ public:
         uint8_t* target_ptr = &code_buffer[cursor];
         uintptr_t target_addr = reinterpret_cast<uintptr_t>(target_ptr);
 
+        // Ensure destination pages are writable before copy when reusing pages.
+        make_page_writable(target_ptr, binary.size());
+
         // 1. Transactional Write to RW memory
         std::memcpy(target_ptr, binary.data(), binary.size());
         
@@ -166,9 +169,9 @@ public:
 
         auto it = trace_meta_map.find(function_id);
         if (it == trace_meta_map.end()) {
-            feedback.actual_latency = 25.0;
-            feedback.cache_miss_rate = 0.15;
-            feedback.branch_mispredict_rate = 0.06;
+            feedback.actual_latency = 0.0;
+            feedback.cache_miss_rate = 0.0;
+            feedback.branch_mispredict_rate = 0.0;
             feedback.execution_count = 0;
             return feedback;
         }
@@ -188,6 +191,34 @@ public:
     }
 
 private:
+    void make_page_writable(void* ptr, size_t size) {
+        #ifdef DGTL_OS_WINDOWS
+            DWORD old_protect;
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            uintptr_t pageSize = si.dwPageSize;
+
+            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+            uintptr_t pageStart = addr & ~(pageSize - 1);
+            uintptr_t pageEnd = (addr + size + pageSize - 1) & ~(pageSize - 1);
+
+            if (!VirtualProtect(reinterpret_cast<LPVOID>(pageStart), pageEnd - pageStart, PAGE_READWRITE, &old_protect)) {
+                throw std::runtime_error("DGTL RW protection failure on Windows");
+            }
+        #else
+            long pagesize = sysconf(_SC_PAGESIZE);
+            if (pagesize <= 0) pagesize = 4096;
+
+            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+            uintptr_t start_page = addr & ~(static_cast<uintptr_t>(pagesize) - 1);
+            uintptr_t end_page = (addr + size + pagesize - 1) & ~(static_cast<uintptr_t>(pagesize) - 1);
+
+            if (mprotect(reinterpret_cast<void*>(start_page), end_page - start_page, PROT_READ | PROT_WRITE) != 0) {
+                throw std::runtime_error("DGTL RW protection failure on POSIX");
+            }
+        #endif
+    }
+
     void sync_caches(void* ptr, size_t size) noexcept {
         #ifdef DGTL_OS_WINDOWS
             FlushInstructionCache(GetCurrentProcess(), ptr, size);
