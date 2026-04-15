@@ -13,7 +13,7 @@
   [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
   [PASS] pressure-zero-spill :: spill_candidates=0
   [PASS] determinism :: hash=0xe3d73dc41db3d3ec
-  [PASS] latency :: opt_us=2.73281 emit_us=0.390625 total_us=3.12344 output_size=11 iterations=64
+  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=11 iterations=64
 [DGTL] Backend=x64 (binary)
 [DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
 48 B8 54 00 00 00 00 00 00 00 C3

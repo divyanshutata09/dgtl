@@ -9,21 +9,12 @@
 [DGTL] Release smoke checks
   [PASS] constant-fold :: nodes=2 cost=27.5->11.6
   [PASS] fusion :: mul+add -> fma structural check
-  [PASS] simd-legalize :: expected=0x304 legalized_nodes=1
+  [PASS] simd-legalize :: expected=0x404 legalized_nodes=1
   [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
   [PASS] pressure-zero-spill :: spill_candidates=0
   [PASS] determinism :: hash=0xe3d73dc41db3d3ec
-  [PASS] latency :: opt_us=1.69844 emit_us=0.840625 total_us=2.53906 output_size=173 iterations=64
-[DGTL] Backend=arm64 (text)
+  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=70 iterations=64
+[DGTL] Backend=wasm (binary)
 [DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
-// --- DGTL-MLIR-X ARM64 BACKEND ---
-.arch armv8-a
-.text
-.align 4
-.global _DGTL_entry
-
-_DGTL_entry:
-    mov x0, #84
-                   // TR_HASH:0x98786E3739E73E1D
-    ret
+00 61 73 6D 01 00 00 00 01 85 80 80 80 00 01 60 00 01 7F 03 82 80 80 80 00 01 00 05 83 80 80 80 00 01 00 01 07 8D 80 80 80 00 01 09 44 47 54 4C 5F 6D 61 69 6E 00 00 0A 89 80 80 80 00 01 07 01 05 7F 41 54 0F 0B
 [DGTL] Pipeline completed successfully

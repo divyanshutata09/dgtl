@@ -45,7 +45,13 @@ dgtl help
 dgtl build
 ```
 
-Builds the default smoke and conformance driver at `build\dgtl_main.exe`.
+Builds the production driver at `build\dgtl_release.exe`.
+
+```powershell
+dgtl smoke-build
+```
+
+Builds the smoke and conformance driver at `build\dgtl_main.exe`.
 
 ```powershell
 dgtl strict
@@ -71,6 +77,7 @@ dgtl help
 
 ```powershell
 dgtl build
+dgtl smoke-build
 dgtl strict
 ```
 
@@ -120,16 +127,17 @@ dgtl crun
 | Command | Requires existing build? | What it does |
 |---|---|---|
 | `dgtl help` | No | Prints command usage and examples. |
-| `dgtl build` | No | Builds `build\dgtl_main.exe`. |
-| `dgtl strict` | No | Builds `build\dgtl_main_strict.exe` with strict warnings and `-Werror`. |
-| `dgtl run` | Yes (`build\dgtl_main.exe`) | Runs full backend conformance (`arm64`, `x64`, `nasm`, `wasm`) against goldens. |
-| `dgtl run <backend>` | Yes (`build\dgtl_main.exe`) | Runs a single backend smoke path (`arm64`, `x64`, `nasm`, `wasm`). |
+| `dgtl build` | No | Builds production `build\dgtl_release.exe`. |
+| `dgtl smoke-build` | No | Builds smoke/conformance `build\dgtl_main.exe`. |
+| `dgtl strict` | No | Builds strict smoke `build\dgtl_main_strict.exe` with strict warnings and `-Werror`. |
+| `dgtl run` | No (auto-builds if missing) | Runs full backend conformance (`arm64`, `x64`, `nasm`, `wasm`) against goldens. |
+| `dgtl run <backend>` | No (auto-builds if missing) | Runs a single backend smoke path (`arm64`, `x64`, `nasm`, `wasm`). |
 | `dgtl bench <backend> [profile\|iterations] [pressure-vars] [dump]` | Auto-builds strict if missing | Runs strict benchmark mode for one backend with profile and optional dump output. |
 | `dgtl update-golden` | Auto-builds default if missing | Refreshes default conformance golden files intentionally. |
 | `dgtl update-golden strict` | Auto-builds strict if missing | Refreshes strict conformance golden files intentionally. |
 | `dgtl srun` | Yes (`build\dgtl_main_strict.exe`) | Runs full backend conformance using strict executable. |
 | `dgtl clean` | No | Deletes DGTL build outputs and conformance log files. |
-| `dgtl crun` | No | Executes `clean -> build -> run` in one command. |
+| `dgtl crun` | No | Executes `clean -> smoke-build -> run` in one command. |
 
 ### Command Runner Flags
 
@@ -147,11 +155,7 @@ dgtl run
 
 Runs the conformance gate across `arm64`, `x64`, `nasm`, and `wasm` using `build\dgtl_main.exe`, then compares normalized output against stored goldens.
 
-If `build\dgtl_main.exe` is missing, run:
-
-```powershell
-dgtl build
-```
+If `build\dgtl_main.exe` is missing, `dgtl run` auto-builds it.
 
 ### Option 2: Run One Backend Only
 
@@ -161,7 +165,7 @@ dgtl run arm64
 
 Replace `arm64` with `x64`, `nasm`, or `wasm` to run a quick single-backend smoke check without invoking the full conformance gate.
 
-If `build\dgtl_main.exe` is missing, run `dgtl build` first.
+If `build\dgtl_main.exe` is missing, `dgtl run <backend>` auto-builds it.
 
 ### Benchmark One Backend
 
@@ -255,7 +259,7 @@ Auto-build behavior:
 
 ```powershell
 dgtl clean
-dgtl build
+dgtl smoke-build
 dgtl run
 ```
 
@@ -375,10 +379,10 @@ g++ -std=c++26 -O2 -I./include your_program.cpp -o your_program.exe
 ./your_program.exe
 ```
 
-For repository validation, prefer the built-in command flow instead of ad hoc compile commands:
+For repository validation, prefer the built-in smoke/conformance flow instead of ad hoc compile commands:
 
 ```powershell
-dgtl build
+dgtl smoke-build
 dgtl run arm64
 ```
 
@@ -498,7 +502,9 @@ DGTL/
 │   └── all.hpp             # Umbrella header (single-include convenience)
 │
 ├── src/                    # Source implementations
-│   ├── main.cpp            # Smoke test driver (demo usage)
+│   ├── main.cpp            # Production driver
+│   ├── apps/
+│   │   └── smoke_main.cpp  # Smoke/conformance/benchmark driver
 │   ├── ir/
 │   ├── analysis/
 │   ├── core/
@@ -566,7 +572,7 @@ See [prelaunch.md](prelaunch.md) for current gate status and open issues before 
 5. **Verify all tests pass** before opening a PR:
   ```powershell
   dgtl clean
-  dgtl build
+  dgtl smoke-build
   dgtl run
    ```
 

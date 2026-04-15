@@ -15,6 +15,7 @@ function Show-Usage {
                 'Usage:',
                 '  dgtl help',
                 '  dgtl build',
+        '  dgtl smoke-build',
                 '  dgtl strict',
                 '  dgtl run [arm64|x64|nasm|wasm]',
         '  dgtl bench [arm64|x64|nasm|wasm] [profile|iterations] [pressure-vars] [dump]',
@@ -24,30 +25,48 @@ function Show-Usage {
                 '  dgtl crun',
                 '',
                 'Notes:',
-                '  build          Builds build\dgtl_main.exe',
-                '  strict         Builds build\dgtl_main_strict.exe with strict warnings',
-                '  run            Runs backend conformance, or a single backend if specified',
+                '  build          Builds production binary build\dgtl_release.exe',
+                '  smoke-build    Builds smoke/conformance binary build\dgtl_main.exe',
+                '  strict         Builds strict smoke binary build\dgtl_main_strict.exe',
+                '  run            Runs smoke backend conformance, or a single backend if specified',
                 '  bench          Runs split optimization/emission benchmark for one backend
                  Profiles: fold (default), fusion, simd, pressure
                  Examples: dgtl bench x64 / dgtl bench x64 fusion / dgtl bench x64 pressure 64 / dgtl bench x64 fusion dump',
                 '  update-golden  Refreshes conformance baselines from the default or strict executable',
                 '  srun           Runs backend conformance using the strict executable',
                 '  clean          Removes built executables and conformance logs',
-                '  crun           clean + build + run'
+                '  crun           clean + smoke-build + run'
         ) -join [Environment]::NewLine
 }
 
 function Get-SourceFiles {
+    param(
+        [string]$EntryPointPath,
+        [string[]]$ExcludePaths = @()
+    )
+
     $srcDir = Join-Path $root 'src'
+    $entryPointFull = [System.IO.Path]::GetFullPath($EntryPointPath)
+    if (-not (Test-Path $entryPointFull)) {
+        throw "Missing entrypoint source: $entryPointFull"
+    }
+
+    $excludeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    [void]$excludeSet.Add($entryPointFull)
+    foreach ($excludePath in $ExcludePaths) {
+        [void]$excludeSet.Add([System.IO.Path]::GetFullPath($excludePath))
+    }
+
     $files = Get-ChildItem -Path $srcDir -Recurse -File -Filter *.cpp |
         Sort-Object FullName |
-        ForEach-Object { $_.FullName }
+        ForEach-Object { $_.FullName } |
+        Where-Object { -not $excludeSet.Contains([System.IO.Path]::GetFullPath($_)) }
 
     if ($files.Count -eq 0) {
         throw "No source files found under $srcDir"
     }
 
-    return $files
+    return @($files + $entryPointFull)
 }
 
 function Invoke-Gpp {
@@ -70,6 +89,8 @@ function Invoke-Gpp {
 function Build-DgtlBinary {
     param(
         [string]$OutputPath,
+        [string]$EntryPointPath,
+        [string[]]$ExcludePaths = @(),
         [switch]$Strict
     )
 
@@ -86,7 +107,7 @@ function Build-DgtlBinary {
         $commonFlags += @('-Wall', '-Wextra', '-Wpedantic', '-Werror')
     }
 
-    $sourceFiles = Get-SourceFiles
+    $sourceFiles = Get-SourceFiles -EntryPointPath $EntryPointPath -ExcludePaths $ExcludePaths
     $arguments = @() + $commonFlags + $sourceFiles + @('-o', $OutputPath)
 
     Write-Host "[build] Compiling $(Split-Path -Leaf $OutputPath)"
@@ -97,11 +118,13 @@ function Build-DgtlBinary {
 function Ensure-DgtlBinary {
     param(
         [string]$OutputPath,
+        [string]$EntryPointPath,
+        [string[]]$ExcludePaths = @(),
         [switch]$Strict
     )
 
     if (-not (Test-Path $OutputPath)) {
-        Build-DgtlBinary -OutputPath $OutputPath -Strict:$Strict
+        Build-DgtlBinary -OutputPath $OutputPath -EntryPointPath $EntryPointPath -ExcludePaths $ExcludePaths -Strict:$Strict
     }
 }
 
@@ -197,6 +220,7 @@ function Invoke-BackendBenchmark {
 
 function Clean-DgtlArtifacts {
     $paths = @(
+        (Join-Path $root 'build\dgtl_release.exe'),
         (Join-Path $root 'build\dgtl_main.exe'),
         (Join-Path $root 'build\dgtl_main_strict.exe'),
         (Join-Path $root 'dgtl_main.exe'),
@@ -253,31 +277,39 @@ $extraArg3 = if ($allArgs.Count -gt 4 -and $null -ne $allArgs[4] -and $allArgs[4
     $null
 }
 
-$defaultExe = Join-Path $root 'build\dgtl_main.exe'
-$strictExe = Join-Path $root 'build\dgtl_main_strict.exe'
+$prodMain = Join-Path $root 'src\main.cpp'
+$smokeMain = Join-Path $root 'src\apps\smoke_main.cpp'
+
+$prodExe = Join-Path $root 'build\dgtl_release.exe'
+$smokeExe = Join-Path $root 'build\dgtl_main.exe'
+$smokeStrictExe = Join-Path $root 'build\dgtl_main_strict.exe'
 
 switch ($command) {
     'help' {
         Show-Usage
     }
     'build' {
-        Build-DgtlBinary -OutputPath $defaultExe
+        Build-DgtlBinary -OutputPath $prodExe -EntryPointPath $prodMain -ExcludePaths @($smokeMain)
+    }
+    'smoke-build' {
+        Build-DgtlBinary -OutputPath $smokeExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain)
     }
     'strict' {
-        Build-DgtlBinary -OutputPath $strictExe -Strict
+        Build-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
     }
     'run' {
+        Ensure-DgtlBinary -OutputPath $smokeExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain)
         if ($null -ne $modeArg) {
-            Invoke-SingleBackend -ExecutablePath $defaultExe -Backend $modeArg.ToLowerInvariant()
+            Invoke-SingleBackend -ExecutablePath $smokeExe -Backend $modeArg.ToLowerInvariant()
         } else {
-            Invoke-Conformance -ExecutablePath $defaultExe
+            Invoke-Conformance -ExecutablePath $smokeExe
         }
     }
     'bench' {
         if ($null -eq $modeArg) {
             throw "Missing backend for bench. Use 'dgtl bench x64' or similar."
         }
-        Ensure-DgtlBinary -OutputPath $strictExe -Strict
+        Ensure-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
 
         $benchExtras = @()
         if ($null -ne $extraArg) { $benchExtras += $extraArg }
@@ -301,7 +333,7 @@ switch ($command) {
         $profileOrIterations = if ($filteredExtras.Count -ge 1) { [string]$filteredExtras[0] } else { $null }
         $pressureVars = if ($filteredExtras.Count -ge 2) { [string]$filteredExtras[1] } else { $null }
 
-        Invoke-BackendBenchmark -ExecutablePath $strictExe `
+        Invoke-BackendBenchmark -ExecutablePath $smokeStrictExe `
             -Backend $modeArg.ToLowerInvariant() `
             -ProfileOrIterations $profileOrIterations `
             -PressureVars $pressureVars `
@@ -309,25 +341,26 @@ switch ($command) {
     }
     'update-golden' {
         if ($null -ne $modeArg -and $modeArg.ToLowerInvariant() -eq 'strict') {
-            Ensure-DgtlBinary -OutputPath $strictExe -Strict
-            Invoke-Conformance -ExecutablePath $strictExe -UpdateGolden
+            Ensure-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
+            Invoke-Conformance -ExecutablePath $smokeStrictExe -UpdateGolden
         } elseif ($null -ne $modeArg) {
             throw "Unsupported update-golden mode '$modeArg'. Use 'dgtl update-golden' or 'dgtl update-golden strict'."
         } else {
-            Ensure-DgtlBinary -OutputPath $defaultExe
-            Invoke-Conformance -ExecutablePath $defaultExe -UpdateGolden
+            Ensure-DgtlBinary -OutputPath $smokeExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain)
+            Invoke-Conformance -ExecutablePath $smokeExe -UpdateGolden
         }
     }
     'srun' {
-        Invoke-Conformance -ExecutablePath $strictExe
+        Ensure-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
+        Invoke-Conformance -ExecutablePath $smokeStrictExe
     }
     'clean' {
         Clean-DgtlArtifacts
     }
     'crun' {
         Clean-DgtlArtifacts
-        Build-DgtlBinary -OutputPath $defaultExe
-        Invoke-Conformance -ExecutablePath $defaultExe
+        Build-DgtlBinary -OutputPath $smokeExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain)
+        Invoke-Conformance -ExecutablePath $smokeExe
     }
     default {
         throw "Unknown command '$command'. Run 'dgtl help' for usage."
