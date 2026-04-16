@@ -5,7 +5,7 @@
 
 void thread_work(int id) {
     try {
-        dgtl::core::DGTL_Arena local_arena(1024 * 1024);
+        dgtl::core::DGTL_Arena local_arena(1, 64);
         // Work logic
     } catch (...) { }
 }

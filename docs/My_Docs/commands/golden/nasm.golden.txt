@@ -12,13 +12,13 @@
   [PASS] simd-legalize :: expected=0x204 legalized_nodes=1
   [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
   [PASS] pressure-zero-spill :: spill_candidates=0
-  [PASS] determinism :: hash=0xe3d73dc41db3d3ec
-  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=640 iterations=64
+  [PASS] determinism :: hash=0x9c13c402303ba602
+  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=997 iterations=64
 [DGTL] Backend=nasm (text)
-[DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0x9c13c402303ba602
 ; -----------------------------------------------------------
 ; DGTL-MLIR-X TIER-2 PERSISTENT KERNEL
-; Logic Hash: 0xE3D73DC41DB3D3EC
+; Logic Hash: 0x9C13C402303BA602
 ; -----------------------------------------------------------
 section .text
     global DGTL_kernel_entry
@@ -35,7 +35,15 @@ DGTL_kernel_entry:
     push r15
     sub  rsp, 32 ; Allocate Shadow Space
 
-    mov rax, 84                                   ; [Node 001] Hash:0x98786E3739E73E1D
+    mov rsi, r10 
+    add rsi, r11                ; [Node 000] Hash:0x98786E76E5341832
+    mov rdi, r12 
+    add rdi, rsi                ; [Node 001] Hash:0x98786E76E511C260
+    mov rbp, r13 
+    add rbp, rsi                ; [Node 002] Hash:0x98786E76E51C4600
+    mov rsp, rdi 
+    imul rsp, rbp               ; [Node 003] Hash:0x98786E76ED599010
+    mov rax, rsp                                  ; [Node 004] Hash:0x98786E3739E6EC0B
 
     add  rsp, 32
     pop  r15

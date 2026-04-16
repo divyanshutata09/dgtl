@@ -6,7 +6,7 @@
 #include "dgtl/core/Symbol_Table.hpp"
 
 void run_fractal_torture_test() {
-    dgtl::core::DGTL_Arena arena(20); 
+    dgtl::core::DGTL_Arena arena(1, 20);
     dgtl::ir::IRStream stream(arena, 10000);
     dgtl::isa::DGTLNasmEmitter nasm;
     dgtl::core::DGTLSymbolTable symbols;

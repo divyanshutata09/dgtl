@@ -80,6 +80,7 @@ public:
                 case OpCode::MUL_F32:   emit_arithmetic(out, "fmul", core, true); break;
                 case OpCode::DIV_F32:   emit_arithmetic(out, "fdiv", core, true); break;
                 case OpCode::FMA_F32:   emit_fma(out, core); break;
+                case OpCode::FMA_WIDEN_F16_F32: emit_fma_widen(out, core); break;
                 case OpCode::LOAD_IMM:
                 case OpCode::IMMEDIATE: emit_load_imm(out, core); break;
                 case OpCode::LOAD:      emit_load(out, core); break;
@@ -97,6 +98,15 @@ public:
                     break;
                 case OpCode::VEC_MUL_F32_512:
                     if (config.use_neon || is_simd) emit_neon_vec_op(out, "fmul", core);
+                    break;
+                case OpCode::FCVTL_F16_TO_F32:
+                    if (config.use_neon || is_simd) emit_fcvtl(out, core);
+                    break;
+                case OpCode::FCVTN_F32_TO_F16:
+                    if (config.use_neon || is_simd) emit_fcvtn(out, core);
+                    break;
+                case OpCode::SIMD_BSL_PREDICATE:
+                    if (config.use_neon || is_simd) emit_bsl_predicate(out, core);
                     break;
                 default:
                     emit_fallback(out, atom.opcode);
@@ -186,6 +196,15 @@ private:
         out << "fmadd s" << core.result_id << ", s" << core.op_a << ", s" << core.op_b << ", s" << core.op_c;
     }
 
+    void emit_fma_widen(std::ostream& out, const IRCore& core) {
+        // Temporal fusion: widen half-precision lane and consume immediately in FMA.
+        // fcvtl Vd.4S, Vn.4H
+        // fmadd Sd, Sd, Sm, Sa
+        out << "fcvtl v" << core.result_id << ".4s, v" << core.op_a << ".4h\n";
+        out << "    fmadd s" << core.result_id << ", s" << core.result_id
+            << ", s" << core.op_b << ", s" << core.op_c;
+    }
+
     void emit_load_imm(std::ostream& out, const IRCore& core) {
         const uint64_t imm = (static_cast<uint64_t>(core.op_a) << 32) | core.op_b;
         out << "mov x" << core.result_id << ", #" << imm;
@@ -201,6 +220,22 @@ private:
 
     void emit_neon_vec_op(std::ostream& out, const char* instr, const IRCore& core) {
         out << instr << " v" << core.op_c << ".4s, v" << core.op_a << ".4s, v" << core.op_b << ".4s";
+    }
+
+    void emit_fcvtl(std::ostream& out, const IRCore& core) {
+        // fcvtl Vd.4S, Vn.4H
+        out << "fcvtl v" << core.result_id << ".4s, v" << core.op_a << ".4h";
+    }
+
+    void emit_fcvtn(std::ostream& out, const IRCore& core) {
+        // fcvtn Vd.4H, Vn.4S
+        out << "fcvtn v" << core.result_id << ".4h, v" << core.op_a << ".4s";
+    }
+
+    void emit_bsl_predicate(std::ostream& out, const IRCore& core) {
+        // result_id := masked blend(mask=op_a, true=op_b, false=op_c)
+        out << "mov v" << core.result_id << ".16b, v" << core.op_a << ".16b\n";
+        out << "    bsl v" << core.result_id << ".16b, v" << core.op_b << ".16b, v" << core.op_c << ".16b";
     }
 
     void emit_branch(std::ostream& out, const IRCore& core) {

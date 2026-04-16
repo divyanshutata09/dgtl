@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
 #include "dgtl/pass/speculative/Speculative_Inliner.hpp"
 #include "dgtl/ir/base/Global_IR.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
@@ -43,7 +44,7 @@ void run_inliner_test() {
         std::cout << "PASSED.\n";
     } catch (const std::exception& e) {
         std::cout << "FAILED: " << e.what() << "\n";
-        exit(1);
+        throw;
     }
 
     // 4. Verification of results
@@ -71,7 +72,7 @@ void run_inliner_test() {
         std::cout << "PASSED.\n";
     } else {
         std::cout << "FAILED: Rollback corrupted the core stream.\n";
-        exit(1);
+        throw std::runtime_error("speculative_inliner failed: rollback corrupted core stream");
     }
 
     std::cout << "\nRESULT: TEST 5 COMPLETE. Inliner Shadow-Logic is Robust.\n";
@@ -82,7 +83,7 @@ void run_test_speculative_inliner() {
         run_inliner_test();
     } catch (const std::exception& e) {
         std::cerr << "CRITICAL ERROR: " << e.what() << "\n";
-        return;
+        throw;
     }
     return;
 }

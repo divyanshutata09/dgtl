@@ -5,27 +5,18 @@
 #include "dgtl/isa/emitter/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
+#include "dgtl/pipeline/Functional_Pipeline_Probes.hpp"
 
 void run_reg_exhaustion_test() {
-    dgtl::core::DGTL_Arena arena(10); 
+    dgtl::core::DGTL_Arena arena(1, 10);
     dgtl::ir::IRStream stream(arena, 5000);
     dgtl::isa::DGTLNasmEmitter nasm;
     dgtl::core::DGTLSymbolTable symbols;
 
     std::cout << "\033[1;36m[DGTL-REG-TEST]\033[0m Starting Register Exhaustion (32 Live Vars)..." << std::endl;
 
-    stream.begin_transaction();
-    
     // PILLAR: Create a chain of 32 dependent nodes.
-    // Each node depends on the previous one, forcing the compiler to keep the result 'live'.
-    for(int i = 0; i < 32; ++i) {
-        // r[1000+i] = r[1000+i-1] + constant
-        uint32_t result_id = 1000 + i;
-        uint32_t op_a = (i == 0) ? 500 : (1000 + i - 1);
-        stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, result_id, op_a, 1, 0);
-    }
-
-    stream.commit_transaction();
+    dgtl::pipeline::probes::build_add_chain_probe(stream, 1000, 500, 1, 32);
 
     // Measure Emission Latency
     uint64_t start = __rdtsc();

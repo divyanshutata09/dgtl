@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 #include <cassert>
+#include <stdexcept>
 #include "dgtl/pass/speculative/Speculative_Inliner.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/ir/base/Global_IR.hpp"
@@ -17,7 +18,7 @@ void run_inliner_transaction_test() {
     std::cout << "--- ROBUSTNESS TEST 4: Speculative Inlining & Rollback ---\n";
 
     // 1. Setup Dependencies
-    core::DGTL_Arena arena(64); // 64 MB arena
+    core::DGTL_Arena arena(1, 64); // 1 thread, 64 MB arena
     analysis::DGTLAICostModel ai_model;
     ir::SymbolTable symbols(arena);
     dgtl::pass::DGTLSpeculativeInliner inliner(&ai_model, &symbols);
@@ -37,7 +38,7 @@ void run_inliner_transaction_test() {
         std::cout << "PASSED.\n";
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << "\n";
-        exit(1);
+        throw;
     }
 
     // 4. SCENARIO: Verify Alpha-Renaming Logic (Manual Trigger)
@@ -54,7 +55,7 @@ void run_inliner_transaction_test() {
         std::cout << "Verified (VREG ID Check).\n";
     } else {
         std::cout << "FAILED (Threshold logic).\n";
-        exit(1);
+        throw std::runtime_error("inliner_safety failed: threshold logic check did not hold");
     }
 
     std::cout << "\nRESULT: TEST 4 SUCCESSFUL. Speculative Inliner is Transaction-Safe.\n";

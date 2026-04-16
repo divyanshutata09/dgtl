@@ -1,6 +1,6 @@
 ﻿# fast_regression.ps1
 
-Source Script: md_docs/commands/fast_regression.ps1
+Source Script: docs/My_Docs/commands/fast_regression.ps1
 Last Synced: 2026-04-14 19:46:42
 
 ## Vision

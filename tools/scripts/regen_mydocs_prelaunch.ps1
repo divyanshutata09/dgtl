@@ -219,8 +219,8 @@ $cmdOut = Join-Path $myDocs 'commands'
 if(-not (Test-Path $cmdOut)){ New-Item -ItemType Directory -Path $cmdOut -Force | Out-Null }
 
 $scripts = @(
-    @{ Name='fast_regression.ps1'; Path=Join-Path $root 'md_docs\commands\fast_regression.ps1'; Why='One-step compile plus backend conformance gate for rapid regression checks.' },
-    @{ Name='backend_conformance_check.ps1'; Path=Join-Path $root 'md_docs\commands\backend_conformance_check.ps1'; Why='Validates emitter outputs against deterministic backend expectations.' }
+    @{ Name='fast_regression.ps1'; Path=Join-Path $root 'docs\My_Docs\commands\fast_regression.ps1'; Why='One-step compile plus backend conformance gate for rapid regression checks.' },
+    @{ Name='backend_conformance_check.ps1'; Path=Join-Path $root 'docs\My_Docs\commands\backend_conformance_check.ps1'; Why='Validates emitter outputs against deterministic backend expectations.' }
 )
 
 foreach($s in $scripts){

@@ -5,7 +5,7 @@
 
 void run_latency_micro_test() {
     // 10MB Arena Strike Zone
-    dgtl::core::DGTL_Arena arena(10); 
+    dgtl::core::DGTL_Arena arena(1, 10);
     dgtl::ir::IRStream stream(arena, 1000);
 
     // Warm up the cache/TLB to ensure stable cycle counts

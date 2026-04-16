@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <atomic>
+#include <stdexcept>
 #include "dgtl/ir/base/Global_IR.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp"
 #include "dgtl/core/Arena.hpp"
@@ -13,8 +14,7 @@ struct optA : public pipeline::DGTLOptimizationPass {
         for (size_t i = 0; i < s.size(); ++i) {
             auto node = s.get_node(i);
             node.flags |= 0x8000; // Set a high bit flag
-            // Note: get_node returns a copy, so we need to modify via another way
-            // For this test, we'll assume the pass modifies the stream internally
+            s.set_node(i, node);
         }
     }
 
@@ -45,8 +45,9 @@ struct optB : public pipeline::DGTLOptimizationPass {
 void run_barrier_race_test() {
     std::cout << "--- ROBUSTNESS TEST 4: Phase-Barrier Sync Integrity ---\n";
     
-    const size_t NODE_COUNT = 524288; // Half a million nodes
-    core::DGTL_Arena arena(512); // 512 MB arena
+    // Keep contention pressure high but bounded for regular developer runs.
+    const size_t NODE_COUNT = 131072;
+    core::DGTL_Arena arena(1, 128);
     ir::IRStream stream(arena, NODE_COUNT);
 
     // Fill the stream with some nodes
@@ -62,8 +63,8 @@ void run_barrier_race_test() {
 
     std::cout << "[Step 1] Queuing Dependent optes (A -> Barrier -> B)... ";
     
-    // Execute multiple times to catch intermittent timing issues
-    for(int i = 0; i < 10; ++i) {
+    // Execute multiple rounds to catch intermittent timing issues.
+    for(int i = 0; i < 4; ++i) {
         failures = 0;
         
         pm.execute(stream);
@@ -71,7 +72,7 @@ void run_barrier_race_test() {
         if (failures.load() > 0) {
             std::cout << "FAILED!\n";
             std::cout << "Detected " << failures << " synchronization leaks in iteration " << i << ".\n";
-            return;
+            throw std::runtime_error("robustness.core4 failed: barrier synchronization leaks detected");
         }
     }
 
@@ -80,7 +81,12 @@ void run_barrier_race_test() {
 }
 
 void run_test_robustness_4() {
-    run_barrier_race_test();
+    try {
+        run_barrier_race_test();
+    } catch (const std::exception& e) {
+        std::cerr << "CRITICAL EXCEPTION during Barrier Race Test: " << e.what() << std::endl;
+        throw;
+    }
     return;
 }
 

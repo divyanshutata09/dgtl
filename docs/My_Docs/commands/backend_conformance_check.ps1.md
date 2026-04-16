@@ -1,6 +1,6 @@
 ﻿# backend_conformance_check.ps1
 
-Source Script: md_docs/commands/backend_conformance_check.ps1
+Source Script: docs/My_Docs/commands/backend_conformance_check.ps1
 Last Synced: 2026-04-14 19:46:42
 
 ## Vision

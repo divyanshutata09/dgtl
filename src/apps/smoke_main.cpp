@@ -51,6 +51,19 @@ enum class BenchmarkProfile : uint8_t {
     fusion,
     simd,
     pressure,
+    predication,
+};
+
+enum class PolyhedralMode : uint8_t {
+    off,
+    safe,
+    aggressive,
+};
+
+enum class PolyhedralParallelPolicy : uint8_t {
+    auto_policy,
+    off,
+    on,
 };
 
 struct AppOptions {
@@ -65,6 +78,11 @@ struct AppOptions {
     BenchmarkProfile benchmark_profile = BenchmarkProfile::fold;
     uint32_t pressure_vars = 25;
     bool benchmark_dump = false;
+    PolyhedralMode polyhedral_mode = PolyhedralMode::off;
+    std::string polyhedral_mode_name = "off";
+    uint32_t polyhedral_tile = 0;
+    PolyhedralParallelPolicy polyhedral_parallel = PolyhedralParallelPolicy::auto_policy;
+    std::string polyhedral_parallel_name = "auto";
 };
 
 struct SmokeCheck {
@@ -86,6 +104,10 @@ struct TimedEmissionResult {
     double optimize_us = 0.0;
     double emit_us = 0.0;
     double total_us = 0.0;
+    double ai_predicted_cost_pre = 0.0;
+    double ai_predicted_cost_post = 0.0;
+    bool hot_swap_applied = false;
+    std::string hot_swap_mode;
     size_t output_size = 0;
     size_t fallback_ops = 0;
     size_t nodes_built = 0;
@@ -106,6 +128,8 @@ struct BackendBenchmark {
     size_t nodes_built = 0;
     size_t nodes_after_profile = 0;
     size_t nodes_after_core_opt = 0;
+    size_t hot_swap_count = 0;
+    std::string hot_swap_last_mode;
     std::string detail;
     std::string dump_text;
     bool dump_is_binary = false;
@@ -162,10 +186,13 @@ void print_usage(const char* argv0) {
         << "  --no-evolution         Skip IREvolver mutate step\n"
         << "  --benchmark            Print benchmark breakdown for selected backend\n"
         << "  --benchmark-iterations <n>  Benchmark iteration count\n"
-        << "  --benchmark-profile <p> IR workload profile: fold|fusion|simd|pressure\n"
+        << "  --benchmark-profile <p> IR workload profile: fold|fusion|simd|pressure|predication\n"
         << "  --pressure-vars <n>    Variable count for pressure profile (default: 25)\n"
         << "  --benchmark-dump       Print benchmark-emitted artifact (hex or text)\n"
         << "  --backend <name>       Select backend: arm64|x64|nasm|wasm\n"
+        << "  --polyhedral-mode <mode>  Polyhedral pipeline mode: off|safe|aggressive (default: off)\n"
+        << "  --polyhedral-tile <n>     Polyhedral tile size (0 means auto)\n"
+        << "  --polyhedral-parallel <p> Polyhedral parallel policy: auto|off|on (default: auto)\n"
         << "  --emit-asm <path>      Write emitted output to file\n";
 }
 
@@ -196,6 +223,48 @@ bool parse_backend(std::string backend_str, BackendKind& out_kind, std::string& 
     if (backend_str == "wasm") {
         out_kind = BackendKind::wasm;
         out_name = backend_str;
+        return true;
+    }
+    return false;
+}
+
+bool parse_polyhedral_mode(std::string mode_str, PolyhedralMode& out_mode, std::string& out_name) {
+    mode_str = to_lower_ascii(std::move(mode_str));
+    if (mode_str == "off") {
+        out_mode = PolyhedralMode::off;
+        out_name = "off";
+        return true;
+    }
+    if (mode_str == "safe") {
+        out_mode = PolyhedralMode::safe;
+        out_name = "safe";
+        return true;
+    }
+    if (mode_str == "aggressive") {
+        out_mode = PolyhedralMode::aggressive;
+        out_name = "aggressive";
+        return true;
+    }
+    return false;
+}
+
+bool parse_polyhedral_parallel_policy(std::string policy_str,
+                                      PolyhedralParallelPolicy& out_policy,
+                                      std::string& out_name) {
+    policy_str = to_lower_ascii(std::move(policy_str));
+    if (policy_str == "auto") {
+        out_policy = PolyhedralParallelPolicy::auto_policy;
+        out_name = "auto";
+        return true;
+    }
+    if (policy_str == "off") {
+        out_policy = PolyhedralParallelPolicy::off;
+        out_name = "off";
+        return true;
+    }
+    if (policy_str == "on") {
+        out_policy = PolyhedralParallelPolicy::on;
+        out_name = "on";
         return true;
     }
     return false;
@@ -264,8 +333,10 @@ ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {
                 opts.benchmark_profile = BenchmarkProfile::simd;
             } else if (p == "pressure") {
                 opts.benchmark_profile = BenchmarkProfile::pressure;
+            } else if (p == "predication") {
+                opts.benchmark_profile = BenchmarkProfile::predication;
             } else {
-                std::cerr << "Unknown benchmark profile: " << p << " (expected fold|fusion|simd|pressure)\n";
+                std::cerr << "Unknown benchmark profile: " << p << " (expected fold|fusion|simd|pressure|predication)\n";
                 return ParseStatus::error;
             }
             continue;
@@ -299,6 +370,44 @@ ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {
             }
             continue;
         }
+        if (arg == "--polyhedral-mode") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --polyhedral-mode\n";
+                return ParseStatus::error;
+            }
+            if (!parse_polyhedral_mode(argv[++i], opts.polyhedral_mode, opts.polyhedral_mode_name)) {
+                std::cerr << "Unsupported polyhedral mode: " << argv[i] << "\n";
+                return ParseStatus::error;
+            }
+            continue;
+        }
+        if (arg == "--polyhedral-tile") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --polyhedral-tile\n";
+                return ParseStatus::error;
+            }
+            try {
+                const unsigned long long parsed = std::stoull(argv[++i]);
+                opts.polyhedral_tile = static_cast<uint32_t>(parsed);
+            } catch (const std::exception&) {
+                std::cerr << "Invalid value for --polyhedral-tile: " << argv[i] << "\n";
+                return ParseStatus::error;
+            }
+            continue;
+        }
+        if (arg == "--polyhedral-parallel") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --polyhedral-parallel\n";
+                return ParseStatus::error;
+            }
+            if (!parse_polyhedral_parallel_policy(argv[++i],
+                                                  opts.polyhedral_parallel,
+                                                  opts.polyhedral_parallel_name)) {
+                std::cerr << "Unsupported polyhedral parallel policy: " << argv[i] << "\n";
+                return ParseStatus::error;
+            }
+            continue;
+        }
         if (arg == "--emit-asm") {
             if (i + 1 >= argc) {
                 std::cerr << "Missing value for --emit-asm\n";
@@ -328,6 +437,11 @@ bool build_release_emit_ir(dgtl::ir::IRStream& stream) {
     stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 4, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
     stream.commit_transaction();
     return stream.size() != 0;
+}
+
+bool build_backend_sample_ir(dgtl::ir::IRStream& stream) {
+    dgtl::pipeline::probes::build_release_int_probe(stream);
+    return stream.size() == 5;
 }
 
 bool build_fusion_ir(dgtl::ir::IRStream& stream) {
@@ -397,6 +511,11 @@ bool build_pressure_ir(dgtl::ir::IRStream& stream, uint32_t vars) {
     return stream.size() != 0;
 }
 
+bool build_predication_ir(dgtl::ir::IRStream& stream) {
+    dgtl::pipeline::probes::build_masked_predication_probe(stream);
+    return stream.size() == 7;
+}
+
 // Bench-specific variants: same IR as the smoke builders but include a RET so
 // the full chain stays live through DCE and emission does not fail.
 bool build_fusion_bench_ir(dgtl::ir::IRStream& stream) {
@@ -441,6 +560,7 @@ std::string_view profile_name(BenchmarkProfile profile) {
         case BenchmarkProfile::fusion:   return "fusion";
         case BenchmarkProfile::simd:     return "simd";
         case BenchmarkProfile::pressure: return "pressure";
+        case BenchmarkProfile::predication: return "predication";
     }
     return "unknown";
 }
@@ -451,12 +571,17 @@ bool build_ir_for_profile(dgtl::ir::IRStream& stream, BenchmarkProfile profile, 
         case BenchmarkProfile::fusion:   return build_fusion_bench_ir(stream);
         case BenchmarkProfile::simd:     return build_simd_bench_ir(stream);
         case BenchmarkProfile::pressure: return build_pressure_ir(stream, vars);
+        case BenchmarkProfile::predication: return build_predication_ir(stream);
     }
     return false;
 }
 
 void run_core_optimizations(dgtl::ir::IRStream& stream) {
     stream.perform_gvn();
+    dgtl::pass::DGTLTemporalVectorFusion temporal_fusion;
+    temporal_fusion.execute(stream);
+    dgtl::pass::DGTLMaskedPredicationLowering masked_predication;
+    masked_predication.execute(stream);
     stream.perform_dead_code_elimination();
 }
 
@@ -634,8 +759,8 @@ SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
                                  BackendKind backend) {
     dgtl::ir::IRStream a(arena, 64);
     dgtl::ir::IRStream b(arena, 64);
-    build_release_emit_ir(a);
-    build_release_emit_ir(b);
+    build_backend_sample_ir(a);
+    build_backend_sample_ir(b);
     run_core_optimizations(a);
     run_core_optimizations(b);
 
@@ -678,7 +803,7 @@ SmokeCheck run_latency_check(dgtl::core::DGTL_Arena& arena,
     bool ok = true;
 
     for (size_t i = 0; i < iterations; ++i) {
-        const TimedEmissionResult timed = time_backend_pipeline(arena, symbols, backend, true);
+        const TimedEmissionResult timed = time_backend_pipeline(arena, symbols, backend, true, BenchmarkProfile::fusion, 25);
         total_opt_us += timed.optimize_us;
         total_emit_us += timed.emit_us;
         total_us += timed.total_us;
@@ -791,7 +916,11 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     if (!build_ir_for_profile(stream, profile, pressure_vars)) {
         return timed;
     }
+    timed.hot_swap_mode = profile_name(profile);
     timed.nodes_built = stream.size();
+
+    dgtl::analysis::DGTLAICostModel ai_model;
+    timed.ai_predicted_cost_pre = ai_model.predict_cost(stream);
 
     const auto optimize_start = std::chrono::high_resolution_clock::now();
 
@@ -804,10 +933,31 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     } else if (profile == BenchmarkProfile::simd) {
         dgtl::pass::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
         legalizer.legalize(stream);
+    } else if (profile == BenchmarkProfile::predication) {
+        dgtl::pass::DGTLMaskedPredicationLowering predication_pass;
+        predication_pass.execute(stream);
     }
+
+    // JIT-style hot-path hot-swap driven by AI cost telemetry.
+    if (backend == BackendKind::arm64 && timed.ai_predicted_cost_pre > 35.0f) {
+        dgtl::pass::DGTLTemporalVectorFusion temporal_fusion;
+        temporal_fusion.execute(stream);
+        dgtl::pass::DGTLMaskedPredicationLowering predication_pass;
+        predication_pass.execute(stream);
+        if (timed.ai_predicted_cost_pre > 65.0f) {
+            dgtl::pass::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+            legalizer.legalize(stream);
+            timed.hot_swap_mode = "int->float-simd/predication";
+        } else {
+            timed.hot_swap_mode = "int->float-fusion";
+        }
+        timed.hot_swap_applied = true;
+    }
+
     timed.nodes_after_profile = stream.size();
     run_core_optimizations(stream);
     timed.nodes_after_core_opt = stream.size();
+    timed.ai_predicted_cost_post = ai_model.predict_cost(stream);
 
     const auto optimize_end = std::chrono::high_resolution_clock::now();
 
@@ -855,6 +1005,10 @@ BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
         result.nodes_built = timed.nodes_built;
         result.nodes_after_profile = timed.nodes_after_profile;
         result.nodes_after_core_opt = timed.nodes_after_core_opt;
+        if (timed.hot_swap_applied) {
+            ++result.hot_swap_count;
+            result.hot_swap_last_mode = timed.hot_swap_mode;
+        }
         last_emission = timed.emission;
     }
 
@@ -916,7 +1070,11 @@ BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
         << " fallback_ops=" << result.fallback_ops
         << " nodes=" << result.nodes_built
         << "->" << result.nodes_after_profile
-        << "->" << result.nodes_after_core_opt;
+        << "->" << result.nodes_after_core_opt
+        << " hot_swaps=" << result.hot_swap_count;
+    if (!result.hot_swap_last_mode.empty()) {
+        oss << " hot_swap_mode=" << result.hot_swap_last_mode;
+    }
     if (result.runtime_supported) {
         oss << " exec_us=" << result.runtime_us;
     } else {
@@ -1062,7 +1220,7 @@ int main(int argc, char** argv) {
         }
 
         dgtl::ir::IRStream stream(arena, 256);
-        if (!build_release_emit_ir(stream)) {
+        if (!build_backend_sample_ir(stream)) {
             std::cerr << "[DGTL] Failed to build backend sample IR\n";
             return static_cast<int>(ExitCode::pipeline_failure);
         }
@@ -1122,6 +1280,9 @@ int main(int argc, char** argv) {
                 return static_cast<int>(ExitCode::pipeline_failure);
             }
             std::cout << "[DGTL] Benchmark :: " << benchmark.detail << "\n";
+            std::cout << "[DGTL] Polyhedral :: mode=" << opts.polyhedral_mode_name
+                      << " parallel=" << opts.polyhedral_parallel_name
+                      << " tile=" << opts.polyhedral_tile << "\n";
             if (opts.benchmark_dump) {
                 std::cout << "[DGTL] BenchmarkDump "
                           << (benchmark.dump_is_binary ? "(hex)" : "(text)") << "\n";
@@ -1133,6 +1294,9 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "[DGTL] Nodes=" << stream.size()
+                  << " PolyMode=" << opts.polyhedral_mode_name
+                  << " PolyParallel=" << opts.polyhedral_parallel_name
+                  << " PolyTile=" << opts.polyhedral_tile
                   << " LogicHash=0x" << std::hex << stream.generate_logic_hash() << std::dec << "\n";
 
         if (opts.print_asm) {

@@ -38,6 +38,7 @@
 #include "dgtl/pass/transform/GVN.hpp"
 #include "dgtl/pass/transform/Instruction_Folder.hpp"
 #include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
+#include "dgtl/pass/transform/Masked_Predication_Lowering.hpp"
 #include "dgtl/pass/transform/Instruction_Reordering.hpp"
 #include "dgtl/pass/transform/Loop_Unswitcher.hpp"
 #include "dgtl/pass/transform/Poly_Transform.hpp"
@@ -46,11 +47,13 @@
 #include "dgtl/pass/memory/Redundant_Store_Fuser.hpp"
 #include "dgtl/pass/speculative/Speculative_DCE.hpp"
 #include "dgtl/pass/speculative/Speculative_Inliner.hpp"
+#include "dgtl/pass/speculative/Temporal_Vector_Fusion.hpp"
 #include "dgtl/pass/speculative/Speculative_Alias_Hoister.hpp"
 #include "dgtl/pass/tuning/Auto_Tuner.hpp"
 
 // Pipeline
 #include "dgtl/pipeline/Analysis_Manager.hpp"
+#include "dgtl/pipeline/Functional_Pipeline_Probes.hpp"
 #include "dgtl/pipeline/Pass_Decision_Engine.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp"
 

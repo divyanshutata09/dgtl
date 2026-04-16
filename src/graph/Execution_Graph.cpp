@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include "dgtl/analysis/polyhedral/Scop_Detector.hpp"
 
 namespace {
 
@@ -85,6 +86,30 @@ void ExecutionGraph::build_from_ir(dgtl::ir::IRStream& global_ir) {
         consumer->cache_miss_rate = consumer->memory_bound ? 0.12 : 0.04;
         consumer->is_hot = consumer->estimated_cycles > 48.0;
         consumer->speculative_candidate = consumer->vectorizable || consumer->memory_bound;
+    }
+
+    // === P0-002: SCoP DETECTION AND REGION ANNOTATION ===
+    // Detect affine Static-Control Polyhedra for polyhedral parallelization.
+    analysis::polyhedral::ScopDetector detector;
+    for (auto& region_ptr : regions) {
+        if (region_ptr) {
+            // Analyze region for affine SCoP classification
+            auto scop_meta = detector.analyze_region(*region_ptr);
+            
+            // Map ScopMetadata classification to Region ScopAnnotation
+            if (scop_meta.classification == analysis::polyhedral::ScopClassification::AFFINE_CANDIATE) {
+                region_ptr->scop_annotation.affinity = ScopAffinity::AFFINE_CANDIDATE;
+            } else {
+                region_ptr->scop_annotation.affinity = ScopAffinity::NON_AFFINE;
+            }
+            
+            region_ptr->scop_annotation.loop_depth = scop_meta.loop_depth;
+            region_ptr->scop_annotation.can_tile = scop_meta.can_tile;
+            region_ptr->scop_annotation.can_fuse = scop_meta.can_fuse;
+            region_ptr->scop_annotation.can_parallelize = scop_meta.can_parallelize;
+            region_ptr->scop_annotation.confidence_score = scop_meta.confidence_score;
+            region_ptr->scop_annotation.rejection_reason = scop_meta.rejection_reason;
+        }
     }
 }
 

@@ -4,58 +4,19 @@
 #include <malloc.h> // For _aligned_malloc
 #include "dgtl/pipeline/Pass_Manager.hpp"
 #include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/pipeline/Performance_Test_Probes.hpp"
 
 using namespace dgtl;
-
-class SIMDFoldingopt : public dgtl::pipeline::DGTLOptimizationPass {
-public:
-    void execute(ir::IRStream& stream) override {
-        fold_stream(stream);
-    }
-
-    [[nodiscard]] const char* get_pass_name() const noexcept override {
-        return "SIMD Folding Optimization V2";
-    }
-    void fold_stream(ir::IRStream& stream) {
-        size_t i = 0;
-        // Process in blocks of 8 (128 bytes total - 2 cache lines)
-        for (; i + 8 <= stream.size(); i += 8) {
-            __m256i a_vals = _mm256_set_epi32(
-                stream.get_node(i+7).op_a, stream.get_node(i+6).op_a, stream.get_node(i+5).op_a, stream.get_node(i+4).op_a,
-                stream.get_node(i+3).op_a, stream.get_node(i+2).op_a, stream.get_node(i+1).op_a, stream.get_node(i).op_a
-            );
-            
-            __m256i b_vals = _mm256_set_epi32(
-                stream.get_node(i+7).op_b, stream.get_node(i+6).op_b, stream.get_node(i+5).op_b, stream.get_node(i+4).op_b,
-                stream.get_node(i+3).op_b, stream.get_node(i+2).op_b, stream.get_node(i+1).op_b, stream.get_node(i).op_b
-            );
-
-            // The Integer Strike
-            __m256i res = _mm256_mullo_epi32(a_vals, b_vals);
-
-            // Vectorized Extract-Write
-            stream.get_node_ref(i).op_a   = _mm256_extract_epi32(res, 0);
-            stream.get_node_ref(i+1).op_a = _mm256_extract_epi32(res, 1);
-            stream.get_node_ref(i+2).op_a = _mm256_extract_epi32(res, 2);
-            stream.get_node_ref(i+3).op_a = _mm256_extract_epi32(res, 3);
-            stream.get_node_ref(i+4).op_a = _mm256_extract_epi32(res, 4);
-            stream.get_node_ref(i+5).op_a = _mm256_extract_epi32(res, 5);
-            stream.get_node_ref(i+6).op_a = _mm256_extract_epi32(res, 6);
-            stream.get_node_ref(i+7).op_a = _mm256_extract_epi32(res, 7);
-        }
-        // Cleanup
-        for (; i < stream.size(); ++i) {
-            stream.get_node_ref(i).op_a *= stream.get_node_ref(i).op_b;
-        }
-    }
-};
 
 void run_test_simd_6() {
     std::cout << "--- DGTL-X: INTEGER SIMD STRIKE (v2.0) ---" << std::endl;
     
     constexpr size_t NODE_COUNT = 1000000;
     void* raw_ptr = _aligned_malloc(NODE_COUNT * sizeof(ir::IRNode), 64);
-    if (!raw_ptr) return -1;
+    if (!raw_ptr) {
+        std::cout << "[FAIL] Allocation failed." << std::endl;
+        return;
+    }
 
     ir::IRNode* buffer = static_cast<ir::IRNode*>(raw_ptr);
 
@@ -67,7 +28,7 @@ void run_test_simd_6() {
 
     ir::IRStream stream(buffer, NODE_COUNT);
     pipeline::DGTLoptManager manager;
-    manager.add_opt(std::make_unique<SIMDFoldingopt>());
+    manager.add_opt(std::make_unique<dgtl::pipeline::probes::SIMDIntMulFoldingPass>());
 
     auto start = std::chrono::high_resolution_clock::now();
     manager.execute(stream);

@@ -12,9 +12,9 @@
   [PASS] simd-legalize :: expected=0x204 legalized_nodes=1
   [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
   [PASS] pressure-zero-spill :: spill_candidates=0
-  [PASS] determinism :: hash=0xe3d73dc41db3d3ec
-  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=11 iterations=64
+  [PASS] determinism :: hash=0x9c13c402303ba602
+  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=43 iterations=64
 [DGTL] Backend=x64 (binary)
-[DGTL] Nodes=2 LogicHash=0xe3d73dc41db3d3ec
-48 B8 54 00 00 00 00 00 00 00 C3
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0x9c13c402303ba602
+45 01 EF 45 01 FF 45 01 FF 45 0F AF FF 4C 89 F8 C3
 [DGTL] Pipeline completed successfully

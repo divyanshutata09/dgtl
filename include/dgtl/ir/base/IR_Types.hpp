@@ -71,6 +71,7 @@ enum class OpCode : uint16_t {
     MUL_F32              = 32,
     DIV_F32              = 33,
     FMA_F32              = 35,
+    FMA_WIDEN_F16_F32    = 36,
 
     // SIMD / Vector Extensions (0x500+)
     GATHER_F32_512       = 0x500,
@@ -78,6 +79,9 @@ enum class OpCode : uint16_t {
     STORE_V512           = 0x502,
     VEC_ADD_F32_512      = 0x503,
     VEC_MUL_F32_512      = 0x504,
+    FCVTL_F16_TO_F32     = 0x505,
+    FCVTN_F32_TO_F16     = 0x506,
+    SIMD_BSL_PREDICATE   = 0x507,
 
     // Control Flow (99-119)
     GOTO                 = 99,

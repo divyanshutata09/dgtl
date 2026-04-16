@@ -17,7 +17,7 @@ using namespace dgtl;
 void run_null_strike_test() {
     std::cout << "--- ROBUSTNESS TEST 1: Null-Strike & Single-Node Safety ---\n";
     
-    core::DGTL_Arena arena(64); // 64 MB arena
+    core::DGTL_Arena arena(1, 64); // 1 thread, 64 MB arena
     core::DGTLFormalVerifier formal_verifier;
     ir::IRStream empty_stream;
 

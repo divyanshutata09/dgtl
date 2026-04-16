@@ -3,14 +3,16 @@
 #include <vector>
 #include <chrono>
 
-void run_stress_test() {
+namespace {
+
+void run_stress_test_impl() {
     std::cout << "\033[1;33m[STRESS]\033[0m Starting Massive Allocation Cycle..." << std::endl;
     try {
         // Stress: 100 Arenas of 64MB each (~6.4GB total physical pressure)
         std::vector<dgtl::core::DGTL_Arena> pressure_cooker;
         
         for(int i = 0; i < 100; ++i) {
-            pressure_cooker.emplace_back(64); 
+            pressure_cooker.emplace_back(1, 64);
             uint8_t* ptr = (uint8_t*)pressure_cooker.back().raw_data();
             
             if (!ptr) {
@@ -30,9 +32,11 @@ void run_stress_test() {
     }
 }
 
+} // namespace
+
 void run_stress_test() {
     auto start = std::chrono::high_resolution_clock::now();
-    run_stress_test();
+    run_stress_test_impl();
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
     std::cout << "[INFO] Stress test completed in " << diff.count() << "s" << std::endl;

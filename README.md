@@ -47,6 +47,29 @@ dgtl build
 
 Builds the production driver at `build\dgtl_release.exe`.
 
+Run the production driver with explicit IR mode selection:
+
+```powershell
+.\build\dgtl_release.exe --backend arm64 --ir-mode int
+.\build\dgtl_release.exe --backend arm64 --ir-mode float
+.\build\dgtl_release.exe --backend arm64 --ir-mode float-simd-widen
+.\build\dgtl_release.exe --backend arm64 --ir-mode fcvtl
+.\build\dgtl_release.exe --backend arm64 --ir-mode float-simd-narrow
+.\build\dgtl_release.exe --backend arm64 --ir-mode fcvtn
+```
+
+`--ir-mode int` is the default v1.1 release path. `--ir-mode float` enables the float profile and FMA-capable fusion path. `--ir-mode float-simd-widen` (alias `--ir-mode fcvtl`) emits an ARM64 SIMD widening probe using `fcvtl` (`vN.4h` -> `vD.4s`). `--ir-mode float-simd-narrow` (alias `--ir-mode fcvtn`) emits an ARM64 SIMD narrowing probe using `fcvtn` (`vN.4s` -> `vD.4h`).
+
+Polyhedral control flags are available in both drivers:
+
+```powershell
+--polyhedral-mode off|safe|aggressive
+--polyhedral-tile <n>
+--polyhedral-parallel auto|off|on
+```
+
+Defaults are `--polyhedral-mode off`, `--polyhedral-parallel auto`, and `--polyhedral-tile 0` (auto tile sizing).
+
 ```powershell
 dgtl smoke-build
 ```
@@ -63,81 +86,207 @@ Builds a strict variant at `build\dgtl_main_strict.exe` using warning-heavy flag
 
 All commands below are run from the repository root using the PowerShell `dgtl` function.
 
-### Quick Command Reference
+### Pick by Intent (Recommended)
 
-Use these short forms for day-to-day workflows:
+Use the descriptive names below to reduce ambiguity:
 
-**General**
+```powershell
+dgtl build-release
+dgtl build-smoke
+dgtl build-strict
+dgtl run-all
+dgtl run-backend x64
+dgtl bench-backend x64 fusion
+dgtl update-goldens
+dgtl run-strict-conformance
+dgtl test
+dgtl test full
+dgtl clean-all
+dgtl clean-build-and-run
+```
+
+### Production Workflow
+
+Use this sequence when building and validating a release for deployment:
+
+| Step | Command | Purpose |
+|---|---|---|
+| 1 — Build | `dgtl build-release` | Compiles the production binary at `build\dgtl_release.exe`. Only this binary is a production build. |
+| 2 — Validate | `dgtl run-all` | Full conformance across all 4 backends (arm64, x64, nasm, wasm). |
+| 2a — Strict gate | `dgtl run-strict-conformance` | Strict executable gate — catches edge cases not covered by default conformance. |
+| 2b — Aggregate tests | `dgtl test` | Functional + robustness sanity suite (fast, incremental). Use `dgtl test full` to include heavy stress tests. |
+| 3 — Benchmark (optional) | `dgtl bench-backend x64` | Timing profile for your target backend before shipping. |
+| All-in-one | `dgtl clean-build-and-run` | Clean → rebuild → full conformance in one command. |
+
+> **Note:** `dgtl build-smoke` and `dgtl build-strict` produce **test/debug binaries only** — do not use them as production artifacts.
+
+### Categories and When to Use
+
+#### 1) Build Binaries
+
+Use when: you need an executable before running validation or benchmarks.
+
+```powershell
+dgtl build-release
+dgtl build-smoke
+dgtl build-strict
+```
+
+Outputs:
+
+- `dgtl build-release` -> `build\dgtl_release.exe`
+- `dgtl build-smoke` -> `build\dgtl_main.exe`
+- `dgtl build-strict` -> `build\dgtl_main_strict.exe`
+
+#### 2) Validate Correctness
+
+Use when: you want to confirm backend output and conformance behavior.
+
+```powershell
+dgtl run-all
+dgtl run-backend arm64
+dgtl run-backend x64
+dgtl run-backend nasm
+dgtl run-backend wasm
+dgtl run-strict-conformance
+dgtl test
+dgtl test full
+```
+
+#### 3) Benchmark Performance
+
+Use when: you want optimization/emission timing data for one backend.
+
+```powershell
+dgtl bench-backend <backend> [profile|iterations] [pressure-vars] [dump]
+```
+
+You can optionally append polyhedral controls to benchmark runs:
+
+```powershell
+dgtl bench-backend x64 fusion --polyhedral-mode safe --polyhedral-tile 64 --polyhedral-parallel on
+```
+
+Profiles: `fold` (default), `fusion`, `simd`, `pressure`, `predication`.
+
+Examples:
+
+```powershell
+dgtl bench-backend x64
+dgtl bench-backend x64 1000
+dgtl bench-backend x64 fusion
+dgtl bench-backend x64 simd
+dgtl bench-backend x64 pressure 64
+dgtl bench-backend arm64 predication
+dgtl bench-backend x64 fusion dump
+dgtl bench-backend wasm simd
+dgtl bench-backend nasm fusion dump
+```
+
+For ARM64, benchmark output now includes AI telemetry-triggered hot-path retuning signals:
+
+- `hot_swaps=<n>`: Number of iterations where adaptive mode switching occurred
+- `hot_swap_mode=<mode>`: Last applied adaptive mode (for example `int->float-simd/predication`)
+
+#### 4) Manage Golden Baselines
+
+Use when: backend output changes are intentional and expected baselines must be refreshed.
+
+```powershell
+dgtl update-goldens
+dgtl update-goldens strict
+```
+
+#### 5) Cleanup and One-Shot Flow
+
+Use when: you want a clean workspace state or a clean-build-run sequence.
+
+```powershell
+dgtl clean-all
+dgtl clean-build-and-run
+```
+
+### Legacy Short Names (Still Supported)
+
+Short names remain available for existing scripts and muscle memory:
 
 ```powershell
 dgtl help
-```
-
-**Build**
-
-```powershell
 dgtl build
 dgtl smoke-build
 dgtl strict
-```
-
-**Run / Validate**
-
-```powershell
 dgtl run
 dgtl run arm64
-dgtl run x64
-dgtl run nasm
-dgtl run wasm
-```
-
-**Benchmark**
-
-```powershell
-dgtl bench x64
-dgtl bench x64 1000
 dgtl bench x64 fusion
-dgtl bench x64 simd
-dgtl bench x64 pressure 64
-dgtl bench x64 fusion dump
-dgtl bench wasm simd
-dgtl bench nasm fusion dump
-```
-
-**Golden Baselines**
-
-```powershell
 dgtl update-golden
-dgtl update-golden strict
-```
-
-**Strict Conformance**
-
-```powershell
 dgtl srun
-```
-
-**Cleanup / One-Shot Flow**
-
-```powershell
 dgtl clean
 dgtl crun
 ```
 
-| Command | Requires existing build? | What it does |
-|---|---|---|
-| `dgtl help` | No | Prints command usage and examples. |
-| `dgtl build` | No | Builds production `build\dgtl_release.exe`. |
-| `dgtl smoke-build` | No | Builds smoke/conformance `build\dgtl_main.exe`. |
-| `dgtl strict` | No | Builds strict smoke `build\dgtl_main_strict.exe` with strict warnings and `-Werror`. |
-| `dgtl run` | No (auto-builds if missing) | Runs full backend conformance (`arm64`, `x64`, `nasm`, `wasm`) against goldens. |
-| `dgtl run <backend>` | No (auto-builds if missing) | Runs a single backend smoke path (`arm64`, `x64`, `nasm`, `wasm`). |
-| `dgtl bench <backend> [profile\|iterations] [pressure-vars] [dump]` | Auto-builds strict if missing | Runs strict benchmark mode for one backend with profile and optional dump output. |
-| `dgtl update-golden` | Auto-builds default if missing | Refreshes default conformance golden files intentionally. |
-| `dgtl update-golden strict` | Auto-builds strict if missing | Refreshes strict conformance golden files intentionally. |
-| `dgtl srun` | Yes (`build\dgtl_main_strict.exe`) | Runs full backend conformance using strict executable. |
-| `dgtl clean` | No | Deletes DGTL build outputs and conformance log files. |
-| `dgtl crun` | No | Executes `clean -> smoke-build -> run` in one command. |
+Alias mapping:
+
+| Recommended Name | Legacy Short Name |
+|---|---|
+| `dgtl build-release` | `dgtl build` |
+| `dgtl build-smoke` | `dgtl smoke-build` |
+| `dgtl build-strict` | `dgtl strict` |
+| `dgtl run-all` | `dgtl run` |
+| `dgtl run-backend <backend>` | `dgtl run <backend>` |
+| `dgtl bench-backend <backend> ...` | `dgtl bench <backend> ...` |
+| `dgtl update-goldens [strict]` | `dgtl update-golden [strict]` |
+| `dgtl run-strict-conformance` | `dgtl srun` |
+| `dgtl test` | `dgtl test` |
+| `dgtl test full` | `dgtl test full` |
+| `dgtl clean-all` | `dgtl clean` |
+| `dgtl clean-build-and-run` | `dgtl crun` |
+
+### Conformance Prerequisite (Important)
+
+Full conformance commands (`dgtl run-all`, `dgtl run-strict-conformance`, `dgtl update-goldens`, `dgtl update-goldens strict`, and `dgtl clean-build-and-run`) call a PowerShell conformance script expected at:
+
+```text
+My_Docs\commands\backend_conformance_check.ps1
+or
+docs\My_Docs\commands\backend_conformance_check.ps1
+```
+
+If that file is missing, those commands fail with:
+
+```text
+Missing conformance script: ...\docs\My_Docs\commands\backend_conformance_check.ps1
+```
+
+Current repository layout note:
+
+- The checked-in script is under `docs\My_Docs\commands\backend_conformance_check.ps1`.
+- `dgtl.ps1` now checks both locations automatically.
+
+Quick workaround when you only need smoke output from one backend:
+
+```powershell
+dgtl run-backend arm64
+dgtl run-backend x64
+dgtl run-backend nasm
+dgtl run-backend wasm
+```
+
+| Recommended Command | Legacy Equivalent | Requires existing build? | What it does |
+|---|---|---|---|
+| `dgtl help` | `dgtl help` | No | Prints command usage and examples. |
+| `dgtl build-release` | `dgtl build` | No | Builds production `build\dgtl_release.exe`. |
+| `dgtl build-smoke` | `dgtl smoke-build` | No | Builds smoke/conformance `build\dgtl_main.exe`. |
+| `dgtl build-strict` | `dgtl strict` | No | Builds strict smoke `build\dgtl_main_strict.exe` with strict warnings and `-Werror`. |
+| `dgtl run-all` | `dgtl run` | No (auto-builds if missing) | Runs full backend conformance through the conformance script (all backends). Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
+| `dgtl run-backend <backend>` | `dgtl run <backend>` | No (auto-builds if missing) | Runs a single backend directly (`arm64`, `x64`, `nasm`, `wasm`) without the conformance script. |
+| `dgtl bench-backend <backend> [profile\|iterations] [pressure-vars] [dump]` | `dgtl bench <backend> [profile\|iterations] [pressure-vars] [dump]` | Auto-builds strict if missing | Runs strict benchmark mode for one backend with profile and optional dump output. |
+| `dgtl update-goldens` | `dgtl update-golden` | Auto-builds default if missing | Refreshes default conformance goldens through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
+| `dgtl update-goldens strict` | `dgtl update-golden strict` | Auto-builds strict if missing | Refreshes strict conformance goldens through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
+| `dgtl run-strict-conformance` | `dgtl srun` | Auto-builds strict if missing | Runs full backend conformance with strict executable through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
+| `dgtl test` | `dgtl test` | Builds test binary if sources changed | Runs functional + robustness sanity suite. Incremental: reuses existing binary when sources are unchanged (~0.04s warm). |
+| `dgtl test full` | `dgtl test full` | Builds test binary if sources changed | Same as `dgtl test` plus heavy stress tests (`robustness.core2`, `robustness.core4`, `performance.mt_codegen`, `performance.opt_strike`). |
+| `dgtl clean-all` | `dgtl clean` | No | Deletes DGTL build outputs, conformance logs, and conformance cache files. |
+| `dgtl clean-build-and-run` | `dgtl crun` | No | Executes `clean -> smoke-build -> run` (full conformance path, so the conformance script is required). |
 
 ### Command Runner Flags
 
@@ -150,22 +299,30 @@ dgtl crun
 ### Option 1: Run Full Backend Validation
 
 ```powershell
-dgtl run
+dgtl run-all
 ```
+
+Legacy equivalent: `dgtl run`
 
 Runs the conformance gate across `arm64`, `x64`, `nasm`, and `wasm` using `build\dgtl_main.exe`, then compares normalized output against stored goldens.
 
 If `build\dgtl_main.exe` is missing, `dgtl run` auto-builds it.
 
+`dgtl run-all` (legacy: `dgtl run`) also requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`.
+
 ### Option 2: Run One Backend Only
 
 ```powershell
-dgtl run arm64
+dgtl run-backend arm64
 ```
+
+Legacy equivalent: `dgtl run arm64`
 
 Replace `arm64` with `x64`, `nasm`, or `wasm` to run a quick single-backend smoke check without invoking the full conformance gate.
 
-If `build\dgtl_main.exe` is missing, `dgtl run <backend>` auto-builds it.
+If `build\dgtl_main.exe` is missing, `dgtl run-backend <backend>` (legacy: `dgtl run <backend>`) auto-builds it.
+
+Single-backend `dgtl run-backend <backend>` does not require the conformance script.
 
 ### Benchmark One Backend
 
@@ -254,6 +411,7 @@ Auto-build behavior:
 
 - `dgtl update-golden` auto-builds `build\dgtl_main.exe` if missing.
 - `dgtl update-golden strict` auto-builds `build\dgtl_main_strict.exe` if missing.
+- Both commands require `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`.
 
 ### Combined Workflow
 
@@ -470,6 +628,8 @@ JIT Execution (Optional: W^X-protected runtime)
 ## Documentation
 
 - [BitPacked_IR_Core.md](docs/analysis/DGPM_SPEC.md): IR architecture deep-dive
+- [V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md](docs/analysis/V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md): v1.2 technical roadmap for polyhedral legality, scheduling, tiling, and parallel lowering
+- [V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md](docs/analysis/V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md): prioritized implementation backlog mapped to concrete modules and files
 - [VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md): Manual verification checklist
 - [DGTL_BUSINESS_MODEL.md](docs/business/DGTL_BUSINESS_MODEL.md): Commercial packaging, target customers, and launch phases
 - [DGTL_PRICING_AND_PILOT_OFFER.md](docs/business/DGTL_PRICING_AND_PILOT_OFFER.md): Concrete pricing structure and pilot offer
@@ -484,7 +644,7 @@ JIT Execution (Optional: W^X-protected runtime)
 - [PRODUCT_POSITIONING.md](docs/business/PRODUCT_POSITIONING.md): Customer-facing positioning and messaging
 - [LICENSE](LICENSE): Release-facing proprietary software notice
 - [DEPENDENCY_VERSION_CONTROL.md](DEPENDENCY_VERSION_CONTROL.md): Locked tool versions
-- [My_Docs/](My_Docs/): Detailed module documentation and examples
+- [docs/My_Docs/](docs/My_Docs/): Detailed module documentation and examples
 
 ## Project Structure
 
@@ -533,15 +693,17 @@ DGTL/
 │   │   └── PRODUCT_POSITIONING.md
 │   └── analysis/
 │       ├── DGPM_SPEC.md
+│       ├── V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md
+│       ├── V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md
 │       └── LANGUAGE_BACKEND_USAGE.md
 │
-├── My_Docs/                # Detailed technical documentation (generated)
-│   ├── core/               # Arena, Context, Symbols, Guards
-│   ├── ir/                 # IR format, streams, dialect rules
-│   ├── analysis/           # Cost models, liveness, dataflow
-│   ├── pass/               # Pass designs, transformation rules
-│   ├── isa/                # Emitter specs, register allocation
-│   └── jit/                # JIT design, orchestration
+│   ├── My_Docs/            # Detailed technical documentation (generated)
+│   │   ├── core/           # Arena, Context, Symbols, Guards
+│   │   ├── ir/             # IR format, streams, dialect rules
+│   │   ├── analysis/       # Cost models, liveness, dataflow
+│   │   ├── pass/           # Pass designs, transformation rules
+│   │   ├── isa/            # Emitter specs, register allocation
+│   │   └── jit/            # JIT design, orchestration
 │
 ├── dgtl.ps1                # Main command runner
 ├── dgtl.cmd                # Windows shim for the command runner
@@ -561,7 +723,7 @@ See [prelaunch.md](prelaunch.md) for current gate status and open issues before 
 
 1. **Read the code**: Understand the module layout in `include/dgtl/`
 2. **Run validation**: Use `dgtl run` on the supported backends before opening a PR
-3. **Check documentation**: Use `My_Docs/` for detailed component info
+3. **Check documentation**: Use `docs/My_Docs/` for detailed component info
 
 ### Contribution Workflow
 
@@ -589,7 +751,7 @@ See [prelaunch.md](prelaunch.md) for current gate status and open issues before 
 - **New optimization passes**: Extend `include/dgtl/pass/` with new transforms
 - **Cost model tuning**: Improve `AI_Cost_Model.hpp` weights and features
 - **Test coverage**: Add robustness tests in `tests/robustness/`
-- **Documentation**: Improve header comments and module guides in `My_Docs/`
+- **Documentation**: Improve header comments and module guides in `docs/My_Docs/`
 
 ## Troubleshooting
 
@@ -638,5 +800,5 @@ See project root for licensing information.
 
 For questions, issues, or discussions:
 1. Review [prelaunch.md](prelaunch.md) for known limitations
-2. Check [My_Docs/](My_Docs/) for detailed explanations
+2. Check [docs/My_Docs/](docs/My_Docs/) for detailed explanations
 3. Run verification tests from [VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md)

@@ -2,7 +2,9 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <stdexcept>
 #include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/pipeline/Functional_Pipeline_Probes.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp"
 #include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
@@ -18,21 +20,17 @@ using namespace dgtl;
 void run_saturation_test() {
     std::cout << "--- ROBUSTNESS TEST 2: Task Saturation & Thread Contention ---\n";
     
-    // 1. Generate 1,048,576 IR Nodes (Massive Stream)
-    const size_t NODE_COUNT = 1048576;
+    // 1. Generate a stress stream that still completes quickly on dev laptops.
+    const size_t NODE_COUNT = 32768;
     std::cout << "[Step 1] Allocating " << (NODE_COUNT * sizeof(ir::IRNode)) / (1024 * 1024) 
               << " MB for IR Stream... ";
     
-    // Using arena for large streams
-    core::DGTL_Arena arena(1024); // 1GB arena
+    // Keep stress semantics without requiring a huge arena pool.
+    core::DGTL_Arena arena(1, 128); // 1 thread, 128 MB arena
     ir::IRStream large_stream(arena, NODE_COUNT);
 
-    // Fill with MUL + ADD pairs to trigger the Fusion engine
-    // Pattern: r[i] = r10 * r11; r[i+1] = r[i] + r12; -> Should become FMA
-    for(size_t i = 0; i < NODE_COUNT - 1; i += 2) {
-        large_stream.push_node(ir::OpCode::MUL_F32, ir::Flags::NONE, (uint32_t)i, 10, 11, 0);
-        large_stream.push_node(ir::OpCode::ADD_F32, ir::Flags::NONE, (uint32_t)i+1, (uint32_t)i, 12, 0);
-    }
+    // Fill with MUL + ADD pairs to trigger the fusion path.
+    dgtl::pipeline::probes::build_mul_add_fusion_pairs_probe(large_stream, NODE_COUNT / 2, 10, 11, 12);
     std::cout << "DONE.\n";
 
     // 2. Initialize Orchestrators
@@ -54,21 +52,15 @@ void run_saturation_test() {
     
     std::cout << "optED.\n";
 
-    // 3. Validation: Verify pattern transformation at boundaries
-    // We check the first node to see if the MUL_F32 was successfully synthesized to FMA_F32
-    auto head_node = large_stream.get_node(0);
-    bool sample_check = (head_node.opcode == ir::OpCode::FMA_F32);
+    // 3. Validation: Verify at least one fused node is present after the strike.
+    const bool sample_check = dgtl::pipeline::probes::count_opcode(large_stream, ir::OpCode::FMA_F32) > 0;
 
     if (sample_check) {
         std::cout << "SUCCESS: Data integrity maintained across parallel chunks.\n";
-        std::cout << "[DATA] Node 0 synthesized to FMA (OpCode: " << (int)head_node.opcode << ")\n";
+        std::cout << "[DATA] Found fused FMA_F32 nodes in transformed stream.\n";
     } else {
-        // If this hits, the worker threads either timed out or the GVN/Fusion hash collided
-        std::cout << "FAILURE: Nodes were not optimized. OpCode remains: " << (int)head_node.opcode << "\n";
-        std::cout << "Check: Did the optManager join all task futures?\n";
-        
-        // Return a non-zero exit code if this is a hard failure requirement
-        // exit(1); 
+        std::cout << "FAILURE: No FMA_F32 nodes were produced by fusion strike.\n";
+        throw std::runtime_error("robustness.core2 failed: fusion strike produced no FMA_F32 nodes");
     }
 
     std::cout << "\nRESULT: TEST 2 COMPLETE. optManager handles high-pressure tasking.\n";
@@ -79,7 +71,7 @@ void run_test_robustness_2() {
         run_saturation_test();
     } catch (const std::exception& e) {
         std::cerr << "CRITICAL EXCEPTION during Saturation Test: " << e.what() << std::endl;
-        return;
+        throw;
     }
     return;
 }

@@ -2,6 +2,7 @@
  * STEP 12: POLYHEDRAL LOOP TRANSFORM ENGINE (LINEAR-CONSTRAINT MATRICES)
  * PILLAR 2: TRANSACTIONAL IR (SHADOW-BUFFERED TRANSFORMATIONS)
  * PILLAR 3: THE SENTINEL (BIT-LEVEL INVARIANT CHECK)
+ * Extension: P0-002 SCoP Detection Guard for Affine Parallelization
  */
 
 #pragma once
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <stdexcept>
 #include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/graph/Region.hpp"
 
 
 namespace dgtl::pass {
@@ -28,6 +30,44 @@ struct LoopNest {
 
 class DGTLPolyTransformer {
 public:
+    /**
+     * @brief Check if a region is a valid SCoP for polyhedral transforms.
+     * P0-002: Enforces non-affine regions are never transformed illegally.
+     * @param region Region to check.
+     * @return true if region is affine candidate and safe to transform.
+     */
+    [[nodiscard]] static bool is_valid_scop_for_transform(const graph::Region& region) {
+        // Non-affine regions are never eligible for polyhedral transforms
+        if (region.scop_annotation.affinity != graph::ScopAffinity::AFFINE_CANDIDATE) {
+            return false;
+        }
+        
+        // Region must have detectable loop structure
+        if (region.scop_annotation.loop_depth == 0) {
+            return false;  // Linear code is not a loop nest
+        }
+        
+        return true;
+    }
+
+    /**
+     * @brief Check if a region can be tiled.
+     * @param region Region to check.
+     * @return true if tiling is legal and beneficial.
+     */
+    [[nodiscard]] static bool can_tile_region(const graph::Region& region) {
+        return is_valid_scop_for_transform(region) && region.scop_annotation.can_tile;
+    }
+
+    /**
+     * @brief Check if a region can be parallelized.
+     * @param region Region to check.
+     * @return true if parallel lowering is legal and beneficial.
+     */
+    [[nodiscard]] static bool can_parallelize_region(const graph::Region& region) {
+        return is_valid_scop_for_transform(region) && region.scop_annotation.can_parallelize;
+    }
+
     /**
      * @brief Loop Tiling (Transactional Shadow-Writing).
      */

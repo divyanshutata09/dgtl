@@ -2,7 +2,7 @@
  * STEP 5: LOCK-FREE THREAD-LOCAL CONTEXT
  * VERSION 4.2: BIR 2.1 PACKED ATOM + V4-ARENA INTEGRATED
  * PILLAR 2: TRUE TLS + SHADOW-BUFFERED TRANSACTIONS
- * FIX: Resolved shadow pointer naming collision in refresh logic.
+ * Extension: P0-001 Polyhedral Configuration
  */
 
 #pragma once
@@ -10,10 +10,54 @@
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
+#include <cstdint>
 #include "dgtl/core/Arena.hpp"   // DGTL_ArenaV4
 #include "dgtl/ir/base/Global_IR.hpp"
 
 namespace dgtl::core {
+
+// ================================
+// 🔹 POLYHEDRAL CONFIGURATION (P0-001)
+// ================================
+
+/**
+ * @enum PolyhedralMode
+ * @brief Control level for affine SCoP detection and transformation.
+ */
+enum class PolyhedralMode : uint8_t {
+    off = 0,        // Disable all polyhedral analysis and transforms
+    safe = 1,       // Enable safe transforms with strict legality checking
+    aggressive = 2, // Enable aggressive transforms with profitability gates
+};
+
+/**
+ * @enum PolyhedralParallelPolicy
+ * @brief Parallel lowering strategy for affine loop nests.
+ */
+enum class PolyhedralParallelPolicy : uint8_t {
+    auto_policy = 0, // Auto-decide based on loop depth and region size
+    off = 1,         // Disable parallel lowering
+    on = 2,          // Force parallel lowering when legal
+};
+
+/**
+ * @struct PolyhedralConfig
+ * @brief Runtime configuration for polyhedral parallelization features.
+ * Populated from CLI flags and passed through the optimization pipeline.
+ */
+struct PolyhedralConfig {
+    PolyhedralMode mode = PolyhedralMode::off;
+    PolyhedralParallelPolicy parallel_policy = PolyhedralParallelPolicy::auto_policy;
+    uint32_t tile_size = 0;  // 0 means auto-select via heuristic
+    
+    bool is_enabled() const noexcept {
+        return mode != PolyhedralMode::off;
+    }
+    
+    bool allow_aggressive_transforms() const noexcept {
+        return mode == PolyhedralMode::aggressive;
+    }
+};
 
 // ================================
 // 🔹 THREAD LOCAL BUFFER
@@ -60,12 +104,26 @@ private:
     // Local buffer for atomic node construction before emission
     mutable ir::IRNode temp_node_buffer;
 
+    // === P0-001: POLYHEDRAL CONFIGURATION ===
+    PolyhedralConfig polyhedral_config;
+
 public:
     explicit DGTLContext(DGTL_Arena& arena) noexcept
-        : global_arena(arena) {}
+        : global_arena(arena), polyhedral_config() {}
 
     DGTLContext(const DGTLContext&) = delete;
     DGTLContext& operator=(const DGTLContext&) = delete;
+
+    // =========================================
+    // 🔹 POLYHEDRAL CONFIGURATION ACCESS (P0-001)
+    // =========================================
+    [[nodiscard]] const PolyhedralConfig& get_polyhedral_config() const noexcept {
+        return polyhedral_config;
+    }
+
+    void set_polyhedral_config(const PolyhedralConfig& config) noexcept {
+        polyhedral_config = config;
+    }
 
     // =========================================
     // 🔥 FAST EMIT

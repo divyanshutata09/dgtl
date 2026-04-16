@@ -162,3 +162,17 @@ DGTL is positioned as a high-performance, retargetable compiler/runtime stack wh
 
 ### Final Recommendation
 Proceed with staged prelaunch immediately after path canonicalization and one final integrated gate run. The technical foundation is strong, and the remaining blockers are operationally concentrated and solvable in a short cycle.
+
+---
+
+## Operational Update (2026-04-15)
+
+### Resolved
+- Conformance script path drift in the command runner has been fixed.
+- `dgtl.ps1` now resolves conformance script in both supported locations:
+  - `docs/My_Docs/commands/backend_conformance_check.ps1` (preferred)
+  - `My_Docs/commands/backend_conformance_check.ps1` (fallback)
+- `docs/My_Docs/commands/backend_conformance_check.ps1` now resolves repository root, logs, golden paths, and relative executable path robustly.
+
+### Verification
+- `dgtl run` from clean state now executes conformance successfully for all backends (`arm64`, `x64`, `nasm`, `wasm`).

@@ -35,10 +35,10 @@ void run_test_pipeline_multi_target() {
 
         uint32_t result_op = static_cast<uint32_t>(s.get_node(0).opcode);
         if (result_op == c.expected) {
-            std::cout << "[opt] " << c.name << " fused to 0x" << std::hex << c.expected << std::endl;
+            std::cout << "[opt] " << c.name << " fused to 0x" << std::hex << c.expected << std::dec << std::endl;
         } else {
             std::cout << "[FAIL] " << c.name << " expected 0x" << std::hex << c.expected 
-                      << " but got 0x" << result_op << std::endl;
+                      << " but got 0x" << result_op << std::dec << std::endl;
             all_opt = false;
         }
     }

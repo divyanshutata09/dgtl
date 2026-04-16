@@ -17,7 +17,7 @@ void run_volatile_safety_test() {
     std::cout << "--- ROBUSTNESS TEST 3: Volatile Side-Effect Isolation ---\n";
     
     // 1. Initialize stream with arena
-    core::DGTL_Arena arena(64);
+    core::DGTL_Arena arena(1, 64);
     ir::IRStream stream(arena, 32);
 
     // Node 0: MUL_F32 (Standard math)

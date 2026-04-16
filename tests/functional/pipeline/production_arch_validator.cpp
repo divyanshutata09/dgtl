@@ -264,7 +264,9 @@ void run_production_arch_validator() {
     }
 }
 
+#ifndef DGTL_EMBED_TESTS
 int main() {
     run_production_arch_validator();
     return 0;
 }
+#endif
