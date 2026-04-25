@@ -1,10 +1,21 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <vector>
 #include <memory>
 #include <cstdio>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pass/transform/GVN.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
+#include "dgtl/isa/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 
@@ -19,7 +30,7 @@
 using namespace dgtl;
 
 int main() {
-    std::cout << "\033[1;36m--- [DGTL-MLIR-X] Pipeline Integration Test ---\033[0m\n";
+    std::cout << "\033[1;36m--- [DGTL] Pipeline Integration Test ---\033[0m\n";
 
     // 1. PILLAR 1: Initialize the Huge-Page Arena (256MB)
     // Ensures physical continuity for Tier 1 and Tier 2 IR layouts.
@@ -119,5 +130,10 @@ int main() {
 
     return 0;
 }
+
+
+
+
+
 
 

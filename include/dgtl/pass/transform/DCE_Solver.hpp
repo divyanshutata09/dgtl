@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 18: TRANSACTIONAL DEAD CODE ELIMINATION (DCE-SOLVER)
  * STRATEGY: Reverse-opt Liveness + Transactional Shadow Compaction.
  * GUARANTEE: Zero-Corruption Strike via Pillar 3 Sentinel.
@@ -7,7 +18,7 @@
 #pragma once
 #include <vector>
 #include <bitset>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp" 
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
@@ -78,17 +89,17 @@ private:
                                 (root_marker != nullptr && root_marker->is_root(node));
 
             // A node is live if it's essential OR its result is needed by a subsequent op
-            // [DGTL FIX]: Added check to ensure result_id is non-zero before bitset testing
-            bool needed_by_successor = (node.result_id != 0) && live_map.test(node.result_id % MAX_TRACKED_IDS);
+            const bool has_result = node.result_id != ir::INVALID_SLOT;
+            const bool needed_by_successor = has_result && live_map.test(node.result_id % MAX_TRACKED_IDS);
 
             if (is_essential || needed_by_successor) {
                 // If this node is live, its operands must also be live
-                if (node.op_a != ir::INVALID_SLOT && node.op_a != 0) live_map.set(node.op_a % MAX_TRACKED_IDS);
-                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0) live_map.set(node.op_b % MAX_TRACKED_IDS);
-                if (node.op_c != ir::INVALID_SLOT && node.op_c != 0) live_map.set(node.op_c % MAX_TRACKED_IDS);
+                if (node.op_a != ir::INVALID_SLOT) live_map.set(node.op_a % MAX_TRACKED_IDS);
+                if (node.op_b != ir::INVALID_SLOT) live_map.set(node.op_b % MAX_TRACKED_IDS);
+                if (node.op_c != ir::INVALID_SLOT) live_map.set(node.op_c % MAX_TRACKED_IDS);
                 
                 // If it was essential but not previously in live_map, ensure it's marked
-                if (node.result_id != 0) {
+                if (has_result) {
                     live_map.set(node.result_id % MAX_TRACKED_IDS);
                 }
             }
@@ -111,11 +122,13 @@ private:
                            (node.flags & ir::Flags::HAS_SIDE_EFFECTS) || 
                            (node.opcode == ir::OpCode::STORE) ||
                            (root_marker != nullptr && root_marker->is_root(node)) ||
-                           (node.result_id != 0 && live_map.test(node.result_id % MAX_TRACKED_IDS));
+                           (node.result_id != ir::INVALID_SLOT && live_map.test(node.result_id % MAX_TRACKED_IDS));
 
             if (is_live) {
                 // [DGTL SAFETY] Prevent pollution from uninitialized IDs
-                if (node.result_id == 0 && !node.is_terminator() && !(node.flags & ir::Flags::HAS_SIDE_EFFECTS)) {
+                if (node.result_id == ir::INVALID_SLOT &&
+                    !node.is_terminator() &&
+                    !(node.flags & ir::Flags::HAS_SIDE_EFFECTS)) {
                     if (node.opcode != ir::OpCode::NOP) return false; 
                 }
 
@@ -138,5 +151,6 @@ private:
 };
 
 } // namespace dgtl::pass
+
 
 

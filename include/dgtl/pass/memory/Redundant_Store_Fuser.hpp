@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 34: SPATIAL-TEMPORAL STORE FUSER
  * PILLAR 2: TRANSACTIONAL IR (DOUBLE-BUFFERED FUSION)
  * PILLAR 3: THE SENTINEL (CRC-32 INTENT VALIDATION)
@@ -6,10 +17,11 @@
  */
 
 #pragma once
+#include <cstdint>
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/analysis/dataflow/Memory_Dependency_Smasher.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 
@@ -25,7 +37,7 @@ class DGTLRedundantStoreFuser {
 
 public:
     // Corrected: Fully qualified namespace in constructor
-    explicit DGTLRedundantStoreFuser(dgtl::analysis::DGTLMemorySmasher& s) : smasher(s) {}
+    explicit DGTLRedundantStoreFuser(dgtl::analysis::DGTLMemorySmasher& s) noexcept : smasher(s) {}
 
     /**
      * @brief Transactional Memory Strike.
@@ -33,13 +45,15 @@ public:
      */
     void fuse_stores(ir::IRStream& stream) {
         const size_t stream_size = stream.size();
-        if (stream_size < 2) return;
+        if (stream_size < 2) {
+            return;
+        }
 
         // PILLAR 2: Open a Transactional Tier
         stream.begin_transaction();
 
         // Step 1: Baseline sync of Primary to Shadow
-        for (uint32_t i = 0; i < (uint32_t)stream_size; ++i) {
+        for (uint32_t i = 0; i < static_cast<uint32_t>(stream_size); ++i) {
             sync_node_to_shadow(stream, i);
         }
 
@@ -71,7 +85,7 @@ public:
     }
 
 private:
-    void sync_node_to_shadow(ir::IRStream& s, uint32_t idx) {
+    void sync_node_to_shadow(ir::IRStream& s, uint32_t idx) noexcept {
         ir::IRNode node = s.get_node_readonly(idx);
         ir::IRAtom& s_atom = s.get_shadow_atom(idx);
         ir::IRCore& s_core = s.get_shadow_core(idx);
@@ -85,7 +99,7 @@ private:
         s_core.intent_hash = node.intent_hash;
     }
 
-    std::vector<uint32_t> find_adjacent_stores(const ir::IRStream& s, uint32_t start_idx) {
+    [[nodiscard]] std::vector<uint32_t> find_adjacent_stores(const ir::IRStream& s, uint32_t start_idx) {
         std::vector<uint32_t> candidates;
         const uint32_t limit = std::min(start_idx + 16, static_cast<uint32_t>(s.size()));
         
@@ -94,7 +108,8 @@ private:
             
             if (next.opcode == ir::OpCode::STORE) {
                 // Smasher check for spatial continuity
-                if (smasher.can_group_access(s, start_idx + (uint32_t)candidates.size(), 2)) {
+                if (j == start_idx + static_cast<uint32_t>(candidates.size()) + 1U &&
+                    smasher.can_group_access(s, start_idx, static_cast<uint32_t>(candidates.size()) + 2U)) {
                     candidates.push_back(j);
                 } else {
                     break;
@@ -109,6 +124,10 @@ private:
     }
 
     bool is_safe_to_fuse(const ir::IRStream& s, uint32_t start, uint32_t end) noexcept {
+        if (end < start || end >= s.size()) {
+            return false;
+        }
+
         for (uint32_t i = start; i <= end; ++i) {
             ir::IRNode n = s.get_node_readonly(i);
             if (n.is_terminator() || (n.flags & ir::Flags::HAS_SIDE_EFFECTS)) {

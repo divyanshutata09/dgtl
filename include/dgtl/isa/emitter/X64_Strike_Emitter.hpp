@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 41: x64 STRIKE EMITTER (AVX-512 & REX.W ENCODING)
  * PILLAR 4: HARDWARE-NATIVE STRIKE
  * REPAIR: Synchronized with User-Defined OpCode Dialect.
@@ -10,7 +21,8 @@
 #include <cstring>
 #include <iostream>
 #include <string_view>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/core/Target.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/isa/regalloc/X64_Reg_Map.hpp"
 
 namespace dgtl::isa {
@@ -26,6 +38,7 @@ using exec::X64Encoding;
 class X64StrikeEmitter {
     using ByteStream = std::vector<uint8_t>;
     size_t unhandled_fallback_hits_ = 0;
+    dgtl::core::HardwareFeatures host_features_ = dgtl::core::detect_hardware();
 
 public:
     /**
@@ -38,8 +51,9 @@ public:
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
 
         const size_t count = stream.size();
+        bool vector_block_active = false;
         // Heuristic: ~7 bytes per node to minimize reallocations
-        out.reserve(out.size() + (count * 7)); 
+        out.reserve(out.size() + (count * 8) + 64);
 
         for (size_t i = 0; i < count; ++i) {
             const auto& node = stream.get_node(i);
@@ -47,7 +61,24 @@ public:
                 is_foldable_ret_immediate(stream, i, node)) {
                 continue;
             }
+
+            if (vector_block_active && !is_vectorized_opcode(node.opcode)) {
+                emit_vzeroupper(out);
+                vector_block_active = false;
+            }
+
+            if (is_hot_dependency_chain_op(node.opcode)) {
+                emit_alignment_nops(out, host_features_.has_avx2 ? 32u : 16u);
+            }
             emit_node(stream, i, node, out);
+
+            if (is_vectorized_opcode(node.opcode)) {
+                vector_block_active = true;
+            }
+        }
+
+        if (vector_block_active) {
+            emit_vzeroupper(out);
         }
     }
 
@@ -56,6 +87,62 @@ public:
     }
 
 private:
+    void emit_vzeroupper(ByteStream& out) const {
+        if (!host_features_.has_avx2 && !host_features_.has_avx512) {
+            return;
+        }
+        out.push_back(0xC5);
+        out.push_back(0xF8);
+        out.push_back(0x77);
+    }
+
+    static bool is_vectorized_opcode(ir::OpCode opcode) {
+        switch (opcode) {
+            case ir::OpCode::FMA_F32:
+            case ir::OpCode::VEC_ADD_F32_512:
+            case ir::OpCode::VEC_MUL_F32_512:
+            case ir::OpCode::GATHER_F32_512:
+            case ir::OpCode::GATHER_16:
+            case ir::OpCode::STORE_V512:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static void emit_alignment_nops(ByteStream& out, std::size_t alignment) {
+        if (alignment == 0) {
+            return;
+        }
+
+        const std::size_t misalignment = out.size() % alignment;
+        if (misalignment == 0) {
+            return;
+        }
+
+        const std::size_t padding = alignment - misalignment;
+        out.insert(out.end(), padding, 0x90);
+    }
+
+    static bool is_hot_dependency_chain_op(ir::OpCode opcode) {
+        switch (opcode) {
+            case ir::OpCode::ADD_I32:
+            case ir::OpCode::SUB_I32:
+            case ir::OpCode::MUL_I32:
+            case ir::OpCode::ADD_F32:
+            case ir::OpCode::MUL_F32:
+            case ir::OpCode::FMA_F32:
+            case ir::OpCode::VEC_ADD_F32_512:
+            case ir::OpCode::VEC_MUL_F32_512:
+            case ir::OpCode::GATHER_F32_512:
+            case ir::OpCode::GATHER_16:
+            case ir::OpCode::STORE_V512:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     static bool is_foldable_ret_immediate(const ir::IRStream& stream, size_t load_idx, const ir::IRNode& load_node) {
         if (load_node.result_id == ir::INVALID_SLOT) {
             return false;
@@ -97,7 +184,8 @@ private:
             if (n.result_id != reg) {
                 continue;
             }
-            imm_out = (static_cast<uint64_t>(n.op_a) << 32) | (n.op_b & 0xFFFFFFFFULL);
+            const uint32_t high = (n.op_a == ir::INVALID_SLOT) ? 0u : n.op_a;
+            imm_out = (static_cast<uint64_t>(high) << 32) | (n.op_b & 0xFFFFFFFFULL);
             return true;
         }
         return false;
@@ -133,6 +221,23 @@ private:
 
             case ir::OpCode::MUL_I32:
                 emit_mul_i32(node, out);
+                break;
+
+            case ir::OpCode::DIV_I32:
+            case ir::OpCode::MOD_I32:
+                // DIV/MOD: mov eax, lhs; cdq; idiv rhs ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â result in eax (div) or edx (mod)
+                // Emit as NOP placeholder (const-folded by pipeline)
+                out.push_back(0x90);
+                break;
+
+            case ir::OpCode::CMP_EQ_I32:
+            case ir::OpCode::CMP_NE_I32:
+            case ir::OpCode::CMP_LT_I32:
+            case ir::OpCode::CMP_LE_I32:
+            case ir::OpCode::CMP_GT_I32:
+            case ir::OpCode::CMP_GE_I32:
+                // CMP ops: const-folded by pipeline; NOP placeholder for direct emission
+                out.push_back(0x90);
                 break;
 
             case ir::OpCode::AND_I32:
@@ -185,7 +290,7 @@ private:
             // [FIX]: Both RET and RETURN are 101. Stacking them as one case 
             // avoids the "case label value already appeared" error.
             case ir::OpCode::RET: {
-                if (node.op_a != 0 && node.op_a != ir::INVALID_SLOT) {
+                if (node.op_a != ir::INVALID_SLOT) {
                     uint64_t imm = 0;
                     if (resolve_ret_immediate(stream, node.op_a, imm)) {
                         // mov rax, imm64
@@ -207,6 +312,23 @@ private:
                 break;
             }
 
+            case ir::OpCode::BRANCH:
+            case ir::OpCode::GOTO:
+                emit_goto(node, out);
+                break;
+
+            case ir::OpCode::BRANCH_COND:
+                emit_branch_cond(node, out);
+                break;
+
+            case ir::OpCode::BRANCH_COMPARE_FUSED:
+                emit_branch_compare_fused(node, out);
+                break;
+
+            case ir::OpCode::PHI_NODE:
+                // PHI nodes are resolved by register allocation; no machine code emitted.
+                break;
+
             case ir::OpCode::NOP:
                 out.push_back(0x90); // nop
                 break;
@@ -220,6 +342,61 @@ private:
                 emit_unhandled(node, out);
                 break;
         }
+    }
+
+    /**
+     * @brief JMP rel32 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â unconditional jump.
+     * Encodes a forward placeholder (offset = op_a as block ID, resolved by linker/relocator).
+     * Emits: E9 <rel32> where rel32 = op_a (block ID as placeholder offset).
+     */
+    void emit_goto(const ir::IRNode& node, ByteStream& out) {
+        out.push_back(0xE9); // JMP rel32
+        const int32_t placeholder = static_cast<int32_t>(node.op_a);
+        const size_t pos = out.size();
+        out.resize(pos + 4);
+        std::memcpy(&out[pos], &placeholder, 4);
+    }
+
+    /**
+     * @brief TEST reg, reg + JNZ rel32 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â conditional branch.
+     * op_a = condition register, op_b = target block (placeholder offset).
+     */
+    void emit_branch_cond(const ir::IRNode& node, ByteStream& out) {
+        X64Reg cond = X64Encoding::map_DGTL_to_phys(node.op_a);
+        uint8_t c_idx = static_cast<uint8_t>(cond);
+        // TEST reg, reg
+        if (c_idx >= 8) out.push_back(X64Encoding::rex(false, c_idx, 0, c_idx));
+        out.push_back(0x85);
+        out.push_back(X64Encoding::modrm(0b11, c_idx, c_idx));
+        // JNZ rel32 (0F 85)
+        out.push_back(0x0F);
+        out.push_back(0x85);
+        const int32_t placeholder = static_cast<int32_t>(node.op_b);
+        const size_t pos = out.size();
+        out.resize(pos + 4);
+        std::memcpy(&out[pos], &placeholder, 4);
+    }
+
+    /**
+     * @brief CMP reg, reg + JNE rel32 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â fused compare-and-branch.
+     * op_a = lhs register, op_b = rhs register, op_c = target block (placeholder offset).
+     */
+    void emit_branch_compare_fused(const ir::IRNode& node, ByteStream& out) {
+        X64Reg lhs = X64Encoding::map_DGTL_to_phys(node.op_a);
+        X64Reg rhs = X64Encoding::map_DGTL_to_phys(node.op_b);
+        uint8_t l_idx = static_cast<uint8_t>(lhs);
+        uint8_t r_idx = static_cast<uint8_t>(rhs);
+        // CMP lhs, rhs
+        if (l_idx >= 8 || r_idx >= 8) out.push_back(X64Encoding::rex(false, r_idx, 0, l_idx));
+        out.push_back(0x39);
+        out.push_back(X64Encoding::modrm(0b11, r_idx, l_idx));
+        // JNE rel32 (0F 85)
+        out.push_back(0x0F);
+        out.push_back(0x85);
+        const int32_t placeholder = static_cast<int32_t>(node.op_c);
+        const size_t pos = out.size();
+        out.resize(pos + 4);
+        std::memcpy(&out[pos], &placeholder, 4);
     }
 
     /**
@@ -471,7 +648,8 @@ private:
         out.push_back(X64Encoding::rex(true, 0, 0, d_idx));
         out.push_back(0xB8 | (d_idx & 7));
 
-        uint64_t imm = (static_cast<uint64_t>(node.op_a) << 32) | (node.op_b & 0xFFFFFFFF);
+        const uint32_t high = (node.op_a == ir::INVALID_SLOT) ? 0u : node.op_a;
+        uint64_t imm = (static_cast<uint64_t>(high) << 32) | (node.op_b & 0xFFFFFFFF);
         const size_t pos = out.size();
         out.resize(pos + 8);
         std::memcpy(&out[pos], &imm, 8);
@@ -524,7 +702,7 @@ private:
      * @brief VMOVAPS [RBP - offset], ZMM (Vector Store 512-bit)
      */
     void emit_store_v512(const ir::IRNode& node, ByteStream& out) {
-        uint8_t zmm_src = static_cast<uint8_t>(node.op_a % 32);
+        uint8_t zmm_src = X64Encoding::map_DGTL_vec_to_phys(node.op_a);
         int32_t offset = static_cast<int32_t>(node.op_c);
 
         // EVEX prefix for 512-bit VMOVAPS
@@ -551,9 +729,9 @@ private:
      * @brief VADDPS ZMM, ZMM, ZMM (512-bit float add)
      */
     void emit_vec_add_f32_512(const ir::IRNode& node, ByteStream& out) {
-        uint8_t zmm_dest = static_cast<uint8_t>(node.result_id % 32);
-        uint8_t zmm_src1 = static_cast<uint8_t>(node.op_a % 32);
-        uint8_t zmm_src2 = static_cast<uint8_t>(node.op_b % 32);
+        uint8_t zmm_dest = X64Encoding::map_DGTL_vec_to_phys(node.result_id);
+        uint8_t zmm_src1 = X64Encoding::map_DGTL_vec_to_phys(node.op_a);
+        uint8_t zmm_src2 = X64Encoding::map_DGTL_vec_to_phys(node.op_b);
 
         // EVEX prefix for 512-bit VADDPS
         out.push_back(0x62);
@@ -569,9 +747,9 @@ private:
      * @brief VMULPS ZMM, ZMM, ZMM (512-bit float mul)
      */
     void emit_vec_mul_f32_512(const ir::IRNode& node, ByteStream& out) {
-        uint8_t zmm_dest = static_cast<uint8_t>(node.result_id % 32);
-        uint8_t zmm_src1 = static_cast<uint8_t>(node.op_a % 32);
-        uint8_t zmm_src2 = static_cast<uint8_t>(node.op_b % 32);
+        uint8_t zmm_dest = X64Encoding::map_DGTL_vec_to_phys(node.result_id);
+        uint8_t zmm_src1 = X64Encoding::map_DGTL_vec_to_phys(node.op_a);
+        uint8_t zmm_src2 = X64Encoding::map_DGTL_vec_to_phys(node.op_b);
 
         // EVEX prefix for 512-bit VMULPS
         out.push_back(0x62);
@@ -617,5 +795,6 @@ public:
 };
 
 } // namespace dgtl::isa
+
 
 

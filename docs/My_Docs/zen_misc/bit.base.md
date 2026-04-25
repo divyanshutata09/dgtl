@@ -1,5 +1,16 @@
 /*
- * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/*
+ * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED IR (BIR) - STABLE FINAL
  * VERSION 4.0: TLS + SHADOW + TRANSACTION SAFE
  */

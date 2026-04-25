@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1 (RETURN FIX)
  * PILLAR 2: TRI-TIER TRANSACTIONAL STREAM & SHADOW-AWARE EMISSION
  * UNIFIED IR NODE ARCHITECTURE (Tier 1 + Tier 2 fused view)
@@ -68,7 +79,7 @@ struct alignas(32) IRNode {
 
     // --- Static Utilities ---
 
-    static constexpr uint64_t calculate_hash(OpCode op, uint32_t res, uint32_t a, uint32_t b, uint32_t c) noexcept {
+    [[nodiscard]] static constexpr uint64_t calculate_hash(OpCode op, uint32_t res, uint32_t a, uint32_t b, uint32_t c) noexcept {
         uint64_t h = static_cast<uint64_t>(op) ^ 0x9e3779b97f4a7c15ULL;
         auto mix = [&](uint32_t val) {
             h ^= (static_cast<uint64_t>(val) + 0x517cc1b727220a95ULL + (h << 6) + (h >> 2));
@@ -79,7 +90,7 @@ struct alignas(32) IRNode {
 
     // Semantic hash deliberately excludes result_id so CSE/GVN can match
     // equivalent expressions produced into different virtual registers.
-    static constexpr uint64_t calculate_semantic_hash(
+    [[nodiscard]] static constexpr uint64_t calculate_semantic_hash(
         OpCode op,
         uint32_t a,
         uint32_t b,

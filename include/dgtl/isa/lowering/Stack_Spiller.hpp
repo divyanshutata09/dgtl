@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
  * PILLAR 2: TRANSACTIONAL STREAM & SHADOW-AWARE STACK-MAPPING
  * STACK PILLER: Lexical Scope, Stack Frame Layout, & Variable Shadowing
@@ -7,12 +18,14 @@
 
 #pragma once
 #include <cstdint>
+#include <cstddef>
+#include <limits>
 #include <vector>
 #include <string_view>
 #include <optional>
 #include <unordered_map>
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 
 using dgtl::ir::OpCode;
@@ -40,6 +53,7 @@ struct alignas(16) StackSlot {
 class alignas(64) StackPiller {
 public:
     using ScopeLayer = std::unordered_map<uint64_t, StackSlot>;
+    static constexpr uint32_t STACK_ALIGNMENT = 16;
 
     explicit StackPiller(dgtl::core::DGTL_Arena& arena) 
         : m_arena(arena), m_current_frame_size(0) {
@@ -66,18 +80,42 @@ public:
      * @return The stack-relative offset.
      */
     int32_t allocate(std::string_view name, uint32_t bytes, OpCode type = OpCode::NOP) {
-        // Maintain 16-byte alignment for hardware efficiency (AVX-512/NEON)
-        m_current_frame_size = (m_current_frame_size + 15) & ~15;
-        
-        int32_t offset = -static_cast<int32_t>(m_current_frame_size + bytes);
-        m_current_frame_size += bytes;
+        if (name.empty() || bytes == 0) {
+            return 0;
+        }
+
+        // Maintain 16-byte alignment for hardware efficiency (AVX-512/NEON).
+        const uint32_t aligned_frame = align_up(m_current_frame_size, STACK_ALIGNMENT);
+        if (aligned_frame < m_current_frame_size) {
+            return 0;
+        }
+
+        if (bytes > (std::numeric_limits<uint32_t>::max)() - aligned_frame) {
+            return 0;
+        }
+
+        const uint32_t next_frame_size = aligned_frame + bytes;
+        if (next_frame_size > static_cast<uint32_t>((std::numeric_limits<int32_t>::max)())) {
+            return 0;
+        }
+
+        int32_t offset = -static_cast<int32_t>(next_frame_size);
+        m_current_frame_size = next_frame_size;
 
         uint64_t name_hash = hash_name(name);
+        uint32_t version = 1;
+        for (auto it = m_scope_stack.rbegin(); it != m_scope_stack.rend(); ++it) {
+            if (auto found = it->find(name_hash); found != it->end()) {
+                version = found->second.version + 1;
+                break;
+            }
+        }
+
         StackSlot slot{
             .offset = offset,
             .size = bytes,
             .type_hint = type,
-            .version = 1,
+            .version = version,
             .is_spill = false
         };
 
@@ -130,17 +168,28 @@ private:
     [[nodiscard]] static constexpr uint64_t hash_name(std::string_view name) noexcept {
         uint64_t hash = 0xcbf29ce484222325ULL;
         for (char c : name) {
-            hash ^= static_cast<uint64_t>(c);
+            hash ^= static_cast<uint64_t>(static_cast<unsigned char>(c));
             hash *= 0x100000001b3ULL;
         }
         return hash;
     }
+
+    [[nodiscard]] static constexpr uint32_t align_up(uint32_t value, uint32_t alignment) noexcept {
+        if (alignment == 0) {
+            return value;
+        }
+        const uint32_t mask = alignment - 1U;
+        return (value + mask) & ~mask;
+    }
 };
+
+using StackSpiller = StackPiller;
 
 } // namespace dgtl::isa
 
 /**
  * @brief Backward Compatibility Alias for DGTL-Zenith high-level logic.
  */
+
 
 

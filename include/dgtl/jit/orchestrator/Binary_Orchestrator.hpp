@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 40: HARDWARE-NATIVE GLOBAL LAYOUT (FINAL ORCHESTRATOR)
  * DESIGN PRINCIPLE: 
  * - Eliminates Cache-Line Straddling for Hot Loops.
@@ -12,7 +23,7 @@
 #include <cassert>
 #include <cstring>
 #include <cstdint>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 
 namespace dgtl::core {
@@ -46,6 +57,7 @@ public:
      */
     std::vector<uint8_t> finalize_production_binary(std::vector<BinarySegment>& segments) {
         if (segments.empty()) [[unlikely]] return {};
+        (void)ai_model;
 
         // 1. Hot-to-Cold Partitioning
         // Sorting by hotness ensures high-frequency code lives in the same TLB pages,
@@ -76,7 +88,7 @@ public:
 
             // 3. Global Branch Patching
             // Refines jump offsets based on the finalized sorted order.
-            patch_relative_jumps(seg, final_blob.size());
+            patch_relative_jumps(seg);
 
             // 4. Final Insertion Strike
             final_blob.insert(final_blob.end(), seg.machine_code.begin(), seg.machine_code.end());
@@ -115,8 +127,7 @@ private:
      * Swaps E9 (JMP rel32) with EB (JMP rel8) if the target is within 127 bytes.
      * This improves code density and reduces instruction fetch bandwidth.
      */
-    void patch_relative_jumps(BinarySegment& seg, size_t current_offset) {
-        (void)current_offset;
+    void patch_relative_jumps(BinarySegment& seg) {
         // Distill long near jumps (E9 rel32) into short jumps (EB rel8) when possible,
         // while preserving instruction footprint with trailing NOPs.
         for (size_t i = 0; i + 4 < seg.machine_code.size(); ++i) {
@@ -142,5 +153,6 @@ private:
 };
 
 } // namespace dgtl::core
+
 
 

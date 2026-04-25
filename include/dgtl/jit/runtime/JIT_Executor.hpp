@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 42: ZERO-LATENCY JIT EXECUTOR
  * FINAL FIX: Hardened W^X Memory Protection and I-Cache Sync.
  * INTEGRATION: Synchronized with Bit-Packed IR Trace-Mapping.
@@ -11,6 +22,7 @@
 #include <chrono>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <unordered_map>
 #include <stdexcept>
@@ -19,7 +31,7 @@
 #include <iostream> 
 
 // Umbrella Entry Point for IR consistency
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 // Runtime feedback for closed-loop learning
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
@@ -73,6 +85,10 @@ class alignas(64) DGTLJitExecutor {
 
 public:
     explicit DGTLJitExecutor(size_t size_mb = 128) { 
+        if (size_mb == 0 || size_mb > (std::numeric_limits<size_t>::max() / (1024u * 1024u))) {
+            throw std::runtime_error("DGTL JIT size_mb out of range");
+        }
+
         buffer_size = size_mb * 1024 * 1024;
 
         #ifdef DGTL_OS_WINDOWS
@@ -98,12 +114,57 @@ public:
         #endif
     }
 
+    DGTLJitExecutor(const DGTLJitExecutor&) = delete;
+    DGTLJitExecutor& operator=(const DGTLJitExecutor&) = delete;
+
+    DGTLJitExecutor(DGTLJitExecutor&& other) noexcept {
+        std::lock_guard<std::mutex> lock(other.jit_mtx);
+        code_buffer = other.code_buffer;
+        buffer_size = other.buffer_size;
+        cursor = other.cursor;
+        ir_trace_map = std::move(other.ir_trace_map);
+        trace_meta_map = std::move(other.trace_meta_map);
+
+        other.code_buffer = nullptr;
+        other.buffer_size = 0;
+        other.cursor = 0;
+    }
+
+    DGTLJitExecutor& operator=(DGTLJitExecutor&& other) noexcept {
+        if (this == &other) return *this;
+
+        std::scoped_lock lock(jit_mtx, other.jit_mtx);
+
+        if (code_buffer && code_buffer != (void*)-1) {
+#ifdef DGTL_OS_WINDOWS
+            VirtualFree(code_buffer, 0, MEM_RELEASE);
+#else
+            munmap(code_buffer, buffer_size);
+#endif
+        }
+
+        code_buffer = other.code_buffer;
+        buffer_size = other.buffer_size;
+        cursor = other.cursor;
+        ir_trace_map = std::move(other.ir_trace_map);
+        trace_meta_map = std::move(other.trace_meta_map);
+
+        other.code_buffer = nullptr;
+        other.buffer_size = 0;
+        other.cursor = 0;
+        return *this;
+    }
+
     /**
      * @brief Prepares binary for execution and maps it to the source IR.
      * @return A callable JitFunction pointer.
      */
     JitFunction load_and_prepare(std::span<const uint8_t> binary, const dgtl::ir::IRStream& source_ir) {
         std::lock_guard<std::mutex> lock(jit_mtx);
+
+        if (binary.empty()) [[unlikely]] {
+            return nullptr;
+        }
 
         // Alignment: 64-byte for hardware cache line efficiency
         cursor = (cursor + 63) & ~static_cast<size_t>(63);
@@ -146,9 +207,9 @@ public:
     /**
      * @brief Back-resolves a physical jump address to its original BIR stream.
      */
-    dgtl::ir::IRStream get_ir_from_address(uint64_t address) {
+    dgtl::ir::IRStream get_ir_from_address(uintptr_t address) {
         std::lock_guard<std::mutex> lock(jit_mtx);
-        auto it = ir_trace_map.find(static_cast<uintptr_t>(address));
+        auto it = ir_trace_map.find(address);
         
         if (it != ir_trace_map.end() && it->second) {
             return it->second->clone(); 
@@ -265,5 +326,6 @@ namespace dgtl::exec {
     using DGTLJitExecutor = dgtl::isa::DGTLJitExecutor;
     using JitFunction = dgtl::isa::JitFunction;
 }
+
 
 

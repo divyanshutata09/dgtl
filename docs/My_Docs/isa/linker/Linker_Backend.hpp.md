@@ -1,16 +1,28 @@
-﻿# Linker_Backend.hpp
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+# Linker_Backend.hpp
 
 Source Header: include/dgtl/isa/linker/Linker_Backend.hpp
-Last Synced: 2026-04-14 19:46:41
+Last Synced: 2026-04-20
 
 ## Vision
-This component exists to make the compiler/runtime pipeline explicit, safe, and predictable under high-performance constraints.
+Universal binary format emission engine. Produces native object files and static archives for all major platforms from DGTL IR, enabling DGTL-compiled code to link with standard system toolchains.
 
 ## Why This File Exists
-- Lower IR into target-specific representation while preserving semantic correctness and backend constraints.
-- Keep responsibilities localized so surrounding passes and backends can compose without hidden coupling.
-- Preserve correctness with explicit guardrails before optimization gains.
-- This file captures a focused subsystem contract so complexity does not leak across module boundaries.
+- Emit ELF64 relocatable objects (`.o`) with full section header table, symbol table, string tables, and `.rela.text` relocations — consumable by `ld`, `gcc`, `clang`.
+- Emit GNU `ar` static archives (`.a`) wrapping DGTL-generated ELF objects.
+- Emit COFF relocatable objects (`.obj`, `IMAGE_FILE_MACHINE_AMD64`) with file header, section header, symbol table, and string table — consumable by MSVC `link.exe` and MinGW `ld`.
+- Emit COFF archives (`.lib`) with first linker member (big-endian symbol index) — consumable by MSVC `link.exe`.
+- Keep binary format concerns isolated from ISA emission, pass management, and JIT execution.
 
 ## Core Logic
 - Inputs are validated early and non-actionable states return fast.
@@ -59,17 +71,34 @@ B --> X[Guard and Early Exit]
 - class DGTLLinker {
 - class DGTLUniversalLinker : public DGTLLinker {
 ### Structs
-- struct Elf64_Ehdr {
-- struct Elf64_Phdr {
+- struct Elf64_Ehdr { — ELF64 file header (16-byte e_ident + type/machine/entry/offsets)
+- struct Elf64_Phdr { — ELF64 program header (type/flags/offset/vaddr/paddr/filesz/memsz/align)
+- struct Elf64_Shdr { — ELF64 section header (name/type/flags/addr/offset/size/link/info/align/entsize)
+- struct Elf64_Sym { — ELF64 symbol table entry (name/info/other/shndx/value/size)
+- struct Elf64_Rela { — ELF64 relocation with addend (offset/info/addend)
+### COFF Namespace (`dgtl::exec::coff`)
+- struct FileHeader { — COFF file header (machine/numberOfSections/timeDateStamp/pointerToSymbolTable/numberOfSymbols/sizeOfOptionalHeader/characteristics)
+- struct SectionHeader { — COFF section header (name[8]/virtualSize/virtualAddress/sizeOfRawData/pointerToRawData/pointerToRelocations/pointerToLinenumbers/numberOfRelocations/numberOfLinenumbers/characteristics)
+- struct Symbol { — COFF symbol table entry (name[8]/value/sectionNumber/type/storageClass/numberOfAuxSymbols)
 
 ## Enum Catalog
-- none detected
+- ELF constants: ET_REL, EM_X86_64, SHT_PROGBITS, SHT_SYMTAB, SHT_STRTAB, SHT_RELA, SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_SECTION
+- COFF constants: IMAGE_FILE_MACHINE_AMD64 (0x8664), IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ, IMAGE_SYM_CLASS_EXTERNAL, IMAGE_SYM_CLASS_STATIC
 
 ## Function Catalog
-- inline void write_leb128(std::vector<uint8_t>& buf, uint64_t value) {
-- void emit_elf64(std::string_view path, const ir::IRStream& ir_stream) {
-- void emit_machine_code(uint8_t* dest, const ir::IRStream& stream) {
-- void emit_wasm(std::string_view path, const ir::IRStream& stream) {
+- inline void write_leb128(std::vector<uint8_t>& buf, uint64_t value) { — LEB128 encoding for WASM
+- void emit_elf64(std::string_view path, const ir::IRStream& ir_stream) { — Legacy ELF64 ET_EXEC standalone binary
+- void emit_machine_code(uint8_t* dest, const ir::IRStream& stream) { — Raw machine code generation
+- void emit_wasm(std::string_view path, const ir::IRStream& stream) { — WASM module emission
+- bool build_elf_relocatable(std::vector<uint8_t>& out, const ir::IRStream& stream, const char* symbol_name) { — ELF64 ET_REL with 6 sections (NULL, .text, .shstrtab, .strtab, .symtab, .rela.text)
+- bool emit_elf_relocatable(std::string_view path, const ir::IRStream& stream, const char* symbol_name) { — File-writing wrapper for ELF .o
+- bool build_static_archive(std::vector<uint8_t>& out, const ir::IRStream& stream, const char* member_name) { — GNU ar archive wrapping ELF .o
+- bool emit_static_archive(std::string_view path, const ir::IRStream& stream, const char* member_name) { — File-writing wrapper for .a
+- bool build_coff_relocatable(std::vector<uint8_t>& out, const ir::IRStream& stream, const char* symbol_name) { — COFF .obj (IMAGE_FILE_MACHINE_AMD64)
+- bool emit_coff_relocatable(std::string_view path, const ir::IRStream& stream, const char* symbol_name) { — File-writing wrapper for .obj
+- bool build_coff_archive(std::vector<uint8_t>& out, const ir::IRStream& stream, const char* member_name, const char* symbol_name) { — COFF .lib with first linker member
+- bool emit_coff_archive(std::string_view path, const ir::IRStream& stream, const char* member_name, const char* symbol_name) { — File-writing wrapper for .lib
+- static uint32_t to_big_endian_u32(uint32_t val) { — Helper for COFF first linker member (big-endian symbol offsets)
 
 ## Design Decisions and Whys
 - Explicit typing across IR nodes and flags reduces hidden semantic drift.

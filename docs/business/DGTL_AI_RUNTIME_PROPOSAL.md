@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL Proposal For AI Runtime And Execution Teams
 
 ## Proposal Overview
@@ -25,7 +36,7 @@ Typical needs include:
 - portable and native target coverage
 - support for backend validation before production deployment
 
-DGTL gives those teams a focused backend layer that can be used to lower internal plans into DGTL IR, run backend passes, and emit validated output across ARM64, x64, NASM, and WASM.
+DGTL gives those teams a focused backend layer that can be used to lower internal plans into DGTL IR, run backend passes, and emit validated output across ARM64, x64, NASM, WASM, native object files (.o/.obj), and static libraries (.a/.lib).
 
 The recommended first step is a tightly scoped pilot on one representative graph or execution workload and one primary target.
 

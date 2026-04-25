@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 28: SPECULATIVE DEAD CODE ELIMINATION (TRANSACTIONAL)
  * PILLAR 2: TRANSACTIONAL IR (DOUBLE-BUFFERED SHADOW STREAMS)
  * PILLAR 3: THE SENTINEL (BIT-LEVEL INVARIANT CHECK)
@@ -9,7 +20,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp" 
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
@@ -52,19 +63,20 @@ public:
     void execute(ir::IRStream& stream) override {
         if (stream.size() == 0) [[unlikely]] return;
 
+        if (!internal_model) {
+            (void)stream.validate_shadow_integrity();
+            return;
+        }
+
         // PILLAR 2: Enter Transactional Mode
         stream.begin_transaction();
 
-        bool success = false;
-        if (internal_model) {
-            success = prune_and_reorder_transactional(stream, *internal_model);
-        } else {
-            // If no AI model, we simply validate existing stream integrity
-            success = stream.validate_shadow_integrity();
-        }
+        const bool success = prune_and_reorder_transactional(stream, *internal_model);
 
         // PILLAR 3: THE SENTINEL - Final validation before commit
-        if (!success || !stream.validate_shadow_integrity()) {
+        if (!success) {
+            stream.rollback_transaction();
+        } else if (!stream.validate_shadow_integrity()) {
             stream.rollback_transaction();
         } else {
             stream.commit_transaction();
@@ -135,10 +147,13 @@ private:
     void finalize_shadow_node(ir::IRStream& s, uint32_t idx) noexcept {
         ir::IRAtom& atom = s.get_shadow_atom(idx);
         ir::IRCore& core = s.get_shadow_core(idx);
-        
-        // Re-calculate Master Sentinel Hash to reflect reordered state
-        core.intent_hash = core::DGTLFormalVerifier::compute_master_hash_bits(
-            atom.opcode, core.op_a, core.op_b, core.op_c
+
+        core.intent_hash = ir::IRNode::calculate_hash(
+            atom.opcode,
+            core.result_id,
+            core.op_a,
+            core.op_b,
+            core.op_c
         );
     }
 
@@ -172,10 +187,10 @@ private:
 
             s_atom.opcode = ir::OpCode::NOP;
             s_atom.flags = ir::Flags::NONE;
-            s_core.result_id = 0;
+            s_core.result_id = ir::INVALID_SLOT;
             s_core.op_a = 0;
             s_core.op_b = 0;
-            s_core.op_c = ir::INVALID_SLOT; // Consistent with BIR Return Fix
+            s_core.op_c = 0;
             
             finalize_shadow_node(s, cursor);
             cursor++;
@@ -207,5 +222,6 @@ private:
 };
 
 } // namespace dgtl::pass
+
 
 

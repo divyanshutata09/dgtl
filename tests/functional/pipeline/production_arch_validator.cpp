@@ -1,3 +1,14 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include "dgtl/all.hpp"
 
 #include <cassert>
@@ -9,7 +20,7 @@
 #include <vector>
 
 /**
- * DGTL-MLIR-X: PRODUCTION GRADE ARCHITECTURAL VALIDATOR
+ * DGTL: PRODUCTION GRADE ARCHITECTURAL VALIDATOR
  * Target: ARM64 Backend (AArch64)
  * Metric: Better-than-LLVM Efficiency and Traceability (project-local heuristic)
  */
@@ -246,7 +257,7 @@ void test_traceability_integrity(ValidatorContext& ctx) {
 }
 
 void run_production_arch_validator() {
-    std::cout << "--- DGTL-MLIR-X PRODUCTION SMOKE PIPELINE ---" << std::endl;
+    std::cout << "--- DGTL PRODUCTION SMOKE PIPELINE ---" << std::endl;
 
     ValidatorContext ctx;
 

@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 46: STRIKE ORCHESTRATOR (THE COMMAND CENTER)
  * PILLAR 4: HARDWARE-NATIVE STRIKE
  * FINAL UPDATE: Fully Synchronized Namespaces & Type Resolution
@@ -10,7 +21,7 @@
 
 // Core Infrastructure
 #include "dgtl/core/Context.hpp"
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 // Cross-Module includes
 #include "dgtl/isa/lowering/Stack_Spiller.hpp"
@@ -72,7 +83,9 @@ public:
     dgtl::exec::StrikeMetrics fire_strike(ir::IRStream& stream, void* data_payload = nullptr) {
         // Validation using BitPacked_IR.hpp interface
         if (stream.is_null() || stream.size() == 0) [[unlikely]] {
-            return dgtl::exec::StrikeMetrics{0, STRIKE_INVALID_STREAM}; 
+            dgtl::exec::StrikeMetrics metrics{};
+            metrics.status_code = STRIKE_INVALID_STREAM;
+            return metrics;
         }
 
         // 1. OPTIMIZATION PHASE: Solve Register Constraints
@@ -83,14 +96,18 @@ public:
         machine_code_buffer.clear(); 
         emitter.process_stream(stream, machine_code_buffer);
         if (machine_code_buffer.empty()) {
-            return dgtl::exec::StrikeMetrics{0, STRIKE_EMIT_EMPTY};
+            dgtl::exec::StrikeMetrics metrics{};
+            metrics.status_code = STRIKE_EMIT_EMPTY;
+            return metrics;
         }
 
         // 3. INJECTION PHASE: Move to Huge-Page Aligned Arena
         // Copies the scratch buffer into the executable memory segment.
         size_t injected_size = strike_runner.inject_code(arena, machine_code_buffer);
         if (injected_size == 0) {
-            return dgtl::exec::StrikeMetrics{0, STRIKE_INJECT_FAILED};
+            dgtl::exec::StrikeMetrics metrics{};
+            metrics.status_code = STRIKE_INJECT_FAILED;
+            return metrics;
         }
 
         // 4. EXECUTION PHASE: The JIT Jump
@@ -102,13 +119,13 @@ public:
         if (!stream.is_null() && stream.size() > 0) {
             // Use the injected code address as function ID.
             uintptr_t function_id = strike_runner.last_injected_address();
-            auto feedback = executor.collect_feedback(function_id);
-            
-            // Update cost model for each IR node in the stream
-            for (size_t i = 0; i < stream.size(); ++i) {
-                const auto* node = &stream.get_node_ref(i);
-                if (node) {
-                    cost_model.update_with_feedback(*node, feedback);
+            if (function_id != 0) {
+                auto feedback = executor.collect_feedback(function_id);
+
+                // Update cost model for each IR node in the stream
+                for (size_t i = 0; i < stream.size(); ++i) {
+                    const auto node = stream.get_node_readonly(i);
+                    cost_model.update_with_feedback(node, feedback);
                 }
             }
         }
@@ -148,5 +165,6 @@ public:
 };
 
 } // namespace dgtl::core
+
 
 

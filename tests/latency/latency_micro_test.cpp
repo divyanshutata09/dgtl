@@ -1,6 +1,17 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <intrin.h>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 
 void run_latency_micro_test() {
@@ -29,4 +40,7 @@ void run_latency_micro_test() {
     std::cout << "\n\033[1;33m[DGTL-PROFILER]\033[0m GVN Transaction Latency: " << (end - start) << " cycles" << std::endl;
     return;
 }
+
+
+
 

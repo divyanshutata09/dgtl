@@ -1,10 +1,104 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include "dgtl/analysis/polyhedral/Scop_Detector.hpp"
 
+#include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <numeric>
+#include <thread>
 #include "dgtl/ir/base/IR_Traits.hpp"
 
 namespace dgtl::analysis::polyhedral {
+
+namespace {
+
+uint32_t compute_induction_depth_signal(const graph::Region& region) noexcept {
+    std::unordered_set<uint32_t> induction_signal;
+    induction_signal.reserve(region.nodes.size());
+
+    for (const auto& node : region.nodes) {
+        if ((node.opcode == ir::OpCode::ADD_I32 || node.opcode == ir::OpCode::SUB_I32) &&
+            node.result_id != 0 &&
+            (node.op_a == node.result_id || node.op_b == node.result_id)) {
+            induction_signal.insert(node.result_id);
+        }
+    }
+
+    return static_cast<uint32_t>(induction_signal.size());
+}
+
+class LoopDepthWorker {
+public:
+    LoopDepthWorker() {
+        worker_ = std::thread([this]() { run(); });
+    }
+
+    ~LoopDepthWorker() {
+        stop_.store(true, std::memory_order_release);
+        request_ready_.store(true, std::memory_order_release);
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    uint32_t evaluate(const graph::Region& region) noexcept {
+        region_ = &region;
+        response_ready_.store(false, std::memory_order_release);
+        request_ready_.store(true, std::memory_order_release);
+
+        while (!response_ready_.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+
+        return result_.load(std::memory_order_acquire);
+    }
+
+private:
+    void run() noexcept {
+        while (!stop_.load(std::memory_order_acquire)) {
+            if (!request_ready_.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+                continue;
+            }
+
+            request_ready_.store(false, std::memory_order_release);
+            const graph::Region* local_region = region_;
+            if (local_region == nullptr) {
+                result_.store(0, std::memory_order_release);
+                response_ready_.store(true, std::memory_order_release);
+                continue;
+            }
+
+            const uint32_t signal = compute_induction_depth_signal(*local_region);
+            result_.store(signal, std::memory_order_release);
+            response_ready_.store(true, std::memory_order_release);
+        }
+    }
+
+    std::thread worker_;
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> request_ready_{false};
+    std::atomic<bool> response_ready_{false};
+    std::atomic<uint32_t> result_{0};
+    const graph::Region* region_ = nullptr;
+};
+
+LoopDepthWorker& loop_depth_worker() {
+    static LoopDepthWorker worker;
+    return worker;
+}
+
+} // namespace
 
 // ============================================================================
 // PUBLIC API
@@ -172,27 +266,21 @@ bool ScopDetector::can_fuse_affine(
 }
 
 uint32_t ScopDetector::detect_loop_depth(const graph::Region& region) const {
-    // Heuristic: Count backward branches as a proxy for loop nesting.
-    // In BIR, a backward branch (target < current) indicates a loop.
+    // Heuristic blend:
+    // 1) Branch-based signal: control flow suggests at least one loop.
+    // 2) Induction-variable signal from lock-free worker indicates nesting.
+    uint32_t branch_depth_signal = 0;
 
-    uint32_t loop_count = 0;
-    std::unordered_set<uint32_t> back_branch_targets;
-
-    for (size_t i = 0; i < region.nodes.size(); ++i) {
-        const auto& node = region.nodes[i];
-
-        // Check for conditional branches (BRANCH_COND may imply loop structure)
+    for (const auto& node : region.nodes) {
         if (node.opcode == ir::OpCode::BRANCH_COND || node.opcode == ir::OpCode::BRANCH) {
-            // PLACEHOLDER: In a full implementation, resolve branch targets from metadata.
-            // For now, assume BRANCH_COND at end of region hints at loop.
-            if (i == region.nodes.size() - 1) {
-                loop_count++;
-            }
+            branch_depth_signal = 1;
         }
     }
 
-    // Cap loop depth
-    return std::min(loop_count, kMaxLoopDepth);
+    const uint32_t induction_depth_signal =
+        std::min(loop_depth_worker().evaluate(region), kMaxLoopDepth);
+    const uint32_t combined_depth = std::max(branch_depth_signal, induction_depth_signal);
+    return std::min(combined_depth, kMaxLoopDepth);
 }
 
 bool ScopDetector::check_affine_subscripts(
@@ -382,3 +470,4 @@ double ScopDetector::estimate_memory_footprint(
 }
 
 } // namespace dgtl::analysis::polyhedral
+

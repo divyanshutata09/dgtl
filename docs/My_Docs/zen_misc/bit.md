@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/ir/base/IR_StreamCloneTransn.hpp"
 #include <immintrin.h> 

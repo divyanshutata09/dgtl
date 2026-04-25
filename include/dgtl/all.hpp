@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #pragma once
 
 // Core (foundational)
@@ -8,6 +19,7 @@
 #include "dgtl/core/Symbol_Table.hpp"
 #include "dgtl/core/Target.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
+#include "dgtl/api/Backend_Driver_API.hpp"
 
 // IR (low-level to umbrella)
 #include "dgtl/ir/base/IR_Types.hpp"
@@ -18,13 +30,17 @@
 #include "dgtl/ir/base/IR_Stream.hpp"
 #include "dgtl/ir/evolution/IR_Evolver.hpp"
 #include "dgtl/ir/evolution/Mutation_Strategies.hpp"
-#include "dgtl/ir/runtime.hpp/TLS_Flush_Merge.hpp"
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/runtime/TLS_Flush_Merge.hpp"
+#include "dgtl/ir/Global_IR.hpp"
+
+// Frontend integration boundary (stable public API)
+#include "dgtl/api/Api_all.hpp"
 
 // Analysis
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/analysis/dataflow/Liveness_Analyzer.hpp"
 #include "dgtl/analysis/dataflow/Memory_Dependency_Smasher.hpp"
+#include "dgtl/analysis/polyhedral/Scop_Detector.hpp"
 #include "dgtl/analysis/profiling/Speculative_Value_Profiler.hpp"
 
 // Graph

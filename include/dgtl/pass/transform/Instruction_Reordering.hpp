@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #pragma once
 
 #include <vector>
@@ -5,8 +16,8 @@
 #include <cstdint>
 #include <memory>
 
-// Core DGTL-MLIR-X Headers
-#include "dgtl/ir/base/Global_IR.hpp"
+// Core DGTL Headers
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/analysis/dataflow/Memory_Dependency_Smasher.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
@@ -33,11 +44,11 @@ struct IR_Op {
         has_side_effects = (node.flags & ir::Flags::HAS_SIDE_EFFECTS);
 
         // Extract Operand dependencies for RAW/WAR/WAW analysis
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0) reads.push_back(node.op_a);
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0) reads.push_back(node.op_b);
-        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0) reads.push_back(node.op_c);
+        if (node.op_a != ir::INVALID_SLOT) reads.push_back(node.op_a);
+        if (node.op_b != ir::INVALID_SLOT) reads.push_back(node.op_b);
+        if (node.op_c != ir::INVALID_SLOT) reads.push_back(node.op_c);
         
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0) {
+        if (node.result_id != ir::INVALID_SLOT) {
             writes.push_back(node.result_id);
         }
     }
@@ -56,6 +67,7 @@ public:
     explicit Instruction_Reordering_Pass(
         analysis::DGTLMemorySmasher& smasher,
         analysis::DGTLAICostModel* ai = nullptr)
+        noexcept
         : m_smasher(smasher), m_ai_model(ai) {}
 
     /**

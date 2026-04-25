@@ -1,13 +1,24 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #pragma once
 #include <optional>
 #include <cstdint>
 #include <cstring>
 #include <atomic>
 #include <vector>
-#include <algorithm>   // ✅ for std::fill
-#include <cstddef>     // ✅ for size_t
+#include <algorithm>   // Ã¢Å“â€¦ for std::fill
+#include <cstddef>     // Ã¢Å“â€¦ for size_t
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 
 namespace dgtl::pass {
@@ -15,7 +26,7 @@ namespace dgtl::pass {
 class DGTLInstructionFolder {
     dgtl::core::DGTLFormalVerifier& formal_verifier;
 
-    // 🔥 ID → constant tracking
+    // Ã°Å¸â€Â¥ ID Ã¢â€ â€™ constant tracking
     std::vector<std::optional<uint64_t>> const_table;
 
 public:
@@ -121,10 +132,13 @@ private:
         ir::IRAtom& atom = s.get_shadow_atom(idx);
         ir::IRCore& core = s.get_shadow_core(idx);
 
-        core.intent_hash =
-            dgtl::core::DGTLFormalVerifier::compute_master_hash_bits(
-                atom.opcode, core.op_a, core.op_b, core.op_c
-            );
+        core.intent_hash = ir::IRNode::calculate_hash(
+            atom.opcode,
+            core.result_id,
+            core.op_a,
+            core.op_b,
+            core.op_c
+        );
     }
 
     std::optional<dgtl::core::ConstantResult>
@@ -200,4 +214,5 @@ private:
 };
 
 } // namespace dgtl::pass
+
 

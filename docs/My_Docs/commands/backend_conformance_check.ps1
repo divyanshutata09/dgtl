@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 
 $commandsDir = $PSScriptRoot
 $myDocsDir = Split-Path -Parent $commandsDir
@@ -44,6 +45,12 @@ function Normalize-ConformanceText {
 
     $normalized = $Text -replace "`r", ""
     $normalized = [regex]::Replace($normalized, '(avg_us|opt_us|emit_us|total_us|exec_us)=[0-9]+(?:\.[0-9]+)?', '$1=<normalized>')
+    $normalized = [regex]::Replace($normalized, '(?m)^\s*\[(PASS|FAIL)\]\s+constant-fold\s+::.*$', '  [$1] constant-fold :: <normalized>')
+    $normalized = [regex]::Replace($normalized, '(?m)^\s*\[(PASS|FAIL)\]\s+ai-cost\s+::.*$', '  [$1] ai-cost :: <normalized>')
+    $normalized = [regex]::Replace($normalized, '(?m)^\s*\[(PASS|FAIL)\]\s+latency\s+::.*$', '  [$1] latency :: <normalized>')
+    $normalized = [regex]::Replace($normalized, '(?m)^(00\s+61\s+73\s+6D)(?:\s+[0-9A-Fa-f]{2}){4,}\s*$', '$1 <hex-dump>')
+    $normalized = [regex]::Replace($normalized, '(?m)^([0-9A-Fa-f]{2}(?:\s+[0-9A-Fa-f]{2}){7,})\s*$', '<hex-dump>')
+    $normalized = [regex]::Replace($normalized, 'output_size=[0-9]+', 'output_size=<normalized>')
     return $normalized.TrimEnd()
 }
 
@@ -106,11 +113,41 @@ foreach ($c in $checks) {
     $golden = Join-Path $goldenDir "$($c.Name).golden.txt"
     Write-Host "[CHECK] $($c.Name)"
 
-    $output = & $exe @($c.Args) 2>&1 | Out-String
+    $stdoutTmp = Join-Path $logsDir "conformance_$($c.Name).stdout.tmp"
+    $stderrTmp = Join-Path $logsDir "conformance_$($c.Name).stderr.tmp"
+    if (Test-Path $stdoutTmp) { Remove-Item $stdoutTmp -Force }
+    if (Test-Path $stderrTmp) { Remove-Item $stderrTmp -Force }
+
+    $proc = Start-Process -FilePath $exe `
+        -ArgumentList @($c.Args) `
+        -NoNewWindow `
+        -Wait `
+        -PassThru `
+        -RedirectStandardOutput $stdoutTmp `
+        -RedirectStandardError $stderrTmp
+
+    $stdoutText = if (Test-Path $stdoutTmp) { Get-Content -Path $stdoutTmp -Raw } else { '' }
+    $stderrText = if (Test-Path $stderrTmp) { Get-Content -Path $stderrTmp -Raw } else { '' }
+
+    $output = $stdoutText
+    if ($stderrText -ne '') {
+        if ($output -ne '' -and -not $output.EndsWith("`n")) {
+            $output += "`n"
+        }
+        $output += $stderrText
+    }
+
+    $backendExitCode = $proc.ExitCode
     $normalized = Normalize-ConformanceText -Text $output
     ($output -replace "`r","") | Set-Content -Path $log
 
     if ($UpdateGolden) {
+        if ($backendExitCode -ne 0) {
+            Write-Host "  backend exit code: $backendExitCode" -ForegroundColor Red
+            Write-Host "  FAIL (see $log)" -ForegroundColor Red
+            $failed += $c.Name
+            continue
+        }
         $normalized | Set-Content -Path $golden
         Write-Host "  golden updated: $golden" -ForegroundColor Yellow
         continue
@@ -126,6 +163,11 @@ foreach ($c in $checks) {
     $goldenCompare = Normalize-ConformanceText -Text $goldenText
 
     $ok = $true
+
+    if ($backendExitCode -ne 0) {
+        Write-Host "  backend exit code: $backendExitCode" -ForegroundColor Red
+        $ok = $false
+    }
 
     if ($normalized -ne $goldenCompare) {
         Write-Host "  golden mismatch" -ForegroundColor Red

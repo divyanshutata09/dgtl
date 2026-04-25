@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 26: INTEGRATED FORMAL VERIFICATION LAYER (SENTINEL-ENABLED)
  * VERSION 3.2: TITAN-STABLE (CROSS-PASS CONSISTENCY UPGRADE)
  *
@@ -18,7 +29,7 @@
 #include <cstring>
 #include <cstdint>
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 namespace dgtl::core {
 
@@ -124,7 +135,7 @@ public:
                 return ConstantResult{ node.op_a / node.op_b, 0 };
 
             case ir::OpCode::SHL_I32:
-                return ConstantResult{ node.op_a << node.op_b, 0 };
+                return ConstantResult{ node.op_a << (node.op_b & 31u), 0 };
 
             case ir::OpCode::ADD_F32: {
                 float fa, fb;
@@ -150,7 +161,7 @@ public:
 
         ir::IRNode opt = node;
 
-        // MUL → SHL (power-of-2)
+        // MUL ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ SHL (power-of-2)
         if (node.opcode == ir::OpCode::MUL_I32) {
             if ((node.flags & ir::Flags::IS_CONST) ||
                 (node.flags & ir::Flags::IS_SPEC_CONST)) {
@@ -165,7 +176,7 @@ public:
             }
         }
 
-        // XOR x,x → 0
+        // XOR x,x ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ 0
         if (node.opcode == ir::OpCode::XOR_I32 && node.op_a == node.op_b) {
             opt.opcode = ir::OpCode::LOAD_IMM;
             opt.op_a = 0;
@@ -176,7 +187,7 @@ public:
             return opt;
         }
 
-        // ADD x,0 → x
+        // ADD x,0 ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ x
         if (node.opcode == ir::OpCode::ADD_I32 && node.op_b == 0) {
             opt.opcode = ir::OpCode::NOP;
             opt.flags |= ir::Flags::IS_OPTIMIZED;
@@ -215,10 +226,28 @@ public:
         uint32_t a,
         uint32_t b) const noexcept
     {
+        const size_t stream_size = s.size();
+        if (a >= stream_size || b >= stream_size) [[unlikely]] {
+            return false;
+        }
+
         const auto& A = s.get_core_readonly(a);
         const auto& B = s.get_core_readonly(b);
 
-        return (A.op_a == B.op_a && A.op_b != B.op_b);
+        if (A.op_a == ir::INVALID_SLOT || B.op_a == ir::INVALID_SLOT) {
+            return false;
+        }
+
+        // Distinct base pointers are considered disjoint.
+        if (A.op_a != B.op_a) {
+            return true;
+        }
+
+        // Same base: treat as disjoint only when byte offsets are at least 4 bytes apart.
+        const uint32_t off_a = A.op_b;
+        const uint32_t off_b = B.op_b;
+        const uint32_t delta = (off_a > off_b) ? (off_a - off_b) : (off_b - off_a);
+        return delta >= 4u;
     }
 
     [[nodiscard]] bool is_contiguous(
@@ -226,8 +255,21 @@ public:
         uint32_t a,
         uint32_t b) const noexcept
     {
+        const size_t stream_size = s.size();
+        if (a >= stream_size || b >= stream_size) [[unlikely]] {
+            return false;
+        }
+
         const auto& A = s.get_core_readonly(a);
         const auto& B = s.get_core_readonly(b);
+
+        if (A.op_a == ir::INVALID_SLOT || B.op_a == ir::INVALID_SLOT) {
+            return false;
+        }
+
+        if (A.op_b > (UINT32_MAX - 4u)) {
+            return false;
+        }
 
         return (A.op_a == B.op_a) && (B.op_b == A.op_b + 4);
     }
@@ -268,8 +310,16 @@ private:
             (node.flags & ir::Flags::IS_CONST) ||
             (node.flags & ir::Flags::IS_SPEC_CONST);
 
-        if (node.opcode == ir::OpCode::LOAD_IMM || is_const) {
-            r.fixed_bits = node.op_a;
+        if (node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::IMMEDIATE) {
+            // DGTL encoding: op_a=high32, op_b=low32 for immediate payload.
+            r.fixed_bits = (static_cast<uint64_t>(node.op_a) << 32) |
+                           static_cast<uint64_t>(node.op_b);
+            r.unknown_mask = 0;
+            return r;
+        }
+
+        if (is_const) {
+            r.fixed_bits = static_cast<uint64_t>(node.op_a);
             r.unknown_mask = 0;
             return r;
         }
@@ -292,4 +342,5 @@ private:
 };
 
 } // namespace dgtl::core
+
 

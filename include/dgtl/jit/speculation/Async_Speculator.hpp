@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 36: ASYNC SPECULATIVE RE-OPTIMIZER (TRANSACTIONAL V2)
  * PILLAR 2: SHADOW-VALIDATION & ZERO-CORRUPTION ROLLBACK
  * PERFORMANCE: Non-blocking background strikes with AVX-512 Validation hooks.
@@ -13,9 +24,10 @@
 #include <mutex>
 #include <condition_variable>
 #include <unordered_map>
+#include <cstddef>
 
 // Core DGTL/DGTL Includes
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/jit/runtime/JIT_Executor.hpp"
 
 namespace dgtl::jit {
@@ -84,7 +96,16 @@ public:
     void speculate_branch(const ir::IRStream& stream, uint32_t target_node_idx) {
         {
             std::lock_guard<std::mutex> lock(m_registry_mtx);
-            if (m_registry.contains(target_node_idx)) return;
+            auto it = m_registry.find(target_node_idx);
+            if (it != m_registry.end()) {
+                const uint8_t state = it->second ? it->second->tx_status.load(std::memory_order_acquire) : 2;
+                // Pending or already validated: do not enqueue duplicate work.
+                if (state == 0 || state == 1) {
+                    return;
+                }
+                // Rejected/failed entry can be retried with a fresh cache object.
+                m_registry.erase(it);
+            }
             m_registry[target_node_idx] = std::make_shared<SpeculativeCache>();
         }
 
@@ -147,19 +168,33 @@ private:
             if (strike_success) [[likely]] {
                 if (validate_ir_invariants(shadow_stream)) {
                     std::vector<uint8_t> machine_code = emit_speculative_code(shadow_stream);
-                    dgtl::exec::JitFunction func = m_jit_engine.load_and_prepare(machine_code, shadow_stream);
+                    dgtl::exec::JitFunction func = machine_code.empty()
+                        ? nullptr
+                        : m_jit_engine.load_and_prepare(machine_code, shadow_stream);
 
-                    if (func) {
-                        std::lock_guard<std::mutex> lock(m_registry_mtx);
-                        auto entry = m_registry[target_idx];
-                        if (entry) {
+                    std::lock_guard<std::mutex> lock(m_registry_mtx);
+                    auto it = m_registry.find(target_idx);
+                    if (it != m_registry.end() && it->second) {
+                        auto& entry = it->second;
+                        if (func) {
                             entry->code_ptr.store(func, std::memory_order_release);
                             entry->tx_status.store(1, std::memory_order_release); // COMMIT SUCCESS
+                        } else {
+                            entry->tx_status.store(2, std::memory_order_release); // REJECTED
                         }
                     }
                 } else {
                     std::lock_guard<std::mutex> lock(m_registry_mtx);
-                    m_registry[target_idx]->tx_status.store(2, std::memory_order_release); // REJECTED
+                    auto it = m_registry.find(target_idx);
+                    if (it != m_registry.end() && it->second) {
+                        it->second->tx_status.store(2, std::memory_order_release); // REJECTED
+                    }
+                }
+            } else {
+                std::lock_guard<std::mutex> lock(m_registry_mtx);
+                auto it = m_registry.find(target_idx);
+                if (it != m_registry.end() && it->second) {
+                    it->second->tx_status.store(2, std::memory_order_release); // REJECTED
                 }
             }
         }
@@ -173,16 +208,14 @@ private:
             return false;
         }
 
-        ir::IRTransactionGuard tx(stream);
-
         // Mark target node as optimized and refresh its identity hash before passes.
-        auto& anchor = stream.get_node_ref(start_idx);
+        auto anchor = stream.get_node(start_idx);
         anchor.flags |= ir::Flags::IS_OPTIMIZED;
         anchor.refresh_intent_hash();
+        stream.set_node(start_idx, anchor);
 
         stream.perform_gvn();
         stream.perform_dead_code_elimination();
-        tx.commit();
         return true;
     }
 
@@ -192,12 +225,12 @@ private:
      */
     bool validate_ir_invariants(const ir::IRStream& stream) {
         const size_t count = stream.size();
-        for (uint32_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             // Using get_node(i) to ensure bit-packed getters are invoked correctly.
             const ir::IRNode node = stream.get_node(i);
             
             // Check for uninitialized result IDs in active instructions.
-            if (node.result_id == 0 && node.opcode != ir::OpCode::NOP) [[unlikely]] {
+            if (node.result_id == ir::INVALID_SLOT && node.opcode != ir::OpCode::NOP) [[unlikely]] {
                 return false; 
             }
         }
@@ -222,5 +255,6 @@ private:
 namespace dgtl::opt {
     using DGTLAsyncSpeculator = dgtl::jit::AsyncSpeculator;
 }
+
 
 

@@ -1,8 +1,19 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <vector>
 #include <intrin.h>
-#include "dgtl/ir/base/Global_IR.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
+#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/isa/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 #include "dgtl/pipeline/Functional_Pipeline_Probes.hpp"
@@ -44,6 +55,10 @@ void run_reg_exhaustion_test() {
 
     return;
 }
+
+
+
+
 
 
 

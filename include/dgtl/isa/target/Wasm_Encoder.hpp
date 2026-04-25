@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 18: HIGH-PERFORMANCE WASM BINARY ENCODER
  * DESIGN PRINCIPLE: 
  * Direct Register-to-Stack Mapping for WebAssembly.
@@ -12,12 +23,15 @@
 #include <algorithm>
 #include <functional> 
 #include <string_view> 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include <limits>
+#include "dgtl/ir/Global_IR.hpp"
 
 namespace dgtl::exec {
 
 class DGTLWasmEncoder {
     std::vector<uint8_t> _binary_buffer;
+    static constexpr uint32_t kDefaultLocals = 32;
+    static constexpr uint32_t kMaxWasmLocals = 65536;
 
 public:
     /**
@@ -77,10 +91,12 @@ public:
             // Local Definitions: Mapping IR Registers to WASM Locals
             // We reserve locals up to the max_id found in the stream
             uint32_t max_reg = stream.get_max_id();
-            if (max_reg == ir::INVALID_SLOT) max_reg = 32; // Default floor
+            if (max_reg == ir::INVALID_SLOT) max_reg = kDefaultLocals - 1; // Default floor
+            max_reg = std::min(max_reg, kMaxWasmLocals - 1);
+            const uint32_t local_count = max_reg + 1;
             
             this->emit_leb128_to(body, 1);           // 1 local group
-            this->emit_leb128_to(body, max_reg + 1); // count
+            this->emit_leb128_to(body, local_count); // count
             body.push_back(0x7F);                   // i32 type
 
             for (size_t i = 0; i < stream.size(); ++i) {
@@ -92,6 +108,10 @@ public:
                 
                 switch (node.opcode) {
                     case ir::OpCode::LOAD_IMM:
+                        if (!this->is_valid_local(node.result_id, max_reg)) {
+                            body.push_back(0x01);
+                            break;
+                        }
                         body.push_back(0x41); // i32.const
                         this->emit_leb128_to(body, node.op_b);
                         body.push_back(0x21); // local.set
@@ -99,6 +119,10 @@ public:
                         break;
 
                     case ir::OpCode::REG_MOVE:
+                        if (!this->is_valid_local(node.op_a, max_reg) || !this->is_valid_local(node.result_id, max_reg)) {
+                            body.push_back(0x01);
+                            break;
+                        }
                         body.push_back(0x20); // local.get
                         this->emit_leb128_to(body, node.op_a);
                         body.push_back(0x21); // local.set
@@ -106,22 +130,58 @@ public:
                         break;
 
                     case ir::OpCode::ADD_I32:
-                        this->emit_binary_op(body, 0x6A, node); // i32.add
+                        this->emit_binary_op(body, 0x6A, node, max_reg); // i32.add
                         break;
 
                     case ir::OpCode::SUB_I32:
-                        this->emit_binary_op(body, 0x6B, node); // i32.sub
+                        this->emit_binary_op(body, 0x6B, node, max_reg); // i32.sub
                         break;
 
                     case ir::OpCode::MUL_I32:
-                        this->emit_binary_op(body, 0x6C, node); // i32.mul
+                        this->emit_binary_op(body, 0x6C, node, max_reg); // i32.mul
+                        break;
+
+                    case ir::OpCode::DIV_I32:
+                        this->emit_binary_op(body, 0x6D, node, max_reg); // i32.div_s
+                        break;
+
+                    case ir::OpCode::MOD_I32:
+                        this->emit_binary_op(body, 0x6F, node, max_reg); // i32.rem_s
+                        break;
+
+                    case ir::OpCode::CMP_EQ_I32:
+                        this->emit_binary_op(body, 0x46, node, max_reg); // i32.eq
+                        break;
+
+                    case ir::OpCode::CMP_NE_I32:
+                        this->emit_binary_op(body, 0x47, node, max_reg); // i32.ne
+                        break;
+
+                    case ir::OpCode::CMP_LT_I32:
+                        this->emit_binary_op(body, 0x48, node, max_reg); // i32.lt_s
+                        break;
+
+                    case ir::OpCode::CMP_LE_I32:
+                        this->emit_binary_op(body, 0x4C, node, max_reg); // i32.le_s
+                        break;
+
+                    case ir::OpCode::CMP_GT_I32:
+                        this->emit_binary_op(body, 0x4A, node, max_reg); // i32.gt_s
+                        break;
+
+                    case ir::OpCode::CMP_GE_I32:
+                        this->emit_binary_op(body, 0x4E, node, max_reg); // i32.ge_s
                         break;
 
                     case ir::OpCode::AND_I32:
-                        this->emit_binary_op(body, 0x71, node); // i32.and
+                        this->emit_binary_op(body, 0x71, node, max_reg); // i32.and
                         break;
 
                     case ir::OpCode::LOAD:
+                        if (!this->is_valid_local(node.op_a, max_reg) || !this->is_valid_local(node.result_id, max_reg)) {
+                            body.push_back(0x01);
+                            break;
+                        }
                         body.push_back(0x20); // local.get (addr)
                         this->emit_leb128_to(body, node.op_a);
                         body.push_back(0x28); // i32.load
@@ -132,6 +192,10 @@ public:
                         break;
 
                     case ir::OpCode::STORE:
+                        if (!this->is_valid_local(node.op_a, max_reg) || !this->is_valid_local(node.op_b, max_reg)) {
+                            body.push_back(0x01);
+                            break;
+                        }
                         body.push_back(0x20); // local.get (addr)
                         this->emit_leb128_to(body, node.op_a);
                         body.push_back(0x20); // local.get (val)
@@ -142,7 +206,7 @@ public:
                         break;
 
                     case ir::OpCode::RET:
-                        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0) {
+                        if (node.op_a != ir::INVALID_SLOT && this->is_valid_local(node.op_a, max_reg)) {
                             uint64_t imm = 0;
                             if (this->resolve_ret_immediate(stream, node.op_a, imm)) {
                                 body.push_back(0x41); // i32.const
@@ -163,6 +227,45 @@ public:
                         body.push_back(0x01); // nop
                         break;
 
+                    case ir::OpCode::BRANCH:
+                    case ir::OpCode::GOTO:
+                        // br <label_idx> ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â unconditional branch
+                        body.push_back(0x0C); // br
+                        this->emit_leb128_to(body, node.op_a);
+                        break;
+
+                    case ir::OpCode::BRANCH_COND:
+                        // op_a = condition local, op_b = target label
+                        if (!this->is_valid_local(node.op_a, max_reg)) {
+                            body.push_back(0x01);
+                            break;
+                        }
+                        body.push_back(0x20); // local.get
+                        this->emit_leb128_to(body, node.op_a);
+                        body.push_back(0x0D); // br_if
+                        this->emit_leb128_to(body, node.op_b);
+                        break;
+
+                    case ir::OpCode::BRANCH_COMPARE_FUSED:
+                        // op_a = lhs, op_b = rhs, op_c = target label
+                        // Compare lhs != rhs, then br_if
+                        if (!this->is_valid_local(node.op_a, max_reg) || !this->is_valid_local(node.op_b, max_reg)) {
+                            body.push_back(0x01);
+                            break;
+                        }
+                        body.push_back(0x20); // local.get
+                        this->emit_leb128_to(body, node.op_a);
+                        body.push_back(0x20); // local.get
+                        this->emit_leb128_to(body, node.op_b);
+                        body.push_back(0x47); // i32.ne
+                        body.push_back(0x0D); // br_if
+                        this->emit_leb128_to(body, node.op_c);
+                        break;
+
+                    case ir::OpCode::PHI_NODE:
+                        // PHI nodes are resolved before WASM emission; no output.
+                        break;
+
                     default:
                         // Pillar 2 Strategy: Graceful degradation to NOP for unknown opcodes
                         body.push_back(0x01); 
@@ -180,6 +283,10 @@ public:
     [[nodiscard]] const std::vector<uint8_t>& get_binary() const noexcept { return _binary_buffer; }
 
 private:
+    [[nodiscard]] static constexpr bool is_valid_local(uint32_t id, uint32_t max_local) noexcept {
+        return id != ir::INVALID_SLOT && id <= max_local;
+    }
+
     bool is_foldable_ret_immediate(const ir::IRStream& stream, size_t load_idx, const ir::IRNode& load_node) const {
         if (load_node.result_id == ir::INVALID_SLOT) return false;
 
@@ -211,7 +318,8 @@ private:
             const auto& node = stream.get_node(i);
             if (node.opcode != ir::OpCode::LOAD_IMM && node.opcode != ir::OpCode::IMMEDIATE) continue;
             if (node.result_id != reg) continue;
-            imm_out = (static_cast<uint64_t>(node.op_a) << 32) | (node.op_b & 0xFFFFFFFFULL);
+            const uint32_t high = (node.op_a == ir::INVALID_SLOT) ? 0u : node.op_a;
+            imm_out = (static_cast<uint64_t>(high) << 32) | (node.op_b & 0xFFFFFFFFULL);
             return true;
         }
         return false;
@@ -223,7 +331,11 @@ private:
         _binary_buffer.insert(_binary_buffer.end(), bytes); 
     }
 
-    void emit_binary_op(std::vector<uint8_t>& body, uint8_t wasm_op, const ir::IRNode& node) {
+    void emit_binary_op(std::vector<uint8_t>& body, uint8_t wasm_op, const ir::IRNode& node, uint32_t max_local) {
+        if (!is_valid_local(node.op_a, max_local) || !is_valid_local(node.op_b, max_local) || !is_valid_local(node.result_id, max_local)) {
+            body.push_back(0x01);
+            return;
+        }
         body.push_back(0x20); // local.get
         this->emit_leb128_to(body, node.op_a);
         body.push_back(0x20); // local.get
@@ -240,26 +352,22 @@ private:
 
     void emit_section(uint8_t section_id, std::function<void()> content_gen) {
         this->emit_byte(section_id);
-        
-        // Preserve current buffer state
-        size_t size_pos = _binary_buffer.size();
-        
-        // Placeholder for LEB128 size (typical max 5 bytes for 32-bit)
-        for(int i=0; i<5; ++i) _binary_buffer.push_back(0); 
-        
-        size_t start_pos = _binary_buffer.size();
+
+        std::vector<uint8_t> section_payload;
+        section_payload.reserve(128);
+
+        auto saved = std::move(_binary_buffer);
+        _binary_buffer = std::move(section_payload);
         content_gen();
-        size_t end_pos = _binary_buffer.size();
-        
-        uint32_t section_size = static_cast<uint32_t>(end_pos - start_pos);
-        
-        // Back-patch size using fixed-width LEB128 to avoid shifting the whole vector
-        for (int i = 0; i < 5; ++i) {
-            uint8_t byte = section_size & 0x7F;
-            section_size >>= 7;
-            if (i < 4) byte |= 0x80;
-            _binary_buffer[size_pos + i] = byte;
+        section_payload = std::move(_binary_buffer);
+        _binary_buffer = std::move(saved);
+
+        if (section_payload.size() > static_cast<size_t>((std::numeric_limits<uint32_t>::max)())) {
+            return;
         }
+
+        this->emit_leb128(static_cast<uint32_t>(section_payload.size()));
+        _binary_buffer.insert(_binary_buffer.end(), section_payload.begin(), section_payload.end());
     }
 
     void emit_leb128(uint32_t val) {
@@ -277,5 +385,6 @@ private:
 };
 
 } // namespace dgtl::exec
+
 
 

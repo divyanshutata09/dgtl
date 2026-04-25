@@ -1,0 +1,10 @@
+==============================
+ DGTL BENCHMARK SUITE (FAIR)
+==============================
+
+[Dependency Chain] 0.0044797 sec
+[ECS Update] 0.0060084 sec
+[SIMD Kernel] 0.0030379 sec
+[HFT Branching] 0.0037565 sec
+
+DONE.

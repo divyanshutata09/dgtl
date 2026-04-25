@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0
  * STEP 5: LOCK-FREE THREAD-LOCAL CONTEXT
  * VERSION 4.2: BIR 2.1 PACKED ATOM + V4-ARENA INTEGRATED
  * PILLAR 2: TRUE TLS + SHADOW-BUFFERED TRANSACTIONS
@@ -12,12 +23,12 @@
 #include <stdexcept>
 #include <cstdint>
 #include "dgtl/core/Arena.hpp"   // DGTL_ArenaV4
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 namespace dgtl::core {
 
 // ================================
-// 🔹 POLYHEDRAL CONFIGURATION (P0-001)
+// ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¹ POLYHEDRAL CONFIGURATION (P0-001)
 // ================================
 
 /**
@@ -60,7 +71,7 @@ struct PolyhedralConfig {
 };
 
 // ================================
-// 🔹 THREAD LOCAL BUFFER
+// ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¹ THREAD LOCAL BUFFER
 // ================================
 struct alignas(64) ThreadLocalBuffer {
     // ===== PRIMARY (Tier 1 & 2) =====
@@ -92,7 +103,7 @@ struct alignas(64) ThreadLocalBuffer {
 inline thread_local ThreadLocalBuffer g_tls_buffer{};
 
 // ================================
-// 🔹 CONTEXT
+// ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¹ CONTEXT
 // ================================
 class DGTLContext {
 public:
@@ -115,7 +126,7 @@ public:
     DGTLContext& operator=(const DGTLContext&) = delete;
 
     // =========================================
-    // 🔹 POLYHEDRAL CONFIGURATION ACCESS (P0-001)
+    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¹ POLYHEDRAL CONFIGURATION ACCESS (P0-001)
     // =========================================
     [[nodiscard]] const PolyhedralConfig& get_polyhedral_config() const noexcept {
         return polyhedral_config;
@@ -126,7 +137,7 @@ public:
     }
 
     // =========================================
-    // 🔥 FAST EMIT
+    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ FAST EMIT
     // =========================================
     void emit_node_fast(ir::OpCode op, uint16_t flg,
                         uint32_t res, uint32_t a, uint32_t b,
@@ -162,11 +173,13 @@ public:
         core->op_a        = a;
         core->op_b        = b;
         core->op_c        = c;
-        core->intent_hash = hash;
+        core->intent_hash = (hash != 0)
+            ? hash
+            : ir::IRNode::calculate_hash(op, res, a, b, c);
     }
 
     // =========================================
-    // 🔹 ATOMIC NODE API
+    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¹ ATOMIC NODE API
     // =========================================
     [[nodiscard]] ir::IRNode* create_node_atomic() noexcept {
         temp_node_buffer = ir::IRNode{};
@@ -181,10 +194,20 @@ public:
     }
 
     // =========================================
-    // 🔥 TRANSACTIONS
+    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ TRANSACTIONS
     // =========================================
     void enter_transactional_mode() noexcept {
         auto& tls = g_tls_buffer;
+
+        // Ensure shadow pages exist before checkpointing so rollback always has a valid restore point.
+        if (tls.remaining_shadow == 0 && !refresh_thread_pages()) {
+            tls.in_strike = false;
+            tls.checkpoint_atom = nullptr;
+            tls.checkpoint_core = nullptr;
+            tls.checkpoint_remaining_shadow = 0;
+            return;
+        }
+
         tls.in_strike = true;
         tls.checkpoint_atom = tls.shadow_atom_ptr;
         tls.checkpoint_core = tls.shadow_core_ptr;
@@ -192,7 +215,11 @@ public:
     }
 
     void commit_transaction() noexcept {
-        g_tls_buffer.in_strike = false;
+        auto& tls = g_tls_buffer;
+        tls.in_strike = false;
+        tls.checkpoint_atom = nullptr;
+        tls.checkpoint_core = nullptr;
+        tls.checkpoint_remaining_shadow = 0;
     }
 
     void rollback_transaction() noexcept {
@@ -203,6 +230,9 @@ public:
             tls.remaining_shadow = tls.checkpoint_remaining_shadow;
         }
         tls.in_strike = false;
+        tls.checkpoint_atom = nullptr;
+        tls.checkpoint_core = nullptr;
+        tls.checkpoint_remaining_shadow = 0;
     }
 
     [[nodiscard]] bool is_in_transaction() const noexcept {
@@ -239,7 +269,7 @@ private:
             tls.base_shadow_atom_ptr = global_arena.allocate<ir::IRAtom>(PageSizeNodes);
             tls.base_shadow_core_ptr = global_arena.allocate<ir::IRCore>(PageSizeNodes);
 
-            // ✅ FIX: Corrected variable name from base_shadow_shadow_atom_ptr
+            // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ FIX: Corrected variable name from base_shadow_shadow_atom_ptr
             tls.shadow_atom_ptr = tls.base_shadow_atom_ptr; 
             tls.shadow_core_ptr = tls.base_shadow_core_ptr;
 

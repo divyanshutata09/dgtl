@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 35: AI-DRIVEN SPECULATIVE LOOP UNSWITCHER
  * PILLAR 2: TRANSACTIONAL VERSIONING (SHADOW-BUFFERED)
  * PILLAR 3: THE SENTINEL (INVARIANT VALIDATION)
@@ -7,7 +18,7 @@
 
 #pragma once
 #include <algorithm>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/pass/speculative/Speculative_DCE.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
@@ -50,7 +61,8 @@ public:
                         // PILLAR 3: Sentinel Check
                         // Validates that the shadow buffer is logically sound and bit-consistent
                         if (stream.validate_shadow_integrity()) {
-                            stream.commit_transaction(); 
+                            stream.commit_transaction();
+                            dce_engine.execute(stream);
                             return; 
                         }
                     }
@@ -66,14 +78,15 @@ private:
      * @brief Proves that the branch condition is never redefined within the stream.
      */
     bool is_loop_invariant(uint32_t cond_reg, const ir::IRStream& s) const noexcept {
+        if (cond_reg == ir::INVALID_SLOT) {
+            return false;
+        }
+
         for (uint32_t i = 0; i < s.size(); ++i) {
             const auto& core = s.get_core_readonly(i);
-            const auto& atom = s.get_atom_readonly(i);
             
             if (core.result_id == cond_reg) {
-                if (atom.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) {
-                    return false; 
-                }
+                return false;
             }
         }
         return true;
@@ -93,22 +106,20 @@ private:
         shad_atom.opcode = ir::OpCode::GOTO; 
         shad_atom.flags |= (ir::Flags::IS_SPEC_CONST | ir::Flags::IS_HOSTED); 
         
-        shad_core.result_id = 0; 
+        shad_core.result_id = ir::INVALID_SLOT; 
         shad_core.op_a = shad_core.op_b; // True-target target becomes primary operand
+        shad_core.op_b = 0;
+        shad_core.op_c = 0;
 
-        // Update Sentinel Hash for manual shadow mutation
-        shad_core.intent_hash = dgtl::core::DGTLFormalVerifier::compute_master_hash_bits(
-            shad_atom.opcode, shad_core.op_a, shad_core.op_b, shad_core.op_c
+        shad_core.intent_hash = ir::IRNode::calculate_hash(
+            shad_atom.opcode,
+            shad_core.result_id,
+            shad_core.op_a,
+            shad_core.op_b,
+            shad_core.op_c
         );
 
-        // Step 3: Run Speculative DCE
-        // Calling execute() is the standard Pipeline interface.
-        // SpeculativeDCE internally calls update_shadow_size() when finished.
-        dce_engine.execute(stream);
-
-        // Verification: Ensure the shadow stream exists and wasn't wiped during pruning
-        // In BIR 2.1, a valid transaction must result in a non-zero shadow capacity.
-        return stream.size() > 0; 
+        return stream.is_active_transaction(); 
     }
 };
 

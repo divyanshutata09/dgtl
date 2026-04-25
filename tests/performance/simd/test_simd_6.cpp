@@ -1,9 +1,20 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <immintrin.h>
 #include <chrono>
 #include <malloc.h> // For _aligned_malloc
 #include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pipeline/Performance_Test_Probes.hpp"
 
 using namespace dgtl;
@@ -46,4 +57,7 @@ void run_test_simd_6() {
     _aligned_free(buffer);
     return;
 }
+
+
+
 

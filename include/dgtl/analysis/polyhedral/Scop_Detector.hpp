@@ -1,3 +1,14 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 /* * DGTL Affine SCoP Detection and Region Annotation
  * STEP 1: POLYHEDRAL LOOP NEST DISCOVERY
  * PILLAR 1: LEGAL TRANSFORMATION PREREQUISITE
@@ -9,7 +20,9 @@
 #include <unordered_map>
 #include <cstdint>
 #include <span>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include <string>
+#include <memory>
+#include "dgtl/ir/base/IR_Traits.hpp"
 #include "dgtl/graph/Region.hpp"
 
 namespace dgtl::analysis::polyhedral {
@@ -20,7 +33,8 @@ namespace dgtl::analysis::polyhedral {
  */
 enum class ScopClassification : uint8_t {
     INVALID = 0,                  // Not yet analyzed
-    AFFINE_CANDIATE = 1,          // Affine bounds, linear subscripts, analyzable deps
+    AFFINE_CANDIDATE = 1,         // Affine bounds, linear subscripts, analyzable deps
+    AFFINE_CANDIATE = AFFINE_CANDIDATE, // Backward compatibility for legacy typo usage
     NON_AFFINE_LOOP = 2,          // Non-affine loop bounds or strides
     NON_AFFINE_SUBSCRIPT = 3,     // Non-linear or non-affine memory accesses
     NON_AFFINE_CONTROL = 4,       // Data-dependent control flow

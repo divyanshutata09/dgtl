@@ -1,8 +1,20 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 /* * DGTL Backend vNext - Fusion Clusters
  * Groups of regions that can be fused for optimization
  */
 
 #pragma once
+#include <cstddef>
 #include <vector>
 #include <algorithm>
 #include "Region.hpp"
@@ -34,8 +46,9 @@ public:
     /**
      * @brief Check if adding a region to this cluster is beneficial.
      */
-    bool can_add_region(Region* region) const {
+    [[nodiscard]] bool can_add_region(Region* region) const {
         if (!region || !region->validate()) return false;
+        if (std::find(regions.begin(), regions.end(), region) != regions.end()) return false;
         if (regions.empty()) return true;
 
         size_t current_nodes = 0;
@@ -84,7 +97,7 @@ public:
     /**
      * @brief Calculate the benefit of this fusion.
      */
-    double calculate_benefit() const {
+    [[nodiscard]] double calculate_benefit() const {
         if (regions.size() < 2) return 0.0;
 
         double simd = 0.0;
@@ -121,7 +134,7 @@ public:
     /**
      * @brief Validate that fusion is safe and beneficial.
      */
-    bool validate_fusion() const {
+    [[nodiscard]] bool validate_fusion() const {
         if (regions.size() < 2) return false;
         for (const Region* r : regions) {
             if (!r || !r->validate()) return false;

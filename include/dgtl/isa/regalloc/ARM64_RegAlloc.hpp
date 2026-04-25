@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 16: HIGH-SPEED ARM64 REGISTER ALLOCATOR (LSRA) - TRANSACTIONAL V2
  * FINAL FIX: Synchronized with Bit-Packed IR (Bit 7/12) & Shadow-Validation.
  * PERFORMANCE: O(N) allocation with hardware-accelerated bit-probing.
@@ -8,10 +19,12 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 #include <bit>
 #include <algorithm>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include <limits>
+#include "dgtl/ir/Global_IR.hpp"
 #include "../../analysis/dataflow/Liveness_Analyzer.hpp"
 
 namespace dgtl::isa {
@@ -56,11 +69,13 @@ class DGTLARM64RegAlloc {
     std::array<uint32_t, 32> vec_reg_to_id;
 
 public:
+    static constexpr uint8_t UNMAPPED_REG = 0xFF;
+
     explicit DGTLARM64RegAlloc(size_t max_results = 1048576) { // Increased for 1M node strikes
-        id_to_reg.resize(max_results, 0xFF);
-        id_to_vec_reg.resize(max_results, 0xFF);
-        reg_to_id.fill(0);
-        vec_reg_to_id.fill(0);
+        id_to_reg.resize(max_results, UNMAPPED_REG);
+        id_to_vec_reg.resize(max_results, UNMAPPED_REG);
+        reg_to_id.fill(ir::INVALID_SLOT);
+        vec_reg_to_id.fill(ir::INVALID_SLOT);
     }
 
     /**
@@ -68,48 +83,93 @@ public:
      * Operates on the Shadow Buffer during the DGTLoptManager strike phase.
      */
     void execute(ir::IRStream& stream, const dgtl::analysis::LivenessAnalyzer& liveness) {
+        if (stream.is_null() || stream.size() == 0) {
+            return;
+        }
+
         // [DGTL CRITICAL] Must be in a transaction to modify shadow buffers
+        bool owns_transaction = false;
         if (!stream.is_active_transaction()) {
             stream.begin_transaction();
+            owns_transaction = true;
         }
 
         // Reset state for the current transactional strike
         free_mask = ARM64Regs::ALLOCABLE_MASK;
         vec_free_mask = ARM64Regs::VEC_ALLOCABLE_MASK;
-        reg_to_id.fill(0);
-        vec_reg_to_id.fill(0);
-        std::fill(id_to_reg.begin(), id_to_reg.end(), 0xFF);
-        std::fill(id_to_vec_reg.begin(), id_to_vec_reg.end(), 0xFF);
+        reg_to_id.fill(ir::INVALID_SLOT);
+        vec_reg_to_id.fill(ir::INVALID_SLOT);
+        std::fill(id_to_reg.begin(), id_to_reg.end(), UNMAPPED_REG);
+        std::fill(id_to_vec_reg.begin(), id_to_vec_reg.end(), UNMAPPED_REG);
 
         const size_t count = stream.size();
         auto* atoms = stream.raw_atoms(); // Returns shadow_atoms if in transaction
         auto* cores = stream.raw_cores(); // Returns shadow_cores if in transaction
+        if (!atoms || !cores) {
+            if (owns_transaction) {
+                stream.rollback_transaction();
+            }
+            return;
+        }
 
-        for (uint32_t i = 0; i < count; ++i) {
+        const size_t max_walk = std::min(count, static_cast<size_t>((std::numeric_limits<uint32_t>::max)()));
+
+        for (size_t idx = 0; idx < max_walk; ++idx) {
+            const uint32_t i = static_cast<uint32_t>(idx);
             // 1. EXPIRATION: Reclaim registers whose liveness ends before this instruction.
             expire_dead_registers(i, liveness);
 
             // 2. INPUT RESOLUTION: Map virtual operands to physical registers.
             bool changed = false;
+            uint32_t preferred_reg = 0xFF; // Preference for coalescing
             
             // Check if this is a SIMD operation to use the correct mapping table
             const bool is_simd = (atoms[i].flags & ir::Flags::IS_SIMD_BURST);
 
             if (cores[i].op_a != ir::INVALID_SLOT) {
                 uint8_t phys = is_simd ? get_phys_vec_reg(cores[i].op_a) : get_phys_reg(cores[i].op_a);
-                if (phys != 0xFF) { cores[i].op_a = phys; changed = true; }
+                if (phys != UNMAPPED_REG) {
+                    cores[i].op_a = phys; 
+                    changed = true; 
+                    // COALESCING: If op_a dies here, prefer its register for the result
+                    const uint32_t src_vid = is_simd ? vec_reg_to_id[phys] : reg_to_id[phys];
+                    if (src_vid != ir::INVALID_SLOT && !liveness.is_live_after(src_vid, i)) {
+                        preferred_reg = phys;
+                    }
+                }
             }
             if (cores[i].op_b != ir::INVALID_SLOT) {
                 uint8_t phys = is_simd ? get_phys_vec_reg(cores[i].op_b) : get_phys_reg(cores[i].op_b);
-                if (phys != 0xFF) { cores[i].op_b = phys; changed = true; }
+                if (phys != UNMAPPED_REG) {
+                    cores[i].op_b = phys; 
+                    changed = true; 
+                    // COALESCING: Secondary preference if op_b dies
+                    if (preferred_reg == UNMAPPED_REG) {
+                        const uint32_t src_vid = is_simd ? vec_reg_to_id[phys] : reg_to_id[phys];
+                        if (src_vid != ir::INVALID_SLOT && !liveness.is_live_after(src_vid, i)) {
+                            preferred_reg = phys;
+                        }
+                    }
+                }
             }
 
             // 3. ALLOCATION: Assign physical destination for the result_id.
-            if (cores[i].result_id != 0 && atoms[i].opcode != ir::OpCode::NOP) {
-                uint32_t phys_dest = is_simd ? find_and_occupy_vec_reg(cores[i].result_id) 
-                                             : find_and_occupy_reg(cores[i].result_id);
+            if (cores[i].result_id != ir::INVALID_SLOT && atoms[i].opcode != ir::OpCode::NOP) {
+                uint32_t phys_dest = UNMAPPED_REG;
+
+                // Try to use preferred coalesced register to eliminate MOV
+                if (preferred_reg != UNMAPPED_REG) {
+                    phys_dest = is_simd ? occupy_vec_reg_specific(cores[i].result_id, preferred_reg)
+                                        : occupy_reg_specific(cores[i].result_id, preferred_reg);
+                }
+
+                // Fallback to hardware-accelerated scan if coalescing fails
+                if (phys_dest == UNMAPPED_REG) {
+                    phys_dest = is_simd ? find_and_occupy_vec_reg(cores[i].result_id) 
+                                         : find_and_occupy_reg(cores[i].result_id);
+                }
                 
-                if (phys_dest != 0xFF) [[likely]] {
+                if (phys_dest != UNMAPPED_REG) [[likely]] {
                     // Update op_c as the physical destination register
                     cores[i].op_c = phys_dest; 
                     atoms[i].flags |= ir::Flags::SVE_ACTIVE; // Mark as Hardware-Mapped
@@ -120,10 +180,7 @@ public:
             }
 
             // 4. [PILLAR 3] REFRESH SENTINEL HASH
-            // If we changed operands to physical registers, the hash MUST be updated
-            // or the validate_shadow_integrity() call will fail during commit.
             if (changed) {
-                // FIX: Use the standardized IRNode hashing to prevent transaction abortion
                 cores[i].intent_hash = ir::IRNode::calculate_hash(
                     atoms[i].opcode, 
                     cores[i].result_id,
@@ -133,30 +190,48 @@ public:
                 );
             }
         }
+
+        if (owns_transaction) {
+            stream.commit_transaction();
+        }
     }
 
 private:
     /**
+     * @brief Specific occupancy for register coalescing.
+     */
+    [[nodiscard]] uint32_t occupy_reg_specific(uint32_t result_id, uint32_t reg) noexcept {
+        if (reg >= ARM64Regs::TotalGPRs) return UNMAPPED_REG;
+        if (!(free_mask & (1u << reg))) return UNMAPPED_REG;
+        free_mask &= ~(1u << reg);
+        reg_to_id[reg] = result_id;
+        if (result_id < id_to_reg.size()) [[likely]] id_to_reg[result_id] = static_cast<uint8_t>(reg);
+        return reg;
+    }
+
+    [[nodiscard]] uint32_t occupy_vec_reg_specific(uint32_t result_id, uint32_t reg) noexcept {
+        if (reg >= ARM64Regs::TotalVecRegs) return UNMAPPED_REG;
+        if (!(vec_free_mask & (1u << reg))) return UNMAPPED_REG;
+        vec_free_mask &= ~(1u << reg);
+        vec_reg_to_id[reg] = result_id;
+        if (result_id < id_to_vec_reg.size()) id_to_vec_reg[result_id] = static_cast<uint8_t>(reg);
+        return reg;
+    }
+
+    /**
      * @brief Hardware-accelerated bit-scanning (CTZ) to find free registers.
      */
     [[nodiscard]] uint32_t find_and_occupy_reg(uint32_t result_id) noexcept {
-        if (free_mask == 0) return 0xFF; 
-
-        // std::countr_zero maps to TZCNT (x64) or CLZ (ARM)
+        if (free_mask == 0) return UNMAPPED_REG;
         uint32_t reg = static_cast<uint32_t>(std::countr_zero(free_mask));
-        
         free_mask &= ~(1u << reg); 
         reg_to_id[reg] = result_id;
-        
-        if (result_id < id_to_reg.size()) [[likely]] {
-            id_to_reg[result_id] = static_cast<uint8_t>(reg);
-        }
-        
+        if (result_id < id_to_reg.size()) [[likely]] id_to_reg[result_id] = static_cast<uint8_t>(reg);
         return reg;
     }
 
     [[nodiscard]] uint32_t find_and_occupy_vec_reg(uint32_t result_id) noexcept {
-        if (vec_free_mask == 0) return 0xFF;
+        if (vec_free_mask == 0) return UNMAPPED_REG;
         uint32_t reg = static_cast<uint32_t>(std::countr_zero(vec_free_mask));
         vec_free_mask &= ~(1u << reg);
         vec_reg_to_id[reg] = result_id;
@@ -165,42 +240,40 @@ private:
     }
 
     [[nodiscard]] uint8_t get_phys_reg(uint32_t virtual_id) const noexcept {
-        if (virtual_id >= id_to_reg.size()) return 0xFF;
+        if (virtual_id >= id_to_reg.size()) return UNMAPPED_REG;
         return id_to_reg[virtual_id];
     }
 
     [[nodiscard]] uint8_t get_phys_vec_reg(uint32_t virtual_id) const noexcept {
-        if (virtual_id >= id_to_vec_reg.size()) return 0xFF;
+        if (virtual_id >= id_to_vec_reg.size()) return UNMAPPED_REG;
         return id_to_vec_reg[virtual_id];
     }
 
     /**
      * @brief Frees registers based on Liveness Data.
-     * Implementation logic for reclaiming bits in free_mask.
+     * PERFORMANCE: Integrated bitmask clear to avoid unnecessary while-loop iterations.
      */
     void expire_dead_registers(uint32_t current_idx, const dgtl::analysis::LivenessAnalyzer& liveness) noexcept {
-        // Scalar Reclamation
         uint32_t occupied = ~free_mask & ARM64Regs::ALLOCABLE_MASK;
         while (occupied) {
             uint32_t reg = static_cast<uint32_t>(std::countr_zero(occupied));
             uint32_t vid = reg_to_id[reg];
-            if (!liveness.is_live_at(vid, current_idx)) {
+            if (vid != ir::INVALID_SLOT && !liveness.is_live_at(vid, current_idx)) {
                 free_mask |= (1u << reg);
-                if (vid < id_to_reg.size()) id_to_reg[vid] = 0xFF;
-                reg_to_id[reg] = 0;
+                if (vid < id_to_reg.size()) id_to_reg[vid] = UNMAPPED_REG;
+                reg_to_id[reg] = ir::INVALID_SLOT;
             }
             occupied &= ~(1u << reg);
         }
 
-        // Vector Reclamation (NEON)
         uint32_t v_occupied = ~vec_free_mask & ARM64Regs::VEC_ALLOCABLE_MASK;
         while (v_occupied) {
             uint32_t reg = static_cast<uint32_t>(std::countr_zero(v_occupied));
             uint32_t vid = vec_reg_to_id[reg];
-            if (!liveness.is_live_at(vid, current_idx)) {
+            if (vid != ir::INVALID_SLOT && !liveness.is_live_at(vid, current_idx)) {
                 vec_free_mask |= (1u << reg);
-                if (vid < id_to_vec_reg.size()) id_to_vec_reg[vid] = 0xFF;
-                vec_reg_to_id[reg] = 0;
+                if (vid < id_to_vec_reg.size()) id_to_vec_reg[vid] = UNMAPPED_REG;
+                vec_reg_to_id[reg] = ir::INVALID_SLOT;
             }
             v_occupied &= ~(1u << reg);
         }
@@ -208,5 +281,3 @@ private:
 };
 
 } // namespace dgtl::isa
-
-

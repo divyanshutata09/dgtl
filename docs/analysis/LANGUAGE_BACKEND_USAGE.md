@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL Language Backend Usage Guide
 
 This guide shows how to use DGTL as the backend for your own language frontend.
@@ -13,7 +24,7 @@ Pipeline:
 2. Build typed AST.
 3. Lower AST to DGTL IR.
 4. Run DGTL optimizations.
-5. Emit target output (ARM64, x64, WASM, NASM).
+5. Emit target output (ARM64, x64, WASM, NASM, ELF .o, COFF .obj/.lib, Mach-O).
 
 ## 2. Minimal C++ Backend Integration
 
@@ -119,6 +130,17 @@ if (target == "arm64") {
 } else if (target == "wasm") {
     dgtl::isa::DGTLWasmEncoder encoder;
     auto bytes = encoder.encode_stream(stream);
+} else if (target == "elfobj") {
+    dgtl::exec::DGTLUniversalLinker linker;
+    std::vector<uint8_t> obj;
+    linker.build_elf_relocatable(obj, stream, "my_kernel_entry");
+} else if (target == "coffobj") {
+    dgtl::exec::DGTLUniversalLinker linker;
+    std::vector<uint8_t> obj;
+    linker.build_coff_relocatable(obj, stream, "my_kernel_entry");
+} else if (target == "macho") {
+    dgtl::isa::MachOEmitter emitter(stream, symbols);
+    auto result = emitter.emit_to_binary();
 }
 ```
 

@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL Business Model
 
 This document defines a practical commercial model for DGTL as a paid compiler/backend product.
@@ -46,12 +57,12 @@ Teams lowering graphs or DSL-like execution plans into native or portable target
 Why they pay:
 
 - they need a controllable lowering path
-- they need WASM / x64 / ARM64 coverage
+- they need WASM / x64 / ARM64 / COFF / ELF / Mach-O coverage
 - they may need custom passes and backend adaptation
 
 ### 4. Embedded, edge, and specialized runtime vendors
 
-Teams shipping software to ARM64, x64, or WASM targets with strong runtime constraints.
+Teams shipping software to ARM64, x64, WASM, or native object targets with strong runtime constraints.
 
 Why they pay:
 

@@ -1,13 +1,24 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 /* 
- * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+ * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 13: GLOBAL VALUE NUMBERING (GVN) - VERSION 3.1 (STABLE FINAL)
  *
  * FIXES:
- * ✔ Proper ID propagation (chain resolution bug FIXED)
- * ✔ Constant folding restored (critical for pipeline1)
- * ✔ PRE-lite strengthened
- * ✔ Memory version isolation retained
- * ✔ SIMD-safe hashing retained
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â Proper ID propagation (chain resolution bug FIXED)
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â Constant folding restored (critical for pipeline1)
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â PRE-lite strengthened
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â Memory version isolation retained
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â SIMD-safe hashing retained
  */
 
 #pragma once
@@ -25,7 +36,7 @@
 #undef CONST
 #endif
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 namespace dgtl::pass {
 
@@ -59,10 +70,10 @@ class DGTLGVN {
 
     std::vector<uint32_t> id_map;
 
-    // 🔥 Memory versioning
+    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ Memory versioning
     uint32_t memory_version = 0;
 
-    // 🔥 PRE-lite
+    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ PRE-lite
     static constexpr size_t PRE_WINDOW = 64;
     std::vector<ValueKey> pre_keys;
     std::vector<uint32_t> pre_ids;
@@ -90,6 +101,9 @@ public:
         pre_keys.clear();
         pre_ids.clear();
         memory_version = 0;
+        for (uint32_t i = 0; i < id_map.size(); ++i) {
+            id_map[i] = i;
+        }
 
         stream.begin_transaction();
         stream.prune_shadow_buffer();
@@ -101,7 +115,7 @@ public:
             const auto& atom = stream.get_atom_readonly(i);
             const auto& core = stream.get_core_readonly(i);
 
-            // 🔥 Memory barrier
+            // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ Memory barrier
             if (ir::IRTraits::has_side_effects(atom.opcode, atom.flags)) {
                 memory_version++;
             }
@@ -117,7 +131,7 @@ public:
                 continue;
             }
 
-            // Side effects → barrier
+            // Side effects ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ barrier
             const bool has_se =
                 ir::IRTraits::has_side_effects(atom.opcode, atom.flags) ||
                 atom.opcode == ir::OpCode::SYSCALL ||
@@ -149,7 +163,7 @@ public:
             uint32_t b = resolve(core.op_b);
             uint32_t c = resolve(core.op_c);
 
-            // 🔥 CONSTANT FOLDING (RESTORED)
+            // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ CONSTANT FOLDING (RESTORED)
             if (atom.opcode == ir::OpCode::ADD_I32) {
                 if (is_zero(stream, a, i)) {
                     map_id(core.result_id, b);
@@ -188,10 +202,10 @@ public:
                 static_cast<uint16_t>(temp.opcode),
                 sem_flags,
                 a,b,c,
-                hash ^ memory_version // 🔥 critical isolation
+                hash ^ memory_version // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ critical isolation
             };
 
-            // 🔥 PRE-LITE STRONG CHECK
+            // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ PRE-LITE STRONG CHECK
             for (size_t k = pre_keys.size(); k-- > 0;) {
                 if (pre_keys[k] == key) {
                     uint32_t gid = pre_ids[k];
@@ -255,7 +269,7 @@ private:
         while (root < id_map.size() && id_map[root] != root)
             root = id_map[root];
 
-        // 🔥 FULL path compression
+        // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ FULL path compression
         while (id < id_map.size() && id_map[id] != id) {
             uint32_t p = id_map[id];
             id_map[id] = root;
@@ -356,4 +370,5 @@ private:
 };
 
 } // namespace dgtl::pass
+
 

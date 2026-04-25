@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 5: ACCELERATED EMISSION - GPGPU FUSION
  * PILLAR 4: HARDWARE AFFINITY & UNIFIED MEMORY COHERENCY
  * ORCHESTRATOR: GPGPU_Fusion (PTX/SPIR-V JIT Bridge)
@@ -13,7 +24,7 @@
 #include <memory>
 
 // Umbrella Entry Point for IR consistency
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Target.hpp"
 
 namespace dgtl::isa {
@@ -71,7 +82,8 @@ public:
      * Follows Pillar 2: Validates the stream before fusion emission.
      */
     [[nodiscard]] std::string fuse_to_source(const IRStream& stream) {
-        if (stream.is_null()) return "";
+        if (stream.is_null() || stream.size() == 0) return "";
+        if (!stream.validate_shadow_integrity()) return "";
 
         std::string source;
         source.reserve(stream.size() * 64); // Heat-map allocation
@@ -94,6 +106,9 @@ public:
     FusionResult dispatch_fusion(const IRStream& stream, const GridConfig& config) {
         (void)config;
         if (stream.is_null() || stream.size() == 0) {
+            return { nullptr, 0, false, FusionStatus::InvalidStream };
+        }
+        if (!stream.validate_shadow_integrity()) {
             return { nullptr, 0, false, FusionStatus::InvalidStream };
         }
 
@@ -143,6 +158,9 @@ private:
     bool emit_node_logic(std::string& src, const IRNode& node) {
         switch (node.opcode) {
             case OpCode::ADD_I32:
+                if (node.result_id == ir::INVALID_SLOT || node.op_a == ir::INVALID_SLOT || node.op_b == ir::INVALID_SLOT) {
+                    return false;
+                }
                 if (m_device == DeviceType::NVIDIA_PTX) {
                     src += "    add.f32 %f" + std::to_string(node.result_id) +
                            ", %f" + std::to_string(node.op_a) +
@@ -153,6 +171,9 @@ private:
                 return true;
             
             case OpCode::LOAD:
+                if (node.result_id == ir::INVALID_SLOT || node.op_a == ir::INVALID_SLOT) {
+                    return false;
+                }
                 if (m_device == DeviceType::NVIDIA_PTX) {
                     src += "    ld.global.f32 %f" + std::to_string(node.result_id) +
                            ", [%rd" + std::to_string(node.op_a) + "];\n";
@@ -162,6 +183,9 @@ private:
                 return true;
 
             case OpCode::STORE:
+                if (node.op_a == ir::INVALID_SLOT || node.op_b == ir::INVALID_SLOT) {
+                    return false;
+                }
                 if (m_device == DeviceType::NVIDIA_PTX) {
                     src += "    st.global.f32 [%rd" + std::to_string(node.op_a) + "], %f" + std::to_string(node.op_b) + ";\n";
                 } else {
@@ -197,5 +221,6 @@ namespace dgtl::isa {
     using GPGPUFusionEngineAlias = GPGPUFusionEngine;
     using DeviceTypeAlias        = DeviceType;
 }
+
 
 

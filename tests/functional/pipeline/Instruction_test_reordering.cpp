@@ -1,12 +1,23 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <vector>
 #include <cassert>
 #include <stdexcept>
 
-// Core DGTL-MLIR-X Headers
-#include "dgtl/ir/base/Global_IR.hpp"
+// Core DGTL Headers
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pass/transform/instruction_reordering.hpp"
-#include "dgtl/analysis/dataflow/Memory_Dependency_Smasher.hpp"
+#include "dgtl/analysis/Memory_Dependency_Smasher.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/core/Verified_Formal.hpp" // Added for Verifier
 
@@ -87,3 +98,8 @@ void run_Instruction_test_reordering() {
     }
     return;
 }
+
+
+
+
+

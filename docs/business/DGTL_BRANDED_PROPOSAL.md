@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL Commercial Proposal
 
 ## Proposal Overview
@@ -22,6 +33,9 @@ DGTL helps teams move from typed frontend output to deterministic target emissio
 - x64
 - NASM
 - WASM
+- ELF relocatable (.o) and GNU static archive (.a)
+- COFF relocatable (.obj) and COFF import library (.lib)
+- Mach-O ARM64 object files
 
 DGTL combines backend infrastructure, optimization, emission, and conformance-driven validation into a commercially supported offering.
 

@@ -1,4 +1,15 @@
-﻿# Speculative_Inliner.hpp
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+# Speculative_Inliner.hpp
 
 Source Header: include/dgtl/pass/speculative/Speculative_Inliner.hpp
 Last Synced: 2026-04-14 19:46:42

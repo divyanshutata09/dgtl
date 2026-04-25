@@ -1,4 +1,16 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include "dgtl/jit/orchestrator/Strike_Runner.hpp"
+#include "dgtl/core/Target.hpp"
 
 #include <cstring>
 #include <cstdlib>
@@ -10,7 +22,33 @@
 #include <unistd.h>
 #endif
 
+#ifndef DGTL_STRIKE_RUNNER_USE_CPP_IMPL
+#define DGTL_STRIKE_RUNNER_USE_CPP_IMPL 0
+#endif
+
+#if DGTL_STRIKE_RUNNER_USE_CPP_IMPL
+
 namespace dgtl::exec {
+
+namespace {
+
+void prime_runner_simd_units() noexcept {
+    dgtl::core::prime_preferred_simd_units(2048);
+}
+
+void stabilize_hardware_clock() noexcept {
+    constexpr auto kStabilizationWindow = std::chrono::milliseconds(500);
+    const auto deadline = std::chrono::steady_clock::now() + kStabilizationWindow;
+    volatile std::uint64_t spin_sink = 0;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        spin_sink = (spin_sink * 1664525ull) + 1013904223ull;
+    }
+
+    (void)spin_sink;
+}
+
+} // namespace
 
 void StrikeRunner::release_exec_region() noexcept {
     if (!exec_region_) {
@@ -121,6 +159,10 @@ StrikeMetrics StrikeRunner::execute(dgtl::core::DGTL_Arena& arena, size_t inject
     StrikeMetrics metrics{};
     metrics.executed_instructions = injected_size;
 
+    (void)dgtl::core::apply_high_performance_affinity();
+    prime_runner_simd_units();
+    stabilize_hardware_clock();
+
     // Safety gate: execution is opt-in via environment variable.
     // Set DGTL_STRIKE_EXECUTE=1 to enable native jump execution.
     const char* env = std::getenv("DGTL_STRIKE_EXECUTE");
@@ -142,3 +184,6 @@ StrikeMetrics StrikeRunner::execute(dgtl::core::DGTL_Arena& arena, size_t inject
 }
 
 } // namespace dgtl::exec
+
+#endif // DGTL_STRIKE_RUNNER_USE_CPP_IMPL
+

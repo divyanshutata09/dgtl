@@ -1,11 +1,30 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include "dgtl/ir/evolution/IR_Evolver.hpp"
 
 #include <algorithm>
 
 namespace dgtl::ir::evolution {
 
+namespace {
+
+[[nodiscard]] inline bool is_mutable_node(const dgtl::ir::IRNode* node) noexcept {
+    return node != nullptr && node->is_valid();
+}
+
+} // namespace
+
 void IREvolver::mutate(dgtl::ir::IRNode* node) {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return;
     }
 
@@ -29,7 +48,7 @@ void IREvolver::mutate(dgtl::ir::IRNode* node) {
 }
 
 void IREvolver::specialize(dgtl::ir::IRNode* node, const dgtl::analysis::RuntimeFeedback& feedback) {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return;
     }
 
@@ -57,7 +76,7 @@ double IREvolver::predict_mutation_benefit(
     MutationType mutation_type,
     dgtl::analysis::DGTLAICostModel& cost_model
 ) const {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return 0.0;
     }
 
@@ -77,7 +96,7 @@ double IREvolver::predict_mutation_benefit(
             }
             break;
         case MutationType::REGISTER_REASSIGNMENT:
-            candidate.result_id = (candidate.result_id % 16U) + 1U;
+            candidate.flags |= dgtl::ir::Flags::IS_OPTIMIZED;
             break;
         case MutationType::MEMORY_LAYOUT_OPT:
             if (candidate.opcode == dgtl::ir::OpCode::LOAD) {
@@ -100,7 +119,7 @@ double IREvolver::predict_mutation_benefit(
 }
 
 void IREvolver::apply_constant_folding(dgtl::ir::IRNode* node) {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return;
     }
 
@@ -117,7 +136,7 @@ void IREvolver::apply_constant_folding(dgtl::ir::IRNode* node) {
 }
 
 void IREvolver::apply_instruction_fusion(dgtl::ir::IRNode* node) {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return;
     }
 
@@ -130,7 +149,7 @@ void IREvolver::apply_instruction_fusion(dgtl::ir::IRNode* node) {
 }
 
 void IREvolver::apply_register_reassignment(dgtl::ir::IRNode* node) {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return;
     }
 
@@ -141,7 +160,7 @@ void IREvolver::apply_register_reassignment(dgtl::ir::IRNode* node) {
 }
 
 void IREvolver::apply_memory_layout_opt(dgtl::ir::IRNode* node) {
-    if (!node) {
+    if (!is_mutable_node(node)) {
         return;
     }
 

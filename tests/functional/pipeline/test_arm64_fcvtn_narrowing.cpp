@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -32,3 +43,5 @@ void run_test_arm64_fcvtn_narrowing() {
 
     std::cout << "PASS: fcvtn emitted for SIMD narrowing conversion.\n";
 }
+
+

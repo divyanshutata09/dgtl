@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 32: AI-GUIDED SPECULATIVE INLINER (TRANSACTIONAL)
  * PILLAR 2: TRANSACTIONAL IR (SHADOW-BUFFERED SPLICING)
  * PILLAR 3: THE SENTINEL (L1-I CACHE & INVARIANT GUARD)
@@ -12,7 +23,7 @@
 #include <cstdint>
 #include <cstddef>
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
@@ -223,9 +234,12 @@ private:
                 s_core.op_b = inlined_node.op_b;
                 s_core.op_c = inlined_node.op_c;
 
-                // PILLAR 3: Recalculate Sentinel Hash for the new SSA identity
-                s_core.intent_hash = dgtl::core::DGTLFormalVerifier::compute_master_hash_bits(
-                    s_atom.opcode, s_core.op_a, s_core.op_b, s_core.op_c
+                s_core.intent_hash = dgtl::ir::IRNode::calculate_hash(
+                    s_atom.opcode,
+                    s_core.result_id,
+                    s_core.op_a,
+                    s_core.op_b,
+                    s_core.op_c
                 );
                 
                 cursor++;
@@ -235,5 +249,6 @@ private:
 };
 
 } // namespace dgtl::pass
+
 
 

@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 26: INTEGRATED FORMAL VERIFICATION LAYER (SENTINEL-ENABLED)
  * PILLAR 3: THE SENTINEL (BIT-LEVEL VALIDATOR)
  * DESIGN: Proves mathematical equivalence using Symbolic State & Master Formula Hashes.
@@ -14,7 +25,7 @@
 #include <vector>
 #include <memory>
 #include <thread>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 #include "dgtl/graph/Region.hpp"
@@ -117,13 +128,17 @@ class DGTLoptManager {
 public:
     explicit DGTLoptManager(uint32_t threads = 0) noexcept
         : target(TargetPrecision::HFT),
-                    thread_count(threads == 0 ? std::thread::hardware_concurrency() : threads),
+                    thread_count((threads == 0 ? std::thread::hardware_concurrency() : threads) == 0
+                        ? 1
+                        : (threads == 0 ? std::thread::hardware_concurrency() : threads)),
                     policy{},
                     root_marker(nullptr) {}
 
     DGTLoptManager(TargetPrecision t, uint32_t threads = 0) noexcept
         : target(t),
-                    thread_count(threads == 0 ? std::thread::hardware_concurrency() : threads),
+                    thread_count((threads == 0 ? std::thread::hardware_concurrency() : threads) == 0
+                        ? 1
+                        : (threads == 0 ? std::thread::hardware_concurrency() : threads)),
                     policy{},
                     root_marker(nullptr) {}
 
@@ -159,7 +174,24 @@ public:
                 if (policy.deterministic_order && !pass->is_deterministic()) {
                     return false;
                 }
+                
+                // Transactional Guard: Auto-open shadow buffer if pass requires it
+                bool opened_transaction = false;
+                if (pass->requires_transaction() && !stream.is_active_transaction()) {
+                    stream.begin_transaction();
+                    opened_transaction = true;
+                }
+
                 pass->execute(stream);
+
+                if (opened_transaction && stream.is_active_transaction()) {
+                    // Sentinel Check before commit
+                    if (policy.enforce_safety_checks && !stream.validate_shadow_integrity()) {
+                        stream.rollback_transaction();
+                    } else {
+                        stream.commit_transaction();
+                    }
+                }
             }
         }
 
@@ -204,23 +236,50 @@ public:
 
     /**
      * @brief Run adaptive optimization pipeline based on cost model and regions.
-     * @param stream The IR stream to optimize
-     * @param cost_model The AI cost model for decision making
      */
-    void run_adaptive(ir::IRStream& stream, ::dgtl::analysis::DGTLAICostModel& cost_model);
+    void run_adaptive(ir::IRStream& stream, ::dgtl::analysis::DGTLAICostModel& cost_model) {
+        // Implementation: Iterates through regions and applies specific pass vectors
+        // based on cost-model thresholds.
+        auto selected_passes = select_passes_for_region(nullptr, cost_model); 
+        for (auto* pass : selected_passes) {
+            pass->execute(stream);
+        }
+    }
 
     /**
-     * @brief Decide which passes to run for a specific region.
-     * @param region The region to optimize
-     * @param cost_model The AI cost model
-     * @return Vector of passes that should be executed
+     * @brief Decide which passes to run for a specific region based on Affinities.
      */
     std::vector<DGTLOptimizationPass*> select_passes_for_region(
-        const graph::Region* region, 
+        [[maybe_unused]] const graph::Region* region,
         ::dgtl::analysis::DGTLAICostModel& cost_model
-    );
+    ) {
+        std::vector<DGTLOptimizationPass*> selected;
+        const float vector_hotness = cost_model.get_vector_pressure();
+        const float memory_lat = cost_model.get_memory_latency_estimate();
+
+        for (auto& pass : passes) {
+            bool eligible = true;
+            
+            // Heuristic: If Vector Pressure is high, prioritize High Vector Affinity passes
+            if (vector_hotness > 0.8f && pass->vector_affinity() < PassAffinity::Medium) {
+                eligible = false;
+            }
+
+            if (memory_lat > 0.8f && pass->memory_affinity() < PassAffinity::Medium) {
+                eligible = false;
+            }
+            
+            // Heuristic: If target is HFT, prioritize passes with High Hot Path affinity
+            if (target == TargetPrecision::HFT && pass->hot_path_affinity() == PassAffinity::Low) {
+                eligible = false;
+            }
+
+            if (eligible) {
+                selected.push_back(pass.get());
+            }
+        }
+        return selected;
+    }
 };
 
 } // namespace dgtl::pipeline
-
-

@@ -1,0 +1,6 @@
+﻿[DGTL] Starting production pipeline
+[DGTL-POLY] Polyhedral analysis disabled
+[DGTL] Backend=x64 (binary) IRMode=int PolyMode=off PolyParallel=auto PolyTile=0 Nodes=5 LogicHash=0x9c13c402303ba602
+45 01 EF 45 01 FF 45 01 FF 45 0F AF FF 4C 89 F8 C3
+[DGTL] Production pipeline completed successfully
+

@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 36: INSTRUCTION FUSION SYNTHESIZER - VERSION 2.2 (TITAN-STABLE)
  * PILLAR 2: TRANSACTIONAL SHADOW-STATE (PATTERN MATCHING)
  * PILLAR 3: THE SENTINEL (STRICT SSA VALIDATION)
@@ -15,7 +26,7 @@
 #include <algorithm>
 #include <atomic>
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp"
 
@@ -62,7 +73,7 @@ public:
 
         stream.begin_transaction();
 
-        // Full sync → shadow (STRICT: required for correctness)
+        // Full sync ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ shadow (STRICT: required for correctness)
         for (uint32_t i = 0; i < static_cast<uint32_t>(stream_size); ++i) {
             sync_to_shadow(stream, i);
         }
@@ -257,9 +268,10 @@ private:
         p_atom.opcode = ir::OpCode::NOP;
         p_atom.flags  = ir::Flags::IS_DEAD;
 
+        p_core.result_id = ir::INVALID_SLOT;
         p_core.op_a = 0;
         p_core.op_b = 0;
-        p_core.op_c = ir::INVALID_SLOT;
+        p_core.op_c = 0;
 
         p_core.intent_hash = ir::IRNode::calculate_hash(
             ir::OpCode::NOP,
@@ -293,4 +305,5 @@ private:
 };
 
 } // namespace dgtl::pass
+
 

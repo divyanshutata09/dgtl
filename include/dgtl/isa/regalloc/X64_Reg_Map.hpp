@@ -1,10 +1,22 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 42: X64 REGISTER MAPPING & MODR/M ENCODER
  * PILLAR 4: HARDWARE-NATIVE ENCODING
  * DESIGN: Maps DGTL Virtual Registers to Physical x64 GPRs.
  */
 
 #pragma once
+#include <array>
 #include <cstdint>
 
 namespace dgtl::exec {
@@ -22,8 +34,61 @@ enum class X64Reg : uint8_t {
     INVALID = 0xFF
 };
 
+enum class X64ZmmReg : uint8_t {
+    ZMM0 = 0, ZMM1 = 1, ZMM2 = 2, ZMM3 = 3,
+    ZMM4 = 4, ZMM5 = 5, ZMM6 = 6, ZMM7 = 7,
+    ZMM8 = 8, ZMM9 = 9, ZMM10 = 10, ZMM11 = 11,
+    ZMM12 = 12, ZMM13 = 13, ZMM14 = 14, ZMM15 = 15,
+    ZMM16 = 16, ZMM17 = 17, ZMM18 = 18, ZMM19 = 19,
+    ZMM20 = 20, ZMM21 = 21, ZMM22 = 22, ZMM23 = 23,
+    ZMM24 = 24, ZMM25 = 25, ZMM26 = 26, ZMM27 = 27,
+    ZMM28 = 28, ZMM29 = 29, ZMM30 = 30, ZMM31 = 31,
+    INVALID = 0xFF
+};
+
+class X64SinglePassRegisterMapper {
+private:
+    static constexpr std::array<X64Reg, 14> kAllocatableGprs = {
+        X64Reg::RAX, X64Reg::RBX, X64Reg::RCX, X64Reg::RDX,
+        X64Reg::RSI, X64Reg::RDI, X64Reg::R8,  X64Reg::R9,
+        X64Reg::R10, X64Reg::R11, X64Reg::R12, X64Reg::R13,
+        X64Reg::R14, X64Reg::R15,
+    };
+
+public:
+    static constexpr uint32_t GprWindow = static_cast<uint32_t>(kAllocatableGprs.size());
+    static constexpr uint32_t ZmmWindow = 32;
+
+    static_assert(GprWindow > 0, "x64 register mapper must expose at least one allocatable GPR");
+    static_assert((ZmmWindow & (ZmmWindow - 1)) == 0, "ZmmWindow must remain power-of-two for bit-mask mapping");
+
+    [[nodiscard]] static constexpr X64Reg map_gpr_branchless(uint32_t virtual_id) noexcept {
+        return kAllocatableGprs[virtual_id % GprWindow];
+    }
+
+    [[nodiscard]] static constexpr X64ZmmReg map_zmm_circular(uint32_t virtual_id) noexcept {
+        return static_cast<X64ZmmReg>(virtual_id & (ZmmWindow - 1));
+    }
+
+    [[nodiscard]] static constexpr uint8_t zmm_index(uint32_t virtual_id) noexcept {
+        return static_cast<uint8_t>(map_zmm_circular(virtual_id));
+    }
+};
+
 class X64Encoding {
 public:
+    [[nodiscard]] static constexpr uint8_t reg_index(X64Reg reg) noexcept {
+        return static_cast<uint8_t>(reg);
+    }
+
+    [[nodiscard]] static constexpr bool is_valid(X64Reg reg) noexcept {
+        return reg != X64Reg::INVALID;
+    }
+
+    [[nodiscard]] static constexpr bool is_valid(X64ZmmReg reg) noexcept {
+        return reg != X64ZmmReg::INVALID;
+    }
+
     /**
      * @brief Encodes the REX prefix for 64-bit operands.
      * @param w Set for 64-bit operand size (REX.W).
@@ -67,30 +132,20 @@ public:
      * DGTL ID [0..5] -> RAX, RBX, RCX, RDX, RSI, RDI
      * DGTL ID [6..15] -> R8..R15
      */
-    static constexpr X64Reg map_DGTL_to_phys(uint32_t DGTL_id) noexcept {
-        switch (DGTL_id) {
-            case 0: return X64Reg::RAX;
-            case 1: return X64Reg::RBX;
-            case 2: return X64Reg::RCX;
-            case 3: return X64Reg::RDX;
-            case 4: return X64Reg::RSI;
-            case 5: return X64Reg::RDI;
-            // Gap 4 (RSP) and 5 (RBP) are skipped for stability
-            default: 
-                // [DGTL UPDATE]: Expanded mapping to include R14 and R15
-                // Map DGTL IDs 6 through 15 to R8 through R15
-                if (DGTL_id >= 6 && DGTL_id <= 15) {
-                    return static_cast<X64Reg>(8 + (DGTL_id - 6));
-                }
-                return X64Reg::INVALID;
-        }
+    [[nodiscard]] static constexpr X64Reg map_DGTL_to_phys(uint32_t DGTL_id) noexcept {
+        return X64SinglePassRegisterMapper::map_gpr_branchless(DGTL_id);
+    }
+
+    [[nodiscard]] static constexpr uint8_t map_DGTL_vec_to_phys(uint32_t DGTL_id) noexcept {
+        return X64SinglePassRegisterMapper::zmm_index(DGTL_id);
     }
 
     /**
      * @brief Check if a register requires a REX prefix extension bit (> 7).
      */
     static constexpr inline bool requires_extension(X64Reg reg) noexcept {
-        return static_cast<uint8_t>(reg) >= 8 && static_cast<uint8_t>(reg) != 0xFF;
+        const uint8_t idx = reg_index(reg);
+        return idx >= 8 && idx != 0xFF;
     }
 };
 

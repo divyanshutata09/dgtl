@@ -1,3 +1,24 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
+ * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1 (RETURN FIX)
+ * PILLAR 4: IR STREAM CORE IMPLEMENTATION, iterator access, and hot path operations
+ * ., transantion gaurd: it has three cpp files, IR_Stream_Core 
+ * (lifecycle, allocation), 
+ * IR_Stream_Operations (emit, access), and 
+ * IR_Stream_Optimizations (passes)
+ * * STANDARDS: C++26 / UCRT64 (Zero-Overhead Primitive Mapping)
+ */
+
 #include "dgtl/ir/base/IR_Types.hpp"
 #include "dgtl/ir/base/IR_Nodes.hpp"
 #include "dgtl/ir/base/IR_Traits.hpp"
@@ -5,9 +26,6 @@
 #include "dgtl/ir/base/IR_Stream.hpp" 
 #include "dgtl/core/Arena.hpp" 
 
-
-    
- 
 #include <immintrin.h>
 #include <cstring>
 #include <thread>
@@ -33,6 +51,10 @@ dgtl::core::DGTL_Arena local_transaction_arena(1);
 
 // --- Internal Helper Functions (From Files 1, 2, 6) ---
 
+/**
+ * @brief Core aligned allocator for World-Class SIMD performance.
+ * Forces 64-byte boundaries to prevent Cache-Line Splits.
+ */
 static void* DGTL_aligned_alloc(size_t size, size_t alignment) {
     if (size == 0) size = alignment;
 #ifdef _WIN32
@@ -53,17 +75,25 @@ void DGTL_aligned_free(void* ptr) {
 #endif
 }
 
-// 🔥 SAFE FALLBACK WRAPPER (ADDED, NOTHING REMOVED)
+/**
+ * @brief SAFE FALLBACK WRAPPER (Optimized for 64-byte alignment)
+ * Fulfills the "Strict Aligned Invariant" required for peak SIMD throughput.
+ */
 template<typename T>
 static T* safe_allocate(dgtl::core::DGTL_Arena& arena, size_t count) {
+    // [PILLAR 4] Try arena allocation first
     T* ptr = arena.allocate<T>(count);
-    if (ptr) {
+    
+    // Check if arena returned an aligned pointer (Arena must support 64-byte alignment)
+    if (ptr && (reinterpret_cast<uintptr_t>(ptr) % 64 == 0)) {
         return ptr;
     }
 
-    ptr = new (std::nothrow) T[count];
+    // Fallback to strict hardware-aligned allocation if arena fails or is unaligned
+    ptr = static_cast<T*>(DGTL_aligned_alloc(count * sizeof(T), 64));
+    
     if (!ptr) {
-        std::cerr << "[DGTL FATAL] Allocation failed\n";
+        std::cerr << "[DGTL FATAL] Aligned Allocation failed for count: " << count << "\n";
         return nullptr;
     }
     return ptr;
@@ -71,7 +101,7 @@ static T* safe_allocate(dgtl::core::DGTL_Arena& arena, size_t count) {
 
 // --- IRStream Implementation: Lifecycle (Merged from Files 1, 2, 6) ---
 
-IRStream::IRStream(dgtl::core::DGTL_Arena& arena, size_t node_count)
+IRStream::IRStream([[maybe_unused]] dgtl::core::DGTL_Arena& arena, size_t node_count)
     : count(0),
       _capacity((node_count > 0) ? node_count : 1024),
       atoms(nullptr),
@@ -83,20 +113,26 @@ IRStream::IRStream(dgtl::core::DGTL_Arena& arena, size_t node_count)
       joined_buffer_in_transaction(false),
       joined_buffer(nullptr),
       joined_valid(false),
-      owns_aligned_alloc_storage(false),
-      owns_joined_buffer(false)
+      owns_aligned_alloc_storage(true), // We now manage these via aligned_free
+      owns_joined_buffer(true)
 {
     in_transaction.store(false, std::memory_order_release);
-    atoms = safe_allocate<IRAtom>(arena, _capacity);
-    cores = safe_allocate<IRCore>(arena, _capacity);
-    shadow_atoms = safe_allocate<IRAtom>(arena, _capacity);
-    shadow_cores = safe_allocate<IRCore>(arena, _capacity);
-    joined_buffer = safe_allocate<IRNode>(arena, _capacity);
+
+    // This constructor keeps independent aligned storage because the current
+    // destructor frees these buffers via DGTL_aligned_free. Reusing arena-owned
+    // memory here would require separate ownership tracking to avoid invalid frees.
+    // [STRICT ALIGNMENT] Every buffer is 64-byte aligned for AVX-512/Neon strikes.
+    // Use DGTL_aligned_alloc directly so the destructor's _aligned_free is safe.
+    atoms        = static_cast<IRAtom*>(DGTL_aligned_alloc(_capacity * sizeof(IRAtom), 64));
+    cores        = static_cast<IRCore*>(DGTL_aligned_alloc(_capacity * sizeof(IRCore), 64));
+    shadow_atoms = static_cast<IRAtom*>(DGTL_aligned_alloc(_capacity * sizeof(IRAtom), 64));
+    shadow_cores = static_cast<IRCore*>(DGTL_aligned_alloc(_capacity * sizeof(IRCore), 64));
+    joined_buffer = static_cast<IRNode*>(DGTL_aligned_alloc(_capacity * sizeof(IRNode), 64));
 
     if (atoms) std::memset(atoms, 0, _capacity * sizeof(IRAtom));
-    if (cores) std::memset(cores, 0, _capacity * sizeof(IRCore));
+    if (cores) std::fill(cores, cores + _capacity, IRCore{});
     if (shadow_atoms) std::memset(shadow_atoms, 0, _capacity * sizeof(IRAtom));
-    if (shadow_cores) std::memset(shadow_cores, 0, _capacity * sizeof(IRCore));
+    if (shadow_cores) std::fill(shadow_cores, shadow_cores + _capacity, IRCore{});
     if (joined_buffer) std::memset(joined_buffer, 0, _capacity * sizeof(IRNode));
 }
 
@@ -116,10 +152,13 @@ IRStream::IRStream(IRNode* external_buffer, size_t node_count)
       owns_joined_buffer(false)
 {
     in_transaction.store(false, std::memory_order_release);
+    
+    // Enforce alignment even for external buffer surrogates
     atoms = static_cast<IRAtom*>(DGTL_aligned_alloc(_capacity * sizeof(IRAtom), 64));
     cores = static_cast<IRCore*>(DGTL_aligned_alloc(_capacity * sizeof(IRCore), 64));
     shadow_atoms = static_cast<IRAtom*>(DGTL_aligned_alloc(_capacity * sizeof(IRAtom), 64));
     shadow_cores = static_cast<IRCore*>(DGTL_aligned_alloc(_capacity * sizeof(IRCore), 64));
+    
     if (!external_buffer) {
         joined_buffer = static_cast<IRNode*>(DGTL_aligned_alloc(_capacity * sizeof(IRNode), 64));
         owns_joined_buffer = true;
@@ -127,9 +166,9 @@ IRStream::IRStream(IRNode* external_buffer, size_t node_count)
     owns_aligned_alloc_storage = true;
 
     if (atoms) std::memset(atoms, 0, _capacity * sizeof(IRAtom));
-    if (cores) std::memset(cores, 0, _capacity * sizeof(IRCore));
+    if (cores) std::fill(cores, cores + _capacity, IRCore{});
     if (shadow_atoms) std::memset(shadow_atoms, 0, _capacity * sizeof(IRAtom));
-    if (shadow_cores) std::memset(shadow_cores, 0, _capacity * sizeof(IRCore));
+    if (shadow_cores) std::fill(shadow_cores, shadow_cores + _capacity, IRCore{});
     if (!external_buffer && joined_buffer) std::memset(joined_buffer, 0, _capacity * sizeof(IRNode));
 
     if (external_buffer && atoms && cores) {
@@ -230,7 +269,6 @@ IRStream& IRStream::operator=(IRStream&& other) noexcept {
     return *this;
 }
 
-// --- Move Semantics (From Files 1, 6) ---
 // --- Allocation & Copying (From File 2, 4) ---
 
 IRStream IRStream::allocate_transactional(size_t size) {
@@ -260,12 +298,11 @@ void IRStream::copy_from(const IRStream& other) {
 
     count = std::min(_capacity, src_count);
     shadow_count = count;
-    std::memcpy(atoms, src_atoms, count * sizeof(IRAtom));
-    std::memcpy(cores, src_cores, count * sizeof(IRCore));
+
+    detail::copy_atom_core_stream(atoms, cores, src_atoms, src_cores, count);
 
     if (shadow_atoms && shadow_cores) {
-        std::memcpy(shadow_atoms, atoms, count * sizeof(IRAtom));
-        std::memcpy(shadow_cores, cores, count * sizeof(IRCore));
+        detail::copy_atom_core_stream(shadow_atoms, shadow_cores, atoms, cores, count);
     }
     joined_valid = false;
 }
@@ -319,9 +356,9 @@ void IRStream::begin_transaction() noexcept {
         return;
     }
     shadow_count = std::min(count, _capacity);
-    if (shadow_atoms && atoms && count > 0) {
-        std::memcpy(shadow_atoms, atoms, count * sizeof(IRAtom));
-        std::memcpy(shadow_cores, cores, count * sizeof(IRCore));
+    if (shadow_atoms && shadow_cores && atoms && cores && count > 0) {
+        // [HOT PATH] Keep transaction open over a streaming SoA copy instead of bulk memcpy.
+        detail::copy_atom_core_stream(shadow_atoms, shadow_cores, atoms, cores, count);
     }
 }
 
@@ -330,8 +367,7 @@ void IRStream::commit_transaction() noexcept {
     if (!in_transaction.load(std::memory_order_acquire)) return;
     count = shadow_count;
     if (count > 0 && atoms && shadow_atoms && cores && shadow_cores) {
-        std::memcpy(atoms, shadow_atoms, count * sizeof(IRAtom));
-        std::memcpy(cores, shadow_cores, count * sizeof(IRCore));
+        detail::copy_atom_core_stream(atoms, cores, shadow_atoms, shadow_cores, count);
     }
     in_transaction.store(false, std::memory_order_release);
     joined_valid = false;
@@ -376,7 +412,7 @@ void IRStream::prune_shadow_buffer() noexcept {
         size_t clear_size = (_capacity - count);
         if (clear_size > 0) {
             std::memset(shadow_atoms + count, 0, clear_size * sizeof(IRAtom));
-            std::memset(shadow_cores + count, 0, clear_size * sizeof(IRCore));
+            std::fill(shadow_cores + count, shadow_cores + count + clear_size, IRCore{});
         }
     }
 }
@@ -384,8 +420,7 @@ void IRStream::prune_shadow_buffer() noexcept {
 void IRStream::push_full_to_shadow() noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     if (!shadow_atoms || !shadow_cores || !atoms || !cores) return;
-    std::memcpy(shadow_atoms, atoms, count * sizeof(IRAtom));
-    std::memcpy(shadow_cores, cores, count * sizeof(IRCore));
+    detail::copy_atom_core_stream(shadow_atoms, shadow_cores, atoms, cores, count);
     shadow_count = count;
 }
 
@@ -400,11 +435,9 @@ void IRStream::commit_from_shadow(IRStream& shadow_stream) noexcept {
 
     const size_t copy_count = std::min(_capacity, shadow_stream.count);
     if (copy_count > 0) {
-        std::memcpy(atoms, shadow_stream.atoms, copy_count * sizeof(IRAtom));
-        std::memcpy(cores, shadow_stream.cores, copy_count * sizeof(IRCore));
+        detail::copy_atom_core_stream(atoms, cores, shadow_stream.atoms, shadow_stream.cores, copy_count);
         if (shadow_atoms && shadow_cores) {
-            std::memcpy(shadow_atoms, atoms, copy_count * sizeof(IRAtom));
-            std::memcpy(shadow_cores, cores, copy_count * sizeof(IRCore));
+            detail::copy_atom_core_stream(shadow_atoms, shadow_cores, atoms, cores, copy_count);
         }
     }
 

@@ -1,0 +1,19 @@
+﻿[DGTL] Starting production pipeline
+[DGTL-POLY] Polyhedral analysis disabled
+[DGTL] Backend=arm64 (text) IRMode=int PolyMode=off PolyParallel=auto PolyTile=0 Nodes=5 LogicHash=0x9c13c402303ba602
+// --- DGTL-MLIR-X ARM64 BACKEND ---
+.arch armv8-a
+.text
+.align 4
+.global _DGTL_entry
+
+_DGTL_entry:
+    add x20, x10, x11               // TR_HASH:0x98786E76E5341832
+    add x21, x12, x20               // TR_HASH:0x98786E76E511C260
+    add x22, x13, x20               // TR_HASH:0x98786E76E51C4600
+    mul x23, x21, x22               // TR_HASH:0x98786E76ED599010
+    mov x0, x23
+                   // TR_HASH:0x98786E3739E6EC0B
+    ret
+[DGTL] Production pipeline completed successfully
+

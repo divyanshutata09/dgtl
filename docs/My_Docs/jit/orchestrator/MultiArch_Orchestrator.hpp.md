@@ -1,13 +1,24 @@
-﻿# MultiArch_Orchestrator.hpp
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+# MultiArch_Orchestrator.hpp
 
 Source Header: include/dgtl/jit/orchestrator/MultiArch_Orchestrator.hpp
-Last Synced: 2026-04-14 19:46:41
+Last Synced: 2026-04-20
 
 ## Vision
-This component exists to make the compiler/runtime pipeline explicit, safe, and predictable under high-performance constraints.
+Multi-target AOT compilation dispatch hub. Routes binary output requests to the correct backend emitter based on file extension or target specification. Supports 9 output formats.
 
 ## Why This File Exists
-- Drive runtime execution, specialization, and backend dispatch with predictable safety checks.
+- Route `.wasm` to DGTLWasmEncoder, `.o` to ELF relocatable, `.a` to GNU ar archive, `.obj` to COFF relocatable, `.lib` to COFF archive, `.macho` to MachOEmitter.
 - Keep responsibilities localized so surrounding passes and backends can compose without hidden coupling.
 - Preserve correctness with explicit guardrails before optimization gains.
 - Runtime orchestration is partitioned to separate policy selection from execution mechanics.
@@ -57,13 +68,15 @@ D --> T[Error Path or Trap]
 - none detected
 
 ## Function Catalog
-- void compile_to_binary(std::string_view output_path, const ir::IRStream& stream) {
+- void compile_to_binary(std::string_view output_path, const ir::IRStream& stream) { — Extension-based dispatch (.wasm/.o/.a/.obj/.lib/.macho)
 - const std::string out_path(output_path);
 - else if (out_path.size() >= 2 && out_path.substr(out_path.size() - 2) == ".o") {
 - [[nodiscard]] CompilationReport get_last_report() const noexcept {
-- void dispatch_to_linker(std::string_view path, const ir::IRStream& stream);
-- void dispatch_to_macho(std::string_view path, const ir::IRStream& stream);
-- void dispatch_to_wasm(std::string_view path, const ir::IRStream& stream);
+- void dispatch_to_linker(std::string_view path, const ir::IRStream& stream); — ELF .o and .a
+- void dispatch_to_macho(std::string_view path, const ir::IRStream& stream); — Mach-O ARM64
+- void dispatch_to_wasm(std::string_view path, const ir::IRStream& stream); — WebAssembly
+- void dispatch_to_coff_relocatable(std::string_view path, const ir::IRStream& stream); — COFF .obj
+- void dispatch_to_coff_archive(std::string_view path, const ir::IRStream& stream); — COFF .lib
 
 ## Design Decisions and Whys
 - Explicit typing across IR nodes and flags reduces hidden semantic drift.

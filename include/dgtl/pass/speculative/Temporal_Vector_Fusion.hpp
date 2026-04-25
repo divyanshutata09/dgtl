@@ -1,6 +1,17 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #pragma once
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pipeline/Pass_Manager.hpp"
 
 namespace dgtl::pass {
@@ -45,9 +56,10 @@ public:
             auto& widen_core = stream.get_shadow_core(i);
             widen_atom.opcode = dgtl::ir::OpCode::NOP;
             widen_atom.flags = dgtl::ir::Flags::IS_DEAD;
+            widen_core.result_id = dgtl::ir::INVALID_SLOT;
             widen_core.op_a = 0;
             widen_core.op_b = 0;
-            widen_core.op_c = dgtl::ir::INVALID_SLOT;
+            widen_core.op_c = 0;
             widen_core.intent_hash = dgtl::ir::IRNode::calculate_hash(
                 widen_atom.opcode, widen_core.result_id, widen_core.op_a, widen_core.op_b, widen_core.op_c);
 
@@ -80,3 +92,4 @@ public:
 };
 
 } // namespace dgtl::pass
+

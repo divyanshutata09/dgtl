@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL Website Landing Copy
 
 ## Hero
@@ -8,7 +19,7 @@ Commercial multi-target backend infrastructure for custom languages and performa
 
 ### Subheadline
 
-DGTL helps teams lower typed IR into deterministic, optimized backend output across ARM64, x64, NASM, and WASM without building a full compiler backend stack from scratch.
+DGTL helps teams lower typed IR into deterministic, optimized backend output across ARM64, x64, NASM, WASM, native object files (.o/.obj), and static libraries (.a/.lib) without building a full compiler backend stack from scratch.
 
 ### Primary CTA
 
@@ -44,7 +55,7 @@ DGTL lets you:
 
 - lower frontend output into DGTL IR
 - run deterministic optimization and validation workflows
-- emit production-oriented output for ARM64, x64, NASM, and WASM
+- emit production-oriented output for ARM64, x64, NASM, WASM, ELF .o, COFF .obj/.lib, and Mach-O
 
 ## Section: Why Teams Buy DGTL
 

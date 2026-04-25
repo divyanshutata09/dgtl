@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL Proposal For HFT And Low-Latency Infrastructure Teams
 
 ## Proposal Overview
@@ -25,7 +36,7 @@ HFT and low-latency teams typically care less about generic compiler breadth and
 
 DGTL is designed to support that operating model.
 
-DGTL helps teams lower internal representations into DGTL IR, apply backend and optimization passes, and emit validated output for targets such as ARM64, x64, NASM, and WASM.
+DGTL helps teams lower internal representations into DGTL IR, apply backend and optimization passes, and emit validated output for targets such as ARM64, x64, NASM, WASM, ELF .o, COFF .obj/.lib, and Mach-O.
 
 For HFT use cases, DGTL should be evaluated first through a narrowly scoped paid pilot focused on one representative workload and one primary target.
 

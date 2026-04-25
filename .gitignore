@@ -12,6 +12,7 @@
 *.ilk
 *.idb
 *.exp
+*.zip
 
 # --- Dependency and Compiler Intermediate Files ---
 *.d
@@ -26,10 +27,18 @@ tests/functional/build/
 tests/latency/*.exe
 tests/**/logs/
 
+# --- Payload Intermediates ---
+*.dgtl.payload
+
 # --- Logs and Traces ---
 *.log
 *.pstat
 *.tmp
+
+# --- Publishable Proof Artifacts ---
+!benchmarks/
+!benchmarks/**/*.md
+!benchmarks/**/*.log
 
 # --- IDE and Local Editor State ---
 .vscode/

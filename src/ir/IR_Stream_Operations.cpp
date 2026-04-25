@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include "dgtl/ir/base/IR_Types.hpp"
 #include "dgtl/ir/base/IR_Nodes.hpp"
 #include "dgtl/ir/base/IR_Traits.hpp"
@@ -6,14 +17,79 @@
 #include "dgtl/core/Arena.hpp" 
 
 #include <iostream>
+#include <atomic>
+#include <thread>
+#include <vector>
 
 
 namespace dgtl::ir {
+
+namespace {
+
+constexpr size_t kJoinedSyncPrefetchDistance = 32;
+constexpr size_t kJoinedSyncUnrollFactor = 8;
+
+inline void sync_joined_buffer_simd(IRNode* __restrict dst,
+                               const IRAtom* __restrict atoms,
+                               const IRCore* __restrict cores,
+                               size_t count) noexcept {
+    size_t i = 0;
+#ifdef __AVX512F__
+    for (; i + kJoinedSyncUnrollFactor <= count; i += kJoinedSyncUnrollFactor) {
+#if defined(__GNUC__) || defined(__clang__)
+        if (i + kJoinedSyncPrefetchDistance < count) {
+            __builtin_prefetch(&atoms[i + kJoinedSyncPrefetchDistance], 0, 1);
+            __builtin_prefetch(&cores[i + kJoinedSyncPrefetchDistance], 0, 1);
+            __builtin_prefetch(&dst[i + kJoinedSyncPrefetchDistance], 1, 1);
+        }
+#endif
+        #pragma GCC unroll 8
+        for(size_t j = 0; j < kJoinedSyncUnrollFactor; ++j) {
+            const size_t idx = i + j;
+            dst[idx].opcode = atoms[idx].opcode;
+            dst[idx].flags = atoms[idx].flags;
+            dst[idx].result_id = cores[idx].result_id;
+            const uint32_t mask = (atoms[idx].opcode == OpCode::NOP) ? 0u : 0xFFFFFFFFu;
+            dst[idx].op_a = cores[idx].op_a & mask;
+            dst[idx].op_b = cores[idx].op_b & mask;
+            dst[idx].op_c = cores[idx].op_c & mask;
+            dst[idx].intent_hash = cores[idx].intent_hash;
+        }
+    }
+#endif
+    for (; i < count; ++i) {
+#if defined(__GNUC__) || defined(__clang__)
+        if (i + kJoinedSyncPrefetchDistance < count) {
+            __builtin_prefetch(&atoms[i + kJoinedSyncPrefetchDistance], 0, 1);
+            __builtin_prefetch(&cores[i + kJoinedSyncPrefetchDistance], 0, 1);
+        }
+#endif
+        dst[i].opcode = atoms[i].opcode;
+        dst[i].flags = atoms[i].flags;
+        dst[i].result_id = cores[i].result_id;
+        if (atoms[i].opcode != OpCode::NOP) [[likely]] {
+            dst[i].op_a = cores[i].op_a;
+            dst[i].op_b = cores[i].op_b;
+            dst[i].op_c = cores[i].op_c;
+        } else {
+            dst[i].op_a = 0;
+            dst[i].op_b = 0;
+            dst[i].op_c = 0;
+        }
+        dst[i].intent_hash = cores[i].intent_hash;
+    }
+}
+
+} // namespace
 
 // From File 2: Extern declaration for linking across units
 extern dgtl::core::DGTL_Arena local_transaction_arena;
 
 // --- Hot Path Operations (From File 3) ---
+
+void IRStream::push_node(const IRAtom& atom, const IRCore& core) noexcept {
+    push_node(atom.opcode, atom.flags, core.result_id, core.op_a, core.op_b, core.op_c, core.intent_hash);
+}
 
 void IRStream::push_back(const IRNode& node) noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
@@ -96,6 +172,12 @@ IRNode IRStream::get_node(size_t idx) const noexcept {
     return { a[idx].opcode, a[idx].flags, c[idx].result_id, c[idx].op_a, c[idx].op_b, c[idx].op_c, c[idx].intent_hash, 0u };
 }
 
+const IRNode& IRStream::get_node_readonly(size_t idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    fallback_node = get_node(idx);
+    return fallback_node;
+}
+
 IRNode& IRStream::get_node_ref(size_t idx) noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     const bool trans = in_transaction.load(std::memory_order_acquire);
@@ -105,13 +187,7 @@ IRNode& IRStream::get_node_ref(size_t idx) noexcept {
         return fallback_node;
     }
 
-    if (!joined_valid) {
-        for (size_t i = 0; i < current_count; ++i) {
-            joined_buffer[i] = get_node(i);
-        }
-        joined_valid = true;
-        joined_buffer_in_transaction = trans;
-    }
+    refresh_joined_buffer_locked(trans);
     return joined_buffer[idx];
 }
 
@@ -173,70 +249,97 @@ IRNode IRStream::get_shadow_node_proxy(size_t idx) const noexcept {
 
 // --- Sync & Hash Logic (From File 4) ---
 
-inline void sync_joined_buffer_simd(IRNode* __restrict dst,
-                               const IRAtom* __restrict atoms,
-                               const IRCore* __restrict cores,
-                               size_t count) noexcept {
-    size_t i = 0;
-#ifdef __AVX512F__
-    for (; i + 8 <= count; i += 8) {
-        #pragma GCC unroll 8
-        for(size_t j = 0; j < 8; ++j) {
-            const size_t idx = i + j;
-            dst[idx].opcode = atoms[idx].opcode;
-            dst[idx].flags = atoms[idx].flags;
-            dst[idx].result_id = cores[idx].result_id;
-            const uint32_t mask = (atoms[idx].opcode == OpCode::NOP) ? 0 : 0xFFFFFFFF;
-            dst[idx].op_a = cores[idx].op_a & mask;
-            dst[idx].op_b = cores[idx].op_b & mask;
-            dst[idx].op_c = cores[idx].op_c & mask;
-            dst[idx].intent_hash = cores[idx].intent_hash;
-        }
+void IRStream::refresh_joined_buffer_locked(bool trans) const noexcept {
+    const auto* active_atoms = trans ? shadow_atoms : atoms;
+    const auto* active_cores = trans ? shadow_cores : cores;
+    const size_t current_count = trans ? shadow_count : count;
+
+    if (!joined_buffer || !active_atoms || !active_cores || current_count == 0) {
+        return;
     }
-#endif
-    for (; i < count; ++i) {
-        dst[i].opcode = atoms[i].opcode;
-        dst[i].flags = atoms[i].flags;
-        dst[i].result_id = cores[i].result_id;
-        if (atoms[i].opcode != OpCode::NOP) [[likely]] {
-            dst[i].op_a = cores[i].op_a; dst[i].op_b = cores[i].op_b; dst[i].op_c = cores[i].op_c;
-        } else {
-            dst[i].op_a = dst[i].op_b = dst[i].op_c = 0;
-        }
-        dst[i].intent_hash = cores[i].intent_hash;
+    if (joined_valid && joined_buffer_in_transaction == trans) {
+        return;
     }
+
+    sync_joined_buffer_simd(joined_buffer, active_atoms, active_cores, std::min(current_count, _capacity));
+    joined_valid = true;
+    joined_buffer_in_transaction = trans;
 }
 
 IRNode* IRStream::get_buffer_ptr() const noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     bool trans = in_transaction.load(std::memory_order_acquire);
-    const auto* a = trans ? shadow_atoms : atoms;
-    const auto* c = trans ? shadow_cores : cores;
     const size_t current_count = trans ? shadow_count : count;
 
-    if (!joined_buffer || !a || !c || current_count == 0) return joined_buffer;
-    if (!joined_valid || joined_buffer_in_transaction != trans) {
-        sync_joined_buffer_simd(joined_buffer, a, c, std::min(current_count, _capacity));
-        joined_valid = true;
-        joined_buffer_in_transaction = trans;
-    }
+    if (!joined_buffer || current_count == 0) return joined_buffer;
+    refresh_joined_buffer_locked(trans);
     return joined_buffer;
 }
 
 bool IRStream::validate_shadow_integrity() const noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    if (!in_transaction.load(std::memory_order_acquire)) return true;
-    for (size_t i = 0; i < shadow_count; ++i) {
-        const uint64_t expected = IRNode::calculate_hash(
-            shadow_atoms[i].opcode,
-            shadow_cores[i].result_id,
-            shadow_cores[i].op_a,
-            shadow_cores[i].op_b,
-            shadow_cores[i].op_c
-        );
-        if (shadow_cores[i].intent_hash != expected) return false;
+    const bool trans = in_transaction.load(std::memory_order_acquire);
+    const IRAtom* atom_ptr = trans ? shadow_atoms : atoms;
+    const IRCore* core_ptr = trans ? shadow_cores : cores;
+    const size_t current_count = trans ? shadow_count : count;
+
+    if (!atom_ptr || !core_ptr) {
+        return current_count == 0;
     }
-    return true;
+
+    const auto validate_range = [&](size_t begin, size_t end) -> bool {
+        for (size_t i = begin; i < end; ++i) {
+            const uint64_t expected = IRNode::calculate_hash(
+                atom_ptr[i].opcode,
+                core_ptr[i].result_id,
+                core_ptr[i].op_a,
+                core_ptr[i].op_b,
+                core_ptr[i].op_c
+            );
+            if (core_ptr[i].intent_hash != expected) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    constexpr size_t kParallelValidationThreshold = 262144;
+    const uint32_t hardware_threads = std::thread::hardware_concurrency();
+    const size_t max_workers = current_count / 65536;
+    const size_t worker_count = std::min<size_t>(
+        hardware_threads == 0 ? 1u : hardware_threads,
+        max_workers == 0 ? 1u : max_workers
+    );
+
+    if (current_count < kParallelValidationThreshold || worker_count <= 1) {
+        return validate_range(0, current_count);
+    }
+
+    std::atomic<bool> valid{true};
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count - 1);
+    const size_t chunk_size = (current_count + worker_count - 1) / worker_count;
+
+    for (size_t worker = 0; worker + 1 < worker_count; ++worker) {
+        const size_t begin = worker * chunk_size;
+        const size_t end = std::min(current_count, begin + chunk_size);
+        workers.emplace_back([&, begin, end]() {
+            if (!validate_range(begin, end)) {
+                valid.store(false, std::memory_order_release);
+            }
+        });
+    }
+
+    const size_t tail_begin = (worker_count - 1) * chunk_size;
+    if (!validate_range(tail_begin, current_count)) {
+        valid.store(false, std::memory_order_release);
+    }
+
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    return valid.load(std::memory_order_acquire);
 }
 
 uint64_t IRStream::generate_logic_hash() const noexcept {

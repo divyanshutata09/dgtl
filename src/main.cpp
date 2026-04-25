@@ -1,5 +1,17 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <cctype>
 #include <cstdint>
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +22,13 @@
 #include <vector>
 
 #include "dgtl/all.hpp"
+// Add these for Titan-Stable integration:
+#include "dgtl/jit/runtime/Hardware_Scheduler.hpp"
+#include "dgtl/pipeline/Pass_Decision_Engine.hpp"
+#include <thread>
+#ifdef _WIN32
+    #include <windows.h>
+#endif
 
 namespace {
 
@@ -33,6 +52,11 @@ enum class BackendKind : uint8_t {
     x64,
     nasm,
     wasm,
+    elfobj,
+    staticlib,
+    coffobj,
+    cofflib,
+    macho,
 };
 
 enum class ReleaseIRMode : uint8_t {
@@ -67,6 +91,8 @@ struct AppOptions {
     PolyhedralParallelPolicy polyhedral_parallel = PolyhedralParallelPolicy::auto_policy;
     std::string polyhedral_parallel_name = "auto";
     std::string output_path;
+    std::string frontend_payload_path;
+    bool jit_execute = false;
 };
 
 struct EmissionResult {
@@ -84,12 +110,14 @@ void print_usage(const char* argv0) {
         << "  --help               Show this help\n"
         << "  --quiet              Reduce terminal output\n"
         << "  --no-print           Do not print emitted output to stdout\n"
-        << "  --backend <name>     Select backend: arm64|x64|nasm|wasm\n"
+        << "  --backend <name>     Select backend: arm64|x64|nasm|wasm|elfobj|staticlib|coffobj|cofflib|macho\n"
         << "  --ir-mode <mode>     Select release IR: int|float|float-simd-widen|float-simd-narrow (default: int)\n"
         << "  --polyhedral-mode <mode>  Polyhedral pipeline mode: off|safe|aggressive (default: off)\n"
         << "  --polyhedral-tile <n>     Polyhedral tile size (0 means auto)\n"
         << "  --polyhedral-parallel <p> Polyhedral parallel policy: auto|off|on (default: auto)\n"
-        << "  --emit-output <path> Write emitted output to file\n";
+        << "  --frontend-payload <path> Load universal frontend payload IR module\n"
+        << "  --emit-output <path> Write emitted output to file\n"
+        << "  --jit-execute        Compile and execute x64 code via StrikeOrchestrator\n";
 }
 
 std::string to_lower_ascii(std::string value) {
@@ -119,6 +147,31 @@ bool parse_backend(std::string backend_str, BackendKind& out_kind, std::string& 
     if (backend_str == "wasm") {
         out_kind = BackendKind::wasm;
         out_name = backend_str;
+        return true;
+    }
+    if (backend_str == "elfobj" || backend_str == "obj" || backend_str == "o") {
+        out_kind = BackendKind::elfobj;
+        out_name = "elfobj";
+        return true;
+    }
+    if (backend_str == "staticlib" || backend_str == "archive" || backend_str == "a" || backend_str == "lib") {
+        out_kind = BackendKind::staticlib;
+        out_name = "staticlib";
+        return true;
+    }
+    if (backend_str == "coffobj" || backend_str == "coff") {
+        out_kind = BackendKind::coffobj;
+        out_name = "coffobj";
+        return true;
+    }
+    if (backend_str == "cofflib" || backend_str == "coffarchive") {
+        out_kind = BackendKind::cofflib;
+        out_name = "cofflib";
+        return true;
+    }
+    if (backend_str == "macho" || backend_str == "mach-o" || backend_str == "macho64") {
+        out_kind = BackendKind::macho;
+        out_name = "macho";
         return true;
     }
     return false;
@@ -221,15 +274,25 @@ dgtl::core::PolyhedralConfig build_polyhedral_config(const AppOptions& opts) {
 dgtl::core::ArchType backend_to_arch_type(BackendKind backend) {
     switch (backend) {
         case BackendKind::x64:
-            return dgtl::core::ArchType::X86_64_AVX512;
+            return dgtl::core::select_preferred_x86_arch();
         case BackendKind::arm64:
             return dgtl::core::ArchType::AARCH64_SVE;
         case BackendKind::nasm:
-            return dgtl::core::ArchType::X86_64_AVX512;  // NASM defaults to x64
+            return dgtl::core::select_preferred_x86_arch();  // NASM defaults to host preferred x64 SIMD tier
         case BackendKind::wasm:
             return dgtl::core::ArchType::WASM_SIMD;
+        case BackendKind::elfobj:
+            return dgtl::core::select_preferred_x86_arch();
+        case BackendKind::staticlib:
+            return dgtl::core::select_preferred_x86_arch();
+        case BackendKind::coffobj:
+            return dgtl::core::select_preferred_x86_arch();
+        case BackendKind::cofflib:
+            return dgtl::core::select_preferred_x86_arch();
+        case BackendKind::macho:
+            return dgtl::core::ArchType::AARCH64_SVE;
         default:
-            return dgtl::core::ArchType::X86_64_AVX512;
+            return dgtl::core::select_preferred_x86_arch();
     }
 }
 
@@ -321,6 +384,23 @@ ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {
             continue;
         }
 
+        if (arg == "--frontend-payload") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --frontend-payload\n";
+                return ParseStatus::error;
+            }
+            opts.frontend_payload_path = argv[++i];
+            if (opts.frontend_payload_path.empty()) {
+                std::cerr << "Empty path for --frontend-payload is not allowed\n";
+                return ParseStatus::error;
+            }
+            continue;
+        }
+        if (arg == "--jit-execute") {
+            opts.jit_execute = true;
+            continue;
+        }
+
         std::cerr << "Unknown option: " << arg << "\n";
         return ParseStatus::error;
     }
@@ -362,19 +442,47 @@ bool build_release_ir_for_mode(dgtl::ir::IRStream& stream, ReleaseIRMode mode) {
 }
 
 void run_core_optimizations(dgtl::ir::IRStream& stream, ReleaseIRMode mode) {
+    (void)mode;
+    dgtl::analysis::DGTLAICostModel cost_model;
+    dgtl::pipeline::DGTLAnalysisManager am;
+    dgtl::pipeline::PassDecisionEngine pde;
+    dgtl::jit::DGTLHardwareScheduler scheduler(cost_model);
+
+    // 1. Global Value Numbering (Base)
     stream.perform_gvn();
-    if (mode == ReleaseIRMode::floating) {
-        dgtl::core::DGTLFormalVerifier verifier;
-        dgtl::pass::DGTLInstructionFusionSynth fusion(verifier);
+
+    // 2. PDE-Gated Instruction Fusion
+    dgtl::core::DGTLFormalVerifier verifier;
+    dgtl::pass::DGTLInstructionFusionSynth fusion(verifier);
+    dgtl::graph::Region region;
+    if (pde.should_run_pass(&fusion, &region, am, cost_model)) {
         fusion.execute(stream);
     }
-    dgtl::pass::DGTLTemporalVectorFusion temporal_fusion;
-    temporal_fusion.execute(stream);
-    dgtl::pass::DGTLMaskedPredicationLowering masked_predication;
-    masked_predication.execute(stream);
+
+    // 3. Hardware-Aware Port Scheduling
+    scheduler.schedule(stream);
+
+    // 4. SIMD legalization routed by preferred host policy (AVX2 dual-pump first).
+    const dgtl::pass::TargetArch simd_arch = []() noexcept {
+        switch (dgtl::core::preferred_simd_tier()) {
+            case dgtl::core::SimdTier::AVX512:
+                return dgtl::pass::TargetArch::X86_AVX512;
+            case dgtl::core::SimdTier::AVX2:
+                return dgtl::pass::TargetArch::X86_AVX2;
+            case dgtl::core::SimdTier::Scalar:
+            default:
+                return dgtl::pass::TargetArch::GENERIC;
+        }
+    }();
+    if (simd_arch != dgtl::pass::TargetArch::GENERIC) {
+        dgtl::core::prime_preferred_simd_units();
+    }
+    dgtl::pass::DGTLSIMDLegalizer legalizer(simd_arch);
+    legalizer.legalize(stream);
+
+    // 5. Final Cleanup
     stream.perform_dead_code_elimination();
 }
-
 // === P0-001: POLYHEDRAL ANALYSIS PIPELINE ===
 void run_polyhedral_analysis(dgtl::ir::IRStream& stream,
                              const dgtl::core::PolyhedralConfig& poly_config,
@@ -505,6 +613,84 @@ bool emit_wasm(const dgtl::ir::IRStream& stream,
     return true;
 }
 
+bool emit_elfobj(const dgtl::ir::IRStream& stream,
+                 std::vector<uint8_t>& out_bytes,
+                 std::string& out_text) {
+    out_bytes.clear();
+    out_text.clear();
+
+    dgtl::exec::DGTLUniversalLinker linker;
+    if (!linker.build_elf_relocatable(out_bytes, stream, "DGTL_kernel_entry")) {
+        return false;
+    }
+
+    out_text = "ELF relocatable object generated: " + std::to_string(out_bytes.size()) + " bytes";
+    return true;
+}
+
+bool emit_staticlib(const dgtl::ir::IRStream& stream,
+                    std::vector<uint8_t>& out_bytes,
+                    std::string& out_text) {
+    out_bytes.clear();
+    out_text.clear();
+
+    dgtl::exec::DGTLUniversalLinker linker;
+    if (!linker.build_static_archive(out_bytes, stream, "module.o")) {
+        return false;
+    }
+
+    out_text = "Static archive generated: " + std::to_string(out_bytes.size()) + " bytes";
+    return true;
+}
+
+bool emit_coffobj(const dgtl::ir::IRStream& stream,
+                  std::vector<uint8_t>& out_bytes,
+                  std::string& out_text) {
+    out_bytes.clear();
+    out_text.clear();
+
+    dgtl::exec::DGTLUniversalLinker linker;
+    if (!linker.build_coff_relocatable(out_bytes, stream, "DGTL_kernel_entry")) {
+        return false;
+    }
+
+    out_text = "COFF relocatable object generated: " + std::to_string(out_bytes.size()) + " bytes";
+    return true;
+}
+
+bool emit_cofflib(const dgtl::ir::IRStream& stream,
+                  std::vector<uint8_t>& out_bytes,
+                  std::string& out_text) {
+    out_bytes.clear();
+    out_text.clear();
+
+    dgtl::exec::DGTLUniversalLinker linker;
+    if (!linker.build_coff_archive(out_bytes, stream, "module.obj", "DGTL_kernel_entry")) {
+        return false;
+    }
+
+    out_text = "COFF archive generated: " + std::to_string(out_bytes.size()) + " bytes";
+    return true;
+}
+
+bool emit_macho(const dgtl::ir::IRStream& stream,
+                const dgtl::core::SymbolTable& symbols,
+                std::vector<uint8_t>& out_bytes,
+                std::string& out_text) {
+    out_bytes.clear();
+    out_text.clear();
+
+    dgtl::isa::MachOEmitter emitter(stream, symbols);
+    auto result = emitter.emit_to_binary();
+    if (!result.success) {
+        return false;
+    }
+
+    out_bytes = std::move(result.binary_data);
+    out_text = "Mach-O ARM64 object generated: " + std::to_string(out_bytes.size()) + " bytes";
+    return true;
+}
+
 bool emit_backend(BackendKind backend,
                   const dgtl::ir::IRStream& stream,
                   const dgtl::core::SymbolTable& symbols,
@@ -526,6 +712,26 @@ bool emit_backend(BackendKind backend,
             return result.ok;
         case BackendKind::wasm:
             result.ok = emit_wasm(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::elfobj:
+            result.ok = emit_elfobj(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::staticlib:
+            result.ok = emit_staticlib(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::coffobj:
+            result.ok = emit_coffobj(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::cofflib:
+            result.ok = emit_cofflib(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::macho:
+            result.ok = emit_macho(stream, symbols, result.emitted_bytes, result.emitted_text);
             result.emitted_binary = true;
             return result.ok;
     }
@@ -574,6 +780,78 @@ bool write_binary_file(const std::string& path, const std::vector<uint8_t>& byte
     return out.good();
 }
 
+bool build_ir_from_frontend_payload(const AppOptions& opts,
+                                    dgtl::core::DGTL_Arena& arena,
+                                    dgtl::ir::IRStream& out_stream,
+                                    std::string& error) {
+    dgtl::core::FrontendPayloadModule payload;
+    if (!dgtl::core::read_frontend_payload_file(opts.frontend_payload_path, payload, &error)) {
+        return false;
+    }
+
+    if (payload.functions.empty()) {
+        error = "frontend payload contains no functions";
+        return false;
+    }
+
+    const auto& first_fn = payload.functions.front();
+    const size_t reserve_nodes = std::max<size_t>(256, first_fn.instructions.size() + 16);
+    dgtl::core::DGTLFunction lowered(arena, first_fn.name, reserve_nodes);
+    dgtl::core::DGTLControlFlowGraph cfg;
+    dgtl::core::DGTLABIRegistry abi;
+
+    // Pre-register Myzon runtime intrinsic ABI signatures
+    {
+        dgtl::core::DGTLABIParameter size_param{"size", dgtl::core::DGTLABIValueClass::i64, 0xFF, 0, 0};
+        dgtl::core::DGTLABIParameter ptr_param{"ptr", dgtl::core::DGTLABIValueClass::pointer, 0xFF, 0, 0};
+        std::vector<dgtl::core::DGTLABIParameter> one_i64{size_param};
+        std::vector<dgtl::core::DGTLABIParameter> one_ptr{ptr_param};
+        abi.register_internal_signature("__myzon_alloc_huge", dgtl::core::DGTLABIValueClass::pointer, 0, one_i64);
+        abi.register_internal_signature("__myzon_free", dgtl::core::DGTLABIValueClass::i32, 0, one_ptr);
+
+        // Pre-register all callee names found in the payload so cross-function
+        // calls and user-level intrinsics pass ABI validation.
+        for (const auto& fn : payload.functions) {
+            std::vector<dgtl::core::DGTLABIParameter> params;
+            for (const auto& p : fn.parameters) {
+                params.push_back({p.name, dgtl::core::DGTLABIValueClass::i32, 0xFF, 0, p.type_handle});
+            }
+            abi.register_internal_signature(fn.name, fn.return_abi_class, fn.return_type_handle, params);
+        }
+
+        // Scan all call instructions for callee names not yet registered
+        // (e.g. user-level intrinsics like verify_buffer) and auto-register
+        // with a generic variadic signature.
+        for (const auto& fn : payload.functions) {
+            for (const auto& ins : fn.instructions) {
+                if (ins.kind == dgtl::core::FrontendInstructionKind::call && !ins.callee_name.empty()) {
+                    if (!abi.find_signature(ins.callee_name)) {
+                        abi.register_internal_signature(
+                            ins.callee_name,
+                            dgtl::core::DGTLABIValueClass::i32, 0,
+                            std::span<const dgtl::core::DGTLABIParameter>{},
+                            /*is_variadic=*/true);
+                    }
+                }
+            }
+        }
+    }
+
+    const auto lower_result = dgtl::core::FrontendPipelineLowerer::lower_function(first_fn, lowered, cfg, &abi);
+    if (!lower_result.ok) {
+        error = lower_result.message;
+        return false;
+    }
+
+    out_stream.copy_from(lowered.stream());
+    if (out_stream.size() == 0) {
+        error = "frontend payload lowered to empty stream";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -600,9 +878,20 @@ int main(int argc, char** argv) {
         context.set_polyhedral_config(poly_config);
 
         dgtl::ir::IRStream stream(arena, 256);
-        if (!build_release_ir_for_mode(stream, opts.ir_mode)) {
-            std::cerr << "[DGTL] Failed to build release IR\n";
-            return static_cast<int>(ExitCode::pipeline_failure);
+        if (!opts.frontend_payload_path.empty()) {
+            std::string payload_error;
+            if (!build_ir_from_frontend_payload(opts, arena, stream, payload_error)) {
+                std::cerr << "[DGTL] Failed to build IR from frontend payload: " << payload_error << "\n";
+                return static_cast<int>(ExitCode::pipeline_failure);
+            }
+            if (opts.verbose) {
+                std::cout << "[DGTL] Loaded frontend payload IR from " << opts.frontend_payload_path << "\n";
+            }
+        } else {
+            if (!build_release_ir_for_mode(stream, opts.ir_mode)) {
+                std::cerr << "[DGTL] Failed to build release IR\n";
+                return static_cast<int>(ExitCode::pipeline_failure);
+            }
         }
 
         run_core_optimizations(stream, opts.ir_mode);
@@ -636,6 +925,34 @@ int main(int argc, char** argv) {
             }
         }
 
+        // === JIT EXECUTE: Fire Strike via StrikeOrchestrator ===
+        if (opts.jit_execute) {
+            if (opts.backend != BackendKind::x64) {
+                std::cerr << "[DGTL] --jit-execute requires --backend x64\n";
+                return static_cast<int>(ExitCode::invalid_args);
+            }
+
+            if (opts.verbose) {
+                std::cout << "[DGTL-JIT] Firing strike via StrikeOrchestrator...\n";
+            }
+
+            dgtl::core::StrikeOrchestrator orchestrator(context, arena);
+            auto strike_metrics = orchestrator.fire_strike(stream);
+
+            const bool strike_ok = (strike_metrics.status_code == dgtl::core::StrikeOrchestrator::STRIKE_OK);
+            std::cout << "[DGTL-JIT] Strike "
+                      << (strike_ok ? "OK" : "FAILED")
+                      << " status=0x" << std::hex << strike_metrics.status_code << std::dec
+                      << " executed_instructions=" << strike_metrics.executed_instructions
+                      << " code_size=" << orchestrator.get_last_code_size()
+                      << "\n";
+
+            if (!strike_ok) {
+                std::cerr << "[DGTL-JIT] Strike execution failed\n";
+                return static_cast<int>(ExitCode::emit_failure);
+            }
+        }
+
         std::cout << "[DGTL] Backend=" << opts.backend_name
                   << (emission.emitted_binary ? " (binary)" : " (text)")
                   << " IRMode=" << opts.ir_mode_name
@@ -653,10 +970,21 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Retain experimental warm-up block in source, but keep production path deterministic.
+    #if 0
         if (opts.verbose) {
-            std::cout << "[DGTL] Production pipeline completed successfully\n";
+            std::cout << "[DGTL] Starting production pipeline (Titan-Stable v3.0)\n";
         }
 
+    #ifdef _WIN32
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+        SetThreadAffinityMask(GetCurrentThread(), 1 << 0);
+    #endif
+
+        dgtl::core::DGTL_Arena arena(1, 128);
+        auto& local = arena.get_local();
+        std::memset(local.raw_data(), 0, 1024 * 1024);
+    #endif
         return static_cast<int>(ExitCode::ok);
     } catch (const std::exception& ex) {
         std::cerr << "[DGTL] Fatal exception: " << ex.what() << "\n";
@@ -666,3 +994,4 @@ int main(int argc, char** argv) {
         return static_cast<int>(ExitCode::internal_error);
     }
 }
+

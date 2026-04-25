@@ -1,8 +1,20 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 /* * DGTL Backend vNext - IR Evolution Layer
  * Self-evolving IR based on runtime feedback
  */
 
 #pragma once
+#include <cstdint>
 #include <vector>
 #include <memory>
 #include "dgtl/ir/base/IR_Types.hpp"
@@ -15,7 +27,7 @@ namespace dgtl::ir::evolution {
  * @enum MutationType
  * @brief Types of IR mutations for evolution.
  */
-enum class MutationType {
+enum class MutationType : uint8_t {
     CONSTANT_FOLDING,
     INSTRUCTION_FUSION,
     REGISTER_REASSIGNMENT,
@@ -51,7 +63,7 @@ public:
      * @param cost_model The AI cost model for prediction
      * @return Predicted benefit of the mutation
      */
-    double predict_mutation_benefit(
+    [[nodiscard]] double predict_mutation_benefit(
         const dgtl::ir::IRNode* node,
         MutationType mutation_type,
         dgtl::analysis::DGTLAICostModel& cost_model

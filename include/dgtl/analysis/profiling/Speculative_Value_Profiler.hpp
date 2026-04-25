@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 36: DYNAMIC VALUE SPECIALIZATION (TRANSACTIONAL)
  * PILLAR 2: TRANSACTIONAL IR (SHADOW-BUFFERED SPECIALIZATION)
  * PILLAR 3: THE SENTINEL (CRC-32 INTENT VALIDATION)
@@ -8,7 +19,7 @@
 #pragma once
 #include <atomic>
 #include <stdexcept>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/jit/runtime/JIT_Executor.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
@@ -35,6 +46,13 @@ public:
     void execute(ir::IRStream& stream) {
         if (!global_arena || stream.size() == 0) [[unlikely]] return; 
 
+        const uintptr_t stream_id = static_cast<uintptr_t>(stream.get_version());
+        const dgtl::analysis::RuntimeFeedback runtime_feedback = jit.collect_feedback(stream_id);
+        const float estimated_cost = ai_model.predict_cost(stream);
+        if (!should_attempt_specialization(estimated_cost, runtime_feedback)) {
+            return;
+        }
+
         // PILLAR 2: Start transaction.
         stream.begin_transaction();
 
@@ -47,6 +65,9 @@ public:
             if (ir::AtomSplitter::get_opcode(atom_raw) == ir::OpCode::GUARD_VALUE) {
                 if (specialize_on_value(stream, i)) {
                     total_specialized = true;
+                    if (runtime_feedback.execution_count > 0) {
+                        ai_model.update_with_feedback(stream.get_node_readonly(i), runtime_feedback);
+                    }
                 }
             }
         }
@@ -61,6 +82,21 @@ public:
     }
 
 private:
+    [[nodiscard]] static bool should_attempt_specialization(
+        float estimated_cost,
+        const dgtl::analysis::RuntimeFeedback& feedback) noexcept {
+        constexpr float kMinPredictedCost = 4.0f;
+        constexpr double kMaxBranchMissForSpec = 0.20;
+
+        if (estimated_cost < kMinPredictedCost) {
+            return false;
+        }
+        if (feedback.execution_count > 0 && feedback.branch_mispredict_rate > kMaxBranchMissForSpec) {
+            return false;
+        }
+        return true;
+    }
+
     /**
      * @brief Injects hot values and refreshes structural identity.
      */
@@ -70,10 +106,18 @@ private:
         const uint32_t reg_id = guard_core.op_a;
         const uint32_t expected_val = guard_core.op_b;
 
+        if (reg_id == ir::INVALID_SLOT || expected_val == ir::INVALID_SLOT) {
+            return false;
+        }
+
         const size_t shadow_count = stream.size();
         bool logic_changed = false;
 
         for (uint32_t i = 0; i < (uint32_t)shadow_count; ++i) {
+            if (i == guard_idx) {
+                continue;
+            }
+
             ir::IRCore& core = stream.get_shadow_core(i);
             
             bool modified = false;
@@ -87,6 +131,10 @@ private:
                 ir::IRAtom& atom_ref = stream.get_shadow_atom(i);
                 uint16_t flags = ir::AtomSplitter::get_flags(atom_ref);
                 ir::OpCode op = ir::AtomSplitter::get_opcode(atom_ref);
+
+                if (op == ir::OpCode::NOP) {
+                    continue;
+                }
 
                 flags |= ir::Flags::IS_SPEC_CONST;
                 atom_ref = ir::AtomSplitter::pack(op, flags);
@@ -118,6 +166,11 @@ private:
         const size_t count = s.size();
         for (uint32_t i = 0; i < (uint32_t)count; ++i) {
             ir::IRAtom& atom_ref = s.get_shadow_atom(i);
+            const ir::OpCode op = ir::AtomSplitter::get_opcode(atom_ref);
+            if (op == ir::OpCode::NOP) {
+                continue;
+            }
+
             uint16_t flags = ir::AtomSplitter::get_flags(atom_ref);
             
             if (flags & ir::Flags::IS_SPEC_CONST) {
@@ -125,7 +178,7 @@ private:
                 
                 // Construct a 32-byte aligned temporary node for folding logic
                 ir::IRNode bridge;
-                bridge.opcode = ir::AtomSplitter::get_opcode(atom_ref);
+                bridge.opcode = op;
                 bridge.flags = flags;
                 bridge.result_id = core.result_id;
                 bridge.op_a = core.op_a;

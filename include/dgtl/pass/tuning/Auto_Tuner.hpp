@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 22: HARDWARE-SENSITIVE AUTO-TUNER (SHADOW-VALIDATED)
  * FINAL FIX: Transactional Shadow-Writing & Invariant Checks.
  * PERFORMANCE: Micro-benchmarking with nanosecond-precision hardware counters.
@@ -9,9 +20,10 @@
 #include <chrono>
 #include <vector>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <cstring>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/jit/runtime/JIT_Executor.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 
@@ -33,6 +45,12 @@ public:
      * Profiles loop variants on silicon using Shadow Buffers to ensure Zero-Corruption.
      */
     TuningResult tune_loop_nest(const ir::IRStream& base_stream) {
+        if (base_stream.size() == 0) {
+            return {1, 0};
+        }
+
+        (void)jit_engine;
+
         constexpr uint32_t factors[] = {1, 2, 4, 8};
         uint32_t best_factor = 1;
         uint64_t min_cycles = UINT64_MAX;
@@ -98,6 +116,14 @@ private:
      */
     ir::IRStream clone_and_unroll_transactional(const ir::IRStream& src, uint32_t factor) {
         const size_t src_size = src.size();
+        if (factor == 0) {
+            return ir::IRStream::allocate_shadow(1);
+        }
+
+        if (src_size > (std::numeric_limits<size_t>::max() / factor)) {
+            return ir::IRStream::allocate_shadow(src_size);
+        }
+
         ir::IRStream shadow = ir::IRStream::allocate_shadow(src_size * factor);
 
         if (factor == 1) {
@@ -117,17 +143,22 @@ private:
                     const uint32_t reg_offset = (f * 0x4000);
                     
                     // Offset virtual registers
-                    if (node.result_id != 0) node.result_id += reg_offset; 
-                    if (node.op_a != 0 && node.op_a < 0xFFFF) node.op_a += reg_offset;
-                    if (node.op_b != 0 && node.op_b < 0xFFFF) node.op_b += reg_offset;
+                    if (node.result_id != ir::INVALID_SLOT) node.result_id += reg_offset;
+                    if (node.op_a != ir::INVALID_SLOT) node.op_a += reg_offset;
+                    if (node.op_b != ir::INVALID_SLOT) node.op_b += reg_offset;
+                    if (node.op_c != ir::INVALID_SLOT) node.op_c += reg_offset;
 
                     // Apply BIR 2.1 Hardware Flags
                     node.flags |= ir::Flags::IS_SIMD_BURST;
                     node.flags |= ir::Flags::IS_HOSTED; // Mark as unroll-hosted
 
                     // PILLAR 3: Recalculate Intent Hash for the new ID configuration
-                    node.intent_hash = core::DGTLFormalVerifier::compute_master_hash_bits(
-                        node.opcode, node.op_a, node.op_b, node.op_c
+                    node.intent_hash = ir::IRNode::calculate_hash(
+                        node.opcode,
+                        node.result_id,
+                        node.op_a,
+                        node.op_b,
+                        node.op_c
                     );
 
                     shadow.push_back(node);

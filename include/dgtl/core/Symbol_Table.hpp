@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
  * PILLAR 2: TRI-TIER TRANSACTIONAL STREAM & SHADOW-AWARE EMISSION
  * SYMBOL TABLE: Scoped High-Velocity Identity Resolution
@@ -49,14 +60,21 @@ public:
     SymbolTable() 
         : m_fallback_arena(std::make_unique<dgtl::core::DGTL_Arena>()), 
           m_arena(*m_fallback_arena) {
+        m_scopes.reserve(8);
         m_scopes.emplace_back();
     }
 
     explicit SymbolTable(dgtl::core::DGTL_Arena& arena) 
         : m_arena(arena) {
+        m_scopes.reserve(8);
         // Initialize global scope
         m_scopes.emplace_back(); 
     }
+
+    SymbolTable(const SymbolTable&) = delete;
+    SymbolTable& operator=(const SymbolTable&) = delete;
+    SymbolTable(SymbolTable&&) = delete;
+    SymbolTable& operator=(SymbolTable&&) = delete;
 
     // --- SCOPE MANAGEMENT ---
 
@@ -84,6 +102,10 @@ public:
      * @return true if defined, false if redefinition occurs in the same scope.
      */
     bool define(std::string_view name, uint32_t slot_id, dgtl::ir::OpCode type = dgtl::ir::OpCode::NOP) {
+        if (slot_id == dgtl::ir::INVALID_SLOT) {
+            return false;
+        }
+
         uint64_t hash = compute_hash(name);
         auto& current_scope = m_scopes.back();
 
@@ -100,8 +122,7 @@ public:
             .metadata = nullptr
         };
 
-        current_scope[hash] = entry;
-        return true;
+        return current_scope.emplace(hash, entry).second;
     }
 
     /**
@@ -163,6 +184,10 @@ public:
      * @brief Updates an existing symbol's metadata or slot.
      */
     bool update(std::string_view name, uint32_t new_slot) {
+        if (new_slot == dgtl::ir::INVALID_SLOT) {
+            return false;
+        }
+
         uint64_t hash = compute_hash(name);
         for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
             if (auto entry_it = it->find(hash); entry_it != it->end()) {
@@ -182,7 +207,7 @@ public:
     [[nodiscard]] static constexpr uint64_t compute_hash(std::string_view name) noexcept {
         uint64_t hash = 0xcbf29ce484222325ULL;
         for (char c : name) {
-            hash ^= static_cast<uint64_t>(c);
+            hash ^= static_cast<uint64_t>(static_cast<uint8_t>(c));
             hash *= 0x100000001b3ULL;
         }
         return hash;

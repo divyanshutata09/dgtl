@@ -1,0 +1,168 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+#include "dgtl/core/Arena.hpp"
+#include "dgtl/core/Debug_Metadata.hpp"
+#include "dgtl/core/Symbol_Table.hpp"
+#include "dgtl/ir/base/IR_Stream.hpp"
+
+namespace dgtl::core {
+
+using FrontendTypeHandle = uint64_t;
+
+struct DGTLFunctionParameter {
+    std::string name;
+    uint32_t slot_id = dgtl::ir::INVALID_SLOT;
+    FrontendTypeHandle type_handle = 0;
+    bool is_variadic = false;
+};
+
+class DGTLFunction {
+public:
+    DGTLFunction(DGTL_Arena& arena, std::string_view name, size_t reserved_nodes = 256)
+        : arena_(arena),
+          name_(name),
+          stream_(arena, reserved_nodes),
+          symbols_(arena),
+          debug_store_(arena, reserved_nodes) {}
+
+    [[nodiscard]] const std::string& name() const noexcept { return name_; }
+    [[nodiscard]] ir::IRStream& stream() noexcept { return stream_; }
+    [[nodiscard]] const ir::IRStream& stream() const noexcept { return stream_; }
+    [[nodiscard]] SymbolTable& symbols() noexcept { return symbols_; }
+    [[nodiscard]] const SymbolTable& symbols() const noexcept { return symbols_; }
+    [[nodiscard]] debug::DGTLDebugStore& debug_store() noexcept { return debug_store_; }
+    [[nodiscard]] const debug::DGTLDebugStore& debug_store() const noexcept { return debug_store_; }
+    [[nodiscard]] const std::vector<DGTLFunctionParameter>& parameters() const noexcept { return parameters_; }
+
+    [[nodiscard]] uint32_t allocate_slot() noexcept {
+        return next_slot_id_++;
+    }
+
+    [[nodiscard]] uint32_t add_parameter(std::string_view name,
+                                         FrontendTypeHandle type_handle = 0,
+                                         dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP,
+                                         bool is_variadic = false) {
+        const uint32_t slot_id = allocate_slot();
+        symbols_.define(name, slot_id, type_hint);
+        parameters_.push_back(DGTLFunctionParameter{std::string(name), slot_id, type_handle, is_variadic});
+        if (type_handle != 0) {
+            slot_type_handles_[slot_id] = type_handle;
+        }
+        return slot_id;
+    }
+
+    [[nodiscard]] bool define_local(std::string_view name,
+                                    uint32_t slot_id,
+                                    FrontendTypeHandle type_handle = 0,
+                                    dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
+        if (!symbols_.define(name, slot_id, type_hint)) {
+            return false;
+        }
+        if (type_handle != 0) {
+            slot_type_handles_[slot_id] = type_handle;
+        }
+        return true;
+    }
+
+    [[nodiscard]] std::optional<uint32_t> resolve_slot(std::string_view name) const noexcept {
+        const auto entry = symbols_.resolve(name);
+        if (!entry.has_value()) {
+            return std::nullopt;
+        }
+        return entry->slot_id;
+    }
+
+    [[nodiscard]] uint32_t define_or_get_local(std::string_view name,
+                                               FrontendTypeHandle type_handle = 0,
+                                               dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
+        if (const auto existing = resolve_slot(name); existing.has_value()) {
+            if (type_handle != 0) {
+                slot_type_handles_[*existing] = type_handle;
+            }
+            return *existing;
+        }
+
+        const uint32_t slot_id = allocate_slot();
+        const bool defined = define_local(name, slot_id, type_handle, type_hint);
+        if (!defined) {
+            return dgtl::ir::INVALID_SLOT;
+        }
+        return slot_id;
+    }
+
+    [[nodiscard]] uint32_t define_temp(FrontendTypeHandle type_handle = 0,
+                                       dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
+        const uint32_t slot_id = allocate_slot();
+        if (type_handle != 0) {
+            slot_type_handles_[slot_id] = type_handle;
+        }
+        if (type_hint != dgtl::ir::OpCode::NOP) {
+            temp_type_hints_[slot_id] = type_hint;
+        }
+        return slot_id;
+    }
+
+    void set_return_type(FrontendTypeHandle type_handle) noexcept {
+        return_type_handle_ = type_handle;
+    }
+
+    [[nodiscard]] FrontendTypeHandle return_type() const noexcept {
+        return return_type_handle_;
+    }
+
+    void set_slot_type(uint32_t slot_id, FrontendTypeHandle type_handle) noexcept {
+        if (type_handle == 0) {
+            slot_type_handles_.erase(slot_id);
+            return;
+        }
+        slot_type_handles_[slot_id] = type_handle;
+    }
+
+    [[nodiscard]] std::optional<FrontendTypeHandle> get_slot_type(uint32_t slot_id) const noexcept {
+        const auto it = slot_type_handles_.find(slot_id);
+        if (it == slot_type_handles_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    void begin_scope() {
+        symbols_.push_scope();
+    }
+
+    void end_scope() {
+        symbols_.pop_scope();
+    }
+
+private:
+    DGTL_Arena& arena_;
+    std::string name_;
+    ir::IRStream stream_;
+    SymbolTable symbols_;
+    debug::DGTLDebugStore debug_store_;
+    std::vector<DGTLFunctionParameter> parameters_;
+    std::unordered_map<uint32_t, FrontendTypeHandle> slot_type_handles_;
+    std::unordered_map<uint32_t, dgtl::ir::OpCode> temp_type_hints_;
+    FrontendTypeHandle return_type_handle_ = 0;
+    uint32_t next_slot_id_ = 1;
+};
+
+} // namespace dgtl::core

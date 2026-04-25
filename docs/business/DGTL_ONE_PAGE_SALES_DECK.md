@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL One-Page Sales Deck
 
 ## Headline
@@ -6,7 +17,7 @@ Commercial multi-target backend infrastructure for custom languages and performa
 
 ## Subheadline
 
-Lower your frontend into DGTL IR, apply deterministic optimization passes, and emit production-ready output across ARM64, x64, NASM, and WASM without building a backend stack from scratch.
+Lower your frontend into DGTL IR, apply deterministic optimization passes, and emit production-ready output across ARM64, x64, NASM, WASM, native object files, and static libraries without building a backend stack from scratch.
 
 ## What DGTL Solves
 

@@ -1,10 +1,21 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <vector>
 #include <cassert>
 
 
 // Framework Includes
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pass/transform/GVN.hpp"
 #include "dgtl/pass/transform/Instruction_Folder.hpp"
 #include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
@@ -135,21 +146,15 @@ void run_fusion_test() {
     dgtl::pass::DGTLInstructionFusionSynth fusion(verifier);
     fusion.execute(stream);
 
-    bool producer_nopped = false;
-    bool consumer_fused = false;
+    // After apply_fusion the producer is NOP'd with result_id = INVALID_SLOT,
+    // so check by stream index rather than result_id.
+    const auto n0 = stream.get_node(0);
+    const auto n1 = stream.get_node(1);
 
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto n = stream.get_node(i);
-
-        if (n.result_id == 20 && n.opcode == ir::OpCode::NOP) {
-            producer_nopped = true;
-        }
-
-        if (n.result_id == 21 && n.opcode == ir::OpCode::FMA_F32 &&
-            (n.flags & ir::Flags::IS_MACRO_FUSED)) {
-            consumer_fused = true;
-        }
-    }
+    bool producer_nopped = (n0.opcode == ir::OpCode::NOP);
+    bool consumer_fused  = (n1.result_id == 21 &&
+                            n1.opcode    == ir::OpCode::FMA_F32 &&
+                            (n1.flags    &  ir::Flags::IS_MACRO_FUSED));
 
     if (producer_nopped && consumer_fused) {
         std::cout << "SUCCESS: MUL+ADD fused into FMA pattern.\n";
@@ -172,4 +177,11 @@ void run_test_pipeline1() {
     std::cout << "\n--- Stress Test Suite Complete ---\n";
     return;
 }
+
+
+
+
+
+
+
 

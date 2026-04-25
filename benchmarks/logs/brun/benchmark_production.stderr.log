@@ -1,0 +1,7 @@
+[DGTL] Hardware lock: process=Realtime thread=TimeCritical mask=0x4 core=2 sibling=best-effort isolated
+[DGTL] stabilize(): 3000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24958878 ticks / 10000000 ns => ~2.49589 GHz
+[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
+[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
+[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
+[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)

@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
  * PILLAR 2: TRI-TIER TRANSACTIONAL STREAM & SHADOW-AWARE EMISSION
  * TYPES ENGINE: Core Opcodes, Flags, and Semantic Traits
@@ -27,15 +38,15 @@ namespace dgtl::ir {
  * Tier 2: The register and data payload.
  */
 struct IRCore {
-    uint32_t result_id;     // 4 bytes: Destination Virtual Register
+    uint32_t result_id = 0;     // 4 bytes: Destination Virtual Register
     
-    uint32_t op_a;
-    uint32_t op_b;
-    uint32_t op_c;
+    uint32_t op_a = 0;
+    uint32_t op_b = 0;
+    uint32_t op_c = 0;
     
-    uint64_t intent_hash;   // 8 bytes: Structural identity for GVN (Tier 3)
-    uint32_t logic_flags;   // 4 bytes: Dialect-specific metadata
-    uint32_t padding;       // 4 bytes: Future-proofing / Alignment
+    uint64_t intent_hash = 0;   // 8 bytes: Structural identity for GVN (Tier 3)
+    uint32_t logic_flags = 0;   // 4 bytes: Dialect-specific metadata
+    uint32_t padding = 0;       // 4 bytes: Future-proofing / Alignment
 };
 
 /**
@@ -64,6 +75,15 @@ enum class OpCode : uint16_t {
     AND_I32              = 25,
     OR_I32               = 26,
     XOR_I32              = 27,
+    MOD_I32              = 28,
+
+    // Integer Comparison (40-49) Ã¢â‚¬â€ result_id = 1 if true, 0 if false
+    CMP_EQ_I32           = 40,
+    CMP_NE_I32           = 41,
+    CMP_LT_I32           = 42,
+    CMP_LE_I32           = 43,
+    CMP_GT_I32           = 44,
+    CMP_GE_I32           = 45,
 
     // Floating Point (30-39)
     ADD_F32              = 30,
@@ -159,6 +179,7 @@ namespace Flags {
     inline constexpr uint16_t IS_HOSTED             = 0x4000; // Flag for environment-hosted resources
     inline constexpr uint16_t REQUIRES_DEPASS_TARGET = IS_HOSTED; // Compatibility alias for deoptimization targets
     inline constexpr uint16_t IS_MACRO_FUSED        = 0x8000; // Shifted to maintain 16-bit alignment
+    inline constexpr uint16_t NON_TEMPORAL_HINT     = IS_HOSTED; // Compatibility alias for cache-bypass hinting
     
     // Branch hints (utilizing high bits or specific patterns)
     inline constexpr uint16_t BRANCH_LIKELY         = 0xA000; 
@@ -169,8 +190,8 @@ namespace Flags {
  * @section Global Sentinels
  */
 inline constexpr uint32_t NULL_REGISTER = 0x0;
-static constexpr uint32_t INVALID_ATOM = 0xFFFFFFFF;
-static constexpr uint32_t INVALID_SLOT = INVALID_ATOM; 
+inline constexpr uint32_t INVALID_ATOM = 0xFFFFFFFF;
+inline constexpr uint32_t INVALID_SLOT = INVALID_ATOM; 
 
 /**
  * @struct ExtendedFlags

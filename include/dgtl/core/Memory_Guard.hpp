@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : CORE MEMORY PROTOCAL
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : CORE MEMORY PROTOCAL
  * PILLAR 1: ZERO-TRUST MEMORY MANAGEMENT
  * STANDARDS: C++26 / UCRT64 / MSVC-Compatible
  */
@@ -6,11 +17,15 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <source_location>
 #include <span>
 
-#ifdef DGTL_WIN64
+#if defined(_WIN32) || defined(_WIN64)
+    #ifndef DGTL_WIN64
+        #define DGTL_WIN64
+    #endif
     #include <intrin.h>
 #endif
 
@@ -37,6 +52,10 @@ public:
         );
     }
 
+    [[nodiscard]] friend constexpr bool has_access(Access set, Access required) noexcept {
+        return (static_cast<uint8_t>(set) & static_cast<uint8_t>(required)) == static_cast<uint8_t>(required);
+    }
+
     constexpr MemoryGuard() noexcept = default;
 
     /**
@@ -45,21 +64,19 @@ public:
     template<typename T>
     explicit constexpr MemoryGuard(T* ptr, size_t count, Access perm = Access::Read | Access::Write) noexcept
         : m_base(reinterpret_cast<uintptr_t>(ptr)),
-          m_size(count * sizeof(T)),
+                    m_size((count > (std::numeric_limits<size_t>::max() / sizeof(T)))
+                                         ? std::numeric_limits<size_t>::max()
+                                         : count * sizeof(T)),
           m_perms(perm) {}
 
     /**
      * @brief Secure access to a specific offset.
      * @throw std::out_of_range in debug builds.
      */
-    [[nodiscard]] inline void* get(size_t offset, size_t requested_size, 
+    [[nodiscard]] inline void* get(size_t offset, size_t requested_size,
+                                   Access required = Access::Read,
                                    std::source_location loc = std::source_location::current()) const {
-        #ifdef _DEBUG
-        validate_access(offset, requested_size, loc);
-        #else
-        (void)requested_size;
-        (void)loc;
-        #endif
+        validate_access(offset, requested_size, required, loc);
 
         return reinterpret_cast<void*>(m_base + offset);
     }
@@ -89,14 +106,19 @@ private:
     /**
      * @brief Internal validation logic (Optimized away in Release).
      */
-    void validate_access([[maybe_unused]] size_t offset, 
+    void validate_access([[maybe_unused]] size_t offset,
                          [[maybe_unused]] size_t req_size,
+                         [[maybe_unused]] Access required,
                          [[maybe_unused]] const std::source_location& loc) const {
         if (m_base == 0) [[unlikely]] {
             throw std::runtime_error("Memory_Guard: Invalid base address");
         }
 
-        if (offset + req_size > m_size) [[unlikely]] {
+        if (!has_access(m_perms, required)) [[unlikely]] {
+            throw std::runtime_error("Memory_Guard: Access permission denied");
+        }
+
+        if (offset > m_size || req_size > (m_size - offset)) [[unlikely]] {
             throw std::runtime_error("Memory_Guard: Access out of bounds");
         }
     }

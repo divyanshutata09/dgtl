@@ -1,6 +1,28 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 # DGTL: High-Performance Compiler Infrastructure
 
 **DGTL** is a retargetable compiler infrastructure designed for high-performance code generation and optimization. It targets **AI inference, high-frequency trading (HFT), cloud computing, and embedded systems** requiring low-latency, vectorized code generation.
+
+## Access And Licensing
+
+DGTL is released under a proprietary software notice. Source access, usage rights, and distribution rights are controlled by written agreement.
+
+- Repository notice: [LICENSE](LICENSE)
+- Licensing/evaluation draft terms: [PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md](docs/business/PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md)
+- Technical disclosure policy for deep questions: [DEEP_TECHNICAL_RESPONSE_POLICY.md](docs/business/DEEP_TECHNICAL_RESPONSE_POLICY.md)
+- Technical whitepaper outline (black-box publication model): [TECHNICAL_WHITEPAPER_OUTLINE.md](docs/analysis/TECHNICAL_WHITEPAPER_OUTLINE.md)
+
+For commercial licensing or evaluation access, contact: **licensing@dgtl.tech**
 
 ## Core Features
 
@@ -8,14 +30,101 @@
 - **Transactional Memory Model**: Thread-local arenas with speculative execution and rollback via shadow buffers
 - **AI-Guided Optimization**: Neural network-based cost prediction for intelligent pass ordering
 - **Multi-Target Code Generation**: ARM64/AArch64, x86-64, WebAssembly, NASM assembly
+- **Native Object & Library Emission**:
+  - ELF64 relocatable objects (`.o`) with `.rela.text` relocations
+  - GNU `ar` static archives (`.a`)
+  - COFF relocatable objects (`.obj`, IMAGE_FILE_MACHINE_AMD64)
+  - COFF import libraries (`.lib`) with first linker member
+  - Mach-O 64-bit ARM64 objects with real instruction encoding
 - **Advanced Optimization Passes**: 
   - Global Value Numbering (GVN) with SIMD fingerprinting
   - Dead Code Elimination, Constant Folding
   - SIMD legalization, vectorization, and gather/scatter optimization
   - Loop unswitching, polyhedral transformations, speculative inlining
   - Memory dependency analysis and redundant store fusion
-- **JIT Execution Runtime**: W^X-protected code execution with multi-architecture orchestration
+- **JIT Execution Runtime**: W^X-protected code execution via `StrikeOrchestrator` with closed-loop AI cost feedback
 - **Graph-Based Analysis**: Execution graphs, dependency tracking, region-level optimization
+
+## Performance-First Lowering
+
+DGTL lowers high-level logic to backend-native output with traceability markers for post-run analysis.
+
+```armasm
+// Example Output: Arithmetic Lowering (ARM64, IRMode=int)
+_DGTL_entry:
+  add x20, x10, x11               // TR_HASH:0x98786E76E5341832
+  add x21, x12, x20               // TR_HASH:0x98786E76E511C260
+  add x22, x13, x20               // TR_HASH:0x98786E76E51C4600
+  mul x23, x21, x22               // TR_HASH:0x98786E76ED599010
+  ret
+```
+
+Current proof point from production run:
+
+- `LogicHash=0x9c13c402303ba602`
+- per-instruction `TR_HASH` tags in emitted assembly
+- artifact logs under `benchmarks/logs/`
+
+## Repository Face For Proprietary Launch
+
+- Source is organized under `src/` and public interfaces under `include/dgtl/`.
+- Build artifacts (including `dgtl_release.exe`) are ignored via `.gitignore`.
+- Binary distribution should go through GitHub Releases, not through committed build outputs.
+- Public technical depth is documented under `docs/analysis/` with black-box disclosure boundaries.
+
+## Backend Bridge Before Public Reveal
+
+ARM64 lowering is stable; backend parity is now established across all 9 targets including native object/library emission and JIT execution.
+
+Recommended pre-reveal bridge gate:
+
+1. Emit and verify `int` profile parity across `arm64`, `x64`, `nasm`, `wasm`.
+2. Verify object/library output: `elfobj`, `staticlib`, `coffobj`, `cofflib`, `macho`.
+3. Validate `--jit-execute` with `DGTL_STRIKE_EXECUTE=1` on x64.
+4. Record release logs and logic hashes per backend in `benchmarks/logs/`.
+5. Publish backend bridge status and risks in `docs/analysis/BACKEND_BRIDGE_PRE_REVEAL_PLAN.md`.
+6. Keep polyhedral mode documented as staged (`off|safe|aggressive`) with clear enablement criteria.
+
+## Public Reveal Kit
+
+Use this section when publishing the first public-facing repository/release post.
+
+### Backend Parity Snapshot (IRMode=int)
+
+| Backend | Output Kind | Status | LogicHash | Evidence |
+|---|---|---|---|---|
+| `arm64` | text assembly | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_arm64_int.log` |
+| `x64` | binary bytes | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_x64_int.log` |
+| `nasm` | text assembly | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_nasm_int.log` |
+| `wasm` | binary bytes | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_wasm_int.log` |
+| `elfobj` | ELF .o binary | Ready | — | Verified: ELF64 ET_REL, 6 sections |
+| `staticlib` | GNU .a archive | Ready | — | Verified: `!<arch>` header |
+| `coffobj` | COFF .obj binary | Ready | — | Verified: `64 86` (MACHINE_AMD64) |
+| `cofflib` | COFF .lib archive | Ready | — | Verified: first linker member + COFF member |
+| `macho` | Mach-O ARM64 binary | Ready | — | Verified: `CF FA ED FE`, LC_SEGMENT_64 + LC_SYMTAB |
+
+### Copy-Paste Reveal Announcement
+
+```markdown
+DGTL is now available under a proprietary software notice for evaluation and commercial licensing.
+
+What is included in this reveal:
+- Multi-target lowering evidence across ARM64, x64, NASM, and WASM.
+- Native object/library emission: ELF .o, GNU .a, COFF .obj, COFF .lib, Mach-O ARM64.
+- JIT execution via `--jit-execute` (x64, W^X-protected, closed-loop AI feedback).
+- Deterministic `LogicHash` traceability (`0x9c13c402303ba602`) on baseline int-mode runs.
+- Backend proof logs under `benchmarks/logs/`.
+- Public theory documentation and architecture flow under `docs/analysis/THEORY_OF_OPERATION.md`.
+
+Sample runs:
+`./build/dgtl_release.exe --backend arm64 --ir-mode int`
+`./build/dgtl_release.exe --backend coffobj --emit-output kernel.obj`
+`./build/dgtl_release.exe --backend x64 --jit-execute`
+
+Licensing and evaluation:
+- Notice: `LICENSE`
+- Contact: licensing@dgtl.tech
+```
 
 ## Requirements
 
@@ -59,6 +168,25 @@ Run the production driver with explicit IR mode selection:
 ```
 
 `--ir-mode int` is the default v1.1 release path. `--ir-mode float` enables the float profile and FMA-capable fusion path. `--ir-mode float-simd-widen` (alias `--ir-mode fcvtl`) emits an ARM64 SIMD widening probe using `fcvtl` (`vN.4h` -> `vD.4s`). `--ir-mode float-simd-narrow` (alias `--ir-mode fcvtn`) emits an ARM64 SIMD narrowing probe using `fcvtn` (`vN.4s` -> `vD.4h`).
+
+Emit native object files and libraries:
+
+```powershell
+.\build\dgtl_release.exe --backend elfobj --emit-output kernel.o
+.\build\dgtl_release.exe --backend staticlib --emit-output libkernel.a
+.\build\dgtl_release.exe --backend coffobj --emit-output kernel.obj
+.\build\dgtl_release.exe --backend cofflib --emit-output kernel.lib
+.\build\dgtl_release.exe --backend macho --emit-output kernel.macho
+```
+
+JIT-compile and execute x64 machine code in-process (requires `DGTL_STRIKE_EXECUTE=1` env gate):
+
+```powershell
+$env:DGTL_STRIKE_EXECUTE="1"
+.\build\dgtl_release.exe --backend x64 --jit-execute
+```
+
+`--jit-execute` invokes the full `StrikeOrchestrator` pipeline: emit → W^X inject → execute → closed-loop AI cost feedback. Only valid with `--backend x64`.
 
 Polyhedral control flags are available in both drivers:
 
@@ -569,21 +697,30 @@ Analysis (Liveness, Memory Deps, Cost Modeling)
   ↓
 Transformations (GVN, DCE, SIMD Legalization, etc.)
   ↓
+Polyhedral Analysis (SCoP detection, tiling, parallelization)
+  ↓
 Graph Scheduling (Region-level, multi-backend aware)
   ↓
 ISA Emission (ARM64 / x86-64 / WASM / NASM)
-  ↓
-JIT Execution (Optional: W^X-protected runtime)
+  ↓                          ↓
+Object/Library Emission      JIT Execution (--jit-execute)
+(ELF .o / .a / COFF .obj    (StrikeOrchestrator: W^X inject
+ / .lib / Mach-O)             + execute + AI cost feedback)
 ```
 
 ### Supported Backends
 
-| Backend | Status | Use Case |
-|---------|--------|----------|
-| **ARM64 (AArch64)** | ✅ Primary | Mobile, edge, AWS Graviton |
-| **x86-64** | ✅ Primary | Intel/AMD servers, HFT workstations |
-| **WebAssembly** | ✅ Complete | Browser, cloud-native portability |
-| **NASM** | ✅ Complete | Traditional assembly toolchains |
+| Backend | CLI Name | Status | Use Case |
+|---------|----------|--------|----------|
+| **ARM64 (AArch64)** | `arm64` | ✅ Primary | Mobile, edge, AWS Graviton |
+| **x86-64** | `x64` | ✅ Primary | Intel/AMD servers, HFT workstations |
+| **WebAssembly** | `wasm` | ✅ Complete | Browser, cloud-native portability |
+| **NASM** | `nasm` | ✅ Complete | Traditional assembly toolchains |
+| **ELF Relocatable** | `elfobj` | ✅ Complete | Linux `.o` for `ld` / `gcc` linking |
+| **Static Archive** | `staticlib` | ✅ Complete | GNU `ar` `.a` for static linking |
+| **COFF Object** | `coffobj` | ✅ Complete | Windows `.obj` for MSVC `link.exe` |
+| **COFF Library** | `cofflib` | ✅ Complete | Windows `.lib` import library |
+| **Mach-O ARM64** | `macho` | ✅ Complete | macOS/iOS ARM64 object files |
 
 ## Key Components
 
@@ -617,11 +754,15 @@ JIT Execution (Optional: W^X-protected runtime)
 - `ARM64_Emitter.hpp` / `X64_Strike_Emitter.hpp`: Assembly generation
 - `ARM64_RegAlloc.hpp` / `X64_Reg_Map.hpp`: Register allocation
 - `Wasm_Encoder.hpp`: WebAssembly binary encoding
+- `MachOs_Emitter.hpp`: Mach-O 64-bit ARM64 object emission with real instruction encoding
+- `Linker_Backend.hpp`: ELF64 relocatable, GNU `ar` archive, COFF `.obj`, and COFF `.lib` emission
 - `Stack_Spiller.hpp`: Spill code generation
 
 ### JIT Runtime (`include/dgtl/jit/`)
 - `JIT_Executor.hpp`: W^X memory protection, cross-platform I-Cache sync
-- `MultiArch_Orchestrator.hpp`: Multi-target JIT dispatch
+- `Strike_Orchestrator.hpp`: Full compile→inject→execute→feedback pipeline (`--jit-execute`)
+- `Strike_Runner.hpp`: Low-level VirtualAlloc/mmap executable memory injection
+- `MultiArch_Orchestrator.hpp`: Multi-target dispatch (ARM64, x64, NASM, WASM, ELF, COFF, Mach-O)
 - `Hardware_Scheduler.hpp`: Hardware-aware execution scheduling
 - `Async_Speculator.hpp`: Asynchronous speculation support
 
@@ -630,6 +771,8 @@ JIT Execution (Optional: W^X-protected runtime)
 - [BitPacked_IR_Core.md](docs/analysis/DGPM_SPEC.md): IR architecture deep-dive
 - [V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md](docs/analysis/V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md): v1.2 technical roadmap for polyhedral legality, scheduling, tiling, and parallel lowering
 - [V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md](docs/analysis/V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md): prioritized implementation backlog mapped to concrete modules and files
+- [THEORY_OF_OPERATION.md](docs/analysis/THEORY_OF_OPERATION.md): End-to-end backend flow and architecture diagram
+- [BACKEND_BRIDGE_PRE_REVEAL_PLAN.md](docs/analysis/BACKEND_BRIDGE_PRE_REVEAL_PLAN.md): x86-64 and multi-backend parity checklist before public reveal
 - [VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md): Manual verification checklist
 - [DGTL_BUSINESS_MODEL.md](docs/business/DGTL_BUSINESS_MODEL.md): Commercial packaging, target customers, and launch phases
 - [DGTL_PRICING_AND_PILOT_OFFER.md](docs/business/DGTL_PRICING_AND_PILOT_OFFER.md): Concrete pricing structure and pilot offer
@@ -641,9 +784,13 @@ JIT Execution (Optional: W^X-protected runtime)
 - [DGTL_AI_RUNTIME_PROPOSAL.md](docs/business/DGTL_AI_RUNTIME_PROPOSAL.md): AI runtime and execution team proposal variant
 - [DGTL_DSL_ENTERPRISE_LANGUAGE_PROPOSAL.md](docs/business/DGTL_DSL_ENTERPRISE_LANGUAGE_PROPOSAL.md): Internal DSL and enterprise language proposal variant
 - [PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md](docs/business/PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md): Draft proprietary licensing and evaluation terms
+- [DEEP_TECHNICAL_RESPONSE_POLICY.md](docs/business/DEEP_TECHNICAL_RESPONSE_POLICY.md): How to answer deep technical questions while protecting implementation IP
 - [PRODUCT_POSITIONING.md](docs/business/PRODUCT_POSITIONING.md): Customer-facing positioning and messaging
+- [TECHNICAL_WHITEPAPER_OUTLINE.md](docs/analysis/TECHNICAL_WHITEPAPER_OUTLINE.md): Black-box whitepaper structure, benchmark evidence plan, and assembly demo format
 - [LICENSE](LICENSE): Release-facing proprietary software notice
-- [DEPENDENCY_VERSION_CONTROL.md](DEPENDENCY_VERSION_CONTROL.md): Locked tool versions
+- [RELEASE_NOTES.md](docs/RELEASE_NOTES.md): Release summary, backend evidence, and distribution notes
+- [DEPENDENCY_VERSION_CONTROL.md](docs/DEPENDENCY_VERSION_CONTROL.md): Locked tool versions
+- [benchmarks/README.md](benchmarks/README.md): Proof-of-life benchmark logs and regeneration instructions
 - [docs/My_Docs/](docs/My_Docs/): Detailed module documentation and examples
 
 ## Project Structure
@@ -709,49 +856,67 @@ DGTL/
 ├── dgtl.cmd                # Windows shim for the command runner
 ├── LICENSE                 # Proprietary software notice
 ├── README.md               # This file
-├── DEPENDENCY_VERSION_CONTROL.md  # Locked tool/platform versions
-└── prelaunch.md            # Prelaunch review findings
+└── docs/
+    ├── RELEASE_NOTES.md              # Release changelog
+    ├── DEPENDENCY_VERSION_CONTROL.md  # Locked tool/platform versions
 ```
 
 ## Release Readiness
 
-See [prelaunch.md](prelaunch.md) for current gate status and open issues before broader rollout.
+See [prelaunch.md](docs/My_Docs/zen_misc/prelaunch.md) for current gate status and open issues before broader rollout.
 
-## Contributing
+## Evaluation Access And Technical Review
 
-### Before You Start
+This repository is not managed as an open contribution project.
 
-1. **Read the code**: Understand the module layout in `include/dgtl/`
-2. **Run validation**: Use `dgtl run` on the supported backends before opening a PR
-3. **Check documentation**: Use `docs/My_Docs/` for detailed component info
+### Access Path
 
-### Contribution Workflow
+1. Request evaluation or commercial access by email: **licensing@dgtl.tech**
+2. Define scope: backend targets, performance scenarios, and evaluation duration.
+3. Execute under written terms before source sharing or production usage.
 
-1. **Create a branch** for your feature or fix
-2. **Write tests first** for any new functionality (in `tests/functional/` or `tests/performance/`)
-3. **Add/update headers** (C++ implementation goes in `include/dgtl/`, source in `src/`)
-4. **Update documentation** if adding new passes, opcodes, or APIs
-5. **Verify all tests pass** before opening a PR:
-  ```powershell
-  dgtl clean
-  dgtl smoke-build
-  dgtl run
-   ```
+### Technical Review Policy
 
-### Code Standards
+Technical depth is shared using a black-box model:
 
-- **C++26**: Use C++26 features where applicable (concepts, ranges, etc.)
-- **Zero-overhead**: Avoid exceptions and RTTI; use noexcept where possible
-- **Transactionality**: New IR mutations should work with shadow buffers
-- **Const correctness**: IR streams and analyses should mark const where appropriate
+- architecture and algorithm narratives
+- benchmark methodology and reproducible test settings
+- DGTL input to assembly output demonstrations
 
-### Areas for Contribution
+Implementation details of internal passes, heuristics, and lowering internals remain proprietary.
 
-- **New backends**: Add emitters (refer to `ARM64_Emitter.hpp` and `X64_Strike_Emitter.hpp`)
-- **New optimization passes**: Extend `include/dgtl/pass/` with new transforms
-- **Cost model tuning**: Improve `AI_Cost_Model.hpp` weights and features
-- **Test coverage**: Add robustness tests in `tests/robustness/`
-- **Documentation**: Improve header comments and module guides in `docs/My_Docs/`
+### Source Header Compliance
+
+Use the short proprietary header in source files and verify coverage with:
+
+```powershell
+.\tools\scripts\verify_proprietary_headers.ps1
+```
+
+Compliance is also enforced automatically by validation commands:
+
+- `dgtl run-all`
+- `dgtl run-strict-conformance`
+- `dgtl update-goldens` (and `strict` mode)
+- `dgtl test` / `dgtl test full`
+- `dgtl clean-build-and-run`
+- `dgtl header-check`
+
+Useful modes:
+
+```powershell
+# Summary only (non-verbose on failures)
+.\tools\scripts\verify_proprietary_headers.ps1 -SummaryOnly
+
+# CI-friendly JSON to stdout
+.\tools\scripts\verify_proprietary_headers.ps1 -Json
+
+# CI-friendly JSON written to file
+.\tools\scripts\verify_proprietary_headers.ps1 -Json -JsonOut build\logs\header-compliance.json
+
+# Restrict scope or exclusions when needed
+.\tools\scripts\verify_proprietary_headers.ps1 -Include *.hpp,*.cpp -ExcludeRegex "[\\/]third_party[\\/]"
+```
 
 ## Troubleshooting
 
@@ -802,3 +967,41 @@ For questions, issues, or discussions:
 1. Review [prelaunch.md](prelaunch.md) for known limitations
 2. Check [docs/My_Docs/](docs/My_Docs/) for detailed explanations
 3. Run verification tests from [VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md)
+
+
+before release :: 
+# 1. Clean slate
+dgtl clean-all
+
+# 2. Production build
+dgtl build-release
+
+# 3. Aggregate test suite (functional + robustness + performance)
+dgtl test full
+
+# 4. Full backend conformance (arm64, x64, nasm, wasm)
+dgtl run-all
+
+# 5. Strict build (-Wall -Wextra -Wpedantic -Werror)
+dgtl build-strict
+
+# 6. Strict conformance gate
+dgtl run-strict-conformance
+
+# 7. Proprietary header compliance
+dgtl header-check
+
+# 8. Full performance benchmark gate
+dgtl brun
+
+# 9. SDK package (compiles lib, runs smoke link test, creates zip)
+dgtl package
+
+======= or ===== following ::
+
+dgtl clean-all
+dgtl test full
+dgtl run-all
+dgtl run-strict-conformance
+dgtl brun
+dgtl package

@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 6: ZERO-COST STATIC DIALECT INTERFACE - VERSION 2.0
  * PILLAR 3: THE SENTINEL INTEGRATION (SHADOW-VALIDATION)
  * STRATEGY: C++26 Concept-based Invariant Guards for Custom Hardware.
@@ -23,6 +34,9 @@ namespace dgtl::ir {
 namespace dgtl::dialect {
 
 namespace ir = dgtl::ir;
+
+inline constexpr ir::OpCode kFastAddOpcode = static_cast<ir::OpCode>(0x8001);
+inline constexpr ir::OpCode kFastFMAOpcode = static_cast<ir::OpCode>(0x8002);
 
 /**
  * @concept DGTLOp
@@ -62,10 +76,14 @@ struct MathDialect {
     static constexpr std::string_view name = "DGTL.math";
     
     // FastAdd: Optimized 32-bit addition.
-    struct FastAdd : BaseOp<FastAdd, static_cast<ir::OpCode>(0x8001)> {
+    struct FastAdd : BaseOp<FastAdd, kFastAddOpcode> {
         [[nodiscard]] static inline bool verify_impl([[maybe_unused]] const ir::IRAtom& atom, const ir::IRCore& core) noexcept {
             // PILLAR 3: Sentinel Check - Ensure result and source are distinct/valid
-            if (core.result_id == 0xFFFFFFFF || core.op_a == 0xFFFFFFFF) [[unlikely]] return false;
+            if (core.result_id == ir::INVALID_SLOT ||
+                core.op_a == ir::INVALID_SLOT ||
+                core.op_b == ir::INVALID_SLOT) [[unlikely]] {
+                return false;
+            }
 
             const uint64_t expected = ir::IRNode::calculate_hash(
                 atom.opcode,
@@ -79,13 +97,13 @@ struct MathDialect {
     };
     
     // FastFMA: Fused Multiply-Add (Essential for HFT/ML workloads).
-    struct FastFMA : BaseOp<FastFMA, static_cast<ir::OpCode>(0x8002)> {
+    struct FastFMA : BaseOp<FastFMA, kFastFMAOpcode> {
         [[nodiscard]] static inline bool verify_impl([[maybe_unused]] const ir::IRAtom& atom, const ir::IRCore& core) noexcept {
             // All operands must be defined for FMA
-            return (core.result_id != 0xFFFFFFFF && 
-                    core.op_a != 0xFFFFFFFF && 
-                    core.op_b != 0xFFFFFFFF && 
-                    core.op_c != 0xFFFFFFFF);
+            return (core.result_id != ir::INVALID_SLOT && 
+                    core.op_a != ir::INVALID_SLOT && 
+                    core.op_b != ir::INVALID_SLOT && 
+                    core.op_c != ir::INVALID_SLOT);
         }
     };
 };

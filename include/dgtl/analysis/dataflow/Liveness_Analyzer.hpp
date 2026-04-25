@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 9: ULTRA-FAST LIVENESS ANALYZER (V5)
  * PILLAR 3: THE SENTINEL INTEGRATION
  * ZERO-CORRUPTION: Added Invariant Verification and Dangling-ID Traps.
@@ -12,7 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <iostream>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
@@ -29,8 +40,8 @@ namespace dgtl::analysis {
  * Aligned to 8 bytes for dense packing in the range table.
  */
 struct alignas(8) LivenessRange {
-    uint32_t start = 0xFFFFFFFF;
-    uint32_t end   = 0;
+    uint32_t start = ir::INVALID_SLOT;
+    uint32_t end   = ir::INVALID_SLOT;
 };
 
 /**
@@ -104,17 +115,23 @@ public:
             const auto& node = stream.get_node(static_cast<size_t>(i));
             const uint32_t current_idx = static_cast<uint32_t>(i);
 
-            // Track Uses (Operands)
-            if (node.op_a != ir::INVALID_SLOT) track_and_mark_use(node.op_a, current_idx);
-            if (node.op_b != ir::INVALID_SLOT) track_and_mark_use(node.op_b, current_idx);
-            
-            // op_c can be an operand or an immediate/offset based on context
-            if (node.op_c != ir::INVALID_SLOT && !(node.flags & ir::Flags::SVE_ACTIVE)) {
-                track_and_mark_use(node.op_c, current_idx);
+            // LOAD_IMM/IMMEDIATE/CONST operands are immediate values, not register
+            // references. Skip use-tracking for them to avoid false dangling-ID traps.
+            const bool is_imm_node = node.opcode == ir::OpCode::LOAD_IMM ||
+                                     node.opcode == ir::OpCode::IMMEDIATE;
+            if (!is_imm_node) {
+                // Track Uses (Operands)
+                if (node.op_a != ir::INVALID_SLOT) track_and_mark_use(node.op_a, current_idx);
+                if (node.op_b != ir::INVALID_SLOT) track_and_mark_use(node.op_b, current_idx);
+
+                // op_c can be an operand or an immediate/offset based on context
+                if (node.op_c != ir::INVALID_SLOT && !(node.flags & ir::Flags::SVE_ACTIVE)) {
+                    track_and_mark_use(node.op_c, current_idx);
+                }
             }
 
             // Track Definitions (Pillar 3.1: DGTL-Invariant Guard)
-            if (node.result_id != 0) {
+            if (node.result_id != ir::INVALID_SLOT) {
                 if (node.result_id >= max_results) [[unlikely]] {
                     trigger_corruption_trap(node.result_id, "ID_OVERFLOW");
                     return;
@@ -133,7 +150,13 @@ public:
     [[nodiscard]] bool is_live_at(uint32_t result_id, uint32_t ins_idx) const noexcept {
         if (result_id >= max_results) [[unlikely]] return false;
         const auto& r = ranges[result_id];
+        if (r.start == ir::INVALID_SLOT || r.end == ir::INVALID_SLOT) return false;
         return (ins_idx >= r.start && ins_idx <= r.end);
+    }
+
+    [[nodiscard]] bool is_live_after(uint32_t result_id, uint32_t ins_idx) const noexcept {
+        if (ins_idx == 0xFFFFFFFFu) return false;
+        return is_live_at(result_id, ins_idx + 1u);
     }
 
     [[nodiscard]] bool has_corruption() const noexcept {
@@ -157,7 +180,7 @@ private:
      * @brief Registers an ID in the active set if not already present.
      */
     inline void track_id(uint32_t id) noexcept {
-        if (id < max_results && ranges[id].start == 0xFFFFFFFF && ranges[id].end == 0) {
+        if (id < max_results && ranges[id].start == ir::INVALID_SLOT && ranges[id].end == ir::INVALID_SLOT) {
             active_ids.push_back(id);
         }
     }
@@ -168,7 +191,7 @@ private:
     inline void track_and_mark_use(uint32_t id, uint32_t idx) noexcept {
         if (id >= max_results) [[unlikely]] return;
         track_id(id);
-        if (ranges[id].end == 0) ranges[id].end = idx;
+        if (ranges[id].end == ir::INVALID_SLOT) ranges[id].end = idx;
     }
 
     /**
@@ -177,8 +200,8 @@ private:
      */
     void verify_consistency() {
         for (uint32_t id : active_ids) {
-            // If start is still 0xFFFFFFFF after the opt, the ID was used but never defined.
-            if (ranges[id].start == 0xFFFFFFFF) [[unlikely]] {
+            // If start is still INVALID_SLOT after the opt, the ID was used but never defined.
+            if (ranges[id].start == ir::INVALID_SLOT) [[unlikely]] {
                 trigger_corruption_trap(id, "DANGLING_ID_DETECTED");
                 return;
             }
@@ -195,5 +218,6 @@ private:
 };
 
 } // namespace dgtl::analysis
+
 
 

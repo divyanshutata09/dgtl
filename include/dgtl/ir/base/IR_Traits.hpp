@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1 (RETURN FIX)
  * PILLAR 2: TRI-TIER TRANSACTIONAL STREAM & SHADOW-AWARE EMISSION
  * FUNDAMENTAL traits and semantic queries for IR nodes and opcodes.
@@ -12,6 +23,7 @@
 
 // Ensure IR_Types defines the OpCode and Flags used below
 #include "IR_Types.hpp"
+
 
 /**
  * @section Preprocessor Hygiene
@@ -86,7 +98,7 @@ struct IRTraits {
     }
 
     [[nodiscard]] static constexpr bool is_valid_slot(uint32_t slot_id) noexcept {
-        return slot_id != 0xFFFFFFFF && slot_id < 0xFFFFFF00;
+        return slot_id != INVALID_SLOT && slot_id < 0xFFFFFF00;
     }
 
     [[nodiscard]] static constexpr double get_inline_weight(OpCode op) noexcept {
@@ -97,6 +109,6 @@ struct IRTraits {
     }
 };
 
-#include "IR_Nodes.hpp"
+
 
 } // namespace dgtl::ir

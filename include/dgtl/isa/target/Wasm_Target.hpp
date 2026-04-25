@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : UNIVERSAL TARGET EXPANSION
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : UNIVERSAL TARGET EXPANSION
  * STEP 17.5: CROSS-PLATFORM MACH-O & WASM STUBS (V5)
  * PILLAR 3 INTEGRATION: EMITTER-LEVEL SENTINEL
  * DESIGN: Validated IR-to-Binary mapping with Bit-Level Invariant Checks.
@@ -10,7 +21,7 @@
 #include <cstring>
 #include <vector>
 #include <stdexcept>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 
 namespace dgtl::target {
 
@@ -84,14 +95,16 @@ public:
         // Ensures IR hasn't been corrupted by previous optimization optes.
         verify_DGTL_invariants(stream);
 
+        out.clear();
         out.reserve(stream.size() * 80); 
-        out += "; DGTL-MLIR-X v1.0 Generated Assembly [Validated]\n";
+        out += "; DGTL (Deep General-purpose Transformation Layer) version 1.0.0 Generated Assembly [Validated]\n";
         out += "section .text\n    global _start\n_start:\n";
 
         const uint32_t count = static_cast<uint32_t>(stream.size());
         for (uint32_t i = 0; i < count; ++i) {
             const auto& n = stream.get_node(i);
-            out += "L_" + std::to_string(n.result_id) + ":\n";
+            const uint32_t label_id = (n.result_id == ir::INVALID_SLOT) ? i : n.result_id;
+            out += "L_" + std::to_string(label_id) + ":\n";
 
             switch (n.opcode) {
                 case ir::OpCode::LOAD_IMM:
@@ -175,8 +188,7 @@ private:
         for (uint32_t i = 0; i < count; ++i) {
             const auto& n = stream.get_node(i);
             
-            // ResultID 0 is reserved for invalid/null states in BIR 2.0.
-            if (n.result_id == 0 && n.opcode != ir::OpCode::NOP) [[unlikely]] {
+            if (n.result_id == ir::INVALID_SLOT && n.opcode != ir::OpCode::NOP) [[unlikely]] {
                 throw std::runtime_error("WASM target invariant violation: invalid result_id");
             }
             
@@ -189,5 +201,6 @@ private:
 };
 
 } // namespace dgtl::target
+
 
 

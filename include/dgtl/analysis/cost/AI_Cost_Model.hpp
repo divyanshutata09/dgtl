@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 /* * DGTL AI Cost Model - Neural cost prediction for optimization
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
  * PILLAR 4: MACHINE LEARNING GUIDED HEURISTICS
@@ -10,7 +21,7 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/graph/Region.hpp"
 
 namespace dgtl::analysis {
@@ -33,6 +44,8 @@ struct RuntimeFeedback {
  */
 class alignas(64) DGTLAICostModel {
     static constexpr size_t EmbeddingDim = 16;
+    static constexpr float TitanStableCyclesPerNode = 3.17f;
+    static constexpr float TitanGatherCyclesPerNode = 4.10f;
     alignas(64) std::array<float, EmbeddingDim> model_weights;
     float model_bias = 3.5f;
     float learning_rate = 0.0003f;
@@ -43,14 +56,14 @@ class alignas(64) DGTLAICostModel {
 public:
     DGTLAICostModel() noexcept {
         model_weights.fill(0.0f);
-        model_bias = 4.5f;
-        model_weights[1] = 2.0f;  // REQUIRES_VEC_PORT
-        model_weights[2] = 6.5f;  // IS_SIMD_BURST
-        model_weights[3] = 4.0f;  // IS_GATHER
-        model_weights[4] = 3.5f;  // IS_MEMORY_OP
+        model_bias = TitanStableCyclesPerNode;
+        model_weights[1] = 1.15f; // REQUIRES_VEC_PORT
+        model_weights[2] = 1.85f; // IS_SIMD_BURST
+        model_weights[3] = 2.35f; // IS_GATHER
+        model_weights[4] = 2.10f; // IS_MEMORY_OP
         model_weights[5] = 1.0f;  // IS_CONTROL_FLOW
-        model_weights[6] = 2.5f;  // ZERO_INTENT_HASH
-        model_weights[7] = 0.8f;  // ORCHESTRATOR_OVERHEAD
+        model_weights[6] = 1.35f; // ZERO_INTENT_HASH
+        model_weights[7] = 0.35f; // ORCHESTRATOR_OVERHEAD
     }
 
     [[nodiscard]] float predict_cost(const ir::IRStream& stream) const noexcept {
@@ -78,6 +91,14 @@ public:
         preprocess_node(node, features);
 
         float score = run_micro_inference(features);
+        if ((node.flags & ir::Flags::REQUIRES_VEC_PORT) && (node.flags & ir::Flags::IS_SIMD_BURST)) {
+            const bool is_gather = (node.opcode == ir::OpCode::GATHER_16 || node.opcode == ir::OpCode::GATHER_F32_512);
+            const float fast_path_baseline = is_gather ? TitanGatherCyclesPerNode : TitanStableCyclesPerNode;
+            score = std::min(score, fast_path_baseline + features[4] * 0.55f + features[5] * 0.35f);
+        }
+        if ((node.flags & ir::Flags::IS_MACRO_FUSED) != 0) {
+            score -= 0.30f;
+        }
         return std::max(1.0f, score);
     }
 
@@ -108,11 +129,20 @@ public:
     [[nodiscard]] float predict_alias_risk(const ir::IRNode& store, const ir::IRNode& load) const noexcept {
         // BIR 2.1: Check if store target matches load source op_a
         if (store.result_id == load.op_a) return 1.0f;
+
+        const bool invalid_store_ptr = (store.op_a == ir::INVALID_SLOT);
+        const bool invalid_load_ptr = (load.op_a == ir::INVALID_SLOT);
         
         float risk = 0.0f;
-        // Simple range-based aliasing heuristic for local offsets
-        uint32_t delta = (store.op_a > load.op_a) ? (store.op_a - load.op_a) : (load.op_a - store.op_a);
-        if (delta < 64) risk += 0.5f;
+        // Simple range-based aliasing heuristic for local offsets.
+        // INVALID_SLOT means we cannot infer pointer distance reliably.
+        if (!invalid_store_ptr && !invalid_load_ptr) {
+            const uint32_t delta = (store.op_a > load.op_a) ? (store.op_a - load.op_a) : (load.op_a - store.op_a);
+            if (delta < 64) risk += 0.5f;
+        } else {
+            risk += 0.15f;
+        }
+
         if (store.intent_hash == 0 || load.intent_hash == 0) risk += 0.25f;
         
         return std::clamp(risk, 0.0f, 1.0f);
@@ -151,6 +181,18 @@ public:
         return std::clamp(size_factor * cost_factor * hotness_factor, 0.0f, 1.0f);
     }
 
+    [[nodiscard]] float get_vector_pressure() const noexcept {
+        // Derived from vector-port and SIMD-burst feature weights.
+        const float raw = std::abs(model_weights[1]) * 0.4f + std::abs(model_weights[2]) * 0.6f;
+        return std::clamp(raw / 8.0f, 0.0f, 1.0f);
+    }
+
+    [[nodiscard]] float get_memory_latency_estimate() const noexcept {
+        // Derived from memory-op and gather sensitivity with a light bias floor.
+        const float raw = std::abs(model_weights[3]) * 0.55f + std::abs(model_weights[4]) * 0.45f + 0.5f;
+        return std::max(0.0f, raw);
+    }
+
 private:
     void preprocess_node(const ir::IRNode& node, float* out) const noexcept {
         std::fill_n(out, EmbeddingDim, 0.0f);
@@ -175,6 +217,15 @@ private:
         // BIR 2.1 Extended Features
         out[8] = static_cast<float>((node.flags & ir::Flags::IS_SPEC_CONST) != 0);
         out[9] = static_cast<float>((node.flags & ir::Flags::IS_MACRO_FUSED) != 0);
+
+        // Control and safety hints
+        out[10] = static_cast<float>(ir::IRTraits::is_terminator(node.opcode));
+        out[11] = static_cast<float>(
+            (node.op_a != ir::INVALID_SLOT) +
+            (node.op_b != ir::INVALID_SLOT) +
+            (node.op_c != ir::INVALID_SLOT)
+        ) / 3.0f;
+        out[12] = static_cast<float>((node.flags & ir::Flags::IS_VOLATILE) != 0);
         
         // Register Pressure Heuristic (Sum of operand indices)
         uint64_t reg_sum = static_cast<uint64_t>(node.op_a) + node.op_b + node.op_c;

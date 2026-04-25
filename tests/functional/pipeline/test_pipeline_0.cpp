@@ -1,14 +1,25 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <cstdio>
-#include "dgtl/ir/base/Global_IR.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
+#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/isa/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp" 
 #include "dgtl/core/Symbol_Table.hpp"
 
 using namespace dgtl;
 
 void run_test_pipeline_0() {
-    std::cout << "\033[1;36m--- [DGTL-MLIR-X] Pipeline Integration Test ---\033[0m\n";
+    std::cout << "\033[1;36m--- [DGTL] Pipeline Integration Test ---\033[0m\n";
 
     // Initialize high-performance arena and stream
     // FIX: The constructor expects size in MB. 1MB is sufficient for this test.
@@ -84,6 +95,10 @@ void run_test_pipeline_0() {
     std::cout << "\033[1;32m[SUCCESS] GVN merged identical nodes and preserved side-effecting SYSCALL.\033[0m\n";
     return;
 }
+
+
+
+
 
 
 

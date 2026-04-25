@@ -1,6 +1,17 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #include <iostream>
 #include <vector>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/pass/simd/SIMD_Legalizer.hpp"
 
@@ -46,6 +57,11 @@ void run_test_pipeline_multi_target() {
     if(all_opt) std::cout << "GLOBAL_SUCCESS";
     return;
 }
+
+
+
+
+
 
 
 

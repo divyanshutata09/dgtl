@@ -1,4 +1,15 @@
-﻿# GPGPU_Fusion_FastEmission.hpp
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+# GPGPU_Fusion_FastEmission.hpp
 
 Source Header: include/dgtl/isa/emitter/GPGPU_Fusion_FastEmission.hpp
 Last Synced: 2026-04-14 19:46:41

@@ -9,14 +9,14 @@
 [DGTL] Release smoke checks
   [PASS] constant-fold :: nodes=2 cost=27.5->11.6
   [PASS] fusion :: mul+add -> fma structural check
-  [PASS] simd-legalize :: expected=0x304 legalized_nodes=1
+  [PASS] simd-legalize :: expected=0x304 nodes=12
   [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
   [PASS] pressure-zero-spill :: spill_candidates=0
   [PASS] determinism :: hash=0x9c13c402303ba602
-  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=483 iterations=64
+  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=480 iterations=64
 [DGTL] Backend=arm64 (text)
 [DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0x9c13c402303ba602
-// --- DGTL-MLIR-X ARM64 BACKEND ---
+// --- DGTL ARM64 BACKEND ---
 .arch armv8-a
 .text
 .align 4

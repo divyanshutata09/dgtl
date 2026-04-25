@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 
  * TEST SUITE: ROBUSTNESS_04 (SPECULATIVE-INLINING)
  * TARGET: TRANSACTIONAL ROLLBACK & ALPHA-RENAMING
  */
@@ -9,7 +20,7 @@
 #include <stdexcept>
 #include "dgtl/pass/speculative/Speculative_Inliner.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Arena.hpp"
 
 using namespace dgtl;
@@ -65,6 +76,11 @@ void run_test_inliner_safety() {
     run_inliner_transaction_test();
     return;
 }
+
+
+
+
+
 
 
 

@@ -1,15 +1,38 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
+ * STEP 26: INTEGRATED FORMAL VERIFICATION LAYER (SENTINEL-ENABLED)
+ * PILLAR 3: THE SENTINEL (BIT-LEVEL VALIDATOR)
+ * DESIGN: Proves mathematical equivalence using Symbolic State & Master Formula Hashes.
+ * VERSION 3.0: TITAN-STABLE (NO-COMPROMISE SAFETY)
+ */
+
 #pragma once
 
 #include <cstddef>
+#include <algorithm>
 
 #include "dgtl/core/Verified_Formal.hpp"
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pass/speculative/Temporal_Vector_Fusion.hpp"
 #include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
 #include "dgtl/pass/transform/Masked_Predication_Lowering.hpp"
 
 namespace dgtl::pipeline::probes {
 
+/**
+ * @brief Utility for common cleanup on IR streams.
+ * Preserves SoA alignment while removing redundant logic.
+ */
 inline void run_common_optimizations(dgtl::ir::IRStream& stream) {
     stream.perform_gvn();
     stream.perform_dead_code_elimination();
@@ -17,7 +40,7 @@ inline void run_common_optimizations(dgtl::ir::IRStream& stream) {
 
 inline bool stream_has_opcode(const dgtl::ir::IRStream& stream, dgtl::ir::OpCode opcode) {
     for (size_t i = 0; i < stream.size(); ++i) {
-        if (stream.get_node(i).opcode == opcode) {
+        if (stream.get_node_readonly(i).opcode == opcode) {
             return true;
         }
     }
@@ -27,12 +50,14 @@ inline bool stream_has_opcode(const dgtl::ir::IRStream& stream, dgtl::ir::OpCode
 inline size_t count_opcode(const dgtl::ir::IRStream& stream, dgtl::ir::OpCode opcode) {
     size_t count = 0;
     for (size_t i = 0; i < stream.size(); ++i) {
-        if (stream.get_node(i).opcode == opcode) {
+        if (stream.get_node_readonly(i).opcode == opcode) {
             ++count;
         }
     }
     return count;
 }
+
+// --- PROBE BUILDERS (SCALAR & VECTOR TESTBEDS) ---
 
 inline void build_release_int_probe(dgtl::ir::IRStream& stream) {
     stream.reset();
@@ -127,12 +152,6 @@ inline void build_add_chain_probe(dgtl::ir::IRStream& stream,
     stream.commit_transaction();
 }
 
-inline void apply_float_fusion_probe(dgtl::ir::IRStream& stream) {
-    dgtl::core::DGTLFormalVerifier verifier;
-    dgtl::pass::DGTLInstructionFusionSynth fusion(verifier);
-    fusion.execute(stream);
-}
-
 inline void build_fcvtl_probe(dgtl::ir::IRStream& stream, uint32_t dst = 21, uint32_t src = 10) {
     stream.reset();
     stream.begin_transaction();
@@ -190,6 +209,14 @@ inline void build_masked_predication_probe(dgtl::ir::IRStream& stream) {
     stream.push_node(dgtl::ir::OpCode::MUL_I32, dgtl::ir::Flags::NONE, 40, 3, 4, dgtl::ir::INVALID_SLOT, 0);
     stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 40, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
     stream.commit_transaction();
+}
+
+// --- PROBE TRANSFORM APPLICATION (SENTINEL PROTECTED) ---
+
+inline void apply_float_fusion_probe(dgtl::ir::IRStream& stream) {
+    dgtl::core::DGTLFormalVerifier verifier;
+    dgtl::pass::DGTLInstructionFusionSynth fusion(verifier);
+    fusion.execute(stream);
 }
 
 inline void apply_temporal_fusion(dgtl::ir::IRStream& stream) {

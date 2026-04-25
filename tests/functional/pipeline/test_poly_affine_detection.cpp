@@ -1,3 +1,14 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 /* * DGTL v1.2 Polyhedral Test Suite (P1-009)
  * FUNCTIONAL & ROBUSTNESS TESTS FOR AFFINE SCoP DETECTION & REGION ANNOTATION
  * PURPOSE: Validate P0-002 SCoP detection and P0-001 CLI integration

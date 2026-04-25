@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 (DGTL Edition)
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 (DGTL Edition)
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
  * PILLAR 2: TRI-TIER TRANSACTIONAL STREAM & SHADOW-AWARE EMISSION
  * IR Storage: Arena-backed SoA & Shadow-Buffer Logic
@@ -18,6 +29,67 @@
 
 namespace dgtl::ir {
 
+namespace detail {
+
+#if defined(__GNUC__) || defined(__clang__)
+    #define DGTL_IR_STORAGE_RESTRICT __restrict__
+#elif defined(_MSC_VER)
+    #define DGTL_IR_STORAGE_RESTRICT __restrict
+#else
+    #define DGTL_IR_STORAGE_RESTRICT
+#endif
+
+constexpr size_t kIRStorageCopyPrefetchDistance = 32;
+constexpr size_t kIRStorageCopyUnrollFactor = 8;
+
+inline void copy_atom_core_stream(
+    IRAtom* DGTL_IR_STORAGE_RESTRICT dst_atoms,
+    IRCore* DGTL_IR_STORAGE_RESTRICT dst_cores,
+    const IRAtom* DGTL_IR_STORAGE_RESTRICT src_atoms,
+    const IRCore* DGTL_IR_STORAGE_RESTRICT src_cores,
+    size_t count) noexcept
+{
+    if (!dst_atoms || !dst_cores || !src_atoms || !src_cores || count == 0) {
+        return;
+    }
+
+    size_t i = 0;
+    for (; i + kIRStorageCopyUnrollFactor <= count; i += kIRStorageCopyUnrollFactor) {
+#if defined(__GNUC__) || defined(__clang__)
+        if (i + kIRStorageCopyPrefetchDistance < count) {
+            __builtin_prefetch(&src_atoms[i + kIRStorageCopyPrefetchDistance], 0, 1);
+            __builtin_prefetch(&src_cores[i + kIRStorageCopyPrefetchDistance], 0, 1);
+            __builtin_prefetch(&dst_atoms[i + kIRStorageCopyPrefetchDistance], 1, 1);
+            __builtin_prefetch(&dst_cores[i + kIRStorageCopyPrefetchDistance], 1, 1);
+        }
+#endif
+        dst_atoms[i + 0] = src_atoms[i + 0];
+        dst_atoms[i + 1] = src_atoms[i + 1];
+        dst_atoms[i + 2] = src_atoms[i + 2];
+        dst_atoms[i + 3] = src_atoms[i + 3];
+        dst_atoms[i + 4] = src_atoms[i + 4];
+        dst_atoms[i + 5] = src_atoms[i + 5];
+        dst_atoms[i + 6] = src_atoms[i + 6];
+        dst_atoms[i + 7] = src_atoms[i + 7];
+
+        dst_cores[i + 0] = src_cores[i + 0];
+        dst_cores[i + 1] = src_cores[i + 1];
+        dst_cores[i + 2] = src_cores[i + 2];
+        dst_cores[i + 3] = src_cores[i + 3];
+        dst_cores[i + 4] = src_cores[i + 4];
+        dst_cores[i + 5] = src_cores[i + 5];
+        dst_cores[i + 6] = src_cores[i + 6];
+        dst_cores[i + 7] = src_cores[i + 7];
+    }
+
+    for (; i < count; ++i) {
+        dst_atoms[i] = src_atoms[i];
+        dst_cores[i] = src_cores[i];
+    }
+}
+
+} // namespace detail
+
 /**
  * @struct IRStorage
  * @brief High-performance storage backend using a hybrid SoA (Structure of Arrays) 
@@ -25,19 +97,19 @@ namespace dgtl::ir {
  */
 struct IRStorage {
     // ================================
-    // 🔹 PRIMARY (SoA View)
+    // Ã°Å¸â€Â¹ PRIMARY (SoA View)
     // ================================
     IRAtom* atoms = nullptr; // Tier 1: Opcodes + Flags
     IRCore* cores = nullptr; // Tier 2: Operands + Hashes
 
     // ================================
-    // 🔹 SHADOW (Transactional Buffer)
+    // Ã°Å¸â€Â¹ SHADOW (Transactional Buffer)
     // ================================
     IRAtom* shadow_atoms = nullptr;
     IRCore* shadow_cores = nullptr;
 
     // ================================
-    // 🔹 DEBUG / AoS VIEW (Joined)
+    // Ã°Å¸â€Â¹ DEBUG / AoS VIEW (Joined)
     // ================================
     mutable IRNode* joined_buffer = nullptr; // Unified 24-byte view
 
@@ -49,17 +121,20 @@ struct IRStorage {
     bool arena_backed = false;
 
     // ================================
-    // 🔥 ALLOCATION (V4 COMPATIBLE)
+    // Ã°Å¸â€Â¥ ALLOCATION (V4 COMPATIBLE)
     // ================================
     void allocate_aligned(size_t cap,
                           bool use_arena,
                           dgtl::core::DGTL_Arena* arena = nullptr)
     {
-        capacity = cap;
+        capacity = (cap > 0) ? cap : 1;
+        count = 0;
+        shadow_count = 0;
+        in_transaction.store(false, std::memory_order_release);
         arena_backed = use_arena;
 
         if (use_arena && arena) {
-            // ✅ DGTL_Arena V4 API: High-speed arena dispatch
+            // Ã¢Å“â€¦ DGTL_Arena V4 API: High-speed arena dispatch
             atoms         = arena->allocate<IRAtom>(capacity);
             cores         = arena->allocate<IRCore>(capacity);
             shadow_atoms  = arena->allocate<IRAtom>(capacity);
@@ -67,7 +142,7 @@ struct IRStorage {
             joined_buffer = arena->allocate<IRNode>(capacity);
         }
         else {
-            // ✅ Standard Aligned Allocation (64-byte for Cache-Line Alignment)
+            // Ã¢Å“â€¦ Standard Aligned Allocation (64-byte for Cache-Line Alignment)
             auto round_up = [](size_t size, size_t align) {
                 return (size + align - 1) & ~(align - 1);
             };
@@ -91,16 +166,16 @@ struct IRStorage {
 #endif
         }
 
-        // ✅ SAFE ZERO INIT: Prevents junk opcodes in the stream
+        // Ã¢Å“â€¦ SAFE ZERO INIT: Prevents junk opcodes in the stream
         if (atoms)         std::memset(atoms, 0, capacity * sizeof(IRAtom));
-        if (cores)         std::memset(cores, 0, capacity * sizeof(IRCore));
+        if (cores)         std::fill(cores, cores + capacity, IRCore{});
         if (shadow_atoms) std::memset(shadow_atoms, 0, capacity * sizeof(IRAtom));
-        if (shadow_cores) std::memset(shadow_cores, 0, capacity * sizeof(IRCore));
+        if (shadow_cores) std::fill(shadow_cores, shadow_cores + capacity, IRCore{});
         if (joined_buffer) std::memset(joined_buffer, 0, capacity * sizeof(IRNode));
     }
 
     // ================================
-    // 🔥 DEALLOC
+    // Ã°Å¸â€Â¥ DEALLOC
     // ================================
     void deallocate() {
         if (arena_backed) return; // Arena lifetime is managed externally
@@ -129,10 +204,11 @@ struct IRStorage {
         count = 0;
         shadow_count = 0;
         capacity = 0;
+        in_transaction.store(false, std::memory_order_release);
     }
 
     // ================================
-    // 🔥 TRANSACTION COMMIT (OVERWRITE MODE)
+    // Ã°Å¸â€Â¥ TRANSACTION COMMIT (OVERWRITE MODE)
     // ================================
     inline void commit_transaction() noexcept {
         if (shadow_count == 0) {
@@ -140,10 +216,14 @@ struct IRStorage {
             return;
         }
 
+        if (!atoms || !cores || !shadow_atoms || !shadow_cores) {
+            in_transaction.store(false, std::memory_order_release);
+            return;
+        }
+
         if (shadow_count <= capacity) {
-            // ✅ Pillar 2: Shadow-to-Primary sync via deterministic memcpy
-            std::memcpy(atoms, shadow_atoms, shadow_count * sizeof(IRAtom));
-            std::memcpy(cores, shadow_cores, shadow_count * sizeof(IRCore));
+            // Pillar 2: stream the shadow SoA back into primary SoA with aligned linear copies.
+            detail::copy_atom_core_stream(atoms, cores, shadow_atoms, shadow_cores, shadow_count);
 
             count = shadow_count;
             shadow_count = 0;

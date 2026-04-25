@@ -1,4 +1,15 @@
-/* * DGTL-MLIR-X v1.0 : THE COMPILER SPEC
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 4: BACKEND EMISSION - ARM64 / AARCH64
  * FINAL SYNC: GCC/MinGW Default Initializer Fix & Namespace Alignment
  */
@@ -9,7 +20,7 @@
 #include <iomanip>
 #include <string>
 
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Target.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 
@@ -71,6 +82,13 @@ public:
                 case OpCode::SUB_I32:   emit_arithmetic(out, "sub", core); break;
                 case OpCode::MUL_I32:   emit_arithmetic(out, "mul", core); break;
                 case OpCode::DIV_I32:   emit_arithmetic(out, "sdiv", core); break;
+                case OpCode::MOD_I32:   emit_mod_i32(out, core); break;
+                case OpCode::CMP_EQ_I32: emit_cmp_set(out, "eq", core); break;
+                case OpCode::CMP_NE_I32: emit_cmp_set(out, "ne", core); break;
+                case OpCode::CMP_LT_I32: emit_cmp_set(out, "lt", core); break;
+                case OpCode::CMP_LE_I32: emit_cmp_set(out, "le", core); break;
+                case OpCode::CMP_GT_I32: emit_cmp_set(out, "gt", core); break;
+                case OpCode::CMP_GE_I32: emit_cmp_set(out, "ge", core); break;
                 case OpCode::AND_I32:   emit_arithmetic(out, "and", core); break;
                 case OpCode::OR_I32:    emit_arithmetic(out, "orr", core); break;
                 case OpCode::XOR_I32:   emit_arithmetic(out, "eor", core); break;
@@ -88,6 +106,8 @@ public:
                 case OpCode::BRANCH:
                 case OpCode::GOTO:      emit_branch(out, core); break;
                 case OpCode::BRANCH_COND: emit_branch_cond(out, core); break;
+                case OpCode::BRANCH_COMPARE_FUSED: emit_branch_compare_fused(out, core); break;
+                case OpCode::PHI_NODE:  emit_phi_comment(out, core); break;
                 case OpCode::CALL:      emit_call(out, core); break;
                 case OpCode::SYSCALL:   emit_syscall(out); break;
                 case OpCode::BIT_FIELD_INSERT: emit_bitfield_insert(out, core); break;
@@ -161,14 +181,15 @@ private:
             const auto& core = m_stream.get_core_readonly(i);
             if (core.result_id != reg) continue;
 
-            imm_out = (static_cast<uint64_t>(core.op_a) << 32) | core.op_b;
+            { const uint32_t hi = (core.op_a == INVALID_SLOT) ? 0u : core.op_a;
+            imm_out = (static_cast<uint64_t>(hi) << 32) | core.op_b; }
             return true;
         }
         return false;
     }
 
     void emit_header(std::ostream& out, const Config& config) {
-        out << "// --- DGTL-MLIR-X ARM64 BACKEND ---\n";
+        out << "// --- DGTL ARM64 BACKEND ---\n";
         out << ".arch armv8-a\n.text\n.align 4\n.global _DGTL_entry\n\n_DGTL_entry:\n";
         if (!config.omit_fp) out << "    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n";
     }
@@ -206,7 +227,8 @@ private:
     }
 
     void emit_load_imm(std::ostream& out, const IRCore& core) {
-        const uint64_t imm = (static_cast<uint64_t>(core.op_a) << 32) | core.op_b;
+        const uint32_t high = (core.op_a == INVALID_SLOT) ? 0u : core.op_a;
+        const uint64_t imm = (static_cast<uint64_t>(high) << 32) | core.op_b;
         out << "mov x" << core.result_id << ", #" << imm;
     }
 
@@ -246,6 +268,28 @@ private:
         out << "cbnz x" << core.op_a << ", .L" << core.op_b;
     }
 
+    void emit_branch_compare_fused(std::ostream& out, const IRCore& core) {
+        // op_a = lhs register, op_b = rhs register, op_c = target block label
+        out << "cmp x" << core.op_a << ", x" << core.op_b << "\n";
+        out << "    b.ne .L" << core.op_c;
+    }
+
+    void emit_phi_comment(std::ostream& out, const IRCore& core) {
+        // PHI nodes are resolved by register allocation; emit as comment.
+        out << "// PHI x" << core.result_id << " <- x" << core.op_a << ", x" << core.op_b << ", x" << core.op_c;
+    }
+
+    void emit_mod_i32(std::ostream& out, const IRCore& core) {
+        // ARM64: msub Rd, Qtmp, Divisor, Dividend (Rd = Dividend - Qtmp * Divisor)
+        out << "sdiv x16, x" << core.op_a << ", x" << core.op_b << "\n";
+        out << "    msub x" << core.result_id << ", x16, x" << core.op_b << ", x" << core.op_a;
+    }
+
+    void emit_cmp_set(std::ostream& out, const char* cond, const IRCore& core) {
+        out << "cmp x" << core.op_a << ", x" << core.op_b << "\n";
+        out << "    cset x" << core.result_id << ", " << cond;
+    }
+
     void emit_call(std::ostream& out, const IRCore& core) {
         out << "bl _DGTL_fn_" << core.op_a;
     }
@@ -272,7 +316,7 @@ private:
     }
 
     void emit_ret(std::ostream& out, const IRCore& core) {
-        if (core.op_a != 0xFF && core.op_a != 0) {
+        if (core.op_a != INVALID_SLOT) {
             uint64_t ret_imm = 0;
             if (resolve_ret_immediate(core.op_a, ret_imm)) {
                 out << "mov x0, #" << ret_imm << "\n    ";

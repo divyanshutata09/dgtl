@@ -1,3 +1,14 @@
+﻿/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+
 #pragma once
 #include <string>
 #include <string_view>
@@ -5,7 +16,7 @@
 #include <format>
 #include <cstdint>
 #include <sstream>
-#include "dgtl/ir/base/Global_IR.hpp"
+#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 
 namespace dgtl::isa {
@@ -37,7 +48,7 @@ public:
         }
 
         append_line("; -----------------------------------------------------------");
-        append_line("; DGTL-MLIR-X TIER-2 PERSISTENT KERNEL");
+        append_line("; DGTL TIER-2 PERSISTENT KERNEL");
         append_line(std::format("; Logic Hash: 0x{:016X}", stream.generate_logic_hash()));
         append_line("; -----------------------------------------------------------");
         append_line("section .text");
@@ -126,7 +137,8 @@ private:
             const auto& node = stream.get_node(i);
             if (node.opcode != ir::OpCode::LOAD_IMM && node.opcode != ir::OpCode::IMMEDIATE) continue;
             if (node.result_id != reg) continue;
-            imm_out = (static_cast<uint64_t>(node.op_a) << 32) | (node.op_b & 0xFFFFFFFFULL);
+            const uint32_t high = (node.op_a == ir::INVALID_SLOT) ? 0u : node.op_a;
+            imm_out = (static_cast<uint64_t>(high) << 32) | (node.op_b & 0xFFFFFFFFULL);
             return true;
         }
         return false;
@@ -158,7 +170,8 @@ private:
             // FIX: Added LOAD_IMM to match your test cases
             case ir::OpCode::LOAD_IMM:
             case ir::OpCode::IMMEDIATE: {
-                uint64_t imm = (static_cast<uint64_t>(node.op_a) << 32) | (node.op_b & 0xFFFFFFFF);
+                const uint32_t high = (node.op_a == ir::INVALID_SLOT) ? 0u : node.op_a;
+                uint64_t imm = (static_cast<uint64_t>(high) << 32) | (node.op_b & 0xFFFFFFFF);
                 return std::format("mov {}, {}", r(node.result_id), imm);
             }
 
@@ -199,6 +212,36 @@ private:
 
             case ir::OpCode::DIV_I32: {
                 return std::format("mov rax, {} \n    cqo \n    idiv {}", r(node.op_a), r(node.op_b));
+            }
+
+            case ir::OpCode::MOD_I32: {
+                return std::format("mov rax, {} \n    cqo \n    idiv {} \n    mov {}, rdx",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
+            }
+
+            case ir::OpCode::CMP_EQ_I32: {
+                return std::format("cmp {}, {} \n    sete al \n    movzx {}, al",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
+            }
+            case ir::OpCode::CMP_NE_I32: {
+                return std::format("cmp {}, {} \n    setne al \n    movzx {}, al",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
+            }
+            case ir::OpCode::CMP_LT_I32: {
+                return std::format("cmp {}, {} \n    setl al \n    movzx {}, al",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
+            }
+            case ir::OpCode::CMP_LE_I32: {
+                return std::format("cmp {}, {} \n    setle al \n    movzx {}, al",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
+            }
+            case ir::OpCode::CMP_GT_I32: {
+                return std::format("cmp {}, {} \n    setg al \n    movzx {}, al",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
+            }
+            case ir::OpCode::CMP_GE_I32: {
+                return std::format("cmp {}, {} \n    setge al \n    movzx {}, al",
+                                   r(node.op_a), r(node.op_b), r(node.result_id));
             }
 
             case ir::OpCode::AND_I32: {
@@ -246,7 +289,7 @@ private:
             }
 
             case ir::OpCode::RET: {
-                if (node.op_a != 0) {
+                if (node.op_a != ir::INVALID_SLOT) {
                     uint64_t imm = 0;
                     if (resolve_ret_immediate(stream, node.op_a, imm)) {
                         return std::format("mov rax, {}", imm);
@@ -261,6 +304,23 @@ private:
                                    node.result_id % 32, r(node.op_a), node.op_c);
             }
 
+            case ir::OpCode::BRANCH:
+            case ir::OpCode::GOTO:
+                return std::format("jmp .L{}", node.op_a);
+
+            case ir::OpCode::BRANCH_COND:
+                // op_a = condition register, op_b = target block label
+                return std::format("test {0}, {0} \n    jnz .L{1}", r(node.op_a), node.op_b);
+
+            case ir::OpCode::BRANCH_COMPARE_FUSED:
+                // op_a = lhs register, op_b = rhs register, op_c = target block label
+                return std::format("cmp {}, {} \n    jne .L{}", r(node.op_a), r(node.op_b), node.op_c);
+
+            case ir::OpCode::PHI_NODE:
+                // PHI nodes are resolved by register allocation; emit as comment.
+                return std::format("; PHI r{} <- r{}, r{}, r{}",
+                                   node.result_id, node.op_a, node.op_b, node.op_c);
+
             case ir::OpCode::SYSCALL:
                 return "syscall";
 
@@ -272,5 +332,6 @@ private:
 };
 
 } // namespace dgtl::isa
+
 
 
