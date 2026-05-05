@@ -9,10 +9,10 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl/dgtl_all.hpp"
+
 #include <iostream>
 #include <stdexcept>
-
-#include "dgtl/all.hpp"
 
 namespace {
 
@@ -62,11 +62,15 @@ size_t count_optimized_atoms(const dgtl::ir::IRStream& stream) {
 } // namespace
 
 void run_test_poly_matmul_scop_tiling() {
+    constexpr size_t kArenaMbPerThread = 128;
+    constexpr size_t kReservedNodes = 128;
+    constexpr uint32_t kTileSize = 32;
+
     std::cout << "--- POLYHEDRAL SCoP 2D MATMUL TILING ---\n";
 
-    dgtl::core::DGTL_Arena arena(1, 128);
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
 
-    dgtl::ir::IRStream stream(arena, 128);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
     build_matmul_like_scop(stream);
 
     dgtl::graph::ExecutionGraph graph;
@@ -103,7 +107,7 @@ void run_test_poly_matmul_scop_tiling() {
     nest.strides[1] = 1;
 
     dgtl::pass::DGTLPolyTransformer transformer;
-    transformer.apply_tiling(stream, nest, 32);
+    transformer.apply_tiling(stream, nest, kTileSize);
 
     const size_t optimized_after = count_optimized_atoms(stream);
     if (optimized_after <= optimized_before) {
@@ -111,9 +115,9 @@ void run_test_poly_matmul_scop_tiling() {
     }
 
     // Determinism check: same IR + same tiling config should produce same final hash.
-    dgtl::ir::IRStream replay(arena, 128);
+    dgtl::ir::IRStream replay(arena, kReservedNodes);
     build_matmul_like_scop(replay);
-    transformer.apply_tiling(replay, nest, 32);
+    transformer.apply_tiling(replay, nest, kTileSize);
 
     if (stream.generate_logic_hash() != replay.generate_logic_hash()) {
         throw std::runtime_error("tiling transform is not deterministic for identical input");

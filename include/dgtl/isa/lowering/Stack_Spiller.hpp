@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -59,17 +59,21 @@ public:
         : m_arena(arena), m_current_frame_size(0) {
         // Initialize Global Scope
         m_scope_stack.emplace_back();
+        m_scope_frame_checkpoints.push_back(0);
     }
 
     // --- SCOPE LIFECYCLE ---
 
     void push_scope() {
         m_scope_stack.emplace_back();
+        m_scope_frame_checkpoints.push_back(m_current_frame_size);
     }
 
     void pop_scope() {
         if (m_scope_stack.size() > 1) {
             m_scope_stack.pop_back();
+            m_current_frame_size = m_scope_frame_checkpoints.back();
+            m_scope_frame_checkpoints.pop_back();
         }
     }
 
@@ -155,11 +159,14 @@ public:
         m_current_frame_size = 0;
         m_scope_stack.clear();
         m_scope_stack.emplace_back();
+        m_scope_frame_checkpoints.clear();
+        m_scope_frame_checkpoints.push_back(0);
     }
 
 private:
     dgtl::core::DGTL_Arena& m_arena;
     std::vector<ScopeLayer> m_scope_stack;
+    std::vector<uint32_t> m_scope_frame_checkpoints;
     uint32_t m_current_frame_size;
 
     /**

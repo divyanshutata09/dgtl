@@ -69,7 +69,7 @@ extern "C" {
 #define DGTL_VERSION_MAJOR  1
 #define DGTL_VERSION_MINOR  1
 #define DGTL_VERSION_PATCH  0
-#define DGTL_VERSION_STRING "1.1.0"
+#define DGTL_VERSION_STRING "1.0.0"
 
 DGTL_API const char* dgtl_version_string(void);
 
@@ -141,6 +141,25 @@ DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_target_t target,
 /* ---------- Payload Serialization ---------- */
 DGTL_API dgtl_status_t dgtl_write_payload(const dgtl_stream_t* s, const char* path);
 DGTL_API dgtl_status_t dgtl_read_payload(dgtl_stream_t* s, const char* path);
+
+/* ---------- Runtime Scheduler API ---------- */
+typedef struct dgtl_runtime_context dgtl_runtime_context_t;
+typedef void (*dgtl_runtime_task_fn)(void* context);
+
+DGTL_API dgtl_runtime_context_t* dgtl_runtime_context_create(size_t worker_threads,
+                                                            size_t arena_mb_per_worker);
+DGTL_API void dgtl_runtime_context_destroy(dgtl_runtime_context_t* ctx);
+
+DGTL_API uint64_t dgtl_runtime_spawn_task(dgtl_runtime_context_t* ctx,
+                                          dgtl_runtime_task_fn fn,
+                                          void* arg);
+DGTL_API void dgtl_runtime_join_task(dgtl_runtime_context_t* ctx,
+                                     uint64_t task_handle);
+DGTL_API void dgtl_runtime_yield(dgtl_runtime_context_t* ctx);
+
+DGTL_API void dgtl_yield(void);
+DGTL_API uint64_t dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg);
+DGTL_API void dgtl_join_task(uint64_t task_handle);
 
 #ifdef __cplusplus
 }  /* extern "C" */

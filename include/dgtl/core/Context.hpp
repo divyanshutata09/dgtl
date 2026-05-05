@@ -11,7 +11,7 @@
 
 /* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0
  * STEP 5: LOCK-FREE THREAD-LOCAL CONTEXT
- * VERSION 4.2: BIR 2.1 PACKED ATOM + V4-ARENA INTEGRATED
+ * VERSION 4.2: BIR 1.0.0 PACKED ATOM + V4-ARENA INTEGRATED
  * PILLAR 2: TRUE TLS + SHADOW-BUFFERED TRANSACTIONS
  * Extension: P0-001 Polyhedral Configuration
  */
@@ -166,7 +166,7 @@ public:
             tls.remaining_primary--;
         }
 
-        // Pack opcode and flags into the uint32_t IRAtom (BIR 2.1 Standard)
+        // Pack opcode and flags into the uint32_t IRAtom (BIR 1.0.0 Standard)
         *atom = ir::AtomSplitter::pack(op, flg);
 
         core->result_id   = res;
@@ -290,3 +290,4 @@ private:
 };
 
 } // namespace dgtl::core
+

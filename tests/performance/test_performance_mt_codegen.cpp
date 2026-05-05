@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -16,19 +16,19 @@
 #include <thread>
 #include <vector>
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/core/Symbol_Table.hpp"
-#include "dgtl/isa/emitter/ARM64_Emitter.hpp"
-#include "dgtl/pipeline/Functional_Pipeline_Probes.hpp"
+#include "dgtl/dgtl_all.hpp"
 
 namespace {
 
 void run_codegen_worker(int iterations, std::atomic<int>& failures) {
-    dgtl::core::DGTL_Arena arena(1, 32);
+    constexpr size_t kArenaMbPerThread = 32;
+    constexpr size_t kStreamNodeCapacity = 64;
+
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
     dgtl::core::SymbolTable symbols(arena);
 
     for (int i = 0; i < iterations; ++i) {
-        dgtl::ir::IRStream stream(arena, 64);
+        dgtl::ir::IRStream stream(arena, kStreamNodeCapacity);
         if ((i % 3) == 0) {
             dgtl::pipeline::probes::build_fma_probe(stream, 22, 10, 11, 12);
         } else if ((i % 3) == 1) {
@@ -64,8 +64,8 @@ void run_test_performance_mt_codegen() {
     std::cout << "--- PERFORMANCE: Multi-threaded ARM64 codegen stress ---\n";
 
     const unsigned hw = std::thread::hardware_concurrency();
-    const int thread_count = static_cast<int>(hw == 0 ? 8 : hw);
-    const int iterations_per_thread = 256;
+    const int thread_count = static_cast<int>(hw == 0 ? 8u : hw);
+    constexpr int kIterationsPerThread = 256;
 
     std::atomic<int> failures{0};
     std::vector<std::thread> workers;
@@ -73,7 +73,7 @@ void run_test_performance_mt_codegen() {
 
     const auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < thread_count; ++i) {
-        workers.emplace_back(run_codegen_worker, iterations_per_thread, std::ref(failures));
+        workers.emplace_back(run_codegen_worker, kIterationsPerThread, std::ref(failures));
     }
     for (auto& t : workers) {
         t.join();
@@ -81,12 +81,12 @@ void run_test_performance_mt_codegen() {
     const auto end = std::chrono::high_resolution_clock::now();
 
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    const double total_ops = static_cast<double>(thread_count) * static_cast<double>(iterations_per_thread);
+    const double total_ops = static_cast<double>(thread_count) * static_cast<double>(kIterationsPerThread);
     const double sec = static_cast<double>(us) / 1000000.0;
     const double ops_per_sec = sec > 0.0 ? (total_ops / sec) : 0.0;
 
     std::cout << "[perf] threads=" << thread_count
-              << " iterations/thread=" << iterations_per_thread
+              << " iterations/thread=" << kIterationsPerThread
               << " total_ops=" << static_cast<unsigned long long>(total_ops)
               << " failures=" << failures.load() << "\n";
     std::cout << "[perf] elapsed_us=" << us

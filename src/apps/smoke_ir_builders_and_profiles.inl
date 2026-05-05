@@ -172,8 +172,19 @@ std::optional<dgtl::ir::IRNode> find_node_by_result(const dgtl::ir::IRStream& st
 
 dgtl::pass::TargetArch target_arch_for_backend(BackendKind backend) {
     switch (backend) {
-        case BackendKind::arm64: return dgtl::pass::TargetArch::ARM_NEON;
-        case BackendKind::wasm: return dgtl::pass::TargetArch::WASM_SIMD128;
+        case BackendKind::arm64:
+        case BackendKind::arm32:
+        case BackendKind::macho:
+            return dgtl::pass::TargetArch::ARM_NEON;
+        case BackendKind::wasm:
+            return dgtl::pass::TargetArch::WASM_SIMD128;
+        case BackendKind::riscv64:
+        case BackendKind::cuda:
+        case BackendKind::rocm:
+        case BackendKind::elfobj:
+        case BackendKind::staticlib:
+        case BackendKind::coffobj:
+        case BackendKind::cofflib:
         case BackendKind::x64:
         case BackendKind::nasm:
         default:
@@ -191,8 +202,19 @@ dgtl::pass::TargetArch target_arch_for_backend(BackendKind backend) {
 
 uint32_t expected_simd_opcode(BackendKind backend) {
     switch (backend) {
-        case BackendKind::arm64: return 0x304;
-        case BackendKind::wasm: return 0x404;
+        case BackendKind::arm64:
+        case BackendKind::arm32:
+        case BackendKind::macho:
+            return 0x304;
+        case BackendKind::wasm:
+            return 0x404;
+        case BackendKind::riscv64:
+        case BackendKind::cuda:
+        case BackendKind::rocm:
+        case BackendKind::elfobj:
+        case BackendKind::staticlib:
+        case BackendKind::coffobj:
+        case BackendKind::cofflib:
         case BackendKind::x64:
         case BackendKind::nasm:
         default:

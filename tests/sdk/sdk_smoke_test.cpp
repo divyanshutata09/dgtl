@@ -29,6 +29,9 @@
 #include <stdlib.h>
 
 int main(void) {
+    const size_t kReservedNodes = 64;
+    const size_t kExpectedNodeCount = 4;
+
     printf("[SDK smoke] DGTL SDK version: %s\n", dgtl_version_string());
 
     /* --- 1. Create context and stream --- */
@@ -38,7 +41,7 @@ int main(void) {
         return 1;
     }
 
-    dgtl_stream_t* s = dgtl_stream_create(ctx, 64);
+    dgtl_stream_t* s = dgtl_stream_create(ctx, kReservedNodes);
     if (!s) {
         fprintf(stderr, "[SDK smoke] FAIL: stream creation returned NULL\n");
         dgtl_context_destroy(ctx);
@@ -51,11 +54,12 @@ int main(void) {
     uint32_t r  = dgtl_emit_add_i32(s, c1, c2);
     dgtl_emit_return(s, r);
 
-    printf("[SDK smoke] Stream nodes: %zu\n", dgtl_stream_node_count(s));
+    const size_t node_count = dgtl_stream_node_count(s);
+    printf("[SDK smoke] Stream nodes: %zu\n", node_count);
 
-    if (dgtl_stream_node_count(s) != 4) {
+    if (node_count != kExpectedNodeCount) {
         fprintf(stderr, "[SDK smoke] FAIL: expected 4 nodes, got %zu\n",
-                dgtl_stream_node_count(s));
+                node_count);
         dgtl_stream_destroy(s);
         dgtl_context_destroy(ctx);
         return 1;

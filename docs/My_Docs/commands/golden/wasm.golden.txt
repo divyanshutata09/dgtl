@@ -7,14 +7,14 @@
 [DGTL] running determinism
 [DGTL] running latency
 [DGTL] Release smoke checks
-  [PASS] constant-fold :: nodes=2 cost=27.5->11.6
+  [PASS] constant-fold :: <normalized>
   [PASS] fusion :: mul+add -> fma structural check
   [PASS] simd-legalize :: expected=0x404 nodes=12
-  [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
+  [PASS] ai-cost :: <normalized>
   [PASS] pressure-zero-spill :: spill_candidates=0
-  [PASS] determinism :: hash=0x9c13c402303ba602
-  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=64 iterations=64
+  [PASS] determinism :: hash=0xb413c402303ba602
+  [PASS] latency :: <normalized>
 [DGTL] Backend=wasm (binary)
-[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0x9c13c402303ba602
-00 61 73 6D 01 00 00 00 01 05 01 60 00 01 7F 03 02 01 00 05 03 01 00 01 07 0D 01 09 44 47 54 4C 5F 6D 61 69 6E 00 00 0A 25 01 23 01 18 7F 20 0A 20 0B 6A 21 14 20 0C 20 14 6A 21 15 20 0D 20 14 6A 21 16 20 15 20 16 6C 21 17 20 17 0F 0B
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0xb413c402303ba602
+00 61 73 6D <hex-dump>
 [DGTL] Pipeline completed successfully

@@ -11,32 +11,32 @@
 
 /* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * TEST SUITE: ROBUSTNESS_01 (NULL-STRIKE)
- * TARGET: BIR 2.1 TRANSACTIONAL INTEGRITY
+ * TARGET: BIR 1.0.0 TRANSACTIONAL INTEGRITY
  */
 
-#include <iostream>
-#include <vector>
-#include <memory>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
-#include "dgtl/core/Verified_Formal.hpp"
-#include "dgtl/core/Arena.hpp"
+#include "dgtl/dgtl_all.hpp"
 
-using namespace dgtl;
+#include <iostream>
+#include <memory>
+#include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
 
 void run_null_strike_test() {
+    constexpr size_t kArenaMbPerThread = 64;
+    constexpr size_t kSingleNodeCapacity = 10;
+    constexpr uint32_t kPipelineThreads = 4;
+
     std::cout << "--- ROBUSTNESS TEST 1: Null-Strike & Single-Node Safety ---\n";
     
-    core::DGTL_Arena arena(1, 64); // 1 thread, 64 MB arena
-    core::DGTLFormalVerifier formal_verifier;
-    ir::IRStream empty_stream;
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread); // 1 thread, 64 MB arena
+    dgtl::core::DGTLFormalVerifier formal_verifier;
+    dgtl::ir::IRStream empty_stream;
 
-    ir::IRStream single_node_stream(arena, 10);
-    single_node_stream.push_node(ir::OpCode::ADD_I32, ir::Flags::NONE, 100, 10, 20, ir::INVALID_SLOT);
+    dgtl::ir::IRStream single_node_stream(arena, kSingleNodeCapacity);
+    single_node_stream.push_node(
+        dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 100, 10, 20, dgtl::ir::INVALID_SLOT);
 
     dgtl::pass::DGTLInstructionFusionSynth fusion(formal_verifier);
-    pipeline::DGTLoptManager pm(4); 
+    dgtl::pipeline::DGTLoptManager pm(kPipelineThreads);
 
     try {
         std::cout << "[Step 1] Testing Fusion on Empty Stream... ";
@@ -49,10 +49,10 @@ void run_null_strike_test() {
 
         std::cout << "[Step 3] Testing optManager Parallel Execution... ";
         pm.add_opt(std::make_unique<dgtl::pass::DGTLInstructionFusionSynth>(formal_verifier));
-        pm.execute(empty_stream, pipeline::TargetPrecision::HFT);
+        pm.execute(empty_stream, dgtl::pipeline::TargetPrecision::HFT);
         std::cout << "PASSED (Thread-pool safety).\n";
 
-        std::cout << "\nRESULT: TEST 1 SUCCESSFUL. BIR 2.1 Transactional Logic handles null-strikes.\n";
+        std::cout << "\nRESULT: TEST 1 SUCCESSFUL. BIR 1.0.0 Transactional Logic handles null-strikes.\n";
     } catch (const std::exception& e) {
         std::cerr << "FAILED: Exception caught: " << e.what() << "\n";
         throw; // Re-throw to be caught by main
@@ -66,11 +66,12 @@ void run_test_robustness_1() {
     try {
         run_null_strike_test();
     } catch (...) {
-        std::cerr << "Fatal: Unhandled exception in test runner." << std::endl;
+        std::cerr << "Fatal: Unhandled exception in test runner.\n";
         return;
     }
     return;
 }
+
 
 
 

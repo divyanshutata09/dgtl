@@ -27,7 +27,7 @@ namespace dgtl::pass::transform {
 
 /**
  * @struct IR_Op
- * @brief Zero-latency adapter for BIR 2.1 packed atoms.
+ * @brief Zero-latency adapter for BIR 1.0.0 packed atoms.
  * Optimized for cache-line alignment and fast dependency checking.
  */
 struct IR_Op {
@@ -196,3 +196,4 @@ protected:
 };
 
 } // namespace dgtl::pass::transform
+

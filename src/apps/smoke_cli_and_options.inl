@@ -25,6 +25,15 @@ enum class BackendKind : uint8_t {
     x64,
     nasm,
     wasm,
+    arm32,     // ARM32 NEON gather/scatter
+    riscv64,   // RISC-V 64 V-extension gather/scatter
+    cuda,      // CUDA PTX (NVIDIA)
+    rocm,      // ROCm AMD GCN CDNA
+    macho,     // Mach-O ARM64 relocatable binary
+    elfobj,    // ELF64 relocatable object
+    staticlib, // GNU ar static archive
+    coffobj,   // COFF relocatable object
+    cofflib,   // COFF import-library archive
 };
 
 enum class BenchmarkProfile : uint8_t {
@@ -183,7 +192,7 @@ void print_usage(const char* argv0) {
         << "  --pressure-vars <n>    Variable count for pressure profile (default: 25)\n"
         << "  --benchmark-dump       Print benchmark-emitted artifact (hex or text)\n"
         << "  --arm64-binary-stream  Benchmark ARM64 as serialized binary stream (opt-in)\n"
-        << "  --backend <name>       Select backend: arm64|x64|nasm|wasm\n"
+        << "  --backend <name>       Select backend: arm64|x64|nasm|wasm|arm32|riscv64|cuda|rocm|macho|elfobj|staticlib|coffobj|cofflib\n"
         << "  --polyhedral-mode <mode>  Polyhedral pipeline mode: off|safe|aggressive (default: off)\n"
         << "  --polyhedral-tile <n>     Polyhedral tile size (0 means auto)\n"
         << "  --polyhedral-parallel <p> Polyhedral parallel policy: auto|off|on (default: auto)\n"
@@ -217,6 +226,51 @@ bool parse_backend(std::string backend_str, BackendKind& out_kind, std::string& 
     if (backend_str == "wasm") {
         out_kind = BackendKind::wasm;
         out_name = backend_str;
+        return true;
+    }
+    if (backend_str == "arm32") {
+        out_kind = BackendKind::arm32;
+        out_name = backend_str;
+        return true;
+    }
+    if (backend_str == "riscv64" || backend_str == "riscv" || backend_str == "rv64") {
+        out_kind = BackendKind::riscv64;
+        out_name = "riscv64";
+        return true;
+    }
+    if (backend_str == "cuda" || backend_str == "ptx" || backend_str == "nvptx") {
+        out_kind = BackendKind::cuda;
+        out_name = "cuda";
+        return true;
+    }
+    if (backend_str == "rocm" || backend_str == "amdgcn" || backend_str == "hip") {
+        out_kind = BackendKind::rocm;
+        out_name = "rocm";
+        return true;
+    }
+    if (backend_str == "macho") {
+        out_kind = BackendKind::macho;
+        out_name = backend_str;
+        return true;
+    }
+    if (backend_str == "elfobj" || backend_str == "elf") {
+        out_kind = BackendKind::elfobj;
+        out_name = "elfobj";
+        return true;
+    }
+    if (backend_str == "staticlib" || backend_str == "archive") {
+        out_kind = BackendKind::staticlib;
+        out_name = "staticlib";
+        return true;
+    }
+    if (backend_str == "coffobj" || backend_str == "coff") {
+        out_kind = BackendKind::coffobj;
+        out_name = "coffobj";
+        return true;
+    }
+    if (backend_str == "cofflib" || backend_str == "coffarchive") {
+        out_kind = BackendKind::cofflib;
+        out_name = "cofflib";
         return true;
     }
     return false;

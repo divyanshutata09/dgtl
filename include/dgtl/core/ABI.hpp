@@ -11,7 +11,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <cctype>
 #include <optional>
 #include <span>
 #include <string>
@@ -58,6 +60,36 @@ struct DGTLCallSignature {
     bool is_foreign = false;
 };
 
+enum class DGTLCallValidationMode : uint8_t {
+    exact_arity,
+    at_least_arity,
+    skip_arity
+};
+
+struct DGTLCallValidationOptions {
+    DGTLCallValidationMode mode = DGTLCallValidationMode::exact_arity;
+    bool allow_missing_signature = false;
+};
+
+[[nodiscard]] inline bool is_concurrency_boundary_callee(std::string_view callee) {
+    std::string lower(callee);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (lower == "spawn" || lower == "async" || lower == "fiber" || lower == "thread" ||
+        lower == "yield" || lower == "lock" || lower == "unlock" || lower == "release" ||
+        lower == "fence" || lower == "barrier" ||
+        lower == "atomic_cas" || lower == "atomic_add" || lower == "atomic_sub" ||
+        lower == "__myzon_spawn" || lower == "__myzon_yield" ||
+        lower == "__myzon_atomic_add" || lower == "__myzon_atomic_sub" ||
+        lower == "__myzon_concurrent_op" || lower == "__myzon_select_arm") {
+        return true;
+    }
+
+    return lower.find("lock") != std::string::npos;
+}
+
 class DGTLABIRegistry {
 public:
     void register_signature(DGTLCallSignature signature) {
@@ -80,19 +112,43 @@ public:
     [[nodiscard]] bool validate_call(std::string_view callee,
                                      size_t arg_count,
                                      std::string* error = nullptr) const noexcept {
+        return validate_call(callee,
+                             arg_count,
+                             DGTLCallValidationOptions{},
+                             error);
+    }
+
+    [[nodiscard]] bool validate_call(std::string_view callee,
+                                     size_t arg_count,
+                                     const DGTLCallValidationOptions& options,
+                                     std::string* error = nullptr) const noexcept {
         const DGTLCallSignature* signature = find_signature(callee);
         if (!signature) {
+            if (options.allow_missing_signature) {
+                return true;
+            }
             if (error) {
                 *error = "missing ABI signature for callee: " + std::string(callee);
             }
             return false;
         }
 
-        if (!signature->is_variadic && arg_count != signature->parameters.size()) {
-            if (error) {
-                *error = "arity mismatch for callee: " + std::string(callee);
+        if (!signature->is_variadic) {
+            const size_t expected = signature->parameters.size();
+            bool arity_ok = true;
+
+            if (options.mode == DGTLCallValidationMode::exact_arity) {
+                arity_ok = (arg_count == expected);
+            } else if (options.mode == DGTLCallValidationMode::at_least_arity) {
+                arity_ok = (arg_count >= expected);
             }
-            return false;
+
+            if (!arity_ok) {
+                if (error) {
+                    *error = "arity mismatch for callee: " + std::string(callee);
+                }
+                return false;
+            }
         }
 
         return true;

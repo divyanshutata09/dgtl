@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,28 +9,33 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/transform/GVN.hpp"
-#include "dgtl/pass/simd/SIMD_Legalizer.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
-#include "dgtl/core/Arena.hpp"
+#include "dgtl/dgtl_all.hpp"
 
-using namespace dgtl;
+#include <iostream>
 
 void run_test_pipeline_16_the_megabuffer() {
-    std::cout << "--- [DGTL-TEST] 16_the_megabuffer ---" << std::endl;
+    constexpr size_t kArenaMbPerThread = 16;
     constexpr size_t kNodes = 4096;
-    core::DGTL_Arena arena(128);
-    ir::IRStream stream(arena, kNodes + 32);
+
+    std::cout << "--- [DGTL-TEST] 16_the_megabuffer ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kNodes + 32);
 
     stream.begin_transaction();
     for (size_t i = 0; i < kNodes; ++i) {
         const uint32_t rid = static_cast<uint32_t>(i + 1);
         const uint32_t a = (i == 0) ? 1U : static_cast<uint32_t>(i);
-        stream.push_node(ir::OpCode::ADD_I32, ir::Flags::NONE, rid, a, 1, 0, 0);
+        stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, rid, a, 1, 0, 0);
     }
-    stream.push_node(ir::OpCode::RET, ir::Flags::IS_RETURN, 0, static_cast<uint32_t>(kNodes), 0, 0, 0);
+    stream.push_node(dgtl::ir::OpCode::RET,
+                     dgtl::ir::Flags::IS_RETURN,
+                     0,
+                     static_cast<uint32_t>(kNodes),
+                     0,
+                     0,
+                     0);
     stream.commit_transaction();
 
     const size_t before = stream.size();
@@ -44,11 +49,11 @@ void run_test_pipeline_16_the_megabuffer() {
     const bool valid = stream.validate_shadow_integrity();
 
     if (reduced_or_same && non_empty && valid) {
-        std::cout << "SUCCESS" << std::endl;
+        std::cout << "SUCCESS\n";
         return;
     }
 
-    std::cout << "FAIL" << std::endl;
+    std::cout << "FAIL\n";
     return;
 }
 

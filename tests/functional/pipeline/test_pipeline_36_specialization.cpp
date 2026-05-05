@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,31 +9,43 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl/dgtl_all.hpp"
+
 #include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/core/Arena.hpp"
 
 void run_test_pipeline_36_specialization() {
-    std::cout << "--- [DGTL-TEST] 36_jit_specialization ---" << std::endl;
-    dgtl::core::DGTL_Arena arena(512); 
-    dgtl::ir::IRStream stream(arena, 1024);
+    constexpr size_t kArenaMbPerThread = 2;
+    constexpr size_t kReservedNodes = 1024;
+    constexpr uint64_t kGuardTag = 0xBEEFULL;
+
+    std::cout << "--- [DGTL-TEST] 36_jit_specialization ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
 
     stream.begin_transaction();
     
-    // Push a Guard Node: If this fails at runtime, it triggers a deoptimization
+    // Push a guard node that models specialization/deoptimization gate metadata.
     stream.push_node(
         dgtl::ir::OpCode::GUARD_VALUE, 
         dgtl::ir::Flags::REQUIRES_DEPASS_TARGET, 
-        0, 0, 0, 0, 0xBEEF // Intent Hash (the value we are guarding)
+        0, 0, 0, 0, kGuardTag
     );
     
     stream.commit_transaction();
 
-    if (stream.size() > 0) {
-        std::cout << "SUCCESS" << std::endl;
-    } else {
-        return;
+    if (stream.size() == 1) {
+        const auto node = stream.get_node(0);
+        if (node.opcode == dgtl::ir::OpCode::GUARD_VALUE &&
+            (node.flags & dgtl::ir::Flags::REQUIRES_DEPASS_TARGET) &&
+            node.intent_hash == kGuardTag) {
+            std::cout << "SUCCESS\n";
+            return;
+        }
     }
+
+    std::cout << "FAIL\n";
     return;
 }
 

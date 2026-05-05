@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -82,9 +82,13 @@ private:
         for (int i = static_cast<int>(sz) - 1; i >= 0; --i) {
             // Synchronized with IRStream::get_node
             ir::IRNode node = src.get_node(i);
+
+            const bool is_call_like = node.opcode == ir::OpCode::CALL ||
+                                      node.opcode == ir::OpCode::SYSCALL;
             
             bool is_essential = node.is_terminator() || 
-                                (node.flags & ir::Flags::HAS_SIDE_EFFECTS) || 
+                                is_call_like ||
+                                ir::IRTraits::has_side_effects(node.opcode, node.flags) ||
                                 (node.opcode == ir::OpCode::STORE) ||
                                 (root_marker != nullptr && root_marker->is_root(node));
 
@@ -117,9 +121,13 @@ private:
     ) {
         for (size_t i = 0; i < src.size(); ++i) {
             ir::IRNode node = src.get_node(i);
+
+            const bool is_call_like = node.opcode == ir::OpCode::CALL ||
+                                      node.opcode == ir::OpCode::SYSCALL;
             
             bool is_live = node.is_terminator() || 
-                           (node.flags & ir::Flags::HAS_SIDE_EFFECTS) || 
+                           is_call_like ||
+                           ir::IRTraits::has_side_effects(node.opcode, node.flags) ||
                            (node.opcode == ir::OpCode::STORE) ||
                            (root_marker != nullptr && root_marker->is_root(node)) ||
                            (node.result_id != ir::INVALID_SLOT && live_map.test(node.result_id % MAX_TRACKED_IDS));
@@ -128,7 +136,8 @@ private:
                 // [DGTL SAFETY] Prevent pollution from uninitialized IDs
                 if (node.result_id == ir::INVALID_SLOT &&
                     !node.is_terminator() &&
-                    !(node.flags & ir::Flags::HAS_SIDE_EFFECTS)) {
+                    !is_call_like &&
+                    !ir::IRTraits::has_side_effects(node.opcode, node.flags)) {
                     if (node.opcode != ir::OpCode::NOP) return false; 
                 }
 

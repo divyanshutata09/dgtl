@@ -8,15 +8,7 @@
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
-
 #pragma once
+#include "dgtl/core/Frontend_Payload.hpp"
+#include "dgtl/api/Runtime.hpp"
 
-#include "dgtl/api/ABI.hpp"
-#include "dgtl/api/Backend_Driver_API.hpp"
-#include "dgtl/api/ControlFlow.hpp"
-#include "dgtl/api/Frontend.hpp"
-#include "dgtl/api/FrontendHelpers.hpp"
-#include "dgtl/api/Frontend_Pipeline.hpp"
-#include "dgtl/api/Frontend_Payload.hpp"
-#include "dgtl/api/Function.hpp"
-#include "dgtl/api/Symbol_Table.hpp"

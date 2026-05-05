@@ -62,7 +62,7 @@ struct QuietCorePolicyResult {
 class DGTLHardwareScheduler {
 private:
     CpuPorts current_cycle_resources;
-    dgtl::analysis::DGTLAICostModel& ai_model;
+    [[maybe_unused]] dgtl::analysis::DGTLAICostModel& ai_model;
 
     // Titan-Stable: Local cache for lookahead to avoid Arena thrashing
     static constexpr size_t WINDOW_SIZE = 32;
@@ -108,7 +108,7 @@ public:
         }
 
         // PILLAR 2: Open Transactional Shadow Stream.
-        // This now uses the v4.0 Arena to guarantee 64-byte alignment of the shadow buffer.
+        // This now uses the v1.0.0 Arena to guarantee 64-byte alignment of the shadow buffer.
         stream.begin_transaction();
 
         std::vector<ir::IRNode> ready_queue;
@@ -146,11 +146,16 @@ public:
                 }
             }
 
-            // Stall-Breaker: If ports are locked, force a dispatch to prevent pipeline bubbles
-            if (!ready_queue.empty() && current_cycle_resources.alu_slots == 4) [[unlikely]] {
+            // Stall-Breaker: If ports are depleted AND queue is non-empty, force dispatch to prevent starvation
+            if (!ready_queue.empty() && current_cycle_resources.alu_slots == 0 && 
+                scheduled_count < static_cast<uint32_t>(count)) [[unlikely]] {
                 write_shadow_node(stream, scheduled_count, ready_queue[0]);
                 ready_queue.erase(ready_queue.begin());
                 scheduled_count++;
+            } else if (!ready_queue.empty() && ready_queue.size() < WINDOW_SIZE && 
+                       lookahead_ptr < static_cast<uint32_t>(count)) {
+                // Advance lookahead if stalled but window not full
+                ready_queue.push_back(source_nodes[lookahead_ptr++]);
             }
         }
 
@@ -217,3 +222,4 @@ private:
 };
 
 } // namespace dgtl::jit
+

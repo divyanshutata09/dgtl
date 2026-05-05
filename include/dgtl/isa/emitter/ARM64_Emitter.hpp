@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -19,6 +19,8 @@
 #include <ostream>
 #include <iomanip>
 #include <string>
+#include <unordered_map>
+#include <functional>
 
 #include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Target.hpp"
@@ -59,13 +61,36 @@ public:
     void emit_assembly(std::ostream& out, const Config config = {}) {
         if (m_stream.is_null() || m_stream.size() == 0) return;
 
+        // --- FIX: Pre-scan LABEL nodes to build label_id → stream_index map ---
+        std::unordered_map<uint32_t, size_t> label_map;
+        label_map.reserve(m_stream.size() / 4 + 4);
+        for (size_t i = 0; i < m_stream.size(); ++i) {
+            const auto& atom = m_stream.get_atom_readonly(i);
+            const auto& core = m_stream.get_core_readonly(i);
+            if (atom.opcode == OpCode::LABEL) {
+                uint32_t lid = (core.result_id != INVALID_SLOT) ? core.result_id : core.op_a;
+                label_map[lid] = i;
+            }
+        }
+        // Helper: resolve a branch target through label_map or return as-is
+        auto resolve_target = [&](uint32_t raw) -> size_t {
+            auto it = label_map.find(raw);
+            if (it != label_map.end()) return it->second;
+            if (static_cast<size_t>(raw) < m_stream.size()) return static_cast<size_t>(raw);
+            return m_stream.size(); // fallback to epilogue
+        };
+        // -----------------------------------------------------------------------
+
         emit_header(out, config);
 
         for (size_t i = 0; i < m_stream.size(); ++i) {
             const auto& atom = m_stream.get_atom_readonly(i);
             const auto& core = m_stream.get_core_readonly(i);
+
+            out << ".L" << i << ":\n";
             
             if (atom.opcode == OpCode::NOP) continue;
+            if (atom.opcode == OpCode::LABEL) continue; // pseudo-op, no code
             if ((atom.opcode == OpCode::LOAD_IMM || atom.opcode == OpCode::IMMEDIATE) &&
                 is_foldable_ret_immediate(i, core)) {
                 continue;
@@ -93,6 +118,7 @@ public:
                 case OpCode::OR_I32:    emit_arithmetic(out, "orr", core); break;
                 case OpCode::XOR_I32:   emit_arithmetic(out, "eor", core); break;
                 case OpCode::SHL_I32:   emit_shift_left(out, core); break;
+                case OpCode::SHR_I32:   emit_shift_right(out, core); break;
                 case OpCode::ADD_F32:   emit_arithmetic(out, "fadd", core, true); break;
                 case OpCode::SUB_F32:   emit_arithmetic(out, "fsub", core, true); break;
                 case OpCode::MUL_F32:   emit_arithmetic(out, "fmul", core, true); break;
@@ -104,9 +130,9 @@ public:
                 case OpCode::LOAD:      emit_load(out, core); break;
                 case OpCode::STORE:     emit_store(out, core); break;
                 case OpCode::BRANCH:
-                case OpCode::GOTO:      emit_branch(out, core); break;
-                case OpCode::BRANCH_COND: emit_branch_cond(out, core); break;
-                case OpCode::BRANCH_COMPARE_FUSED: emit_branch_compare_fused(out, core); break;
+                case OpCode::GOTO:      emit_branch(out, core, resolve_target); break;
+                case OpCode::BRANCH_COND: emit_branch_cond(out, core, resolve_target); break;
+                case OpCode::BRANCH_COMPARE_FUSED: emit_branch_compare_fused(out, core, resolve_target); break;
                 case OpCode::PHI_NODE:  emit_phi_comment(out, core); break;
                 case OpCode::CALL:      emit_call(out, core); break;
                 case OpCode::SYSCALL:   emit_syscall(out); break;
@@ -195,6 +221,7 @@ private:
     }
 
     void emit_footer(std::ostream& out, const Config& config) {
+        out << ".L_epilogue:\n";
         if (!config.omit_fp) out << "    ldp x29, x30, [sp], #16\n";
         out << "    ret\n";
     }
@@ -209,7 +236,11 @@ private:
     }
 
     void emit_shift_left(std::ostream& out, const IRCore& core) {
-        out << "lsl x" << core.result_id << ", x" << core.op_a << ", #" << (core.op_b & 63U);
+        out << "lslv x" << core.result_id << ", x" << core.op_a << ", x" << core.op_b;
+    }
+
+    void emit_shift_right(std::ostream& out, const IRCore& core) {
+        out << "lsrv x" << core.result_id << ", x" << core.op_a << ", x" << core.op_b;
     }
 
     void emit_fma(std::ostream& out, const IRCore& core) {
@@ -229,7 +260,15 @@ private:
     void emit_load_imm(std::ostream& out, const IRCore& core) {
         const uint32_t high = (core.op_a == INVALID_SLOT) ? 0u : core.op_a;
         const uint64_t imm = (static_cast<uint64_t>(high) << 32) | core.op_b;
-        out << "mov x" << core.result_id << ", #" << imm;
+        const uint32_t part0 = static_cast<uint32_t>(imm & 0xFFFFULL);
+        const uint32_t part1 = static_cast<uint32_t>((imm >> 16) & 0xFFFFULL);
+        const uint32_t part2 = static_cast<uint32_t>((imm >> 32) & 0xFFFFULL);
+        const uint32_t part3 = static_cast<uint32_t>((imm >> 48) & 0xFFFFULL);
+
+        out << "movz x" << core.result_id << ", #" << part0;
+        if (part1 != 0) out << "\n    movk x" << core.result_id << ", #" << part1 << ", lsl #16";
+        if (part2 != 0) out << "\n    movk x" << core.result_id << ", #" << part2 << ", lsl #32";
+        if (part3 != 0) out << "\n    movk x" << core.result_id << ", #" << part3 << ", lsl #48";
     }
 
     void emit_load(std::ostream& out, const IRCore& core) {
@@ -241,7 +280,7 @@ private:
     }
 
     void emit_neon_vec_op(std::ostream& out, const char* instr, const IRCore& core) {
-        out << instr << " v" << core.op_c << ".4s, v" << core.op_a << ".4s, v" << core.op_b << ".4s";
+        out << instr << " v" << core.result_id << ".4s, v" << core.op_a << ".4s, v" << core.op_b << ".4s";
     }
 
     void emit_fcvtl(std::ostream& out, const IRCore& core) {
@@ -260,18 +299,21 @@ private:
         out << "    bsl v" << core.result_id << ".16b, v" << core.op_b << ".16b, v" << core.op_c << ".16b";
     }
 
-    void emit_branch(std::ostream& out, const IRCore& core) {
-        out << "b .L" << core.op_a;
+    void emit_branch(std::ostream& out, const IRCore& core,
+                     const std::function<size_t(uint32_t)>& resolve_target) {
+        out << "b .L" << resolve_target(core.op_a);
     }
 
-    void emit_branch_cond(std::ostream& out, const IRCore& core) {
-        out << "cbnz x" << core.op_a << ", .L" << core.op_b;
+    void emit_branch_cond(std::ostream& out, const IRCore& core,
+                          const std::function<size_t(uint32_t)>& resolve_target) {
+        out << "cbnz x" << core.op_a << ", .L" << resolve_target(core.op_b);
     }
 
-    void emit_branch_compare_fused(std::ostream& out, const IRCore& core) {
+    void emit_branch_compare_fused(std::ostream& out, const IRCore& core,
+                                   const std::function<size_t(uint32_t)>& resolve_target) {
         // op_a = lhs register, op_b = rhs register, op_c = target block label
         out << "cmp x" << core.op_a << ", x" << core.op_b << "\n";
-        out << "    b.ne .L" << core.op_c;
+        out << "    b.ne .L" << resolve_target(core.op_c);
     }
 
     void emit_phi_comment(std::ostream& out, const IRCore& core) {
@@ -291,7 +333,14 @@ private:
     }
 
     void emit_call(std::ostream& out, const IRCore& core) {
-        out << "bl _DGTL_fn_" << core.op_a;
+        // op_b = arg0 register (string pool index -> x0), op_c = arg1 register (value -> x1)
+        if (core.op_b != ir::INVALID_SLOT && core.op_c != ir::INVALID_SLOT) {
+            out << "mov x0, x" << (core.op_b & 0x1Fu) << "\n";
+            out << "    mov x1, x" << (core.op_c & 0x1Fu) << "\n";
+            out << "    bl __myzon_print_i64";
+        } else {
+            out << "bl _DGTL_fn_" << core.op_a;
+        }
     }
 
     void emit_syscall(std::ostream& out) {
@@ -319,11 +368,19 @@ private:
         if (core.op_a != INVALID_SLOT) {
             uint64_t ret_imm = 0;
             if (resolve_ret_immediate(core.op_a, ret_imm)) {
-                out << "mov x0, #" << ret_imm << "\n    ";
+                const uint32_t part0 = static_cast<uint32_t>(ret_imm & 0xFFFFULL);
+                const uint32_t part1 = static_cast<uint32_t>((ret_imm >> 16) & 0xFFFFULL);
+                const uint32_t part2 = static_cast<uint32_t>((ret_imm >> 32) & 0xFFFFULL);
+                const uint32_t part3 = static_cast<uint32_t>((ret_imm >> 48) & 0xFFFFULL);
+                out << "movz x0, #" << part0;
+                if (part1 != 0) out << "\n    movk x0, #" << part1 << ", lsl #16";
+                if (part2 != 0) out << "\n    movk x0, #" << part2 << ", lsl #32";
+                if (part3 != 0) out << "\n    movk x0, #" << part3 << ", lsl #48";
             } else {
-                out << "mov x0, x" << core.op_a << "\n    ";
+                out << "mov x0, x" << core.op_a;
             }
         }
+        out << "\n    b .L_epilogue";
     }
 };
 

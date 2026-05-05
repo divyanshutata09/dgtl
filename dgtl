@@ -1,0 +1,21 @@
+#!/bin/bash
+###############################################################################
+# DGTL Launcher - Cross-Platform Entry Point
+# Routes to either PowerShell (Windows) or Bash (Linux/macOS)
+###############################################################################
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Detect if we're on Windows
+if [[ "$OSTYPE" == "msys"* || "$OSTYPE" == "cygwin"* || "$OSTYPE" == *"win32"* ]]; then
+  # Windows: use PowerShell
+  exec powershell -NoProfile -ExecutionPolicy Bypass -File "$SCRIPT_DIR/dgtl.ps1" "$@"
+else
+  # Linux/macOS: use Bash
+  if [[ -f "$SCRIPT_DIR/dgtl.sh" ]]; then
+    exec bash "$SCRIPT_DIR/dgtl.sh" "$@"
+  else
+    echo "Error: Cannot find $SCRIPT_DIR/dgtl.sh" >&2
+    exit 1
+  fi
+fi

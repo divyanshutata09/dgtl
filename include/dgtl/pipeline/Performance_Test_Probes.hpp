@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -30,6 +30,7 @@ namespace dgtl::pipeline::probes {
  */
 class SIMDIntMulFoldingPass final : public dgtl::pipeline::DGTLOptimizationPass {
 public:
+    __attribute__((target("avx2")))
     void execute(dgtl::ir::IRStream& stream) override {
         const size_t stream_size = stream.size();
         if (stream_size == 0) return;

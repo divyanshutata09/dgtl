@@ -26,9 +26,8 @@
 #include "../base/IR_Nodes.hpp"
 
 namespace dgtl::ir {
-    // Forward declarations for cross-module visibility
+    // Forward declaration of IRStream - fully defined in IR_Stream.hpp
     class IRStream;
-    // IRAtom and IRCore are now defined in IR_Types.hpp
 }
 
 namespace dgtl::dialect {
@@ -140,6 +139,96 @@ private:
  * @brief Standard Hardware Registry.
  */
 using StandardMathRegistry = OpRegistry<MathDialect::FastAdd, MathDialect::FastFMA>;
+
+/**
+ * @struct MYZONDialect
+ * @brief MYZON-specific dialect with ownership, concurrency, DSA awareness (BETTER THAN LLVM)
+ */
+struct MYZONDialect {
+    static constexpr std::string_view name = "DGTL.myzon";
+    static constexpr ir::FrontendLanguage target_lang = ir::FrontendLanguage::MYZON;
+    
+    // Ownership-aware operations
+    struct OwnershipAcquire : BaseOp<OwnershipAcquire, static_cast<ir::OpCode>(410)> {
+        [[nodiscard]] static inline bool verify_impl(const ir::IRAtom& atom, const ir::IRCore& core) noexcept {
+            return core.result_id != ir::INVALID_SLOT && 
+                   atom.opcode == static_cast<ir::OpCode>(410); // OWNERSHIP_ACQUIRE
+        }
+    };
+    
+    // Async/fiber spawn operations
+    struct AsyncSpawn : BaseOp<AsyncSpawn, static_cast<ir::OpCode>(420)> {
+        [[nodiscard]] static inline bool verify_impl([[maybe_unused]] const ir::IRAtom& atom, const ir::IRCore& core) noexcept {
+            return core.result_id != ir::INVALID_SLOT && core.op_a != ir::INVALID_SLOT;
+        }
+    };
+};
+
+/**
+ * @struct CppDialect
+ * @brief C++-specific dialect with template specialization and SFINAE support
+ */
+struct CppDialect {
+    static constexpr std::string_view name = "DGTL.cpp";
+    static constexpr ir::FrontendLanguage target_lang = ir::FrontendLanguage::CPP;
+    
+    // Template specialization markers
+    struct TemplateSpec : BaseOp<TemplateSpec, static_cast<ir::OpCode>(301)> {
+        [[nodiscard]] static inline bool verify_impl([[maybe_unused]] const ir::IRAtom& atom, const ir::IRCore& core) noexcept {
+            return core.result_id != ir::INVALID_SLOT;
+        }
+    };
+};
+
+/**
+ * @struct RustDialect
+ * @brief Rust-specific dialect with borrow-checker aware operations
+ */
+struct RustDialect {
+    static constexpr std::string_view name = "DGTL.rust";
+    static constexpr ir::FrontendLanguage target_lang = ir::FrontendLanguage::RUST;
+    
+    // Borrow operations (Rust-specific)
+    struct BorrowMut : BaseOp<BorrowMut, static_cast<ir::OpCode>(411)> {
+        [[nodiscard]] static inline bool verify_impl([[maybe_unused]] const ir::IRAtom& atom, const ir::IRCore& core) noexcept {
+            return core.op_a != ir::INVALID_SLOT && 
+                   core.result_id != ir::INVALID_SLOT;
+        }
+    };
+};
+
+/**
+ * @class LanguageDialectRegistry
+ * @brief Routes IR through language-specific dialect handlers (MYZON, C++, Rust, etc)
+ * Note: Full implementations moved to IR_Dialect_Interface.cpp for forward declaration compatibility
+ */
+class LanguageDialectRegistry {
+public:
+    static constexpr std::string_view myzon_dialect = "DGTL.myzon";
+    static constexpr std::string_view cpp_dialect = "DGTL.cpp";
+    static constexpr std::string_view rust_dialect = "DGTL.rust";
+    static constexpr std::string_view math_dialect = "DGTL.math";
+    
+    /**
+     * @brief Register a frontend dialect for language-specific IR transformations
+     * Implementation in IR_Dialect_Interface.cpp
+     */
+    [[nodiscard]] static bool register_frontend_dialect(
+        ir::IRStream& stream, 
+        ir::FrontendLanguage lang
+    ) noexcept;
+    
+    /**
+     * @brief Validate dialect-specific operations in stream
+     * Implementation in IR_Dialect_Interface.cpp
+     */
+    [[nodiscard]] static bool validate_dialect_ops(const ir::IRStream& stream) noexcept;
+
+private:
+    static bool validate_myzon_ops(const ir::IRStream& stream) noexcept;
+    static bool validate_cpp_ops(const ir::IRStream& stream) noexcept;
+    static bool validate_rust_ops(const ir::IRStream& stream) noexcept;
+};
 
 } // namespace dgtl::dialect
 

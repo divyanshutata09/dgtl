@@ -70,7 +70,8 @@ DGTL_API uint32_t dgtl_emit_scatter(dgtl_stream_t* s,
 
 /**
  * Run the SIMD legalizer over a stream for a given target architecture.
- * This performs the 4-node sliding-window vectorization pass.
+ * This performs target-lane window vectorization
+ * (AVX-512=16, AVX2=8, NEON/WASM=4 lanes).
  */
 DGTL_API dgtl_status_t dgtl_legalize_simd(dgtl_stream_t* s,
                                             dgtl_simd_arch_t arch);

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -18,6 +18,8 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <string>
+#include <utility>
 
 // Core Infrastructure
 #include "dgtl/core/Context.hpp"
@@ -46,7 +48,7 @@ namespace dgtl::core {
 class StrikeOrchestrator {
     DGTLContext& ctx;
     DGTL_Arena& arena;
-    dgtl::isa::StackPiller spiller;
+    dgtl::isa::StackSpiller spiller;   // ✅ FIXED (was StackPiller)
     
     // Emitter resides in the dgtl::isa namespace for backend-specific logic
     dgtl::isa::X64StrikeEmitter emitter;
@@ -73,6 +75,20 @@ public:
     }
 
     /**
+     * @brief Register a runtime function address for CALL emission.
+     */
+    void register_runtime_function(std::string name, uintptr_t address) {
+        emitter.register_runtime_function(std::move(name), address);
+    }
+
+    /**
+     * @brief Register a runtime function address for CALL nodes by callee slot.
+     */
+    void register_runtime_function_slot(uint32_t slot, uintptr_t address) {
+        emitter.register_runtime_function_slot(slot, address);
+    }
+
+    /**
      * @brief The "Fire" Strike.
      * Transitions IR from the stream into a live execution result.
      * PILLAR 4: Single-opt pipeline with zero mid-strike heap allocation.
@@ -80,7 +96,7 @@ public:
      * @param data_payload Pointer to SVM or context data for the kernel.
      * @return StrikeMetrics containing execution time and result codes.
      */
-    dgtl::exec::StrikeMetrics fire_strike(ir::IRStream& stream, void* data_payload = nullptr) {
+    dgtl::exec::StrikeMetrics fire_strike(dgtl::ir::IRStream& stream, void* data_payload = nullptr) {  // ✅ FIXED namespace
         // Validation using BitPacked_IR.hpp interface
         if (stream.is_null() || stream.size() == 0) [[unlikely]] {
             dgtl::exec::StrikeMetrics metrics{};
@@ -165,6 +181,3 @@ public:
 };
 
 } // namespace dgtl::core
-
-
-

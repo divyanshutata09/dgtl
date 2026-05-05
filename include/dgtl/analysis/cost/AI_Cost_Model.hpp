@@ -40,7 +40,7 @@ struct RuntimeFeedback {
 /**
  * @class alignas(64) DGTLAICostModel
  * @brief Predicts hardware cycle costs using neural inference.
- * Optimized for BIR 2.1 32-byte aligned instruction nodes.
+ * Optimized for BIR 1.0.0 32-byte aligned instruction nodes.
  */
 class alignas(64) DGTLAICostModel {
     static constexpr size_t EmbeddingDim = 16;
@@ -127,7 +127,7 @@ public:
     }
 
     [[nodiscard]] float predict_alias_risk(const ir::IRNode& store, const ir::IRNode& load) const noexcept {
-        // BIR 2.1: Check if store target matches load source op_a
+        // BIR 1.0.0: Check if store target matches load source op_a
         if (store.result_id == load.op_a) return 1.0f;
 
         const bool invalid_store_ptr = (store.op_a == ir::INVALID_SLOT);
@@ -214,7 +214,7 @@ private:
         out[6] = static_cast<float>(node.intent_hash == 0);
         out[7] = 1.0f; // Base latency floor
         
-        // BIR 2.1 Extended Features
+        // BIR 1.0.0 Extended Features
         out[8] = static_cast<float>((node.flags & ir::Flags::IS_SPEC_CONST) != 0);
         out[9] = static_cast<float>((node.flags & ir::Flags::IS_MACRO_FUSED) != 0);
 
@@ -248,3 +248,4 @@ private:
 };
 
 } // namespace dgtl::analysis
+

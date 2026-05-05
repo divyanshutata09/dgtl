@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,25 +9,37 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl/dgtl_all.hpp"
+
 #include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/core/Arena.hpp"
 
 void run_test_pipeline_19_register_exhaustion() {
-    std::cout << "--- [DGTL-TEST] 19_register_exhaustion ---" << std::endl;
-    dgtl::core::DGTL_Arena arena(1024 * 10); 
-    size_t node_limit = 10;
-    dgtl::ir::IRStream stream(arena, node_limit);
+    constexpr size_t kArenaMbPerThread = 2;
+    constexpr size_t kNodeLimit = 10;
+    constexpr size_t kPushAttempts = 20;
 
-    // Push 20 nodes into a 10-node capacity stream
-    for(int i = 0; i < 20; ++i) {
-        stream.push_node(dgtl::ir::OpCode::NOP, 0, i, 0, 0, 0, 0);
+    std::cout << "--- [DGTL-TEST] 19_register_exhaustion ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kNodeLimit);
+
+    // Push more nodes than capacity and ensure the stream clamps safely.
+    for (size_t i = 0; i < kPushAttempts; ++i) {
+        stream.push_node(dgtl::ir::OpCode::NOP,
+                         dgtl::ir::Flags::NONE,
+                         static_cast<uint32_t>(i),
+                         0,
+                         0,
+                         0,
+                         0);
     }
 
-    if (stream.size() <= node_limit) {
-        std::cout << "SUCCESS" << std::endl;
+    if (stream.size() <= kNodeLimit) {
+        std::cout << "SUCCESS\n";
     } else {
-        std::cout << "FAIL: Stream size (" << stream.size() << ") exceeded capacity (" << node_limit << ")" << std::endl;
+        std::cout << "FAIL: Stream size (" << stream.size()
+                  << ") exceeded capacity (" << kNodeLimit << ")\n";
         return;
     }
     return;

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -291,8 +291,8 @@ DGTL_HW_FORCEINLINE std::uint64_t read_tsc() noexcept {
 
 inline void stabilize() noexcept {
     using Clock = std::chrono::steady_clock;
-    constexpr auto kSoakDuration = std::chrono::milliseconds{3000};
-    std::clog << "[DGTL] stabilize(): 3000ms thermal soak + clock calibration\n";
+    constexpr auto kSoakDuration = std::chrono::milliseconds{10000};
+    std::clog << "[DGTL] stabilize(): 10000ms thermal soak + clock calibration\n";
 
     volatile std::uint64_t dummy = 0xDEADBEEFCAFEBABEull;
     const auto soak_start = Clock::now();

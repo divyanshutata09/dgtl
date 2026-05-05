@@ -7,21 +7,22 @@
 [DGTL] running determinism
 [DGTL] running latency
 [DGTL] Release smoke checks
-  [PASS] constant-fold :: nodes=2 cost=27.5->11.6
+  [PASS] constant-fold :: <normalized>
   [PASS] fusion :: mul+add -> fma structural check
   [PASS] simd-legalize :: expected=0x204 nodes=12
-  [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
+  [PASS] ai-cost :: <normalized>
   [PASS] pressure-zero-spill :: spill_candidates=0
-  [PASS] determinism :: hash=0x9c13c402303ba602
-  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=1068 iterations=64
+  [PASS] determinism :: hash=0xb413c402303ba602
+  [PASS] latency :: <normalized>
 [DGTL] Backend=nasm (text)
-[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0x9c13c402303ba602
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0xb413c402303ba602
 ; -----------------------------------------------------------
 ; DGTL TIER-2 PERSISTENT KERNEL
-; Logic Hash: 0x9C13C402303BA602
+; Logic Hash: 0xB413C402303BA602
 ; -----------------------------------------------------------
 section .text
     global DGTL_kernel_entry
+    extern __myzon_print_i64
 
 DGTL_kernel_entry:
     push rbp
@@ -35,15 +36,22 @@ DGTL_kernel_entry:
     push r15
     sub  rsp, 32 ; Allocate Shadow Space
 
-    mov rsi, r10 
-    add rsi, r11                ; [Node 000] Hash:0x98786E76E5341832
-    mov rdi, r12 
+.L0:
+    mov rsi, r12 
+    add rsi, r13                ; [Node 000] Hash:0x98786E76E5341832
+.L1:
+    mov rdi, r14 
     add rdi, rsi                ; [Node 001] Hash:0x98786E76E511C260
-    mov rbp, r13 
-    add rbp, rsi                ; [Node 002] Hash:0x98786E76E51C4600
-    mov rsp, rdi 
-    imul rsp, rbp               ; [Node 003] Hash:0x98786E76ED599010
-    mov rax, rsp                                  ; [Node 004] Hash:0x98786E3739E6EC0B
+.L2:
+    mov r8, r15 
+    add r8, rsi                  ; [Node 002] Hash:0x98786E76E51C4600
+.L3:
+    mov r9, rdi 
+    imul r9, r8                  ; [Node 003] Hash:0x98786E76ED599010
+.L4:
+    mov rax, r9 
+    jmp .L_epilogue              ; [Node 004] Hash:0x98786E3739E6EC0B
+.L_epilogue:
 
     add  rsp, 32
     pop  r15

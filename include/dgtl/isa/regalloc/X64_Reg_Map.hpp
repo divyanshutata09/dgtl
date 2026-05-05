@@ -18,6 +18,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 
 namespace dgtl::exec {
 
@@ -48,16 +49,24 @@ enum class X64ZmmReg : uint8_t {
 
 class X64SinglePassRegisterMapper {
 private:
-    static constexpr std::array<X64Reg, 14> kAllocatableGprs = {
-        X64Reg::RAX, X64Reg::RBX, X64Reg::RCX, X64Reg::RDX,
-        X64Reg::RSI, X64Reg::RDI, X64Reg::R8,  X64Reg::R9,
-        X64Reg::R10, X64Reg::R11, X64Reg::R12, X64Reg::R13,
-        X64Reg::R14, X64Reg::R15,
+    static constexpr std::array<X64Reg, 5> kNonVolatileGprs = {
+        X64Reg::RBX, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
+    };
+
+    static constexpr std::array<X64Reg, 4> kVolatileGprs = {
+        X64Reg::R8, X64Reg::R9, X64Reg::R10, X64Reg::R11,
+    };
+
+    static constexpr std::array<X64Reg, 9> kAllocatableGprs = {
+        X64Reg::RBX, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
+        X64Reg::R8,  X64Reg::R9,  X64Reg::R10, X64Reg::R11,
     };
 
 public:
     static constexpr uint32_t GprWindow = static_cast<uint32_t>(kAllocatableGprs.size());
     static constexpr uint32_t ZmmWindow = 32;
+    static constexpr uint32_t NonVolatileWindow = static_cast<uint32_t>(kNonVolatileGprs.size());
+    static constexpr uint32_t VolatileWindow = static_cast<uint32_t>(kVolatileGprs.size());
 
     static_assert(GprWindow > 0, "x64 register mapper must expose at least one allocatable GPR");
     static_assert((ZmmWindow & (ZmmWindow - 1)) == 0, "ZmmWindow must remain power-of-two for bit-mask mapping");
@@ -66,12 +75,66 @@ public:
         return kAllocatableGprs[virtual_id % GprWindow];
     }
 
+    [[nodiscard]] static constexpr X64Reg map_gpr_prefer_nonvolatile(uint32_t virtual_id) noexcept {
+        return kNonVolatileGprs[virtual_id % NonVolatileWindow];
+    }
+
+    [[nodiscard]] static constexpr X64Reg map_volatile_only(uint32_t virtual_id) noexcept {
+        return kVolatileGprs[virtual_id % VolatileWindow];
+    }
+
     [[nodiscard]] static constexpr X64ZmmReg map_zmm_circular(uint32_t virtual_id) noexcept {
         return static_cast<X64ZmmReg>(virtual_id & (ZmmWindow - 1));
     }
 
     [[nodiscard]] static constexpr uint8_t zmm_index(uint32_t virtual_id) noexcept {
         return static_cast<uint8_t>(map_zmm_circular(virtual_id));
+    }
+};
+
+enum class X64StorageKind : uint8_t {
+    register_lock,
+    stack_slot
+};
+
+struct X64StorageBinding {
+    X64StorageKind kind = X64StorageKind::register_lock;
+    X64Reg reg = X64Reg::INVALID;
+    int32_t stack_offset = 0;
+    bool pinned = true;
+};
+
+class X64LocalStateLockTable {
+private:
+    std::unordered_map<uint32_t, X64StorageBinding> locks_;
+
+public:
+    void clear() {
+        locks_.clear();
+    }
+
+    void lock_to_register(uint32_t virtual_id, X64Reg reg) {
+        if (reg == X64Reg::INVALID) {
+            return;
+        }
+        locks_[virtual_id] = X64StorageBinding{X64StorageKind::register_lock, reg, 0, true};
+    }
+
+    void lock_to_stack(uint32_t virtual_id, int32_t stack_offset) {
+        locks_[virtual_id] = X64StorageBinding{X64StorageKind::stack_slot, X64Reg::INVALID, stack_offset, true};
+    }
+
+    [[nodiscard]] bool resolve(uint32_t virtual_id, X64StorageBinding& out) const {
+        const auto it = locks_.find(virtual_id);
+        if (it == locks_.end()) {
+            return false;
+        }
+        out = it->second;
+        return true;
+    }
+
+    [[nodiscard]] bool is_locked(uint32_t virtual_id) const {
+        return locks_.find(virtual_id) != locks_.end();
     }
 };
 

@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/all.hpp"
+#include "dgtl/dgtl_all.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -17,6 +17,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /**
@@ -41,7 +42,12 @@ struct TestNode {
 class TestGraph {
 public:
     TestGraph(dgtl::core::DGTL_Arena& arena, dgtl::core::SymbolTable& symbols)
-        : stream_(arena, 1024), symbols_(symbols) {}
+        : stream_(arena, 1024), symbols_(symbols) {
+        // Tests keep raw pointers to elements returned by imm()/add().
+        // Reserve enough upfront to keep those pointers stable.
+        nodes_.reserve(256);
+        ops_.reserve(256);
+    }
 
     TestNode* imm(uint32_t value) {
         nodes_.push_back(TestNode{next_reg_++, true, value});
@@ -62,7 +68,7 @@ public:
 
     dgtl::ir::IRStream& stream() { return stream_; }
     dgtl::core::SymbolTable& symbols() { return symbols_; }
-    uint32_t return_reg() const { return return_reg_; }
+    uint32_t return_reg() const noexcept { return return_reg_; }
     const std::vector<TestNode>& nodes() const { return nodes_; }
 
 private:
@@ -89,7 +95,7 @@ class ValidatorContext {
 public:
     ValidatorContext() : arena_(1, 64), symbols_(arena_) {}
 
-    std::unique_ptr<TestGraph> create_graph(const std::string&) {
+    std::unique_ptr<TestGraph> create_graph([[maybe_unused]] std::string_view name) {
         return std::make_unique<TestGraph>(arena_, symbols_);
     }
 

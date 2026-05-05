@@ -34,7 +34,7 @@ namespace dgtl::pass {
 /**
  * @class DGTLSpeculativeInliner
  * @brief Performs AI-guided speculative function inlining using Shadow Tiers.
- * Implements DGTLOptimizationPass for BIR 2.1 Pipeline compatibility.
+ * Implements DGTLOptimizationPass for BIR 1.0.0 Pipeline compatibility.
  */
 class DGTLSpeculativeInliner final : public dgtl::pipeline::DGTLOptimizationPass {
 private:
@@ -43,7 +43,7 @@ private:
     
     // 32KB L1 Instruction Cache Limit
     static constexpr size_t L1_I_CACHE_LIMIT = 32768;
-    // BIR 2.1 Nodes: 20-byte Core + Atom Metadata (Aligned to 24-byte boundaries)
+    // BIR 1.0.0 Nodes: 20-byte Core + Atom Metadata (Aligned to 24-byte boundaries)
     static constexpr size_t BYTES_PER_NODE = 24;
 
 public:
@@ -114,7 +114,7 @@ public:
 
 private:
     /**
-     * @brief BIR 2.1 Shadow SPLICING logic.
+     * @brief BIR 1.0.0 Shadow SPLICING logic.
      * Splices callee instructions directly into the caller's shadow stream.
      */
     bool process_inlining_shadow(dgtl::ir::IRStream& stream) noexcept {
@@ -249,6 +249,7 @@ private:
 };
 
 } // namespace dgtl::pass
+
 
 
 

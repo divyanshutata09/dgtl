@@ -1,0 +1,53 @@
+[DGTL] Starting production smoke pipeline
+[DGTL] running constant-fold
+[DGTL] running fusion
+[DGTL] running simd-legalize
+[DGTL] running ai-cost
+[DGTL] running pressure-zero-spill
+[DGTL] running determinism
+[DGTL] running latency
+[DGTL] Release smoke checks
+  [PASS] constant-fold :: <normalized>
+  [PASS] fusion :: mul+add -> fma structural check
+  [PASS] simd-legalize :: expected=0x304 nodes=12
+  [PASS] ai-cost :: <normalized>
+  [PASS] pressure-zero-spill :: spill_candidates=0
+  [PASS] determinism :: hash=0xb413c402303ba602
+  [PASS] latency :: <normalized>
+[DGTL] Backend=arm32 (text)
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0xb413c402303ba602
+.arch armv7-a
+.fpu neon
+.syntax unified
+DGTL_arm32_entry:
+// ARM32 NEON Gather (software-based)
+mov r14, #0                    // loop counter
+vmov.i32 q1, #0    // clear output
+vext.32 d0, d0, d0, #0
+.gather_loop:
+vmov.32 r2, d0[r14]  // extract index[i]
+mov r3, r0
+lsl r2, r2, #2
+add r3, r3, r2
+ldr r2, [r3]
+vmov.32 d2[r14], r2  // store gathered element
+add r14, r14, #1
+cmp r14, #4
+blt .gather_loop
+// Gather complete: q1 contains gathered values
+@ scatter result
+// ARM32 NEON Scatter (software-based)
+mov r14, #0                    // loop counter
+.scatter_loop:
+vmov.32 r2, d4[r14]  // extract index[i]
+vmov.32 r3, d2[r14]  // extract data[i]
+mov r4, r2
+lsl r2, r2, #2
+add r4, r4, r2
+str r3, [r4]
+add r14, r14, #1
+cmp r14, #4
+blt .scatter_loop
+// Scatter complete
+bx lr
+[DGTL] Pipeline completed successfully

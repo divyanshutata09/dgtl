@@ -13,20 +13,28 @@
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <atomic>
+
+namespace {
+
+constexpr std::size_t kThreadArenaMiB = 64;
+constexpr std::size_t kTouchBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kPageStride = 4096;
+
+} // namespace
 
 void thread_work(int id) {
-    dgtl::core::DGTL_Arena local_arena(1, 64); // 1 thread, 64MB
-    uint8_t* ptr = local_arena.allocate<uint8_t>(64ULL * 1024 * 1024);
+    dgtl::core::DGTL_Arena local_arena(1, kThreadArenaMiB);
+    std::uint8_t* ptr = local_arena.allocate<std::uint8_t>(kTouchBytes);
     if (!ptr) return;
 
-    for(size_t j = 0; j < (64ULL * 1024 * 1024); j += 4096) {
-        ptr[j] = static_cast<uint8_t>(id); 
+    for (std::size_t j = 0; j < kTouchBytes; j += kPageStride) {
+        ptr[j] = static_cast<std::uint8_t>(id);
     }
 }
 
 void run_mt_stress() {
-    const unsigned int thread_count = std::thread::hardware_concurrency();
+    const unsigned int hw_threads = std::thread::hardware_concurrency();
+    const unsigned int thread_count = hw_threads == 0 ? 1u : hw_threads;
     std::cout << "[TITAN-STRESS] Spawning " << thread_count << " concurrent arenas..." << std::endl;
     
     std::vector<std::thread> workers;

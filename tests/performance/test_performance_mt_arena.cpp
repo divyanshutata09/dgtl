@@ -9,22 +9,33 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
+#include "dgtl/dgtl_all.hpp"
+
 #include <thread>
 #include <vector>
-#include "dgtl/core/Arena.hpp"
 
 void thread_work(int id) {
+    (void)id;
+
     try {
-        dgtl::core::DGTL_Arena local_arena(1, 64);
+        constexpr size_t kArenaMbPerThread = 64;
+        dgtl::core::DGTL_Arena local_arena(1, kArenaMbPerThread);
         // Work logic
-    } catch (...) { }
+    } catch (...) {}
 }
 
 void run_test_performance_mt_arena() {
+    constexpr int kWorkerCount = 12;
     std::vector<std::thread> threads;
-    for(int i=0; i<12; ++i) threads.emplace_back(thread_work, i);
-    for(auto& t : threads) t.join();
+    threads.reserve(static_cast<size_t>(kWorkerCount));
+
+    for (int i = 0; i < kWorkerCount; ++i) {
+        threads.emplace_back(thread_work, i);
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
     return;
 }
 

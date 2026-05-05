@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,20 +9,15 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include <vector>
 #include <atomic>
-#include <thread>
-#include <stdexcept>
 #include <iomanip>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pipeline/Functional_Pipeline_Probes.hpp"
-#include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
-#include "dgtl/analysis/cost/AI_Cost_Model.hpp"
-#include "dgtl/core/Arena.hpp"
+#include <iostream>
+#include <stdexcept>
+#include <thread>
+#include <vector>
 
-using namespace dgtl;
+#include "dgtl/dgtl_all.hpp"
+#include "dgtl/pass/transform/Instruction_Fusion_Synth.hpp"
 
 /**
  * @brief ROBUSTNESS TEST 2: Task Saturation & Thread Contention
@@ -30,27 +25,30 @@ using namespace dgtl;
  * dropping chunks or suffering from race-condition logic skips.
  */
 void run_saturation_test() {
+    constexpr size_t kNodeCount = 32768;
+    constexpr size_t kArenaMbPerThread = 128;
+
     std::cout << "--- ROBUSTNESS TEST 2: Task Saturation & Thread Contention ---\n";
     
     // 1. Generate a stress stream that still completes quickly on dev laptops.
-    const size_t NODE_COUNT = 32768;
-    const size_t estimated_stream_bytes = NODE_COUNT *
-        (sizeof(ir::IRAtom) + sizeof(ir::IRCore) + sizeof(ir::IRAtom) + sizeof(ir::IRCore) + sizeof(ir::IRNode));
+    const size_t estimated_stream_bytes = kNodeCount *
+        (sizeof(dgtl::ir::IRAtom) + sizeof(dgtl::ir::IRCore) + sizeof(dgtl::ir::IRAtom) +
+         sizeof(dgtl::ir::IRCore) + sizeof(dgtl::ir::IRNode));
     const double estimated_stream_mib = static_cast<double>(estimated_stream_bytes) / (1024.0 * 1024.0);
     std::cout << "[Step 1] Allocating ~" << std::fixed << std::setprecision(2)
               << estimated_stream_mib << " MiB estimated IRStream storage... ";
     
     // Keep stress semantics without requiring a huge arena pool.
-    core::DGTL_Arena arena(1, 128); // 1 thread, 128 MB arena
-    ir::IRStream large_stream(arena, NODE_COUNT);
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread); // 1 thread, 128 MB arena
+    dgtl::ir::IRStream large_stream(arena, kNodeCount);
 
     // Fill with MUL + ADD pairs to trigger the fusion path.
-    dgtl::pipeline::probes::build_mul_add_fusion_pairs_probe(large_stream, NODE_COUNT / 2, 10, 11, 12);
+    dgtl::pipeline::probes::build_mul_add_fusion_pairs_probe(large_stream, kNodeCount / 2, 10, 11, 12);
     std::cout << "DONE.\n";
 
     // 2. Initialize Orchestrators
-    core::DGTLFormalVerifier formal_verifier;
-    pipeline::DGTLoptManager pm; // Automatically detects hardware threads (e.g., 12)
+    dgtl::core::DGTLFormalVerifier formal_verifier;
+    dgtl::pipeline::DGTLoptManager pm; // Automatically detects hardware threads (e.g., 12)
 
     std::cout << "[Step 2] Executing Parallel Fusion Strike on " 
               << std::thread::hardware_concurrency() << " cores... ";
@@ -59,7 +57,7 @@ void run_saturation_test() {
     pm.add_opt(std::make_unique<dgtl::pass::DGTLInstructionFusionSynth>(formal_verifier));
     
     // Strike execution: The Gauntlet point
-    pm.execute(large_stream, pipeline::TargetPrecision::HFT); 
+    pm.execute(large_stream, dgtl::pipeline::TargetPrecision::HFT);
     
     // CRITICAL: Ensure all memory side-effects from worker threads are visible
     // This acts as a full memory barrier before we sample the results.
@@ -68,7 +66,8 @@ void run_saturation_test() {
     std::cout << "DONE.\n";
 
     // 3. Validation: Verify at least one fused node is present after the strike.
-    const bool sample_check = dgtl::pipeline::probes::count_opcode(large_stream, ir::OpCode::FMA_F32) > 0;
+    const bool sample_check =
+        dgtl::pipeline::probes::count_opcode(large_stream, dgtl::ir::OpCode::FMA_F32) > 0;
 
     if (sample_check) {
         std::cout << "SUCCESS: Data integrity maintained across parallel chunks.\n";
@@ -85,7 +84,7 @@ void run_test_robustness_2() {
     try {
         run_saturation_test();
     } catch (const std::exception& e) {
-        std::cerr << "CRITICAL EXCEPTION during Saturation Test: " << e.what() << std::endl;
+        std::cerr << "CRITICAL EXCEPTION during Saturation Test: " << e.what() << "\n";
         throw;
     }
     return;

@@ -11,6 +11,7 @@
 
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 void run_test_pipeline1();
@@ -33,6 +34,10 @@ void run_test_speculative_inliner();
 void run_test_performance_mt_arena();
 void run_test_performance_mt_codegen();
 void run_test_opt_strike();
+void run_test_sdk_api_sync_roundtrip();
+void run_test_sdk_runtime_scheduler();
+void run_test_recursive_spawning();
+void run_test_sdk_strike_code_size();
 
 namespace {
 
@@ -50,6 +55,10 @@ bool parse_full_mode(int argc, char** argv) {
 }
 
 void run_named_test(const char* name, void (*fn)()) {
+    if (fn == nullptr) {
+        throw std::runtime_error("test entrypoint pointer was null");
+    }
+
     std::cout << "[DGTL test] START " << name << "\n";
     fn();
     std::cout << "[DGTL test] PASS  " << name << "\n";
@@ -80,6 +89,10 @@ int main(int argc, char** argv) {
         run_named_test("robustness.core3", &run_test_robustness_3);
         run_named_test("robustness.inliner_safety", &run_test_inliner_safety);
         run_named_test("robustness.speculative_inliner", &run_test_speculative_inliner);
+        run_named_test("sdk.api_sync_roundtrip", &run_test_sdk_api_sync_roundtrip);
+        run_named_test("sdk.runtime_scheduler", &run_test_sdk_runtime_scheduler);
+        run_named_test("sdk.recursive_spawning", &run_test_recursive_spawning);
+        run_named_test("sdk.strike_code_size", &run_test_sdk_strike_code_size);
         run_named_test("performance.mt_arena", &run_test_performance_mt_arena);
 
         if (run_full_suite) {

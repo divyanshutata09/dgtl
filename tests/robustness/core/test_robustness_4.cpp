@@ -9,19 +9,15 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include <vector>
 #include <atomic>
+#include <iostream>
 #include <stdexcept>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/core/Arena.hpp"
 
-using namespace dgtl;
+#include "dgtl/dgtl_all.hpp"
 
 // A mock opt that marks nodes with a "processed" flag
-struct optA : public pipeline::DGTLOptimizationPass {
-    void execute(ir::IRStream& s) override {
+struct optA : public dgtl::pipeline::DGTLOptimizationPass {
+    void execute(dgtl::ir::IRStream& s) override {
         for (size_t i = 0; i < s.size(); ++i) {
             auto node = s.get_node(i);
             node.flags |= 0x8000; // Set a high bit flag
@@ -30,16 +26,16 @@ struct optA : public pipeline::DGTLOptimizationPass {
     }
 
     [[nodiscard]] const char* get_pass_name() const noexcept override {
-        return "optA Barrier Marker";
+        return "optA Barrier Marker v1.0.0";
     }
 };
 
 // A mock opt that checks if the flag is set
-struct optB : public pipeline::DGTLOptimizationPass {
+struct optB : public dgtl::pipeline::DGTLOptimizationPass {
     std::atomic<size_t>& fail_count;
-    optB(std::atomic<size_t>& failures) : fail_count(failures) {}
+    explicit optB(std::atomic<size_t>& failures) : fail_count(failures) {}
 
-    void execute(ir::IRStream& s) override {
+    void execute(dgtl::ir::IRStream& s) override {
         for (size_t i = 0; i < s.size(); ++i) {
             auto node = s.get_node(i);
             if (!(node.flags & 0x8000)) {
@@ -49,24 +45,27 @@ struct optB : public pipeline::DGTLOptimizationPass {
     }
 
     [[nodiscard]] const char* get_pass_name() const noexcept override {
-        return "optB Barrier Verifier";
+        return "optB Barrier Verifier v1.0.0";
     }
 };
 
 void run_barrier_race_test() {
+    constexpr size_t kNodeCount = 131072;
+    constexpr size_t kArenaMbPerThread = 128;
+    constexpr int kIterations = 4;
+
     std::cout << "--- ROBUSTNESS TEST 4: Phase-Barrier Sync Integrity ---\n";
     
     // Keep contention pressure high but bounded for regular developer runs.
-    const size_t NODE_COUNT = 131072;
-    core::DGTL_Arena arena(1, 128);
-    ir::IRStream stream(arena, NODE_COUNT);
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kNodeCount);
 
     // Fill the stream with some nodes
-    for(size_t i = 0; i < NODE_COUNT; ++i) {
-        stream.push_node(ir::OpCode::NOP, 0, (uint32_t)i, 0, 0, 0);
+    for (size_t i = 0; i < kNodeCount; ++i) {
+        stream.push_node(dgtl::ir::OpCode::NOP, 0, static_cast<uint32_t>(i), 0, 0, 0);
     }
 
-    pipeline::DGTLoptManager pm;
+    dgtl::pipeline::DGTLoptManager pm;
     std::atomic<size_t> failures{0};
 
     pm.add_opt(std::make_unique<optA>());
@@ -75,7 +74,7 @@ void run_barrier_race_test() {
     std::cout << "[Step 1] Queuing Dependent optes (A -> Barrier -> B)... ";
     
     // Execute multiple rounds to catch intermittent timing issues.
-    for(int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kIterations; ++i) {
         failures = 0;
         
         pm.execute(stream);
@@ -95,11 +94,12 @@ void run_test_robustness_4() {
     try {
         run_barrier_race_test();
     } catch (const std::exception& e) {
-        std::cerr << "CRITICAL EXCEPTION during Barrier Race Test: " << e.what() << std::endl;
+        std::cerr << "CRITICAL EXCEPTION during Barrier Race Test: " << e.what() << "\n";
         throw;
     }
     return;
 }
+
 
 
 

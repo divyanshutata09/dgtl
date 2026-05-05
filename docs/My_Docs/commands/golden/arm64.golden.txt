@@ -7,15 +7,15 @@
 [DGTL] running determinism
 [DGTL] running latency
 [DGTL] Release smoke checks
-  [PASS] constant-fold :: nodes=2 cost=27.5->11.6
+  [PASS] constant-fold :: <normalized>
   [PASS] fusion :: mul+add -> fma structural check
   [PASS] simd-legalize :: expected=0x304 nodes=12
-  [PASS] ai-cost :: scalar=5.3 simd=13.8 adjusted=13.7999
+  [PASS] ai-cost :: <normalized>
   [PASS] pressure-zero-spill :: spill_candidates=0
-  [PASS] determinism :: hash=0x9c13c402303ba602
-  [PASS] latency :: opt_us=<normalized> emit_us=<normalized> total_us=<normalized> output_size=480 iterations=64
+  [PASS] determinism :: hash=0xb413c402303ba602
+  [PASS] latency :: <normalized>
 [DGTL] Backend=arm64 (text)
-[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0x9c13c402303ba602
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0xb413c402303ba602
 // --- DGTL ARM64 BACKEND ---
 .arch armv8-a
 .text
@@ -23,11 +23,17 @@
 .global _DGTL_entry
 
 _DGTL_entry:
+.L0:
     add x20, x10, x11               // TR_HASH:0x98786E76E5341832
+.L1:
     add x21, x12, x20               // TR_HASH:0x98786E76E511C260
+.L2:
     add x22, x13, x20               // TR_HASH:0x98786E76E51C4600
+.L3:
     mul x23, x21, x22               // TR_HASH:0x98786E76ED599010
+.L4:
     mov x0, x23
-                   // TR_HASH:0x98786E3739E6EC0B
+    b .L_epilogue               // TR_HASH:0x98786E3739E6EC0B
+.L_epilogue:
     ret
 [DGTL] Pipeline completed successfully

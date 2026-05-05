@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,28 +9,29 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/transform/GVN.hpp"
-#include "dgtl/pass/simd/SIMD_Legalizer.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/analysis/cost/AI_Cost_Model.hpp"
+#include "dgtl/dgtl_all.hpp"
 
-using namespace dgtl;
+#include <iostream>
 
 void run_test_pipeline_12_ai_cost_rejection() {
-    std::cout << "--- [DGTL-TEST] 12_ai_cost_rejection ---" << std::endl;
-    core::DGTL_Arena arena(64);
-    ir::IRStream stream(arena, 64);
+    constexpr size_t kArenaMbPerThread = 2;
+    constexpr size_t kReservedNodes = 64;
+    constexpr dgtl::ir::Flags kGatherFlags =
+        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::Flags::REQUIRES_VEC_PORT);
+
+    std::cout << "--- [DGTL-TEST] 12_ai_cost_rejection ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
     dgtl::analysis::DGTLAICostModel model;
 
     stream.begin_transaction();
-    stream.push_node(ir::OpCode::ADD_I32, ir::Flags::NONE, 1, 10, 11, 0, 0);
-    stream.push_node(ir::OpCode::GATHER_F32_512,
-                     ir::Flags::IS_SIMD_BURST | ir::Flags::REQUIRES_VEC_PORT,
+    stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 1, 10, 11, 0, 0);
+    stream.push_node(dgtl::ir::OpCode::GATHER_F32_512,
+                     kGatherFlags,
                      2, 20, 21, 0, 0);
-    stream.push_node(ir::OpCode::RET, ir::Flags::IS_RETURN, 0, 1, 0, 0, 0);
+    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 1, 0, 0, 0);
     stream.commit_transaction();
 
     const auto scalar = stream.get_node(0);
@@ -40,12 +41,12 @@ void run_test_pipeline_12_ai_cost_rejection() {
     const float gather_cost = model.predict_node_cost(gather);
     const float total_cost = model.predict_cost(stream);
 
-    if (scalar_cost > 0.0f && gather_cost > scalar_cost && total_cost >= gather_cost) {
-        std::cout << "SUCCESS" << std::endl;
+    if (stream.size() == 3 && scalar_cost > 0.0f && gather_cost > scalar_cost && total_cost >= gather_cost) {
+        std::cout << "SUCCESS\n";
         return;
     }
 
-    std::cout << "FAIL" << std::endl;
+    std::cout << "FAIL\n";
     return;
 }
 

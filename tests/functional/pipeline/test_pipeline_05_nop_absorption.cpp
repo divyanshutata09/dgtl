@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,15 +9,22 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl/dgtl_all.hpp"
+
 #include <iostream>
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
-using namespace dgtl;
+
 void run_test_pipeline_05_nop_absorption() {
-    core::DGTL_Arena a(2);
-    ir::IRStream s(a, 16);
-    s.push_node(ir::OpCode::NOP, ir::Flags::NONE, 0, 0, 0, 0);
-    if(s.get_node(0).opcode == ir::OpCode::NOP) std::cout << "SUCCESS";
+    constexpr size_t kReservedNodes = 16;
+
+    // Keep this test lightweight and deterministic: 1 thread, 2 MB arena.
+    dgtl::core::DGTL_Arena arena(1, 2);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
+    stream.push_node(dgtl::ir::OpCode::NOP, dgtl::ir::Flags::NONE, 0, 0, 0, 0);
+
+    if (stream.get_node(0).opcode == dgtl::ir::OpCode::NOP) {
+        std::cout << "SUCCESS";
+    }
+
     return;
 }
 

@@ -46,7 +46,7 @@ bool Region::can_fuse_with(const Region& other) const {
     if (this == &other) return false;
     if (nodes.empty() || other.nodes.empty()) return false;
 
-    // BIR 2.1 Optimization: Keep fusions bounded for L1-instruction cache locality.
+    // BIR 1.0.0 Optimization: Keep fusions bounded for L1-instruction cache locality.
     // Over-fusing triggers spills in the register allocator.
     constexpr size_t kMaxFusedNodes = 128;
     if (nodes.size() + other.nodes.size() > kMaxFusedNodes) {

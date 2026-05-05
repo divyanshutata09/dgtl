@@ -10,7 +10,7 @@
  */
 
 /* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
- * STEP 36: INSTRUCTION FUSION SYNTHESIZER - VERSION 2.2 (TITAN-STABLE)
+ * STEP 36: INSTRUCTION FUSION SYNTHESIZER - VERSION 1.0.0 (TITAN-STABLE)
  * PILLAR 2: TRANSACTIONAL SHADOW-STATE (PATTERN MATCHING)
  * PILLAR 3: THE SENTINEL (STRICT SSA VALIDATION)
  * ENHANCEMENTS:
@@ -44,7 +44,7 @@ public:
     }
 
     [[nodiscard]] const char* get_pass_name() const noexcept override {
-        return "Instruction Fusion Synthesis v2.2";
+        return "Instruction Fusion Synthesis v1.0.0";
     }
 
     [[nodiscard]] pipeline::PassStage get_stage() const noexcept override {
@@ -305,5 +305,8 @@ private:
 };
 
 } // namespace dgtl::pass
+
+
+
 
 

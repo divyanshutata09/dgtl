@@ -1,0 +1,30 @@
+[DGTL] Starting production smoke pipeline
+[DGTL] running constant-fold
+[DGTL] running fusion
+[DGTL] running simd-legalize
+[DGTL] running ai-cost
+[DGTL] running pressure-zero-spill
+[DGTL] running determinism
+[DGTL] running latency
+[DGTL] Release smoke checks
+  [PASS] constant-fold :: <normalized>
+  [PASS] fusion :: mul+add -> fma structural check
+  [PASS] simd-legalize :: expected=0x204 nodes=12
+  [PASS] ai-cost :: <normalized>
+  [PASS] pressure-zero-spill :: spill_candidates=0
+  [PASS] determinism :: hash=0xb413c402303ba602
+  [PASS] latency :: <normalized>
+[DGTL] Backend=riscv64 (text)
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0xb413c402303ba602
+# RISC-V 64 (RV64GC + V-extension) Emission
+.arch rv64gcv
+DGTL_riscv64_entry:
+# RISC-V 64 gather with V-extension
+vsetvli t0, zero, e32, m1, ta, ma
+vl32r.v v1, (a0)
+# scatter result
+# RISC-V 64 scatter with V-extension
+vsetvli t0, zero, e32, m1, ta, ma
+vs32r.v v1, (a1)
+ret
+[DGTL] Pipeline completed successfully

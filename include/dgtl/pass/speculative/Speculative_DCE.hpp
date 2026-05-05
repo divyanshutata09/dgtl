@@ -58,7 +58,7 @@ public:
 
     /**
      * @brief Entry Point for the Pipeline Manager.
-     * Implements the "Double-Buffered Safety Net" for BIR 2.1.
+     * Implements the "Double-Buffered Safety Net" for BIR 1.0.0.
      */
     void execute(ir::IRStream& stream) override {
         if (stream.size() == 0) [[unlikely]] return;
@@ -179,7 +179,7 @@ private:
     }
 
     void align_shadow_to_cache_line(ir::IRStream& s, uint32_t& cursor) noexcept {
-        // BIR 2.1: Align to 4-atom (16-byte) boundaries for vector dispatch
+        // BIR 1.0.0: Align to 4-atom (16-byte) boundaries for vector dispatch
         uint32_t align_gap = (4 - (cursor & 3)) & 3; 
         for (uint32_t i = 0; i < align_gap && (cursor < s.capacity()); ++i) {
             ir::IRAtom& s_atom = s.get_shadow_atom(cursor);
@@ -222,6 +222,7 @@ private:
 };
 
 } // namespace dgtl::pass
+
 
 
 

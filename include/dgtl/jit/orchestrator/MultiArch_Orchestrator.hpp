@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-/* * DGTL (Deep General-purpose Transformation Layer) version 1.1.0
+/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0
  * STEP 21: MULTI-ARCH ORCHESTRATOR (V6 - Hardware Aware)
  * PILLAR 2 & 3 INTEGRATION: TRANSACTIONAL GATEKEEPER
  * UNIFIED TARGETING: Integrated with dgtl::core::TargetMachine
@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <cctype>
+#include <fstream>
 #include "dgtl/core/Target.hpp"
 #include "dgtl/ir/Global_IR.hpp"
 
@@ -77,6 +78,8 @@ public:
      * @param stream The validated, committed IRStream.
      */
     void compile_to_binary(std::string_view output_path, const ir::IRStream& stream) {
+        last_report = CompilationReport{};
+
         if (output_path.empty()) [[unlikely]] {
             trigger_fatal_trap("INVALID_OUTPUT_PATH", "Output path for binary emission cannot be empty.");
         }
@@ -89,7 +92,7 @@ public:
             trigger_fatal_trap("TRANSACTION_NOT_COMMITTED", 
                 "Attempted to emit binary from an unvalidated Shadow Stream.");
         }
-        
+
         last_report.validation_opted = true;
         
         // Manual string representation since get_triple() is missing in Target.hpp
@@ -113,26 +116,30 @@ public:
         auto start_time = std::chrono::high_resolution_clock::now();
 
         std::string out_path(output_path);
-        for (char& ch : out_path) {
-            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        std::string ext_lower;
+        if (const size_t dot = out_path.find_last_of('.'); dot != std::string::npos) {
+            ext_lower = out_path.substr(dot);
+            for (char& ch : ext_lower) {
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
         }
 
-        if (out_path.ends_with(".wasm")) {
+        if (ext_lower == ".wasm") {
             this->dispatch_to_wasm(output_path, stream);
         }
-        else if (out_path.ends_with(".o")) {
+        else if (ext_lower == ".o") {
             this->dispatch_to_relocatable(output_path, stream);
         }
-        else if (out_path.ends_with(".obj")) {
+        else if (ext_lower == ".obj") {
             this->dispatch_to_coff_relocatable(output_path, stream);
         }
-        else if (out_path.ends_with(".a")) {
+        else if (ext_lower == ".a") {
             this->dispatch_to_archive(output_path, stream);
         }
-        else if (out_path.ends_with(".lib")) {
+        else if (ext_lower == ".lib") {
             this->dispatch_to_coff_archive(output_path, stream);
         }
-        else if (out_path.ends_with(".macho")) {
+        else if (ext_lower == ".macho") {
             this->dispatch_to_macho(output_path, stream);
         }
         else {
@@ -165,6 +172,15 @@ private:
         throw std::runtime_error(std::string(code) + ": " + details);
     }
 
+    static constexpr ArchType select_preferred_x86_arch() noexcept {
+        #if defined(__AVX512F__)
+            return ArchType::X86_64_AVX512;
+        #else
+            return ArchType::X86_64_AVX2;
+        #endif
+    }
+
+    /* Dispatch methods - implemented in .cpp file */
     void dispatch_to_linker(std::string_view path, const ir::IRStream& stream);
     void dispatch_to_relocatable(std::string_view path, const ir::IRStream& stream);
     void dispatch_to_archive(std::string_view path, const ir::IRStream& stream);

@@ -149,7 +149,11 @@ int main() {
 
     // 3) Deterministic output and traceability signals (repeat strict backend runs)
     {
-        const std::vector<std::string> backends = {"arm64", "x64", "nasm", "wasm"};
+        const std::vector<std::string> backends = {
+            "arm64", "x64", "nasm", "wasm",
+            "arm32", "riscv64", "cuda", "rocm",
+            "macho", "elfobj", "staticlib", "coffobj", "cofflib"
+        };
         const int runs = 3;
 
         bool all_stable = true;

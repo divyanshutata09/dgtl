@@ -19,7 +19,7 @@
 #include <string_view>
 #include <vector>
 
-#include "dgtl/api/Frontend_Pipeline.hpp"
+#include "dgtl/core/FrontendHelpers.hpp"
 
 namespace dgtl::core {
 
@@ -92,6 +92,7 @@ inline bool frontend_payload_unescape(std::string_view input, std::string& out) 
 inline const char* frontend_instruction_kind_name(FrontendInstructionKind kind) {
     switch (kind) {
     case FrontendInstructionKind::const_i64: return "const_i64";
+    case FrontendInstructionKind::const_str: return "const_str";
     case FrontendInstructionKind::add_i32: return "add_i32";
     case FrontendInstructionKind::sub_i32: return "sub_i32";
     case FrontendInstructionKind::mul_i32: return "mul_i32";
@@ -108,6 +109,11 @@ inline const char* frontend_instruction_kind_name(FrontendInstructionKind kind) 
     case FrontendInstructionKind::label: return "label";
     case FrontendInstructionKind::jmp: return "jmp";
     case FrontendInstructionKind::br_if: return "br_if";
+    case FrontendInstructionKind::and_i32: return "and_i32";
+    case FrontendInstructionKind::or_i32:  return "or_i32";
+    case FrontendInstructionKind::xor_i32: return "xor_i32";
+    case FrontendInstructionKind::shl_i32: return "shl_i32";
+    case FrontendInstructionKind::shr_i32: return "shr_i32";
     default: return "const_i64";
     }
 }
@@ -115,6 +121,10 @@ inline const char* frontend_instruction_kind_name(FrontendInstructionKind kind) 
 inline bool parse_frontend_instruction_kind(std::string_view text, FrontendInstructionKind& out) {
     if (text == "const_i64") {
         out = FrontendInstructionKind::const_i64;
+        return true;
+    }
+    if (text == "const_str") {
+        out = FrontendInstructionKind::const_str;
         return true;
     }
     if (text == "add_i32") {
@@ -181,8 +191,28 @@ inline bool parse_frontend_instruction_kind(std::string_view text, FrontendInstr
         out = FrontendInstructionKind::br_if;
         return true;
     }
+    if (text == "and_i32") {
+        out = FrontendInstructionKind::and_i32;
+        return true;
+    }
+    if (text == "or_i32") {
+        out = FrontendInstructionKind::or_i32;
+        return true;
+    }
+    if (text == "xor_i32") {
+        out = FrontendInstructionKind::xor_i32;
+        return true;
+    }
+    if (text == "shl_i32") {
+        out = FrontendInstructionKind::shl_i32;
+        return true;
+    }
+    if (text == "shr_i32") {
+        out = FrontendInstructionKind::shr_i32;
+        return true;
+    }
     return false;
-}
+    }
 
 inline bool write_frontend_payload_file(const FrontendPayloadModule& payload,
                                         std::string_view file_path,
@@ -227,6 +257,9 @@ inline bool write_frontend_payload_file(const FrontendPayloadModule& payload,
             out << "ins " << frontend_instruction_kind_name(ins.kind) << " ";
             if (ins.kind == FrontendInstructionKind::const_i64) {
                 out << ins.result_value_id << " " << ins.type_handle << " " << ins.immediate;
+            } else if (ins.kind == FrontendInstructionKind::const_str) {
+                out << ins.result_value_id << " " << ins.type_handle
+                    << " " << frontend_payload_escape(ins.callee_name);
             } else if (ins.kind == FrontendInstructionKind::add_i32 ||
                        ins.kind == FrontendInstructionKind::sub_i32 ||
                        ins.kind == FrontendInstructionKind::mul_i32 ||
@@ -237,7 +270,12 @@ inline bool write_frontend_payload_file(const FrontendPayloadModule& payload,
                        ins.kind == FrontendInstructionKind::cmp_lt ||
                        ins.kind == FrontendInstructionKind::cmp_le ||
                        ins.kind == FrontendInstructionKind::cmp_gt ||
-                       ins.kind == FrontendInstructionKind::cmp_ge) {
+                       ins.kind == FrontendInstructionKind::cmp_ge ||
+                       ins.kind == FrontendInstructionKind::and_i32 ||
+                       ins.kind == FrontendInstructionKind::or_i32  ||
+                       ins.kind == FrontendInstructionKind::xor_i32 ||
+                       ins.kind == FrontendInstructionKind::shl_i32 ||
+                       ins.kind == FrontendInstructionKind::shr_i32) {
                 out << ins.result_value_id << " " << ins.type_handle
                     << " " << ins.lhs_value_id << " " << ins.rhs_value_id;
             } else if (ins.kind == FrontendInstructionKind::call) {
@@ -381,9 +419,40 @@ inline bool read_frontend_payload_file(std::string_view file_path,
             }
 
             if (ins.kind == FrontendInstructionKind::const_i64) {
-                if (!(iss >> ins.result_value_id >> ins.type_handle >> ins.immediate)) {
+                uint32_t result = 0;
+                FrontendTypeHandle type_handle = 0;
+                std::string imm_str;
+                if (!(iss >> result >> type_handle >> imm_str)) {
                     if (error) {
                         *error = "invalid const_i64 instruction line";
+                    }
+                    return false;
+                }
+                ins.result_value_id = result;
+                ins.type_handle = type_handle;
+                
+                // Parse immediate as signed int64_t, then reinterpret bits as uint64_t
+                // This correctly handles negative values from string interning and memory addresses
+                try {
+                    int64_t signed_imm = std::stoll(imm_str, nullptr, 0);
+                    ins.immediate = static_cast<uint64_t>(signed_imm);
+                } catch (...) {
+                    if (error) {
+                        *error = "invalid const_i64 immediate value: " + imm_str;
+                    }
+                    return false;
+                }
+            } else if (ins.kind == FrontendInstructionKind::const_str) {
+                std::string encoded_literal;
+                if (!(iss >> ins.result_value_id >> ins.type_handle >> encoded_literal)) {
+                    if (error) {
+                        *error = "invalid const_str instruction line";
+                    }
+                    return false;
+                }
+                if (!frontend_payload_unescape(encoded_literal, ins.callee_name)) {
+                    if (error) {
+                        *error = "invalid escaped literal in const_str instruction";
                     }
                     return false;
                 }
@@ -397,7 +466,12 @@ inline bool read_frontend_payload_file(std::string_view file_path,
                        ins.kind == FrontendInstructionKind::cmp_lt ||
                        ins.kind == FrontendInstructionKind::cmp_le ||
                        ins.kind == FrontendInstructionKind::cmp_gt ||
-                       ins.kind == FrontendInstructionKind::cmp_ge) {
+                       ins.kind == FrontendInstructionKind::cmp_ge ||
+                       ins.kind == FrontendInstructionKind::and_i32 ||
+                       ins.kind == FrontendInstructionKind::or_i32  ||
+                       ins.kind == FrontendInstructionKind::xor_i32 ||
+                       ins.kind == FrontendInstructionKind::shl_i32 ||
+                       ins.kind == FrontendInstructionKind::shr_i32) {
                 if (!(iss >> ins.result_value_id >> ins.type_handle >> ins.lhs_value_id >> ins.rhs_value_id)) {
                     if (error) {
                         *error = "invalid binary instruction line";
@@ -472,3 +546,4 @@ inline bool read_frontend_payload_file(std::string_view file_path,
 }
 
 } // namespace dgtl::core
+

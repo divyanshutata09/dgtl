@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -161,7 +161,7 @@ public:
 
         ir::IRNode opt = node;
 
-        // MUL ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ SHL (power-of-2)
+        // MUL Ã¢â€ â€™ SHL (power-of-2)
         if (node.opcode == ir::OpCode::MUL_I32) {
             if ((node.flags & ir::Flags::IS_CONST) ||
                 (node.flags & ir::Flags::IS_SPEC_CONST)) {
@@ -176,7 +176,7 @@ public:
             }
         }
 
-        // XOR x,x ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ 0
+        // XOR x,x Ã¢â€ â€™ 0
         if (node.opcode == ir::OpCode::XOR_I32 && node.op_a == node.op_b) {
             opt.opcode = ir::OpCode::LOAD_IMM;
             opt.op_a = 0;
@@ -187,7 +187,7 @@ public:
             return opt;
         }
 
-        // ADD x,0 ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ x
+        // ADD x,0 Ã¢â€ â€™ x
         if (node.opcode == ir::OpCode::ADD_I32 && node.op_b == 0) {
             opt.opcode = ir::OpCode::NOP;
             opt.flags |= ir::Flags::IS_OPTIMIZED;

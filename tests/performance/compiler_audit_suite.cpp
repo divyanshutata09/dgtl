@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -173,7 +173,7 @@ int main() {
 
     printf("=====================================\n");
     printf(" DGTL / LLVM / GCC FULL AUDIT SUITE\n");
-    printf(" TITAN-STABLE v3.0 (HARDWARE LOCKED)\n");
+    printf(" TITAN-STABLE v1.0.0 (HARDWARE LOCKED)\n");
     printf("=====================================\n\n");
 
     vector<Entity> ecs(N);
@@ -200,3 +200,5 @@ int main() {
 
     return 0;
 }
+
+

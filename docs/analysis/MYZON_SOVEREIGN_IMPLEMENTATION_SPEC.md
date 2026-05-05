@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-# MYZON / SOVEREIGN v1.1.0 Full Implementation Spec
+# MYZON / SOVEREIGN v1.0.0 Full Implementation Spec
 
 ## 1. Mission and Non-Negotiables
 

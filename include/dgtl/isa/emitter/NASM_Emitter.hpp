@@ -16,6 +16,8 @@
 #include <format>
 #include <cstdint>
 #include <sstream>
+#include <functional>
+#include <unordered_map>
 #include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Symbol_Table.hpp"
 
@@ -47,12 +49,33 @@ public:
             return;
         }
 
+        // --- FIX: Pre-scan LABEL nodes to build label_id → stream_index map ---
+        // This resolves frontend label IDs in branch targets to the correct .L{n} positions.
+        std::unordered_map<uint32_t, size_t> label_map;
+        label_map.reserve(stream.size() / 4 + 4);
+        for (size_t i = 0; i < stream.size(); ++i) {
+            const auto& n = stream.get_node(i);
+            if (n.opcode == ir::OpCode::LABEL) {
+                uint32_t lid = (n.result_id != ir::INVALID_SLOT) ? n.result_id : n.op_a;
+                label_map[lid] = i;
+            }
+        }
+        // Helper: resolve a branch target through label_map or return as-is
+        auto resolve_target = [&](uint32_t raw) -> size_t {
+            auto it = label_map.find(raw);
+            if (it != label_map.end()) return it->second;
+            if (static_cast<size_t>(raw) < stream.size()) return static_cast<size_t>(raw);
+            return stream.size(); // fallback to epilogue
+        };
+        // -----------------------------------------------------------------------
+
         append_line("; -----------------------------------------------------------");
         append_line("; DGTL TIER-2 PERSISTENT KERNEL");
         append_line(std::format("; Logic Hash: 0x{:016X}", stream.generate_logic_hash()));
         append_line("; -----------------------------------------------------------");
         append_line("section .text");
         append_line("    global DGTL_kernel_entry");
+        append_line("    extern __myzon_print_i64"); // runtime print hook
         append_line("");
         append_line("DGTL_kernel_entry:");
         
@@ -72,13 +95,15 @@ public:
         (void)symbols;
         for (size_t i = 0; i < stream.size(); ++i) {
             const auto& node = stream.get_node(i);
+            append_line(std::format(".L{}:", i));
             if (node.opcode == ir::OpCode::NOP) continue;
+            if (node.opcode == ir::OpCode::LABEL) continue; // label pseudo-op, no code
             if ((node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::IMMEDIATE) &&
                 is_foldable_ret_immediate(stream, i, node)) {
                 continue;
             }
 
-            std::string asm_code = translate_node(stream, node);
+            std::string asm_code = translate_node(stream, node, resolve_target);
             
             // Format intent hash for debugging within the ASM
             std::string comment = std::format(" ; [Node {:03d}] Hash:0x{:08X}", i, node.intent_hash);
@@ -86,6 +111,7 @@ public:
         }
 
         // --- EPILOGUE: Restore Registers and Return ---
+    append_line(".L_epilogue:");
         append_line("");
         append_line("    add  rsp, 32");
         append_line("    pop  r15");
@@ -149,11 +175,12 @@ private:
         _asm_buffer.append("\n");
     }
 
-    std::string translate_node(const ir::IRStream& stream, const ir::IRNode& node) {
+    std::string translate_node(const ir::IRStream& stream, const ir::IRNode& node,
+                               const std::function<size_t(uint32_t)>& resolve_target) {
         auto r = [](uint32_t idx) -> const char* {
             static constexpr const char* regs[] = { 
-                "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", 
-                "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" 
+                "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9",
+                "r10", "r11", "r12", "r13", "r14", "r15", "rbx", "rcx"
             };
             return regs[idx & 0xF];
         };
@@ -211,6 +238,10 @@ private:
             }
 
             case ir::OpCode::DIV_I32: {
+                if (node.result_id != ir::INVALID_SLOT && std::string_view(r(node.result_id)) != "rax") {
+                    return std::format("mov rax, {} \n    cqo \n    idiv {} \n    mov {}, rax",
+                                       r(node.op_a), r(node.op_b), r(node.result_id));
+                }
                 return std::format("mov rax, {} \n    cqo \n    idiv {}", r(node.op_a), r(node.op_b));
             }
 
@@ -270,14 +301,22 @@ private:
 
             case ir::OpCode::SHL_I32: {
                 if (node.result_id != node.op_a) {
-                    return std::format("mov {0}, {1} \n    shl {0}, {2}",
-                                       r(node.result_id), r(node.op_a), node.op_b & 63U);
+                    return std::format("mov {0}, {1} \n    mov rcx, {2} \n    shl {0}, cl",
+                                       r(node.result_id), r(node.op_a), r(node.op_b));
                 }
-                return std::format("shl {}, {}", r(node.result_id), node.op_b & 63U);
+                return std::format("mov rcx, {} \n    shl {}, cl", r(node.op_b), r(node.result_id));
+            }
+
+            case ir::OpCode::SHR_I32: {
+                if (node.result_id != node.op_a) {
+                    return std::format("mov {0}, {1} \n    mov rcx, {2} \n    shr {0}, cl",
+                                       r(node.result_id), r(node.op_a), r(node.op_b));
+                }
+                return std::format("mov rcx, {} \n    shr {}, cl", r(node.op_b), r(node.result_id));
             }
 
             case ir::OpCode::LOAD: {
-                return std::format("mov {}, [{} + {}]", r(node.result_id), r(node.op_a), node.op_b);
+                return std::format("mov {}, [{} + {}]", r(node.result_id), r(node.op_a), node.op_c);
             }
 
             case ir::OpCode::STORE: {
@@ -292,11 +331,11 @@ private:
                 if (node.op_a != ir::INVALID_SLOT) {
                     uint64_t imm = 0;
                     if (resolve_ret_immediate(stream, node.op_a, imm)) {
-                        return std::format("mov rax, {}", imm);
+                        return std::format("mov rax, {} \n    jmp .L_epilogue", imm);
                     }
-                    return std::format("mov rax, {}", r(node.op_a));
+                    return std::format("mov rax, {} \n    jmp .L_epilogue", r(node.op_a));
                 }
-                return "; Return (already in rax)";
+                return "jmp .L_epilogue";
             }
 
             case ir::OpCode::GATHER_F32_512: {
@@ -306,20 +345,33 @@ private:
 
             case ir::OpCode::BRANCH:
             case ir::OpCode::GOTO:
-                return std::format("jmp .L{}", node.op_a);
+                return std::format("jmp .L{}", resolve_target(node.op_a));
 
             case ir::OpCode::BRANCH_COND:
                 // op_a = condition register, op_b = target block label
-                return std::format("test {0}, {0} \n    jnz .L{1}", r(node.op_a), node.op_b);
+                return std::format("test {0}, {0} \n    jnz .L{1}", r(node.op_a), resolve_target(node.op_b));
 
             case ir::OpCode::BRANCH_COMPARE_FUSED:
                 // op_a = lhs register, op_b = rhs register, op_c = target block label
-                return std::format("cmp {}, {} \n    jne .L{}", r(node.op_a), r(node.op_b), node.op_c);
+                return std::format("cmp {}, {} \n    jne .L{}", r(node.op_a), r(node.op_b), resolve_target(node.op_c));
 
             case ir::OpCode::PHI_NODE:
                 // PHI nodes are resolved by register allocation; emit as comment.
                 return std::format("; PHI r{} <- r{}, r{}, r{}",
                                    node.result_id, node.op_a, node.op_b, node.op_c);
+
+            case ir::OpCode::CALL: {
+                // Windows x64 ABI: arg0 (str pool idx) -> rcx, arg1 (value) -> rdx
+                // op_b = first arg register, op_c = second arg register
+                std::string cs = "sub rsp, 32";
+                if (node.op_b != ir::INVALID_SLOT)
+                    cs += std::format(" \n    mov rcx, {}", r(node.op_b));
+                if (node.op_c != ir::INVALID_SLOT)
+                    cs += std::format(" \n    mov rdx, {}", r(node.op_c));
+                cs += " \n    call __myzon_print_i64";
+                cs += " \n    add rsp, 32";
+                return cs;
+            }
 
             case ir::OpCode::SYSCALL:
                 return "syscall";

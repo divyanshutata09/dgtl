@@ -46,14 +46,18 @@ Assert-Exists 'docs/api/FRONTEND_CONFORMANCE_KIT.md'
 
 # Required public API headers.
 Assert-Exists 'include/dgtl/api/Api_all.hpp'
-Assert-Exists 'include/dgtl/api/Frontend.hpp'
-Assert-Exists 'include/dgtl/api/Frontend_Pipeline.hpp'
-Assert-Exists 'include/dgtl/api/Frontend_Payload.hpp'
-Assert-Exists 'include/dgtl/api/Backend_Driver_API.hpp'
+Assert-Exists 'include/dgtl/core/FrontendHelpers.hpp'
+Assert-Exists 'include/dgtl/core/FrontendHelpers.hpp'
+Assert-Exists 'include/dgtl/core/Frontend_Payload.hpp'
+Assert-Exists 'include/dgtl/core/Backend_Driver_API.hpp'
+Assert-Exists 'include/dgtl/api/Runtime.hpp'
+Assert-Exists 'include/dgtl/runtime/TaskScheduler.hpp'
 
 # Stable umbrella wiring.
-Assert-ContainsText 'include/dgtl/all.hpp' 'dgtl/api/Api_all\.hpp' 'top-level umbrella must include public API umbrella'
-Assert-ContainsText 'include/dgtl/api/Api_all.hpp' 'dgtl/api/Frontend_Payload\.hpp' 'public API umbrella must expose frontend payload'
+Assert-ContainsText 'include/dgtl/dgtl_all.hpp' 'dgtl/api/Api_all\.hpp' 'top-level umbrella must include public API umbrella'
+Assert-ContainsText 'include/dgtl/api/Api_all.hpp' 'dgtl/core/Frontend_Payload\.hpp' 'public API umbrella must expose frontend payload'
+Assert-ContainsText 'include/dgtl/api/Api_all.hpp' 'dgtl/api/Runtime\.hpp' 'public API umbrella must expose runtime scheduler API'
+Assert-ContainsText 'include/dgtl/api/Runtime.hpp' 'dgtl/runtime/TaskScheduler\.hpp' 'runtime API header must include TaskScheduler implementation header'
 
 # Universal payload + driver ingestion contract anchors.
 Assert-ContainsText 'include/dgtl/core/Backend_Driver_API.hpp' 'frontend_payload_path' 'backend driver request must carry frontend payload path'

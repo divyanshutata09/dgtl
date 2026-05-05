@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -23,6 +23,7 @@
 #include <vector>
 #include <memory>
 #include <array>
+#include <cstdlib>
 #include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Target.hpp"
 
@@ -62,7 +63,8 @@ enum class StrikeStatus : uint32_t {
     NoExecutePermission = 10,
     NullEntryPoint = 11,
     InjectFailed = 12,
-    ArenaViolation = 13
+    ArenaViolation = 13,
+    ExecutionTimeout = 14
 };
 
 struct alignas(64) StrikeMetrics {
@@ -74,7 +76,7 @@ struct alignas(64) StrikeMetrics {
 /**
  * @class StrikeRunner
  * @brief Runtime bridge for executable-memory injection and low-latency strike execution.
- * Optimized to utilize v4.0 Arena alignment for immediate RIP-entry.
+ * Optimized to utilize v1.0.0 Arena alignment for immediate RIP-entry.
  */
 class StrikeRunner {
 private:
@@ -85,7 +87,7 @@ private:
     void release_exec_region() noexcept {
         if (!exec_region_) return;
 #ifdef _WIN32
-        VirtualFree(exec_region_, 0, MEM_RELEASE);
+        VirtualFree(exec_region_, 0, 0x8000);  // MEM_RELEASE = 0x8000
 #else
         munmap(exec_region_, exec_size_);
 #endif
@@ -120,10 +122,6 @@ public:
         return *this;
     }
 
-    /**
-     * @brief Inject Machine Code directly from Arena-managed structures.
-     * Uses 64-byte alignment to prevent instruction fetcher stalls.
-     */
     size_t inject_code([[maybe_unused]] dgtl::core::DGTL_Arena& arena, const std::vector<uint8_t>& machine_code) {
         if (machine_code.empty()) [[unlikely]] return 0;
         
@@ -151,10 +149,8 @@ public:
             return 0;
         }
 
-        // Optimized copy from Arena-adjacent buffers
         std::memcpy(exec_region_, machine_code.data(), exec_size_);
 
-        // Flip permissions to RX (Read-Execute) - The "Titan-Safe" transition
         bool protect_ok = true;
 #ifdef _WIN32
         DWORD old_prot = 0;
@@ -181,14 +177,10 @@ public:
 
     [[nodiscard]] uintptr_t last_injected_address() const noexcept { return exec_addr_; }
 
-    /**
-     * @brief Execute the Strike with pinned Arena context.
-     * @param payload User-defined data (e.g., IRStream raw pointers)
-     */
     StrikeMetrics execute(dgtl::core::DGTL_Arena& arena, size_t injected_size, void* payload) {
         StrikeMetrics metrics{};
         if (!exec_region_ || injected_size == 0 || injected_size > exec_size_) [[unlikely]] {
-            metrics.status_code = static_cast<uint32_t>(StrikeStatus::NullEntryPoint);
+            metrics.status_code = static_cast<uint32_t>(StrikeStatus::InvalidInput);
             return metrics;
         }
 
@@ -197,17 +189,62 @@ public:
         detail::stabilize_hardware_clock();
 
         // Define the function signature for a DGTL Strike
-        typedef void (*StrikeFn)(void*, void*);
+        typedef uint64_t (*StrikeFn)(void*);   // âœ… FIXED ABI
+
         StrikeFn run_strike = reinterpret_cast<StrikeFn>(exec_region_);
 
-        // Hardware-locking the Arena's local data before entry
-        auto& local = arena.get_local();
+        (void)arena;
         const auto start = std::chrono::high_resolution_clock::now();
         
         try {
-            // Execution Entry: The jump into optimized machine code
-            run_strike(payload, local.raw_data());
+            // Execution Entry: guarded call into generated machine code.
+#ifdef _WIN32
+            struct StrikeThreadContext {
+                StrikeFn fn;
+                void* arg;
+                uint64_t result;
+            } ctx{run_strike, payload, 0};
+
+            auto thread_proc = [](LPVOID param) -> DWORD {
+                auto* c = static_cast<StrikeThreadContext*>(param);
+                c->result = c->fn(c->arg);
+                return 0;
+            };
+
+            HANDLE h = CreateThread(nullptr, 0, thread_proc, &ctx, 0, nullptr);
+            if (h == nullptr) {
+                metrics.status_code = static_cast<uint32_t>(StrikeStatus::InjectFailed);
+            } else {
+                unsigned long timeout_ms = 5000;
+                if (const char* env_timeout = std::getenv("DGTL_STRIKE_TIMEOUT_MS")) {
+                    char* end_ptr = nullptr;
+                    const unsigned long parsed = std::strtoul(env_timeout, &end_ptr, 10);
+                    if (end_ptr != env_timeout && parsed > 0) {
+                        timeout_ms = parsed;
+                    }
+                }
+
+                const DWORD wait_rc = WaitForSingleObject(h, static_cast<DWORD>(timeout_ms));
+                if (wait_rc == WAIT_OBJECT_0) {
+                    DWORD thread_exit = 1;
+                    if (GetExitCodeThread(h, &thread_exit) && thread_exit == 0) {
+                        metrics.status_code = static_cast<uint32_t>(StrikeStatus::Ok);
+                    } else {
+                        metrics.status_code = static_cast<uint32_t>(StrikeStatus::InjectFailed);
+                    }
+                } else if (wait_rc == WAIT_TIMEOUT) {
+                    TerminateThread(h, 1);
+                    WaitForSingleObject(h, INFINITE);
+                    metrics.status_code = static_cast<uint32_t>(StrikeStatus::ExecutionTimeout);
+                } else {
+                    metrics.status_code = static_cast<uint32_t>(StrikeStatus::InjectFailed);
+                }
+                CloseHandle(h);
+            }
+#else
+            run_strike(payload);
             metrics.status_code = static_cast<uint32_t>(StrikeStatus::Ok);
+#endif
         } catch (...) {
             metrics.status_code = static_cast<uint32_t>(StrikeStatus::InjectFailed);
         }

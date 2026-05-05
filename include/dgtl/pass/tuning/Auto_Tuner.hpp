@@ -148,7 +148,7 @@ private:
                     if (node.op_b != ir::INVALID_SLOT) node.op_b += reg_offset;
                     if (node.op_c != ir::INVALID_SLOT) node.op_c += reg_offset;
 
-                    // Apply BIR 2.1 Hardware Flags
+                    // Apply BIR 1.0.0 Hardware Flags
                     node.flags |= ir::Flags::IS_SIMD_BURST;
                     node.flags |= ir::Flags::IS_HOSTED; // Mark as unroll-hosted
 
@@ -177,3 +177,4 @@ private:
 };
 
 } // namespace dgtl::pass
+

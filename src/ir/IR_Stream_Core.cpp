@@ -452,4 +452,98 @@ void IRStream::commit_from_shadow() noexcept {
     commit_transaction();
 }
 
+// ============================================================================
+// BACKEND PROFILING & HYBRID TIER TRACKING (NEW - DGTL v1.0.0)
+// ============================================================================
+
+// Global backend profile cache (one per stream_id)
+static thread_local std::unordered_map<uint32_t, dgtl::ir::BackendProfile> g_backend_profiles;
+
+BackendProfile& IRStream::get_backend_profile(uint32_t stream_id) noexcept {
+    if (g_backend_profiles.find(stream_id) == g_backend_profiles.end()) {
+        g_backend_profiles[stream_id] = BackendProfile{};
+    }
+    return g_backend_profiles[stream_id];
+}
+
+void IRStream::record_function_call(uint32_t function_id) noexcept {
+    auto& profile = get_backend_profile(function_id);
+    profile.calls_count++;
+}
+
+void IRStream::record_block_hotness(uint32_t block_id [[maybe_unused]]) noexcept {
+    // Record hotness metric for block identified by block_id
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    
+    // Record block execution for PGO analysis
+    // Try to access and mark block if in range
+    try {
+        if (atoms && block_id < size()) {
+            atoms[block_id].flags |= Flags::IS_OPTIMIZED;
+        }
+    } catch (...) {
+        // Silently ignore if block_id is out of range
+    }
+}
+
+void IRStream::update_backend_stats(uint32_t stream_id, uint64_t compilation_time_us) noexcept {
+    auto& profile = get_backend_profile(stream_id);
+    
+    // Exponential moving average for compilation latency
+    if (profile.avg_compilation_latency_us == 0.0f) {
+        profile.avg_compilation_latency_us = static_cast<float>(compilation_time_us);
+    } else {
+        const float alpha = 0.3f;  // EMA smoothing factor
+        profile.avg_compilation_latency_us = 
+            alpha * compilation_time_us + (1.0f - alpha) * profile.avg_compilation_latency_us;
+    }
+    
+    // Tier switch decision based on compilation time
+    if (compilation_time_us > 5000) {  // > 5ms
+        if (profile.current_tier == BackendProfile::CompilationTier::JIT_FAST) {
+            profile.current_tier = BackendProfile::CompilationTier::AOT_INTENSIVE;
+            profile.tier_switch_count++;
+        }
+    } else if (compilation_time_us < 1000) {  // < 1ms
+        if (profile.current_tier == BackendProfile::CompilationTier::AOT_INTENSIVE) {
+            profile.current_tier = BackendProfile::CompilationTier::JIT_FAST;
+            profile.tier_switch_count++;
+        }
+    }
+}
+
+void IRStream::record_cache_access(uint32_t stream_id, bool hit) noexcept {
+    auto& profile = get_backend_profile(stream_id);
+    if (hit) {
+        profile.cache_hits++;
+    } else {
+        profile.cache_misses++;
+    }
+}
+
+BackendProfile::CompilationTier IRStream::compute_adaptive_tier(uint32_t function_id) noexcept {
+    auto& profile = get_backend_profile(function_id);
+    
+    // Compute tier based on multiple factors
+    const uint32_t complexity_score = estimate_complexity_score();
+    const float cache_hit_rate = profile.cache_hits + profile.cache_misses > 0
+        ? static_cast<float>(profile.cache_hits) / (profile.cache_hits + profile.cache_misses)
+        : 0.0f;
+    
+    // Decision logic:
+    // - Low complexity + high cache hit rate → JIT_FAST
+    // - High complexity or low cache hit rate → AOT_INTENSIVE
+    // - Otherwise → ADAPTIVE_HYBRID
+    
+    if (complexity_score < 50 && cache_hit_rate > 0.8f && profile.calls_count < 100) {
+        return BackendProfile::CompilationTier::JIT_FAST;
+    }
+    
+    if (complexity_score > 200 || cache_hit_rate < 0.5f) {
+        return BackendProfile::CompilationTier::AOT_INTENSIVE;
+    }
+    
+    return BackendProfile::CompilationTier::ADAPTIVE_HYBRID;
+}
+
 } // namespace dgtl::ir

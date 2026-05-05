@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-# DGTL v1.1.0-proprietary-eval
+# DGTL v1.0.0-proprietary-eval
 
 DGTL is now available under a proprietary software notice for evaluation and commercial licensing.
 

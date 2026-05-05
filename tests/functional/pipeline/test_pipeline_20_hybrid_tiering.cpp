@@ -9,8 +9,8 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/jit/JIT_Executor.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
+#include "dgtl/jit/runtime/JIT_Executor.hpp"
+#include "dgtl/isa/emitter/NASM_Emitter.hpp"
 
 #include <iostream>
 #include <vector>
@@ -27,7 +27,7 @@ void run_test_pipeline_20_hybrid_tiering() {
     // 1. Create stream with capacity 1024, starting count 0
     IRStream stream(nullptr, 1024); 
 
-    // 2. Injection with Explicit Register Mapping (BIR 2.1)
+    // 2. Injection with Explicit Register Mapping (BIR 1.0.0)
     // Node 0: IMMEDIATE -> VR1 (rbx). Value: 1337
     stream.push_node(OpCode::IMMEDIATE, 0, 1, 0, 1337, 0, 0); 
     
@@ -99,6 +99,7 @@ void run_test_pipeline_20_hybrid_tiering() {
 
     return;
 }
+
 
 
 

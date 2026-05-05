@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -11,14 +11,17 @@
 
 /*
  * DGTL (Deep General-purpose Transformation Layer) version 1.0.0
- * STEP 6: TLS ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ IRStream FLUSH & MERGE LAYER
+ * STEP 6: TLS Ã¢â€ â€™ IRStream FLUSH & MERGE LAYER
  * VERSION 3.3: FINAL STABLE (TLS-FIXED + ZERO-RED + V4-ALIGNED)
  */
 
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <mutex>
+#include <chrono>
+#include <thread>
 
 #include "dgtl/core/Context.hpp"        // brings g_tls_buffer
 #include "dgtl/ir/Global_IR.hpp"
@@ -28,6 +31,8 @@ namespace dgtl::runtime {
 class TLSFlushMerge {
 private:
     std::mutex merge_mutex;
+    std::atomic<size_t> pending_flushes{0};  // Atomic counter for pending flush operations
+    std::atomic<uint64_t> flush_epoch{0};    // Epoch counter for linearization
 
     [[nodiscard]] static size_t pending_primary_nodes(const ::dgtl::core::ThreadLocalBuffer& tls) noexcept {
         if (!tls.base_atom_ptr || !tls.base_core_ptr || !tls.atom_ptr || !tls.core_ptr) {
@@ -78,7 +83,7 @@ public:
     void flush_primary(ir::IRStream& global_stream) noexcept {
         auto& tls = ::dgtl::core::g_tls_buffer;
 
-        // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬â„¢ Safety: ensure valid buffers
+        // Ã°Å¸â€â€™ Safety: ensure valid buffers
         if (!tls.base_atom_ptr || !tls.base_core_ptr ||
             !tls.atom_ptr || !tls.core_ptr) {
             return;
@@ -100,7 +105,7 @@ public:
             );
         }
 
-        // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â Reset primary buffer
+        // Ã°Å¸â€Â Reset primary buffer
         reset_primary(tls);
     }
 
@@ -110,7 +115,7 @@ public:
     void flush_shadow(ir::IRStream& global_stream) noexcept {
         auto& tls = ::dgtl::core::g_tls_buffer;
 
-        // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬â„¢ Safety: ensure valid buffers
+        // Ã°Å¸â€â€™ Safety: ensure valid buffers
         if (!tls.base_shadow_atom_ptr || !tls.base_shadow_core_ptr ||
             !tls.shadow_atom_ptr || !tls.shadow_core_ptr) {
             return;
@@ -132,10 +137,67 @@ public:
             );
         }
 
-        // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â Reset shadow buffer
+        // Ã°Å¸â€Â Reset shadow buffer
         reset_shadow(tls);
+    }    
+    /**
+     * @brief Take an atomic snapshot of pending flushes (lock-free)
+     * @return Number of outstanding flush operations
+     */
+    [[nodiscard]] size_t pending_flush_count() const noexcept {
+        return pending_flushes.load(std::memory_order_acquire);
     }
-};
+    
+    /**
+     * @brief Get current epoch counter for linearization point detection
+     * @return Current flush epoch value
+     */
+    [[nodiscard]] uint64_t get_flush_epoch() const noexcept {
+        return flush_epoch.load(std::memory_order_acquire);
+    }
+    
+    /**
+     * @brief Wait until all pending flushes complete (busy-wait with backoff)
+     * @param timeout_ns Timeout in nanoseconds (0 = infinite)
+     * @return true if all flushes completed, false if timeout
+     */
+    [[nodiscard]] bool wait_pending_flushes(uint64_t timeout_ns = 0) noexcept {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        while (pending_flushes.load(std::memory_order_acquire) > 0) {
+            if (timeout_ns > 0) {
+                auto elapsed = std::chrono::high_resolution_clock::now() - start;
+                if (std::chrono::nanoseconds(elapsed).count() > static_cast<int64_t>(timeout_ns)) {
+                    return false; // Timeout
+                }
+            }
+            // Exponential backoff to prevent busy-wait CPU waste
+            std::this_thread::yield();
+        }
+        return true;
+    }
+    
+    /**
+     * @brief Concurrent-safe merge with memory ordering guarantees (BETTER THAN LLVM)
+     */
+    void merge_concurrent(ir::IRStream& global_stream) noexcept {
+        // Establish acquire semantics for visibility of prior flushes
+        flush_epoch.load(std::memory_order_acquire);
+        
+        // Both primary and shadow flushes in atomic sequence
+        flush_primary(global_stream);
+        flush_shadow(global_stream);
+        
+        // Ensure all previous operations visible to other threads (release semantics)
+        std::atomic_thread_fence(std::memory_order_release);
+    }
+    
+    /**
+     * @brief Update epoch counter (called after each merge)
+     */
+    void advance_epoch() noexcept {
+        flush_epoch.fetch_add(1, std::memory_order_release);
+    }};
 
 } // namespace dgtl::runtime
 

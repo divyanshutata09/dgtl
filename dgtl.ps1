@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Args
 )
@@ -65,6 +65,46 @@ function Get-LatestWriteTimeUtcCached {
     return $latest
 }
 
+function Get-ValidationStampPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $logDir = Join-Path $root 'build\logs'
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    return Join-Path $logDir $Name
+}
+
+function Test-ValidationStampCurrent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StampPath,
+        [Parameter(Mandatory = $true)]
+        [DateTime]$LatestInputTime
+    )
+
+    if (-not (Test-Path $StampPath)) {
+        return $false
+    }
+
+    $stampTime = (Get-Item $StampPath).LastWriteTimeUtc
+    return $stampTime -ge $LatestInputTime
+}
+
+function Update-ValidationStamp {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StampPath
+    )
+
+    if (-not (Test-Path $StampPath)) {
+        New-Item -ItemType File -Force -Path $StampPath | Out-Null
+    }
+
+    (Get-Item $StampPath).LastWriteTimeUtc = [DateTime]::UtcNow
+}
+
 function Show-Usage {
     @(
         'DGTL command runner',
@@ -77,6 +117,7 @@ function Show-Usage {
         '  Run one backend quickly         dgtl run-backend x64',
         '  Run backend benchmark           dgtl bench-backend x64 fusion',
         '  Build and run one source        dgtl brun tests/performance/foo.cpp',
+        '  Compile payloads to all backends  dgtl compile-all',
         '  Refresh golden baselines        dgtl update-goldens',
         '  Run strict conformance          dgtl run-strict-conformance',
         '  Run aggregate tests             dgtl test',
@@ -85,14 +126,17 @@ function Show-Usage {
         '  Clean outputs/logs              dgtl clean-all',
         '  Clean + build + run             dgtl clean-build-and-run',
         '',
-        'Production workflow (ship flow):',
-        '  Use when: building and validating a release for deployment.',
-        '  1. dgtl build-release             -> build\dgtl_release.exe (ONLY production binary)',
-        '  2. dgtl test full                 # aggregate functional/robustness tests',
-        '  3. dgtl package                   # build static lib + SDK zip',
-        '  Or all-in-one: dgtl package       (runs test full first, then archives SDK)',
-        '  Or all-in-one: dgtl clean-build-and-run',
-        '  Note: build-smoke and build-strict are NOT production builds.',
+        'Pre-release heavy gates (recommended order):',
+        '  1. dgtl clean-all',
+        '  2. dgtl build-release',
+        '  3. dgtl test full',
+        '  4. dgtl run-all',
+        '  5. dgtl build-strict',
+        '  6. dgtl run-strict-conformance',
+        '  7. dgtl header-check',
+        '  8. dgtl brun',
+        '  9. dgtl package',
+        '  Note: build-smoke and build-strict are not production artifacts.',
         '',
         'Polyhedral Parallelization (P0-001+):',
         '  P0 features require direct invocation with flags. Example:',
@@ -101,7 +145,7 @@ function Show-Usage {
         '    --polyhedral-mode <off|safe|aggressive>     Control SCoP detection and transform policy',
         '    --polyhedral-tile <n>                       Tile size (0=auto)',
         '    --polyhedral-parallel <auto|off|on>         Parallel lowering policy',
-        '    --backend <arm64|x64|nasm|wasm>             Target backend',
+        '    --backend <arm64|x64|nasm|wasm|arm32|riscv64|cuda|rocm|macho|elfobj|staticlib|coffobj|cofflib>  Target backend',
         '',
         'Categories (recommended names):',
         '',
@@ -114,7 +158,7 @@ function Show-Usage {
         '2) Validate correctness',
         '  Use when: you want to verify backend output against expected behavior.',
         '  dgtl run-all                            # full conformance',
-        '  dgtl run-backend <arm64|x64|nasm|wasm> # quick backend check',
+        '  dgtl run-backend <arm64|x64|nasm|wasm|arm32|riscv64|cuda|rocm|macho|elfobj|staticlib|coffobj|cofflib> # quick backend check',
         '  dgtl run-strict-conformance             # strict executable gate',
         '  dgtl test [full]                        # aggregate source-backed tests',
         '  dgtl header-check                       # proprietary header compliance gate',
@@ -137,18 +181,26 @@ function Show-Usage {
         '    dgtl bench-backend x64 pressure 64',
         '    dgtl bench-backend x64 fusion dump',
         '',
-        '4) Manage baselines',
+        '4) Compile payloads to all backends',
+        '  Use when: you have frontend payload files and want all 13 backend outputs in build/out/.',
+        '  dgtl compile-all                        # all *.frontend.payload.bin in build/out/',
+        '  dgtl compile-all <path/to/payload.bin>  # specific payload file',
+        '  Output extensions: .arm64.s .x64.bin .nasm.asm .wasm .arm32.s .riscv64.s',
+        '                     .cuda.ptx .rocm.gcn .macho.o .elfobj.o .staticlib.a .coffobj.obj .cofflib.lib',
+        '',
+        '5) Manage baselines',
         '  Use when: output changes are intentional and goldens must be updated.',
         '  dgtl update-goldens',
         '  dgtl update-goldens strict',
         '',
-        '5) Clean and one-shot workflows',
+        '6) Clean and one-shot workflows',
         '  Use when: you want a clean state or a full clean-build-run cycle.',
         '  dgtl clean-all',
         '  dgtl clean-build-and-run',
         '',
         'Legacy short names (still supported):',
         '  help | build | smoke-build | strict | run | bench | brun | update-golden | srun | test | header-check | clean | crun',
+        '  compatibility aliases: run-tests | check-headers',
         '',
         'Alias mapping:',
         '  build-release -> build',
@@ -159,6 +211,7 @@ function Show-Usage {
         '  bench-backend -> bench <backend>',
         '  update-goldens -> update-golden',
         '  run-strict-conformance -> srun',
+        '  compile-all -> compile',
         '  run-tests -> test',
         '  check-headers -> header-check',
         '  clean-all -> clean',
@@ -316,11 +369,28 @@ function Invoke-HeaderCompliance {
         throw "Missing proprietary header verification script: $headerScript"
     }
 
-    & powershell -ExecutionPolicy Bypass -File $headerScript -SummaryOnly -RelativePaths
+    $latestHeaderInputs = Get-LatestWriteTimeUtcCached `
+        -CacheKey 'validate:header:inputs' `
+        -Paths @(
+            (Join-Path $root 'src'),
+            (Join-Path $root 'include'),
+            (Join-Path $root 'tests'),
+            (Join-Path $root 'tools')
+        ) `
+        -Extensions @('.cpp', '.hpp', '.h', '.hh', '.hxx', '.c', '.cc', '.cxx', '.inl', '.ps1') `
+        -ExplicitFiles @($headerScript)
+    $headerStamp = Get-ValidationStampPath -Name 'header-compliance.ok'
+    if (Test-ValidationStampCurrent -StampPath $headerStamp -LatestInputTime $latestHeaderInputs) {
+        Write-Host '[compliance] Proprietary header check reused cached pass'
+        return
+    }
+
+    & $headerScript -Root $root -SummaryOnly -RelativePaths
     if ($LASTEXITCODE -ne 0) {
         throw 'Proprietary header compliance check failed.'
     }
 
+    Update-ValidationStamp -StampPath $headerStamp
     Write-Host '[compliance] Proprietary header check passed'
 }
 
@@ -330,11 +400,31 @@ function Invoke-ApiPolicyGates {
         throw "Missing public API policy verification script: $policyScript"
     }
 
-    & powershell -ExecutionPolicy Bypass -File $policyScript -SummaryOnly
+    $latestPolicyInputs = Get-LatestWriteTimeUtcCached `
+        -CacheKey 'validate:api-policy:inputs' `
+        -Paths @(
+            (Join-Path $root 'include'),
+            (Join-Path $root 'src'),
+            (Join-Path $root 'tests'),
+            (Join-Path $root 'docs')
+        ) `
+        -Extensions @('.cpp', '.hpp', '.h', '.hh', '.hxx', '.md', '.ps1') `
+        -ExplicitFiles @(
+            $policyScript,
+            (Join-Path $root 'dgtl.ps1')
+        )
+    $policyStamp = Get-ValidationStampPath -Name 'api-policy.ok'
+    if (Test-ValidationStampCurrent -StampPath $policyStamp -LatestInputTime $latestPolicyInputs) {
+        Write-Host '[api-policy] Public API policy gates reused cached pass'
+        return
+    }
+
+    & $policyScript -SummaryOnly
     if ($LASTEXITCODE -ne 0) {
         throw 'Public API policy gates failed.'
     }
 
+    Update-ValidationStamp -StampPath $policyStamp
     Write-Host '[api-policy] Public API policy gates passed'
 }
 
@@ -352,6 +442,7 @@ function Build-DgtlBinary {
     $commonFlags = @(
         '-std=c++26',
         '-O2',
+        '-pipe',
         '-I', (Join-Path $root 'include')
     )
 
@@ -495,10 +586,10 @@ function Invoke-Brun {
     $benchmarkStdoutPath = Join-Path $benchmarkLogDir ($logBaseName + '.stdout.log')
     $benchmarkStderrPath = Join-Path $benchmarkLogDir ($logBaseName + '.stderr.log')
     if (Test-Path $stdoutPath) {
-        Remove-Item $stdoutPath -Force
+        Remove-Item $stdoutPath -Force -ErrorAction SilentlyContinue
     }
     if (Test-Path $stderrPath) {
-        Remove-Item $stderrPath -Force
+        Remove-Item $stderrPath -Force -ErrorAction SilentlyContinue
     }
 
     if ($runArgs.Count -gt 0) {
@@ -507,6 +598,7 @@ function Invoke-Brun {
             -NoNewWindow `
             -Wait `
             -PassThru `
+            -WorkingDirectory $root `
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath
     } else {
@@ -514,6 +606,7 @@ function Invoke-Brun {
             -NoNewWindow `
             -Wait `
             -PassThru `
+            -WorkingDirectory $root `
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath
     }
@@ -588,6 +681,7 @@ function Build-DgtlTestBinary {
     $commonFlags = @(
         '-std=c++26',
         '-O0',
+        '-pipe',
         '-DDGTL_EMBED_TESTS',
         '-I', (Join-Path $root 'include')
     )
@@ -621,6 +715,10 @@ function Build-DgtlTestBinary {
         (Join-Path $root 'tests\robustness\core\test_robustness_4.cpp'),
         (Join-Path $root 'tests\robustness\test_inliner_safety.cpp'),
         (Join-Path $root 'tests\robustness\inliner\test_speculative_inliner.cpp'),
+        (Join-Path $root 'tests\sdk\test_sdk_api_sync_roundtrip.cpp'),
+        (Join-Path $root 'tests\sdk\test_sdk_strike_code_size.cpp'),
+        (Join-Path $root 'tests\sdk\test_sdk_runtime.cpp'),
+        (Join-Path $root 'tests\sdk\test_recursive_spawning.cpp'),
         (Join-Path $root 'tests\performance\test_performance_mt_arena.cpp'),
         (Join-Path $root 'tests\performance\test_performance_mt_codegen.cpp'),
         (Join-Path $root 'tests\performance\stress\test_opt_strike.cpp')
@@ -672,6 +770,10 @@ function Ensure-DgtlTestBinary {
         (Join-Path $root 'tests\robustness\core\test_robustness_4.cpp'),
         (Join-Path $root 'tests\robustness\test_inliner_safety.cpp'),
         (Join-Path $root 'tests\robustness\inliner\test_speculative_inliner.cpp'),
+        (Join-Path $root 'tests\sdk\test_sdk_api_sync_roundtrip.cpp'),
+        (Join-Path $root 'tests\sdk\test_sdk_strike_code_size.cpp'),
+        (Join-Path $root 'tests\sdk\test_sdk_runtime.cpp'),
+        (Join-Path $root 'tests\sdk\test_recursive_spawning.cpp'),
         (Join-Path $root 'tests\performance\test_performance_mt_arena.cpp'),
         (Join-Path $root 'tests\performance\test_performance_mt_codegen.cpp'),
         (Join-Path $root 'tests\performance\stress\test_opt_strike.cpp')
@@ -742,18 +844,99 @@ function Invoke-Conformance {
         throw "Missing conformance script: $($scriptCandidates[0])"
     }
 
-    $scriptArgs = @('-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-Executable', $ExecutablePath)
     if ($UpdateGolden) {
-        $scriptArgs += '-UpdateGolden'
+        & $scriptPath -Executable $ExecutablePath -UpdateGolden
+    } else {
+        & $scriptPath -Executable $ExecutablePath
     }
-
-    & powershell @scriptArgs
     if ($LASTEXITCODE -ne 0) {
         if ($UpdateGolden) {
             throw 'Golden update failed.'
         }
         throw 'Backend conformance failed.'
     }
+}
+
+function Invoke-CompileAllBackends {
+    param(
+        [string]$ExecutablePath,
+        [string]$PayloadPath = ''
+    )
+
+    if (-not (Test-Path $ExecutablePath)) {
+        throw "Missing production executable: $ExecutablePath. Run 'dgtl build' first."
+    }
+
+    $outDir = Join-Path $root 'build\out'
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+    # Canonical output extension for each of the 13 backends
+    $backendExtensions = [ordered]@{
+        'arm64'     = '.arm64.s'
+        'x64'       = '.x64.bin'
+        'nasm'      = '.nasm.asm'
+        'wasm'      = '.wasm'
+        'arm32'     = '.arm32.s'
+        'riscv64'   = '.riscv64.s'
+        'cuda'      = '.cuda.ptx'
+        'rocm'      = '.rocm.gcn'
+        'macho'     = '.macho.o'
+        'elfobj'    = '.elfobj.o'
+        'staticlib' = '.staticlib.a'
+        'coffobj'   = '.coffobj.obj'
+        'cofflib'   = '.cofflib.lib'
+    }
+
+    # Resolve payload file(s)
+    $payloads = @()
+    if ($null -ne $PayloadPath -and $PayloadPath -ne '') {
+        $resolved = if ([System.IO.Path]::IsPathRooted($PayloadPath)) {
+            $PayloadPath
+        } else {
+            Join-Path $root $PayloadPath
+        }
+        $resolved = [System.IO.Path]::GetFullPath($resolved)
+        if (-not (Test-Path $resolved)) {
+            throw "Missing payload file: $resolved"
+        }
+        $payloads = @($resolved)
+    } else {
+        $payloads = @(Get-ChildItem -Path $outDir -Filter '*.frontend.payload.bin' -File |
+            Sort-Object FullName |
+            ForEach-Object { $_.FullName })
+        if ($payloads.Count -eq 0) {
+            throw "No *.frontend.payload.bin files found in $outDir. Run a frontend compilation first to produce payload files."
+        }
+    }
+
+    Write-Host "[compile] $($payloads.Count) payload(s) x $($backendExtensions.Count) backend(s)"
+    $totalFailed = 0
+
+    foreach ($payload in $payloads) {
+        $stem = [System.IO.Path]::GetFileName($payload) -replace '\.frontend\.payload\.bin$', ''
+        Write-Host "[compile] $stem"
+
+        foreach ($backend in $backendExtensions.Keys) {
+            $ext = $backendExtensions[$backend]
+            $outFile = Join-Path $outDir ($stem + $ext)
+
+            $proc = Start-Process -FilePath $ExecutablePath `
+                -ArgumentList @('--backend', $backend, '--frontend-payload', $payload, '--emit-output', $outFile) `
+                -NoNewWindow -Wait -PassThru
+
+            if ($proc.ExitCode -eq 0) {
+                Write-Host ("  [OK]   {0,-12} -> {1}" -f $backend, (Split-Path -Leaf $outFile))
+            } else {
+                Write-Host ("  [FAIL] {0,-12} exit={1}" -f $backend, $proc.ExitCode) -ForegroundColor Red
+                $totalFailed++
+            }
+        }
+    }
+
+    if ($totalFailed -gt 0) {
+        throw "compile: $totalFailed emission(s) failed."
+    }
+    Write-Host "[compile] All $($backendExtensions.Count) backends emitted for $($payloads.Count) payload(s)." -ForegroundColor Green
 }
 
 function Invoke-SingleBackend {
@@ -767,7 +950,7 @@ function Invoke-SingleBackend {
         throw "Missing executable: $ExecutablePath. Run 'dgtl build' first."
     }
 
-    $validBackends = @('arm64', 'x64', 'nasm', 'wasm')
+    $validBackends = @('arm64', 'x64', 'nasm', 'wasm', 'arm32', 'riscv64', 'cuda', 'rocm', 'macho', 'elfobj', 'staticlib', 'coffobj', 'cofflib')
     if ($Backend -notin $validBackends) {
         throw "Unsupported backend '$Backend'. Expected one of: $($validBackends -join ', ')"
     }
@@ -797,7 +980,7 @@ function Invoke-BackendBenchmark {
         throw "Missing executable: $ExecutablePath. Run 'dgtl build' or 'dgtl strict' first."
     }
 
-    $validBackends = @('arm64', 'x64', 'nasm', 'wasm')
+    $validBackends = @('arm64', 'x64', 'nasm', 'wasm', 'arm32', 'riscv64', 'cuda', 'rocm', 'macho', 'elfobj', 'staticlib', 'coffobj', 'cofflib')
     if ($Backend -notin $validBackends) {
         throw "Unsupported backend '$Backend'. Expected one of: $($validBackends -join ', ')"
     }
@@ -832,21 +1015,13 @@ function Invoke-BackendBenchmark {
     }
 }
 
-function Invoke-SdkPackage {
-    $sdkVersion = '1.0.0'
-    $sdkDir     = Join-Path $root "build\DGTL_SDK"
-    $sdkInclude = Join-Path $sdkDir 'include'
-    $sdkLibX64  = Join-Path $sdkDir 'lib\x64'
-    $sdkBin     = Join-Path $sdkDir 'bin'
-    $objDir     = Join-Path $root   'build\sdk_obj'
-    $zipName    = "DGTL_v${sdkVersion}_TataG_Systems.zip"
-    $zipPath    = Join-Path $root   "build\$zipName"
-
-    # 1. Compile library object files (all src/ except main.cpp and smoke_main.cpp)
-    Write-Host '[sdk] Compiling library object files'
+# Compile DGTL internal implementation objects into internal_obj/ (incremental).
+# Returns the list of .o paths so callers can use them for linking or archiving.
+function Invoke-BuildInternalObjs {
+    $objDir  = Join-Path $root 'build\internal_obj'
+    $srcDir  = Join-Path $root 'src'
     New-Item -ItemType Directory -Force -Path $objDir | Out-Null
 
-    $srcDir = Join-Path $root 'src'
     $sdkImplPath = [System.IO.Path]::GetFullPath((Join-Path $root 'src\sdk\dgtl_sdk_impl.cpp'))
     $libSources = Get-ChildItem -Path $srcDir -Recurse -File -Filter *.cpp |
         Sort-Object FullName |
@@ -882,8 +1057,7 @@ function Invoke-SdkPackage {
     $compiled = 0
     $skipped  = 0
     foreach ($src in $libSources) {
-        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($src)
-        # Prevent name collisions by prefixing directory
+        # Prevent name collisions by prefixing directory path
         $relPath  = $src.Substring($srcDir.Length).TrimStart('\', '/')
         $safeBase = ($relPath -replace '[\\/]', '_') -replace '\.cpp$', ''
         $objFile  = Join-Path $objDir "$safeBase.o"
@@ -907,7 +1081,23 @@ function Invoke-SdkPackage {
         }
         $objFiles += $objFile
     }
-    Write-Host "[sdk] Object files: $compiled compiled, $skipped up-to-date ($($objFiles.Count) total)"
+    Write-Host "[internal] Object files: $compiled compiled, $skipped up-to-date ($($objFiles.Count) total)"
+    return $objFiles
+}
+
+function Invoke-SdkPackage {
+    $sdkVersion = '1.0.0'
+    $sdkDir     = Join-Path $root "build\DGTL_SDK"
+    $sdkInclude = Join-Path $sdkDir 'include'
+    $sdkLibX64  = Join-Path $sdkDir 'lib\x64'
+    $sdkBin     = Join-Path $sdkDir 'bin'
+    $objDir     = Join-Path $root   'build\internal_obj'
+    $zipName    = "DGTL_v${sdkVersion}_TataG_Systems.zip"
+    $zipPath    = Join-Path $root   "build\$zipName"
+
+    # 1. Compile library object files (incremental, shared with build command)
+    Write-Host '[sdk] Compiling library object files'
+    $objFiles = Invoke-BuildInternalObjs
 
     # 2. Archive into static library using ar
     $arPath = Resolve-ToolchainBinary -ToolName 'ar'
@@ -934,14 +1124,23 @@ function Invoke-SdkPackage {
     # 3. Assemble SDK directory structure
     Write-Host '[sdk] Assembling SDK directory'
 
-    # include/ — public SDK headers only
+    # include/ â€” public SDK headers only
     New-Item -ItemType Directory -Force -Path $sdkInclude | Out-Null
     $sdkHeaders = Get-ChildItem -Path (Join-Path $root 'include\dgtl_sdk') -Filter *.h -File
     foreach ($h in $sdkHeaders) {
         Copy-Item -Path $h.FullName -Destination $sdkInclude -Force
     }
 
-    # bin/ — production binary
+    # include/dgtl â€” public C++ API header tree for native embedders.
+    # This keeps the packaged SDK usable for consumers that include
+    # dgtl/api/Runtime.hpp, dgtl/runtime/TaskScheduler.hpp, and related
+    # public C++ API surfaces.
+    $publicCppHeaderRoot = Join-Path $root 'include\dgtl'
+    if (Test-Path $publicCppHeaderRoot) {
+        Copy-Item -Path $publicCppHeaderRoot -Destination $sdkInclude -Recurse -Force
+    }
+
+    # bin/ â€” production binary
     New-Item -ItemType Directory -Force -Path $sdkBin | Out-Null
     $prodExePath = Join-Path $root 'build\dgtl_release.exe'
     if (Test-Path $prodExePath) {
@@ -1005,7 +1204,12 @@ function Invoke-SdkPackage {
     Write-Host "  Version:     $sdkVersion"
     Write-Host "  SDK dir:     $sdkDir"
     Write-Host "  Static lib:  $libFile ($libSize bytes)"
-    Write-Host "  Headers:     $($sdkHeaders.Count) public headers"
+    $sdkCppHeaderCount = 0
+    $sdkCppHeaderDir = Join-Path $sdkInclude 'dgtl'
+    if (Test-Path $sdkCppHeaderDir) {
+        $sdkCppHeaderCount = (Get-ChildItem -Path $sdkCppHeaderDir -Recurse -File | Measure-Object).Count
+    }
+    Write-Host "  Headers:     $($sdkHeaders.Count) C headers, $sdkCppHeaderCount C++ headers"
     Write-Host "  ZIP:         $zipPath"
     Write-Host "  Smoke test:  PASSED"
     Write-Host '================================='
@@ -1030,6 +1234,15 @@ function Clean-DgtlArtifacts {
         (Join-Path $root 'build\logs\conformance_x64.log'),
         (Join-Path $root 'build\logs\conformance_nasm.log'),
         (Join-Path $root 'build\logs\conformance_wasm.log'),
+        (Join-Path $root 'build\logs\conformance_arm32.log'),
+        (Join-Path $root 'build\logs\conformance_riscv64.log'),
+        (Join-Path $root 'build\logs\conformance_cuda.log'),
+        (Join-Path $root 'build\logs\conformance_rocm.log'),
+        (Join-Path $root 'build\logs\conformance_macho.log'),
+        (Join-Path $root 'build\logs\conformance_elfobj.log'),
+        (Join-Path $root 'build\logs\conformance_staticlib.log'),
+        (Join-Path $root 'build\logs\conformance_coffobj.log'),
+        (Join-Path $root 'build\logs\conformance_cofflib.log'),
         (Join-Path $root 'build\logs\conformance_pass.cache'),
         (Join-Path $root 'build\logs\conformance_dgtl_main.cache'),
         (Join-Path $root 'build\logs\conformance_dgtl_main_strict.cache')
@@ -1041,10 +1254,10 @@ function Clean-DgtlArtifacts {
         }
     }
 
-    # SDK build intermediates, package output, and stale orphan directories
+    # SDK build intermediates that are safe to delete, plus stale orphan directories.
+    # Preserve build\DGTL_SDK because it is the packaged public API surface,
+    # and preserve build\internal_obj for internal API consumers (e.g., Myzon).
     $sdkDirs = @(
-        (Join-Path $root 'build\sdk_obj'),
-        (Join-Path $root 'build\DGTL_SDK'),
         (Join-Path $root 'build\sdk'),
         (Join-Path $root 'build\batch'),
         (Join-Path $root 'build\build'),
@@ -1064,7 +1277,7 @@ function Clean-DgtlArtifacts {
         }
     }
 
-    Write-Host '[clean] Removed DGTL build outputs, conformance logs, and SDK artifacts'
+    Write-Host '[clean] Removed DGTL build outputs and conformance logs; preserved build\DGTL_SDK and build\internal_obj'
 }
 
 [string[]]$allArgs = @()
@@ -1119,6 +1332,7 @@ switch ($command) {
     }
     'update-goldens' { $command = 'update-golden' }
     'run-strict-conformance' { $command = 'srun' }
+    'compile-all' { $command = 'compile' }
     'clean-all' { $command = 'clean' }
     'clean-build-and-run' { $command = 'crun' }
 }
@@ -1137,13 +1351,16 @@ switch ($command) {
     }
     'build' {
         Invoke-ApiPolicyGates
-        Build-DgtlBinary -OutputPath $prodExe -EntryPointPath $prodMain -ExcludePaths @($smokeMain)
+        Ensure-DgtlBinary -OutputPath $prodExe -EntryPointPath $prodMain -ExcludePaths @($smokeMain)
+        # Keep internal_obj in sync so Myzon can link against pre-built DGTL internal objects
+        Write-Host '[build] Updating DGTL internal_obj (incremental)'
+        Invoke-BuildInternalObjs | Out-Null
     }
     'smoke-build' {
-        Build-DgtlBinary -OutputPath $smokeExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain)
+        Ensure-DgtlBinary -OutputPath $smokeExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain)
     }
     'strict' {
-        Build-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
+        Ensure-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
     }
     'run' {
         Invoke-HeaderCompliance
@@ -1261,6 +1478,9 @@ switch ($command) {
             )
 
             Write-Host "[brun] Running default performance suite ($($defaultBrunSources.Count) files)"
+            # benchmark_hardest_e2e_gate.cpp (gate 3) invokes dgtl_main_strict.exe as a subprocess;
+            # ensure it is built so the relative-path lookup succeeds regardless of prior clean-all.
+            Ensure-DgtlBinary -OutputPath $smokeStrictExe -EntryPointPath $smokeMain -ExcludePaths @($prodMain) -Strict
             $suiteExitCode = 0
             foreach ($source in $defaultBrunSources) {
                 $brunExitCode = Invoke-Brun -SourcePath $source -ProgramArgs $brunProgramArgs -Mode $brunMode
@@ -1335,6 +1555,11 @@ switch ($command) {
         Ensure-DgtlBinary -OutputPath $prodExe -EntryPointPath $prodMain -ExcludePaths @($smokeMain)
         # Package SDK
         Invoke-SdkPackage
+    }
+    'compile' {
+        Ensure-DgtlBinary -OutputPath $prodExe -EntryPointPath $prodMain -ExcludePaths @($smokeMain)
+        $payloadArg = if ($null -ne $modeArg -and $modeArg -ne '') { [string]$modeArg } else { '' }
+        Invoke-CompileAllBackends -ExecutablePath $prodExe -PayloadPath $payloadArg
     }
     default {
         throw "Unknown command '$command'. Run 'dgtl help' for usage."

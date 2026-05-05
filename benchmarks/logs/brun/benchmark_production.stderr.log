@@ -1,7 +1,17 @@
 [DGTL] Hardware lock: process=Realtime thread=TimeCritical mask=0x4 core=2 sibling=best-effort isolated
-[DGTL] stabilize(): 3000ms thermal soak + clock calibration
-[DGTL] stabilize(): TSC calibration 24958878 ticks / 10000000 ns => ~2.49589 GHz
-[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
-[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
-[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
-[DGTL] Silicon recovery: active SIMD preconditioning (100000 iterations, no cool-down)
+[DGTL] stabilize(): 10000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24959870 ticks / 10000000 ns => ~2.49599 GHz
+[DGTL] stabilize(): 10000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24959996 ticks / 10000100 ns => ~2.49597 GHz
+[DGTL] stabilize(): 10000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24959907 ticks / 10000100 ns => ~2.49597 GHz
+[DGTL] Silicon recovery: scalar fence + 2500ms delay between suites
+[DGTL] stabilize(): 10000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24959872 ticks / 10000000 ns => ~2.49599 GHz
+[DGTL] Silicon recovery: scalar fence + 2500ms delay between suites
+[DGTL] stabilize(): 10000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24959905 ticks / 10000100 ns => ~2.49597 GHz
+[DGTL] Silicon recovery: scalar fence + 2500ms delay between suites
+[DGTL] stabilize(): 10000ms thermal soak + clock calibration
+[DGTL] stabilize(): TSC calibration 24959904 ticks / 10000100 ns => ~2.49597 GHz
+[DGTL] Silicon recovery: scalar fence + 2500ms delay between suites

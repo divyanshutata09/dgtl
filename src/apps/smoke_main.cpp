@@ -24,15 +24,15 @@
 #include <cstdlib>
 #include <vector>
 
-#include "dgtl/all.hpp"
+#include "dgtl/dgtl_all.hpp"
 
 namespace {
 
 #include "smoke_cli_and_options.inl"
 #include "smoke_ir_builders_and_profiles.inl"
+#include "smoke_emitters_and_io.inl"
 #include "smoke_release_checks.inl"
 #include "smoke_benchmark_pipeline.inl"
-#include "smoke_emitters_and_io.inl"
 
 } // namespace
 

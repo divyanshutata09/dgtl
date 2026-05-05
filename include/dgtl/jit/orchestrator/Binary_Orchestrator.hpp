@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -33,8 +33,8 @@ namespace dgtl::core {
  */
 struct BinarySegment {
     std::vector<uint8_t> machine_code;
-    float hotness_score;
-    uint32_t original_id;
+    float hotness_score = 0.0f;
+    uint32_t original_id = 0;
     uintptr_t final_load_address = 0; // Relative to blob start
 };
 
@@ -67,8 +67,12 @@ public:
         });
 
         std::vector<uint8_t> final_blob;
-        // Pre-allocate 2MB to minimize reallocations during the merge strike
-        final_blob.reserve(2 * 1024 * 1024); 
+        size_t total_bytes = 0;
+        for (const auto& seg : segments) {
+            total_bytes += seg.machine_code.size();
+        }
+        // Reserve exact payload plus one cache line headroom for alignment padding.
+        final_blob.reserve(total_bytes + CPU_CACHE_LINE);
 
         for (auto& seg : segments) {
             // 2. Cache-Line Alignment (The "Zero-Straddle" Rule)
@@ -84,7 +88,7 @@ public:
             }
 
             // Record finalized relative address
-            seg.final_load_address = final_blob.size();
+            seg.final_load_address = static_cast<uintptr_t>(final_blob.size());
 
             // 3. Global Branch Patching
             // Refines jump offsets based on the finalized sorted order.

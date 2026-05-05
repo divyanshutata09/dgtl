@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -14,31 +14,31 @@
  * TARGET: TRANSACTIONAL ROLLBACK & ALPHA-RENAMING
  */
 
-#include <iostream>
-#include <vector>
-#include <cassert>
-#include <stdexcept>
-#include "dgtl/pass/speculative/Speculative_Inliner.hpp"
-#include "dgtl/analysis/cost/AI_Cost_Model.hpp"
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/core/Arena.hpp"
+#include "dgtl/dgtl_all.hpp"
 
-using namespace dgtl;
+#include <iostream>
+#include <stdexcept>
+
+#include "dgtl/pass/speculative/Speculative_Inliner.hpp"
 
 void run_inliner_transaction_test() {
+    constexpr size_t kArenaMbPerThread = 64;
+    constexpr size_t kCallerCapacity = 10;
+    constexpr size_t kCalleeCapacity = 5;
+
     std::cout << "--- ROBUSTNESS TEST 4: Speculative Inlining & Rollback ---\n";
 
     // 1. Setup Dependencies
-    core::DGTL_Arena arena(1, 64); // 1 thread, 64 MB arena
-    analysis::DGTLAICostModel ai_model;
-    ir::SymbolTable symbols(arena);
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread); // 1 thread, 64 MB arena
+    dgtl::analysis::DGTLAICostModel ai_model;
+    dgtl::core::SymbolTable symbols(arena);
     dgtl::pass::DGTLSpeculativeInliner inliner(&ai_model, &symbols);
 
     // 2. Create a Caller Stream with 1 Node
-    ir::IRStream caller_stream(arena, 10);
+    dgtl::ir::IRStream caller_stream(arena, kCallerCapacity);
     
     // Use push_node API instead of direct buffer access
-    caller_stream.push_node(ir::OpCode::ADD_I32, 0, 50, 10, 20, 0);
+    caller_stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 50, 10, 20, 0);
 
     // 3. SCENARIO: Execute Inliner
     // Since our current process_inlining_shadow() just copies to shadow,
@@ -55,13 +55,13 @@ void run_inliner_transaction_test() {
     // 4. SCENARIO: Verify Alpha-Renaming Logic (Manual Trigger)
     std::cout << "[Step 2] Testing Alpha-Renaming / SSA Isolation... ";
     
-    ir::IRStream callee_stream(arena, 5);
-    callee_stream.push_node(ir::OpCode::MUL_I32, 0, 1, 10, 11, 0);
+    dgtl::ir::IRStream callee_stream(arena, kCalleeCapacity);
+    callee_stream.push_node(dgtl::ir::OpCode::MUL_I32, dgtl::ir::Flags::NONE, 1, 10, 11, 0);
 
     // We manually simulate the append to check the VREG_THRESHOLD logic
     // Note: We access the private method via a test-friend or check the public effect
     // For this test, we verify the logic provided in your .hpp
-    ir::IRNode node = callee_stream.get_node(0);
+    const dgtl::ir::IRNode node = callee_stream.get_node(0);
     if (node.result_id < 0x80000000U) {
         std::cout << "Verified (VREG ID Check).\n";
     } else {

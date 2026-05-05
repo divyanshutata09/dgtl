@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,17 +9,21 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl/dgtl_all.hpp"
+
 #include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/core/Arena.hpp"
 
 
 void run_ghost_test() {
-    // Initialize Arena and Stream
-    dgtl::core::DGTL_Arena arena(1, 5);
-    dgtl::ir::IRStream stream(arena, 1000);
+    constexpr size_t kArenaMbPerThread = 5;
+    constexpr size_t kReservedNodes = 1000;
+    constexpr size_t kGhostNodes = 100;
 
-    std::cout << "\033[1;36m[DGTL-GHOST]\033[0m Testing Transactional Atomicity..." << std::endl;
+    // Initialize Arena and Stream
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
+
+    std::cout << "\033[1;36m[DGTL-GHOST]\033[0m Testing Transactional Atomicity...\n";
 
     // 1. Commit a valid Base Node
     stream.begin_transaction();
@@ -28,7 +32,7 @@ void run_ghost_test() {
 
     // 2. Start a "Ghost" Transaction and then ABORT
     stream.begin_transaction();
-    for(int i = 0; i < 100; ++i) {
+    for (size_t i = 0; i < kGhostNodes; ++i) {
         stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 500 + i, 1, 1, 0);
     }
     
@@ -40,19 +44,19 @@ void run_ghost_test() {
     stream.push_node(dgtl::ir::OpCode::SYSCALL, dgtl::ir::Flags::NONE, 2, 1, 0, 0);
     stream.commit_transaction();
 
-    size_t final_size = stream.size();
-    std::cout << "[INFO] Stream Size after Ghost Abort: " << final_size << std::endl;
+    const size_t final_size = stream.size();
+    std::cout << "[INFO] Stream Size after Ghost Abort: " << final_size << "\n";
 
     // Verification
     if (final_size == 2) {
-        auto node2 = stream.get_node(1);
+        const auto node2 = stream.get_node(1);
         if (node2.opcode == dgtl::ir::OpCode::SYSCALL) {
-            std::cout << "\033[1;32m[opt]\033[0m Transactional integrity verified. Ghost nodes purged." << std::endl;
+            std::cout << "\033[1;32m[opt]\033[0m Transactional integrity verified. Ghost nodes purged.\n";
         } else {
-            std::cout << "\033[1;31m[FAIL]\033[0m Opcode mismatch at index 1. Got: " << (int)node2.opcode << std::endl;
+            std::cout << "\033[1;31m[FAIL]\033[0m Opcode mismatch at index 1. Got: " << static_cast<int>(node2.opcode) << "\n";
         }
     } else {
-        std::cout << "\033[1;31m[FAIL]\033[0m Stream leaked " << (final_size - 2) << " ghost nodes!" << std::endl;    
+        std::cout << "\033[1;31m[FAIL]\033[0m Stream leaked " << (final_size - 2) << " ghost nodes!\n";
     }
 
     return;

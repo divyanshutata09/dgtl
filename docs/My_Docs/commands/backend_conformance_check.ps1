@@ -54,6 +54,35 @@ function Normalize-ConformanceText {
     return $normalized.TrimEnd()
 }
 
+function Get-CanonicalLogicHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
+
+    $m = [regex]::Match($Text, 'LogicHash=0x([0-9A-Fa-f]+)')
+    if ($m.Success) {
+        return ($m.Groups[1].Value.ToLowerInvariant())
+    }
+    return ''
+}
+
+function Get-DeterministicTextHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha.ComputeHash($bytes)
+        return ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 New-Item -ItemType Directory -Force $logsDir | Out-Null
 New-Item -ItemType Directory -Force $goldenDir | Out-Null
 
@@ -89,6 +118,60 @@ $checks = @(
         Args = @('--backend','wasm')
         MustContain = @('Backend=wasm','00 61 73 6D')
         MustNotContain = @('WASM emission produced no output')
+    },
+    @{
+        Name = 'arm32'
+        Args = @('--backend','arm32')
+        MustContain = @('.arch armv7-a','DGTL_arm32_entry')
+        MustNotContain = @('DGTL-EMIT-ERR','Unhandled')
+    },
+    @{
+        Name = 'riscv64'
+        Args = @('--backend','riscv64')
+        MustContain = @('DGTL_riscv64_entry','RISC-V 64')
+        MustNotContain = @('DGTL-EMIT-ERR','Unhandled')
+    },
+    @{
+        Name = 'cuda'
+        Args = @('--backend','cuda')
+        MustContain = @('Backend=cuda','DGTL_kernel','.target sm_80')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
+    },
+    @{
+        Name = 'rocm'
+        Args = @('--backend','rocm')
+        MustContain = @('Backend=rocm','DGTL_kernel','DGTL-GPGPU-GENERIC-KERNEL')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
+    },
+    @{
+        Name = 'macho'
+        Args = @('--backend','macho')
+        MustContain = @('Backend=macho','CF FA ED FE')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
+    },
+    @{
+        Name = 'elfobj'
+        Args = @('--backend','elfobj')
+        MustContain = @('Backend=elfobj','7F 45 4C 46')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
+    },
+    @{
+        Name = 'staticlib'
+        Args = @('--backend','staticlib')
+        MustContain = @('Backend=staticlib','21 3C 61 72 63 68 3E')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
+    },
+    @{
+        Name = 'coffobj'
+        Args = @('--backend','coffobj')
+        MustContain = @('Backend=coffobj','64 86')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
+    },
+    @{
+        Name = 'cofflib'
+        Args = @('--backend','cofflib')
+        MustContain = @('Backend=cofflib','21 3C 61 72 63 68 3E')
+        MustNotContain = @('DGTL-EMIT-ERR','emission produced no output')
     }
 )
 
@@ -107,6 +190,8 @@ if (-not $UpdateGolden -and (Test-Path $cacheFile)) {
 }
 
 $failed = @()
+$logicHashByBackend = @{}
+$normalizedHashByBackend = @{}
 
 foreach ($c in $checks) {
     $log = Join-Path $logsDir "conformance_$($c.Name).log"
@@ -139,6 +224,8 @@ foreach ($c in $checks) {
 
     $backendExitCode = $proc.ExitCode
     $normalized = Normalize-ConformanceText -Text $output
+    $logicHashByBackend[$c.Name] = Get-CanonicalLogicHash -Text $normalized
+    $normalizedHashByBackend[$c.Name] = Get-DeterministicTextHash -Text $normalized
     ($output -replace "`r","") | Set-Content -Path $log
 
     if ($UpdateGolden) {
@@ -175,14 +262,14 @@ foreach ($c in $checks) {
     }
 
     foreach ($needle in $c.MustContain) {
-        if ($normalized -notmatch [regex]::Escape($needle)) {
+        if ($output -notmatch [regex]::Escape($needle)) {
             Write-Host "  missing: $needle" -ForegroundColor Red
             $ok = $false
         }
     }
 
     foreach ($bad in $c.MustNotContain) {
-        if ($normalized -match [regex]::Escape($bad)) {
+        if ($output -match [regex]::Escape($bad)) {
             Write-Host "  forbidden found: $bad" -ForegroundColor Red
             $ok = $false
         }
@@ -190,9 +277,44 @@ foreach ($c in $checks) {
 
     if ($ok) {
         Write-Host "  PASS" -ForegroundColor Green
+        if ($logicHashByBackend[$c.Name] -ne '') {
+            Write-Host "  logic_hash=0x$($logicHashByBackend[$c.Name])"
+        }
+        Write-Host "  normalized_sha256=$($normalizedHashByBackend[$c.Name])"
     } else {
         Write-Host "  FAIL (see $log)" -ForegroundColor Red
         $failed += $c.Name
+    }
+}
+
+# Cross-backend parity gate: all canonical LogicHash values must match.
+# This is the backend-independent bitwise semantic signature.
+if ($failed.Count -eq 0 -and -not $UpdateGolden) {
+    $parityTargets = @('arm64','x64','nasm','wasm')
+    $logicValues = @()
+    foreach ($t in $parityTargets) {
+        if ($logicHashByBackend.ContainsKey($t) -and $logicHashByBackend[$t] -ne '') {
+            $logicValues += $logicHashByBackend[$t]
+        }
+    }
+
+    if ($logicValues.Count -eq $parityTargets.Count) {
+        $first = $logicValues[0]
+        foreach ($v in $logicValues) {
+            if ($v -ne $first) {
+                Write-Host ''
+                Write-Host 'Cross-backend parity FAILED: LogicHash mismatch.' -ForegroundColor Red
+                foreach ($t in $parityTargets) {
+                    Write-Host (" - {0}: 0x{1}" -f $t, $logicHashByBackend[$t]) -ForegroundColor Red
+                }
+                exit 1
+            }
+        }
+        Write-Host ''
+        Write-Host ("Cross-backend parity OK: LogicHash=0x{0}" -f $first) -ForegroundColor Green
+    } else {
+        Write-Host ''
+        Write-Host 'Cross-backend parity WARNING: missing LogicHash in one or more backend outputs.' -ForegroundColor Yellow
     }
 }
 

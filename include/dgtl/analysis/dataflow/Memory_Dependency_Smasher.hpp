@@ -13,7 +13,7 @@
  * STEP 29: MEMORY DEPENDENCY SMASHER (AI-PROVEN DISAMBIGUATION)
  * PILLAR 2: TRANSACTIONAL PROVENANCE (SHADOW-MAPPING)
  * PILLAR 3: THE SENTINEL (ALIAS-CONSISTENCY GUARD)
- * STANDARDS: BIR 2.1 PACKED ATOM / C++26
+ * STANDARDS: BIR 1.0.0 PACKED ATOM / C++26
  */
 
 #pragma once
@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <algorithm>
 
-// Ensure all BIR 2.1 core types and the Stream definition are visible
+// Ensure all BIR 1.0.0 core types and the Stream definition are visible
 #include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/core/Verified_Formal.hpp"
 #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
@@ -95,7 +95,7 @@ public:
 
     /**
      * @brief The "Zero-Corruption" Dependency Strike.
-     * Validates reordering safety using BIR 2.1 split-tier accessors and packed atoms.
+     * Validates reordering safety using BIR 1.0.0 split-tier accessors and packed atoms.
      */
     [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
         const size_t stream_size = stream.size();
@@ -103,7 +103,7 @@ public:
             return false; 
         }
 
-        // BIR 2.1: Use AtomSplitter to decode packed opcode/flags
+        // BIR 1.0.0: Use AtomSplitter to decode packed opcode/flags
         const ir::IRAtom store_atom_raw = stream.get_atom_readonly(store_idx);
         const ir::IRAtom load_atom_raw  = stream.get_atom_readonly(load_idx);
         
@@ -267,3 +267,4 @@ private:
 };
 
 } // namespace dgtl::analysis
+

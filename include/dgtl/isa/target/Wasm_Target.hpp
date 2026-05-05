@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -21,6 +21,7 @@
 #include <cstring>
 #include <vector>
 #include <stdexcept>
+#include <unordered_map>
 #include "dgtl/ir/Global_IR.hpp"
 
 namespace dgtl::target {
@@ -98,15 +99,39 @@ public:
         out.clear();
         out.reserve(stream.size() * 80); 
         out += "; DGTL (Deep General-purpose Transformation Layer) version 1.0.0 Generated Assembly [Validated]\n";
-        out += "section .text\n    global _start\n_start:\n";
+        out += "section .text\n    global _start\n    extern __myzon_print_i64\n_start:\n";
 
         const uint32_t count = static_cast<uint32_t>(stream.size());
+
+        // --- Label pre-scan: build label_id -> stream index map ---
+        std::unordered_map<uint32_t, uint32_t> label_map;
+        label_map.reserve(count / 4 + 4);
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::LABEL) {
+                uint32_t lid = (node.result_id != ir::INVALID_SLOT) ? node.result_id : node.op_a;
+                label_map[lid] = i;
+            }
+        }
+        auto resolve_target = [&](uint32_t raw) -> uint32_t {
+            auto it = label_map.find(raw);
+            if (it != label_map.end()) return it->second;
+            if (raw < count) return raw;
+            return count - 1;
+        };
+
         for (uint32_t i = 0; i < count; ++i) {
             const auto& n = stream.get_node(i);
             const uint32_t label_id = (n.result_id == ir::INVALID_SLOT) ? i : n.result_id;
             out += "L_" + std::to_string(label_id) + ":\n";
 
             switch (n.opcode) {
+                case ir::OpCode::LABEL:
+                    // Pseudo-op: position label was already emitted above; no code.
+                    break;
+                case ir::OpCode::PHI_NODE:
+                    out += "    ; PHI r" + std::to_string(n.result_id) + "\n";
+                    break;
                 case ir::OpCode::LOAD_IMM:
                 case ir::OpCode::IMMEDIATE:
                     out += "    mov r" + std::to_string(n.result_id % 16) +
@@ -117,16 +142,114 @@ public:
                            ", r" + std::to_string(n.op_a % 16) + "\n";
                     break;
                 case ir::OpCode::ADD_I32:
-                    out += "    add r" + std::to_string(n.result_id % 16) + 
-                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                      out += "    mov r" + std::to_string(n.result_id % 16) +
+                          ", r" + std::to_string(n.op_a % 16) + "\n";
+                      out += "    add r" + std::to_string(n.result_id % 16) +
+                          ", r" + std::to_string(n.op_b % 16) + "\n";
                     break;
                 case ir::OpCode::SUB_I32:
-                    out += "    sub r" + std::to_string(n.result_id % 16) +
-                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                      out += "    mov r" + std::to_string(n.result_id % 16) +
+                          ", r" + std::to_string(n.op_a % 16) + "\n";
+                      out += "    sub r" + std::to_string(n.result_id % 16) +
+                          ", r" + std::to_string(n.op_b % 16) + "\n";
                     break;
                 case ir::OpCode::MUL_I32:
-                    out += "    imul r" + std::to_string(n.result_id % 16) +
+                      out += "    mov r" + std::to_string(n.result_id % 16) +
+                          ", r" + std::to_string(n.op_a % 16) + "\n";
+                      out += "    imul r" + std::to_string(n.result_id % 16) +
+                          ", r" + std::to_string(n.op_b % 16) + "\n";
+                    break;
+                case ir::OpCode::DIV_I32:
+                    out += "    mov rax, r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    cqo\n";
+                    out += "    idiv r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    mov r" + std::to_string(n.result_id % 16) + ", rax\n";
+                    break;
+                case ir::OpCode::MOD_I32:
+                    out += "    mov rax, r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    cqo\n";
+                    out += "    idiv r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    mov r" + std::to_string(n.result_id % 16) + ", rdx\n";
+                    break;
+                case ir::OpCode::AND_I32:
+                    out += "    mov r" + std::to_string(n.result_id % 16) +
                            ", r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    and r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_b % 16) + "\n";
+                    break;
+                case ir::OpCode::OR_I32:
+                    out += "    mov r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    or r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_b % 16) + "\n";
+                    break;
+                case ir::OpCode::XOR_I32:
+                    out += "    mov r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    xor r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_b % 16) + "\n";
+                    break;
+                case ir::OpCode::SHL_I32:
+                    out += "    mov rcx, r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    mov r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    shl r" + std::to_string(n.result_id % 16) + ", cl\n";
+                    break;
+                case ir::OpCode::SHR_I32:
+                    out += "    mov rcx, r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    mov r" + std::to_string(n.result_id % 16) +
+                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    shr r" + std::to_string(n.result_id % 16) + ", cl\n";
+                    break;
+                case ir::OpCode::CMP_EQ_I32:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) + ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    sete al\n    movzx r" + std::to_string(n.result_id % 16) + ", al\n";
+                    break;
+                case ir::OpCode::CMP_NE_I32:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) + ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    setne al\n    movzx r" + std::to_string(n.result_id % 16) + ", al\n";
+                    break;
+                case ir::OpCode::CMP_LT_I32:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) + ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    setl al\n    movzx r" + std::to_string(n.result_id % 16) + ", al\n";
+                    break;
+                case ir::OpCode::CMP_LE_I32:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) + ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    setle al\n    movzx r" + std::to_string(n.result_id % 16) + ", al\n";
+                    break;
+                case ir::OpCode::CMP_GT_I32:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) + ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    setg al\n    movzx r" + std::to_string(n.result_id % 16) + ", al\n";
+                    break;
+                case ir::OpCode::CMP_GE_I32:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) + ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    setge al\n    movzx r" + std::to_string(n.result_id % 16) + ", al\n";
+                    break;
+                case ir::OpCode::BRANCH:
+                case ir::OpCode::GOTO:
+                    out += "    jmp L_" + std::to_string(resolve_target(n.op_a)) + "\n";
+                    break;
+                case ir::OpCode::BRANCH_COND:
+                    out += "    test r" + std::to_string(n.op_a % 16) +
+                           ", r" + std::to_string(n.op_a % 16) + "\n";
+                    out += "    jnz L_" + std::to_string(resolve_target(n.op_b)) + "\n";
+                    break;
+                case ir::OpCode::BRANCH_COMPARE_FUSED:
+                    out += "    cmp r" + std::to_string(n.op_a % 16) +
+                           ", r" + std::to_string(n.op_b % 16) + "\n";
+                    out += "    jne L_" + std::to_string(resolve_target(n.op_c)) + "\n";
+                    break;
+                case ir::OpCode::CALL:
+                    out += "    sub rsp, 32\n";
+                    if (n.op_b != ir::INVALID_SLOT)
+                        out += "    mov rcx, r" + std::to_string(n.op_b % 16) + "\n";
+                    if (n.op_c != ir::INVALID_SLOT)
+                        out += "    mov rdx, r" + std::to_string(n.op_c % 16) + "\n";
+                    out += "    call __myzon_print_i64\n";
+                    out += "    add rsp, 32\n";
+                    break;
+                case ir::OpCode::SYSCALL:
+                    out += "    syscall\n";
                     break;
                 case ir::OpCode::LOAD:
                     out += "    mov r" + std::to_string(n.result_id % 16) + 
@@ -187,13 +310,46 @@ private:
         const uint32_t count = static_cast<uint32_t>(stream.size());
         for (uint32_t i = 0; i < count; ++i) {
             const auto& n = stream.get_node(i);
-            
-            if (n.result_id == ir::INVALID_SLOT && n.opcode != ir::OpCode::NOP) [[unlikely]] {
-                throw std::runtime_error("WASM target invariant violation: invalid result_id");
+
+            auto requires_result = [](ir::OpCode opcode) {
+                switch (opcode) {
+                    case ir::OpCode::LOAD_IMM:
+                    case ir::OpCode::IMMEDIATE:
+                    case ir::OpCode::REG_MOVE:
+                    case ir::OpCode::ADD_I32:
+                    case ir::OpCode::SUB_I32:
+                    case ir::OpCode::MUL_I32:
+                    case ir::OpCode::DIV_I32:
+                    case ir::OpCode::MOD_I32:
+                    case ir::OpCode::CMP_EQ_I32:
+                    case ir::OpCode::CMP_NE_I32:
+                    case ir::OpCode::CMP_LT_I32:
+                    case ir::OpCode::CMP_LE_I32:
+                    case ir::OpCode::CMP_GT_I32:
+                    case ir::OpCode::CMP_GE_I32:
+                    case ir::OpCode::AND_I32:
+                    case ir::OpCode::OR_I32:
+                    case ir::OpCode::XOR_I32:
+                    case ir::OpCode::SHL_I32:
+                    case ir::OpCode::SHR_I32:
+                    case ir::OpCode::LOAD:
+                    case ir::OpCode::CALL:
+                        return true;
+                    default:
+                        return false;
+                }
+            };
+
+            if (requires_result(n.opcode) && n.result_id == ir::INVALID_SLOT) [[unlikely]] {
+                throw std::runtime_error("WASM target invariant violation: missing result_id for value-producing opcode");
             }
             
-            // Check for op_a/op_b out of bounds relative to 24-bit addressable limit (0xFFFFFF).
-            if (n.op_a > 16777215 || n.op_b > 16777215) [[unlikely]] {
+            // Check for op_a/op_b out of bounds (exempt branch targets — these hold stream indices).
+            bool is_branch = (n.opcode == ir::OpCode::BRANCH ||
+                              n.opcode == ir::OpCode::GOTO ||
+                              n.opcode == ir::OpCode::BRANCH_COND ||
+                              n.opcode == ir::OpCode::BRANCH_COMPARE_FUSED);
+            if (!is_branch && (n.op_a > 16777215 || n.op_b > 16777215)) [[unlikely]] {
                 throw std::runtime_error("WASM target invariant violation: operand index out of range");
             }
         }

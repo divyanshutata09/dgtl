@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -157,6 +157,7 @@ struct Symbol {
 } // namespace dgtl::exec::coff
 
 #include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/ir/base/IR_Stream.hpp"   // Explicit for inline methods
 #include "dgtl/isa/target/Wasm_Encoder.hpp"
 
 namespace dgtl::exec {
@@ -400,7 +401,7 @@ protected:
         shdr[4].sh_addralign = 8;
         shdr[4].sh_entsize = sizeof(Elf64_Sym);
 
-        // .rela.text ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â relocation section (structurally present; no external fixups in current codegen)
+        // .rela.text Ã¢â‚¬â€ relocation section (structurally present; no external fixups in current codegen)
         shdr[5].sh_name = sh_name_relatext;
         shdr[5].sh_type = SHT_RELA;
         shdr[5].sh_flags = SHF_INFO_LINK;
@@ -452,6 +453,213 @@ protected:
         out.insert(out.end(), object_bytes.begin(), object_bytes.end());
         if ((object_bytes.size() & 1U) != 0U) {
             out.push_back('\n');
+        }
+
+        return true;
+    }
+
+    // ---------------------------------------------------------------------
+    // COFF Relocation structure (IMAGE_REL_AMD64_REL32 = 4)
+    // ---------------------------------------------------------------------
+    struct CoffCallReloc {
+        uint32_t text_offset;   // byte offset inside .text where the 4-byte displacement sits
+        std::string callee_name; // external symbol to resolve
+    };
+
+    /// Collect CALL sites from a lowered stream so we can emit COFF relocations.
+    /// Each CALL node emits sub rsp,32 + E8 00 00 00 00 + add rsp,32 = 13 bytes total.
+    /// The displacement starts at text_offset + 5 (4 bytes for sub rsp,32 + 1 for 0xE8).
+    std::vector<CoffCallReloc> collect_call_relocs(
+        const ir::IRStream& stream,
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee)
+    {
+        std::vector<CoffCallReloc> relocs;
+        if (stream.is_null()) return relocs;
+
+        size_t text_offset = 0;
+        for (size_t i = 0; i < stream.size(); ++i) {
+            const auto& node = stream.get_node(i);
+            switch (node.opcode) {
+                case ir::OpCode::LOAD_IMM:    text_offset += 7;  break;
+                case ir::OpCode::REG_MOVE:    text_offset += 3;  break;
+                case ir::OpCode::ADD_I32:     text_offset += 2;  break;
+                case ir::OpCode::SUB_I32:     text_offset += 2;  break;
+                case ir::OpCode::MUL_I32:     text_offset += 3;  break;
+                case ir::OpCode::AND_I32:     text_offset += 2;  break;
+                case ir::OpCode::OR_I32:      text_offset += 2;  break;
+                case ir::OpCode::XOR_I32:     text_offset += 2;  break;
+                case ir::OpCode::SHL_I32:     text_offset += 2;  break;
+                case ir::OpCode::SHR_I32:     text_offset += 2;  break;
+                case ir::OpCode::CALL: {
+                    // sub rsp,32 (4) + E8 (1) + displacement (4) + add rsp,32 (4) = 13
+                    const size_t disp_offset = text_offset + 5; // past sub rsp,32 + 0xE8
+                    auto it = slot_to_callee.find(node.op_b);
+                    if (it != slot_to_callee.end()) {
+                        relocs.push_back({static_cast<uint32_t>(disp_offset), it->second});
+                    }
+                    text_offset += 13;
+                    break;
+                }
+                case ir::OpCode::BRANCH:
+                case ir::OpCode::GOTO:        text_offset += 5;  break;
+                case ir::OpCode::BRANCH_COND: text_offset += 8;  break;
+                case ir::OpCode::RET:         text_offset += 1;  break;
+                case ir::OpCode::NOP:         text_offset += 1;  break;
+                case ir::OpCode::LABEL:       text_offset += 0;  break; // pseudo-op: no bytes
+                case ir::OpCode::PHI_NODE:    text_offset += 0;  break; // pseudo-op: no bytes
+                case ir::OpCode::IMMEDIATE:               text_offset += 7;  break;
+                case ir::OpCode::BRANCH_COMPARE_FUSED:    text_offset += 8;  break;
+                case ir::OpCode::CMP_EQ_I32:
+                case ir::OpCode::CMP_NE_I32:
+                case ir::OpCode::CMP_LT_I32:
+                case ir::OpCode::CMP_LE_I32:
+                case ir::OpCode::CMP_GT_I32:
+                case ir::OpCode::CMP_GE_I32:              text_offset += 5;  break;
+                case ir::OpCode::DIV_I32:
+                case ir::OpCode::MOD_I32:                 text_offset += 3;  break;
+                default:                      text_offset += 1;  break; // NOP fallback
+            }
+        }
+        return relocs;
+    }
+
+    /// Build a COFF relocatable object for one function, including IMAGE_REL_AMD64_REL32
+    /// entries for all CALL instructions so the linker can resolve external/cross-obj calls.
+    bool build_coff_relocatable_binary_with_relocs(
+        const ir::IRStream& stream,
+        std::vector<uint8_t>& out,
+        std::string_view entry_symbol,
+        const std::vector<CoffCallReloc>& call_relocs)
+    {
+        out.clear();
+        if (stream.is_null() || stream.size() == 0 || !stream.validate_shadow_integrity()) return false;
+
+        std::vector<uint8_t> text_bytes;
+        text_bytes.resize(stream.size() * 20 + 64);
+        size_t text_size = 0;
+        if (!emit_machine_code(text_bytes.data(), text_bytes.size(), stream, &text_size)) return false;
+        text_bytes.resize(text_size);
+        if (text_bytes.empty()) return false;
+
+        using namespace dgtl::exec::coff;
+
+        // -- Build relocation table + callee symbol table entries --------------
+        // COFF relocation entry (10 bytes each)
+        struct CoffReloc { uint32_t VirtualAddress; uint32_t SymbolTableIndex; uint16_t Type; };
+        static constexpr uint16_t kCoffRelAmd64Rel32 = 4;
+
+        // Collect unique callee names ? assign symbol indices (after entry symbol at index 1)
+        std::vector<std::string> extern_names;
+        for (const auto& r : call_relocs) {
+            bool found = false;
+            for (const auto& e : extern_names) { if (e == r.callee_name) { found = true; break; } }
+            if (!found) extern_names.push_back(r.callee_name);
+        }
+
+        // Build COFF relocation records
+        std::vector<CoffReloc> coff_relocs;
+        for (const auto& r : call_relocs) {
+            uint32_t sym_idx = 2; // entry symbol at idx 1, externals start at idx 2
+            for (const auto& e : extern_names) {
+                if (e == r.callee_name) break;
+                ++sym_idx;
+            }
+            coff_relocs.push_back({r.text_offset, sym_idx, kCoffRelAmd64Rel32});
+        }
+
+        // -- String table ------------------------------------------------------
+        std::string sym_name(entry_symbol);
+        std::string strtab_data; // entries for names > 8 chars
+        struct SymStrInfo { bool use_long; uint32_t strtab_off; };
+        auto make_sym_str = [&](const std::string& n) -> SymStrInfo {
+            if (n.size() <= 8) return {false, 0};
+            uint32_t off = 4 + static_cast<uint32_t>(strtab_data.size());
+            strtab_data.append(n);
+            strtab_data.push_back('\0');
+            return {true, off};
+        };
+        const auto entry_str = make_sym_str(sym_name);
+        std::vector<SymStrInfo> extern_str_infos;
+        for (const auto& e : extern_names) extern_str_infos.push_back(make_sym_str(e));
+
+        const size_t num_symbols = 1        // .text section
+                                 + 1        // entry_symbol
+                                 + extern_names.size();
+        const uint32_t strtab_total_size = 4 + static_cast<uint32_t>(strtab_data.size());
+
+        // -- Layout -----------------------------------------------------------
+        const size_t file_hdr_size  = sizeof(FileHeader);
+        const size_t sect_hdr_size  = sizeof(SectionHeader);
+        const size_t text_off       = file_hdr_size + sect_hdr_size;
+        const size_t reloc_off      = text_off + text_size;
+        const size_t symtab_off     = reloc_off + coff_relocs.size() * 10;
+        const size_t symtab_size    = num_symbols * sizeof(Symbol);
+        const size_t total_size     = symtab_off + symtab_size + strtab_total_size;
+        out.assign(total_size, 0);
+
+        // -- File Header -------------------------------------------------------
+        auto* fhdr = reinterpret_cast<FileHeader*>(out.data());
+        fhdr->Machine              = MACHINE_AMD64;
+        fhdr->NumberOfSections     = 1;
+        fhdr->TimeDateStamp        = 0;
+        fhdr->PointerToSymbolTable = static_cast<uint32_t>(symtab_off);
+        fhdr->NumberOfSymbols      = static_cast<uint32_t>(num_symbols);
+        fhdr->SizeOfOptionalHeader = 0;
+        fhdr->Characteristics      = 0;
+
+        // -- Section Header ----------------------------------------------------
+        auto* shdr = reinterpret_cast<SectionHeader*>(out.data() + file_hdr_size);
+        std::memset(shdr, 0, sizeof(SectionHeader));
+        std::memcpy(shdr->Name, ".text\0\0\0", 8);
+        shdr->SizeOfRawData          = static_cast<uint32_t>(text_size);
+        shdr->PointerToRawData       = static_cast<uint32_t>(text_off);
+        shdr->PointerToRelocations   = coff_relocs.empty() ? 0 : static_cast<uint32_t>(reloc_off);
+        shdr->NumberOfRelocations    = static_cast<uint16_t>(coff_relocs.size());
+        shdr->Characteristics        = SCN_CNT_CODE | SCN_MEM_EXECUTE | SCN_MEM_READ | SCN_ALIGN_16BYTES;
+
+        // -- .text bytes -------------------------------------------------------
+        std::memcpy(out.data() + text_off, text_bytes.data(), text_size);
+
+        // -- Relocation records ------------------------------------------------
+        for (size_t ri = 0; ri < coff_relocs.size(); ++ri) {
+            uint8_t* rptr = out.data() + reloc_off + ri * 10;
+            std::memcpy(rptr,     &coff_relocs[ri].VirtualAddress, 4);
+            std::memcpy(rptr + 4, &coff_relocs[ri].SymbolTableIndex, 4);
+            std::memcpy(rptr + 8, &coff_relocs[ri].Type, 2);
+        }
+
+        // -- Symbol Table ------------------------------------------------------
+        auto fill_sym = [&](Symbol& s, const std::string& name, const SymStrInfo& si,
+                            uint32_t value, int16_t sect, uint8_t cls) {
+            std::memset(&s, 0, sizeof(Symbol));
+            if (si.use_long) {
+                s.Name.LongName.Zeroes = 0;
+                s.Name.LongName.Offset = si.strtab_off;
+            } else {
+                const size_t n = name.size() > 8 ? 8 : name.size();
+                std::memcpy(s.Name.ShortName, name.data(), n);
+            }
+            s.Value         = value;
+            s.SectionNumber = sect;
+            s.Type          = (cls == SYM_CLASS_EXTERNAL) ? SYM_DTYPE_FUNCTION : 0;
+            s.StorageClass  = cls;
+        };
+
+        auto* sym_tbl = reinterpret_cast<Symbol*>(out.data() + symtab_off);
+        // sym[0]: .text section
+        fill_sym(sym_tbl[0], ".text", {false, 0}, 0, 1, SYM_CLASS_STATIC);
+        // sym[1]: entry function symbol
+        fill_sym(sym_tbl[1], sym_name, entry_str, 0, 1, SYM_CLASS_EXTERNAL);
+        // sym[2..]: external callee symbols (section=0 = undefined)
+        for (size_t ei = 0; ei < extern_names.size(); ++ei) {
+            fill_sym(sym_tbl[2 + ei], extern_names[ei], extern_str_infos[ei], 0, 0, SYM_CLASS_EXTERNAL);
+        }
+
+        // -- String Table ------------------------------------------------------
+        uint8_t* strtab_ptr = out.data() + symtab_off + symtab_size;
+        std::memcpy(strtab_ptr, &strtab_total_size, 4);
+        if (!strtab_data.empty()) {
+            std::memcpy(strtab_ptr + 4, strtab_data.data(), strtab_data.size());
         }
 
         return true;
@@ -734,15 +942,77 @@ protected:
                            const ir::IRStream& stream,
                            size_t* emitted_size = nullptr) {
         if (stream.is_null() || !dest || !stream.validate_shadow_integrity()) return false;
-        size_t offset = 0;
         const size_t count = stream.size();
 
+        // --- Pass 0: Build label_map (frontend label IDs → stream node indices) ---
+        std::unordered_map<uint32_t, size_t> label_map;
+        label_map.reserve(count / 4 + 4);
+        for (size_t i = 0; i < count; ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::LABEL) {
+                uint32_t lid = (node.result_id != ir::INVALID_SLOT) ? node.result_id : node.op_a;
+                label_map[lid] = i;
+            }
+        }
+        auto resolve_target = [&](uint32_t raw) -> size_t {
+            auto it = label_map.find(raw);
+            if (it != label_map.end()) return it->second;
+            if (static_cast<size_t>(raw) < count) return static_cast<size_t>(raw);
+            return count;
+        };
+
+        // --- Pass 1: Pre-compute per-node byte offsets ---
+        std::vector<size_t> node_offsets(count + 1, 0);
+        size_t probe = 0;
+        for (size_t i = 0; i < count; ++i) {
+            node_offsets[i] = probe;
+            const auto& node = stream.get_node(i);
+            switch (node.opcode) {
+                case ir::OpCode::LOAD_IMM:    probe += 7;  break;
+                case ir::OpCode::REG_MOVE:    probe += 3;  break;
+                case ir::OpCode::ADD_I32:     probe += 2;  break;
+                case ir::OpCode::SUB_I32:     probe += 2;  break;
+                case ir::OpCode::MUL_I32:     probe += 3;  break;
+                case ir::OpCode::AND_I32:     probe += 2;  break;
+                case ir::OpCode::OR_I32:      probe += 2;  break;
+                case ir::OpCode::XOR_I32:     probe += 2;  break;
+                case ir::OpCode::SHL_I32:     probe += 2;  break;
+                case ir::OpCode::SHR_I32:     probe += 2;  break;
+                case ir::OpCode::CALL:        probe += 13; break;
+                case ir::OpCode::BRANCH:
+                case ir::OpCode::GOTO:        probe += 5;  break;
+                case ir::OpCode::BRANCH_COND: probe += 8;  break;
+                case ir::OpCode::RET:         probe += 1;  break;
+                case ir::OpCode::NOP:         probe += 1;  break;
+                case ir::OpCode::LABEL:       probe += 0;  break;
+                case ir::OpCode::PHI_NODE:    probe += 0;  break;
+                case ir::OpCode::IMMEDIATE:              probe += 7;  break;
+                case ir::OpCode::BRANCH_COMPARE_FUSED:   probe += 8;  break;
+                case ir::OpCode::CMP_EQ_I32:
+                case ir::OpCode::CMP_NE_I32:
+                case ir::OpCode::CMP_LT_I32:
+                case ir::OpCode::CMP_LE_I32:
+                case ir::OpCode::CMP_GT_I32:
+                case ir::OpCode::CMP_GE_I32:             probe += 5;  break;
+                case ir::OpCode::DIV_I32:
+                case ir::OpCode::MOD_I32:                probe += 3;  break;
+                default:                      probe += 1;  break;
+            }
+        }
+        node_offsets[count] = probe;
+
+        if (probe > dest_capacity) return false;
+
+        // --- Pass 2: Emit code with placeholder branch displacements ---
+        struct BranchPatch { size_t disp_offset; size_t source_end; size_t target_node; };
+        std::vector<BranchPatch> patches;
+        patches.reserve(count / 8 + 4);
+
+        size_t offset = 0;
         for (size_t i = 0; i < count; ++i) {
             const auto& node = stream.get_node(i);
             switch (node.opcode) {
                 case ir::OpCode::LOAD_IMM: {
-                    if (offset + 7 > dest_capacity) return false;
-                    // mov rax, imm32 (sign-extended)
                     dest[offset++] = 0x48;
                     dest[offset++] = 0xC7;
                     dest[offset++] = 0xC0;
@@ -752,48 +1022,125 @@ protected:
                     break;
                 }
                 case ir::OpCode::REG_MOVE:
-                    if (offset + 3 > dest_capacity) return false;
-                    // mov rax, rbx
-                    dest[offset++] = 0x48;
-                    dest[offset++] = 0x89;
-                    dest[offset++] = 0xD8;
-                    break;
+                    dest[offset++] = 0x48; dest[offset++] = 0x89; dest[offset++] = 0xD8; break;
                 case ir::OpCode::ADD_I32:
-                    if (offset + 2 > dest_capacity) return false;
-                    dest[offset++] = 0x01; 
-                    dest[offset++] = 0xD8; // x86_64: ADD EAX, EBX
-                    break;
+                    dest[offset++] = 0x01; dest[offset++] = 0xD8; break;
                 case ir::OpCode::SUB_I32:
-                    if (offset + 2 > dest_capacity) return false;
-                    dest[offset++] = 0x29;
-                    dest[offset++] = 0xD8; // SUB EAX, EBX
-                    break;
+                    dest[offset++] = 0x29; dest[offset++] = 0xD8; break;
                 case ir::OpCode::MUL_I32:
-                    if (offset + 3 > dest_capacity) return false;
-                    dest[offset++] = 0x0F;
-                    dest[offset++] = 0xAF;
-                    dest[offset++] = 0xC3; // IMUL EAX, EBX
+                    dest[offset++] = 0x0F; dest[offset++] = 0xAF; dest[offset++] = 0xC3; break;
+                case ir::OpCode::AND_I32:
+                    dest[offset++] = 0x21; dest[offset++] = 0xD8; break;
+                case ir::OpCode::OR_I32:
+                    dest[offset++] = 0x09; dest[offset++] = 0xD8; break;
+                case ir::OpCode::XOR_I32:
+                    dest[offset++] = 0x31; dest[offset++] = 0xD8; break;
+                case ir::OpCode::SHL_I32:
+                    dest[offset++] = 0xD3; dest[offset++] = 0xE0; break;
+                case ir::OpCode::SHR_I32:
+                    dest[offset++] = 0xD3; dest[offset++] = 0xF8; break;
+                case ir::OpCode::CALL: {
+                    // sub rsp,32 (shadow space) + call rel32 (0, COFF reloc) + add rsp,32
+                    dest[offset++] = 0x48; dest[offset++] = 0x83;
+                    dest[offset++] = 0xEC; dest[offset++] = 0x20;
+                    dest[offset++] = 0xE8;
+                    dest[offset++] = 0x00; dest[offset++] = 0x00;
+                    dest[offset++] = 0x00; dest[offset++] = 0x00;
+                    dest[offset++] = 0x48; dest[offset++] = 0x83;
+                    dest[offset++] = 0xC4; dest[offset++] = 0x20;
+                    break;
+                }
+                case ir::OpCode::BRANCH:
+                case ir::OpCode::GOTO: {
+                    dest[offset++] = 0xE9; // JMP rel32
+                    patches.push_back({offset, offset + 4, resolve_target(node.op_a)});
+                    dest[offset++] = 0; dest[offset++] = 0;
+                    dest[offset++] = 0; dest[offset++] = 0;
+                    break;
+                }
+                case ir::OpCode::BRANCH_COND: {
+                    dest[offset++] = 0x85; dest[offset++] = 0xC0; // TEST EAX, EAX
+                    dest[offset++] = 0x0F; dest[offset++] = 0x85; // JNZ rel32
+                    patches.push_back({offset, offset + 4, resolve_target(node.op_b)});
+                    dest[offset++] = 0; dest[offset++] = 0;
+                    dest[offset++] = 0; dest[offset++] = 0;
+                    break;
+                }
+                case ir::OpCode::BRANCH_COMPARE_FUSED: {
+                    dest[offset++] = 0x39; dest[offset++] = 0xD8; // CMP EAX, EBX
+                    dest[offset++] = 0x0F; dest[offset++] = 0x85; // JNE rel32
+                    patches.push_back({offset, offset + 4, resolve_target(node.op_c)});
+                    dest[offset++] = 0; dest[offset++] = 0;
+                    dest[offset++] = 0; dest[offset++] = 0;
+                    break;
+                }
+                case ir::OpCode::IMMEDIATE: {
+                    // IMMEDIATE is alias for LOAD_IMM
+                    dest[offset++] = 0x48; dest[offset++] = 0xC7; dest[offset++] = 0xC0;
+                    const uint32_t imm_i = node.op_b;
+                    std::memcpy(dest + offset, &imm_i, 4); offset += 4;
+                    break;
+                }
+                case ir::OpCode::CMP_EQ_I32:
+                    dest[offset++]=0x39; dest[offset++]=0xD8; // CMP EAX,EBX
+                    dest[offset++]=0x0F; dest[offset++]=0x94; dest[offset++]=0xC0; // SETE AL
+                    break;
+                case ir::OpCode::CMP_NE_I32:
+                    dest[offset++]=0x39; dest[offset++]=0xD8;
+                    dest[offset++]=0x0F; dest[offset++]=0x95; dest[offset++]=0xC0; // SETNE AL
+                    break;
+                case ir::OpCode::CMP_LT_I32:
+                    dest[offset++]=0x39; dest[offset++]=0xD8;
+                    dest[offset++]=0x0F; dest[offset++]=0x9C; dest[offset++]=0xC0; // SETL AL
+                    break;
+                case ir::OpCode::CMP_LE_I32:
+                    dest[offset++]=0x39; dest[offset++]=0xD8;
+                    dest[offset++]=0x0F; dest[offset++]=0x9E; dest[offset++]=0xC0; // SETLE AL
+                    break;
+                case ir::OpCode::CMP_GT_I32:
+                    dest[offset++]=0x39; dest[offset++]=0xD8;
+                    dest[offset++]=0x0F; dest[offset++]=0x9F; dest[offset++]=0xC0; // SETG AL
+                    break;
+                case ir::OpCode::CMP_GE_I32:
+                    dest[offset++]=0x39; dest[offset++]=0xD8;
+                    dest[offset++]=0x0F; dest[offset++]=0x9D; dest[offset++]=0xC0; // SETGE AL
+                    break;
+                case ir::OpCode::DIV_I32:
+                    dest[offset++]=0x99;                       // CDQ
+                    dest[offset++]=0xF7; dest[offset++]=0xFB; // IDIV EBX
+                    break;
+                case ir::OpCode::MOD_I32:
+                    dest[offset++]=0x99;                       // CDQ
+                    dest[offset++]=0xF7; dest[offset++]=0xFB; // IDIV EBX (remainder in EDX)
                     break;
                 case ir::OpCode::RET:
-                    if (offset + 1 > dest_capacity) return false;
-                    dest[offset++] = 0xC3; // x86_64: RET
-                    break;
+                    dest[offset++] = 0xC3; break;
                 case ir::OpCode::NOP:
-                    if (offset + 1 > dest_capacity) return false;
-                    dest[offset++] = 0x90;
-                    break;
+                    dest[offset++] = 0x90; break;
+                case ir::OpCode::LABEL:
+                case ir::OpCode::PHI_NODE:
+                    break; // pseudo-ops: no bytes emitted
                 default:
-                    // Reject unsupported opcode to avoid generating semantically invalid binaries.
-                    return false;
+                    // NOP fallback — keeps COFF structure valid
+                    dest[offset++] = 0x90; break;
             }
         }
 
-        if (emitted_size) {
-            *emitted_size = offset;
+        // --- Pass 3: Patch branch displacements ---
+        for (const auto& p : patches) {
+            const size_t tgt_byte = (p.target_node <= count)
+                                        ? node_offsets[p.target_node]
+                                        : offset;
+            const int64_t rel64 = static_cast<int64_t>(tgt_byte) -
+                                  static_cast<int64_t>(p.source_end);
+            const int32_t rel32 = static_cast<int32_t>(rel64);
+            std::memcpy(dest + p.disp_offset, &rel32, sizeof(rel32));
         }
 
+        if (emitted_size) *emitted_size = offset;
         return true;
     }
+
 
 public:
     bool build_elf_relocatable(std::vector<uint8_t>& out,
@@ -832,6 +1179,16 @@ public:
                                 const ir::IRStream& stream,
                                 std::string_view entry_symbol = "DGTL_kernel_entry") {
         return build_coff_relocatable_binary(stream, out, entry_symbol);
+    }
+
+    /// Build a COFF object for one function, emitting IMAGE_REL_AMD64_REL32
+    /// relocations for all CALL instructions so the linker resolves them.
+    bool build_coff_with_relocs(std::vector<uint8_t>& out,
+                                const ir::IRStream& stream,
+                                std::string_view entry_symbol,
+                                const std::unordered_map<uint32_t, std::string>& slot_to_callee) {
+        auto relocs = collect_call_relocs(stream, slot_to_callee);
+        return build_coff_relocatable_binary_with_relocs(stream, out, entry_symbol, relocs);
     }
 
     bool emit_coff_relocatable(std::string_view path,

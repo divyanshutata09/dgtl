@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,32 +9,18 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include <vector>
-#include <memory>
+#include "dgtl/dgtl_all.hpp"
+
 #include <cstdio>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/transform/GVN.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/core/Symbol_Table.hpp"
-
-#ifdef _WIN32
-    #include <malloc.h>
-#else
-    #include <stdlib.h>
-    #define _aligned_malloc(size, alignment) aligned_alloc(alignment, size)
-    #define _aligned_free(ptr) free(ptr)
-#endif
-
-using namespace dgtl;
+#include <iostream>
+#include <string>
 
 int main() {
     std::cout << "\033[1;36m--- [DGTL] Pipeline Integration Test ---\033[0m\n";
 
-    // 1. PILLAR 1: Initialize the Huge-Page Arena (256MB)
+    // 1. PILLAR 1: Initialize the huge-page arena (1 thread, 256MB).
     // Ensures physical continuity for Tier 1 and Tier 2 IR layouts.
-    core::DGTL_Arena arena(256); 
+    dgtl::core::DGTL_Arena arena(1, 256);
     if (arena.raw_data() == nullptr) {
         printf("[FATAL] OS failed to provide Huge-Page Arena.\n");
         return -1;
@@ -43,27 +29,27 @@ int main() {
     // 2. INITIALIZE STREAM
     // Sets up the Bit-Packed IR Stream using the provided Arena.
     constexpr size_t MAX_NODES = 1024;
-    ir::IRStream stream(arena, MAX_NODES); 
+    dgtl::ir::IRStream stream(arena, MAX_NODES);
     stream.set_count(0); 
 
     std::cout << "[DEBUG] Stream Capacity: " << stream.capacity() << " nodes\n";
 
     // 3. TRANSACTIONAL INJECTION (Pillar 2)
-    // begin_strike() opens the transaction window for low-latency injection.
+    // begin_transaction() opens the transaction window for low-latency injection.
     stream.begin_transaction(); 
 
     // Node 0: r1001 = 10 + 11
-    stream.push_node(ir::OpCode::ADD_I32, ir::Flags::NONE, 1001, 10, 11, 0);
+    stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 1001, 10, 11, 0);
     
     // Node 1: r1002 = 10 + 11 (Redundant entry for GVN testing)
-    stream.push_node(ir::OpCode::ADD_I32, ir::Flags::NONE, 1002, 10, 11, 0);
+    stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 1002, 10, 11, 0);
 
     /* * THE ANCHOR: 
      * Using r1001 in a RET instruction. 
      * This marks r1001 as "live," allowing GVN to eliminate r1002 while 
      * preserving the original logic.
      */
-    stream.push_node(ir::OpCode::RET, ir::Flags::NONE, 0, 1001, 0, 0);
+    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::NONE, 0, 1001, 0, 0);
 
     std::cout << "[DEBUG] Transaction Status: " << (stream.is_active_transaction() ? "ACTIVE" : "INACTIVE") << "\n";
 
@@ -88,10 +74,10 @@ int main() {
     
     for(size_t i = 0; i < stream.size(); ++i) {
         // Retrieve unified IRNode view (24-byte alignment)
-        ir::IRNode node = stream.get_node(i); 
+        dgtl::ir::IRNode node = stream.get_node(i);
         
-        bool is_nop = (node.opcode == ir::OpCode::NOP);
-        bool is_dead = (node.flags & ir::Flags::IS_DEAD);
+        bool is_nop = (node.opcode == dgtl::ir::OpCode::NOP);
+        bool is_dead = (node.flags & dgtl::ir::Flags::IS_DEAD);
 
         printf("  Node[%03zu]: Op=%04X, Result=%u, Dead=%s, Nop=%s\n", 
                 static_cast<unsigned long>(i), 
@@ -110,7 +96,7 @@ int main() {
 
     // 7. EMIT NASM ASSEMBLY
     dgtl::isa::DGTLNasmEmitter nasm;
-    core::DGTLSymbolTable symbols; 
+    dgtl::core::SymbolTable symbols(arena);
 
     std::cout << "\n--- GENERATING NASM OUTPUT ---\n";
     try {

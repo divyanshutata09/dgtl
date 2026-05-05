@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,40 +9,41 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/transform/GVN.hpp"
-#include "dgtl/pass/simd/SIMD_Legalizer.hpp"
-#include "dgtl/isa/NASM_Emitter.hpp"
-#include "dgtl/core/Arena.hpp"
+#include "dgtl/dgtl_all.hpp"
 
-using namespace dgtl;
+#include <iostream>
 
 void run_test_pipeline_14_unaligned_load() {
-    std::cout << "--- [DGTL-TEST] 14_unaligned_load ---" << std::endl;
-    core::DGTL_Arena arena(64);
-    ir::IRStream stream(arena, 128);
+    constexpr size_t kArenaMbPerThread = 2;
+    constexpr size_t kReservedNodes = 128;
+    constexpr uint32_t kUnalignedOffset = 3;
+
+    std::cout << "--- [DGTL-TEST] 14_unaligned_load ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
 
     stream.begin_transaction();
     // Simulate an unaligned byte offset load.
-    stream.push_node(ir::OpCode::LOAD, ir::Flags::NONE, 1, 1000, 0, 3, 0);
-    stream.push_node(ir::OpCode::ADD_I32, ir::Flags::NONE, 2, 1, 1, 0, 0);
-    stream.push_node(ir::OpCode::RET, ir::Flags::IS_RETURN, 0, 2, 0, 0, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD, dgtl::ir::Flags::NONE, 1, 1000, 0, kUnalignedOffset, 0);
+    stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 2, 1, 1, 0, 0);
+    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 2, 0, 0, 0);
     stream.commit_transaction();
 
     const size_t before = stream.size();
     dgtl::pass::DGTLGVN gvn;
     gvn.execute(stream);
 
-    const bool size_stable = stream.size() > 0 && stream.size() <= before;
+    const bool size_stable = stream.size() == before;
     const bool integrity_ok = stream.validate_shadow_integrity();
 
     if (size_stable && integrity_ok) {
-        std::cout << "SUCCESS" << std::endl;
+        std::cout << "SUCCESS\n";
         return;
     }
 
-    std::cout << "FAIL" << std::endl;
+    std::cout << "FAIL\n";
     return;
 }
 

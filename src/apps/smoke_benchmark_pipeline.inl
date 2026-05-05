@@ -54,6 +54,42 @@ bool emit_backend(BackendKind backend,
             result.ok = emit_wasm(stream, result.emitted_bytes, result.emitted_text);
             result.emitted_binary = true;
             return result.ok;
+        case BackendKind::arm32:
+            result.ok = emit_arm32(result.emitted_text);
+            result.emitted_binary = false;
+            return result.ok;
+        case BackendKind::riscv64:
+            result.ok = emit_riscv64(result.emitted_text);
+            result.emitted_binary = false;
+            return result.ok;
+        case BackendKind::cuda:
+            result.ok = emit_cuda(stream, result.emitted_text);
+            result.emitted_binary = false;
+            return result.ok;
+        case BackendKind::rocm:
+            result.ok = emit_rocm(stream, result.emitted_text);
+            result.emitted_binary = false;
+            return result.ok;
+        case BackendKind::macho:
+            result.ok = emit_macho(stream, symbols, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::elfobj:
+            result.ok = emit_elfobj(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::staticlib:
+            result.ok = emit_staticlib(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::coffobj:
+            result.ok = emit_coffobj(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
+        case BackendKind::cofflib:
+            result.ok = emit_cofflib(stream, result.emitted_bytes, result.emitted_text);
+            result.emitted_binary = true;
+            return result.ok;
     }
 
     return false;

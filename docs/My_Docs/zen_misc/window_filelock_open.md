@@ -1,0 +1,1 @@
+Stop-Process -Name "dgtl_tests" -Force -ErrorAction SilentlyContinue

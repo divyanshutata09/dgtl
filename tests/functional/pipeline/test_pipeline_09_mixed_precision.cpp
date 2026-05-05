@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,14 +9,20 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl/dgtl_all.hpp"
+
 #include <iostream>
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
 
 void run_test_pipeline_09_mixed_precision() {
-    std::cout << "--- [DGTL-TEST] 09_mixed_precision ---" << std::endl;
-    dgtl::core::DGTL_Arena arena(512); 
-    dgtl::ir::IRStream stream(arena, 1024);
+    constexpr size_t kArenaMbPerThread = 2;
+    constexpr size_t kReservedNodes = 1024;
+    constexpr size_t kExpectedNodeCount = 2;
+
+    std::cout << "--- [DGTL-TEST] 09_mixed_precision ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
 
     stream.begin_transaction();
     
@@ -26,8 +32,8 @@ void run_test_pipeline_09_mixed_precision() {
     
     stream.commit_transaction();
 
-    if (stream.size() > 0) {
-        std::cout << "SUCCESS" << std::endl;
+    if (stream.size() == kExpectedNodeCount) {
+        std::cout << "SUCCESS\n";
     } else {
         return;
     }

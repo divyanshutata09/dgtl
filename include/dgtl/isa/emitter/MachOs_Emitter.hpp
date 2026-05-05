@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -23,6 +23,7 @@
 #include <cstring>
 #include <cstdint>
 #include <array>
+#include <unordered_map>
 
 // Umbrella Entry Point for IR consistency
 #include "dgtl/ir/Global_IR.hpp"
@@ -119,7 +120,7 @@ public:
         bool success;
     };
 
-    explicit MachOEmitter(const dgtl::ir::IRStream& stream, const dgtl::ir::SymbolTable& symbols)
+    explicit MachOEmitter(const dgtl::ir::IRStream& stream, const dgtl::core::SymbolTable& symbols)
         : m_stream(stream), m_symbols(symbols) {}
 
     /**
@@ -129,6 +130,8 @@ public:
     MachOResult emit_to_binary() {
         MachOResult result;
         result.success = false;
+
+        (void)m_symbols;
 
         if (m_stream.is_null() || m_stream.size() == 0) return result;
 
@@ -244,7 +247,7 @@ public:
 
 private:
     const dgtl::ir::IRStream& m_stream;
-    const dgtl::ir::SymbolTable& m_symbols;
+    const dgtl::core::SymbolTable& m_symbols;
 
     [[nodiscard]] static constexpr bool is_valid_gpr_slot(uint32_t slot) noexcept {
         return slot != dgtl::ir::INVALID_SLOT && slot < 32;
@@ -252,19 +255,143 @@ private:
 
     /**
      * @brief Encodes the IR stream into real ARM64 (AArch64) binary machine code.
+     * Two-pass: first build label_map + node_offsets, then emit with branch patching.
      * Each instruction is a fixed-width 32-bit encoding in little-endian byte order.
      */
     std::vector<uint8_t> generate_arm64_binary() {
+        const size_t count = m_stream.size();
         std::vector<uint8_t> code;
-        code.reserve(m_stream.size() * 4);
+        code.reserve(count * 4);
 
-        for (size_t i = 0; i < m_stream.size(); ++i) {
+        // --- Pass 0: Build label_map (frontend label IDs → stream node indices) ---
+        std::unordered_map<uint32_t, size_t> label_map;
+        label_map.reserve(count / 4 + 4);
+        for (size_t i = 0; i < count; ++i) {
             const auto& node = m_stream.get_node(i);
+            if (node.opcode == dgtl::ir::OpCode::LABEL) {
+                uint32_t lid = (node.result_id != dgtl::ir::INVALID_SLOT)
+                                   ? node.result_id : node.op_a;
+                label_map[lid] = i;
+            }
+        }
+        // Resolve a raw branch target through label_map or use as stream index
+        auto resolve_target = [&](uint32_t raw) -> size_t {
+            auto it = label_map.find(raw);
+            if (it != label_map.end()) return it->second;
+            if (static_cast<size_t>(raw) < count) return static_cast<size_t>(raw);
+            return count; // past-end → epilogue
+        };
+
+        // --- Pass 1: Emit instructions; record branch patch sites ---
+        struct BranchPatch32 {
+            size_t insn_byte_offset; // byte offset in `code` of the 4-byte instruction
+            size_t target_node;      // stream node index to branch to
+            bool is_cond;            // conditional (CBZ/CBNZ/B.cond) vs unconditional B
+            uint32_t cond_reg;       // for CBNZ: register index
+        };
+        std::vector<BranchPatch32> patches;
+        patches.reserve(count / 4 + 4);
+
+        // node_byte_offsets[i] = byte offset where node i's instruction starts
+        std::vector<size_t> node_byte_offsets(count + 1, 0);
+
+        for (size_t i = 0; i < count; ++i) {
+            node_byte_offsets[i] = code.size();
+            const auto& node = m_stream.get_node(i);
+
+            // Skip pseudo-ops that emit no instruction
+            if (node.opcode == dgtl::ir::OpCode::NOP ||
+                node.opcode == dgtl::ir::OpCode::LABEL ||
+                node.opcode == dgtl::ir::OpCode::PHI_NODE) {
+                // Emit NOP placeholder to keep fixed-width stride for offsets
+                const uint32_t nop = 0xD503201Fu;
+                code.push_back(nop & 0xFF);
+                code.push_back((nop >> 8) & 0xFF);
+                code.push_back((nop >> 16) & 0xFF);
+                code.push_back((nop >> 24) & 0xFF);
+                continue;
+            }
+
+            // Branch instructions — emit placeholder, record patch
+            if (node.opcode == dgtl::ir::OpCode::BRANCH ||
+                node.opcode == dgtl::ir::OpCode::GOTO) {
+                patches.push_back({code.size(), resolve_target(node.op_a), false, 0});
+                const uint32_t placeholder = 0x14000000u; // B #0
+                code.push_back(placeholder & 0xFF);
+                code.push_back((placeholder >> 8) & 0xFF);
+                code.push_back((placeholder >> 16) & 0xFF);
+                code.push_back((placeholder >> 24) & 0xFF);
+                continue;
+            }
+            if (node.opcode == dgtl::ir::OpCode::BRANCH_COND) {
+                // CBNZ x{op_a}, target
+                patches.push_back({code.size(), resolve_target(node.op_b), true, node.op_a & 0x1Fu});
+                const uint32_t placeholder = 0xB5000000u | (node.op_a & 0x1Fu); // CBNZ x{reg}, #0
+                code.push_back(placeholder & 0xFF);
+                code.push_back((placeholder >> 8) & 0xFF);
+                code.push_back((placeholder >> 16) & 0xFF);
+                code.push_back((placeholder >> 24) & 0xFF);
+                continue;
+            }
+            if (node.opcode == dgtl::ir::OpCode::BRANCH_COMPARE_FUSED) {
+                // CMP x{op_a}, x{op_b} + B.NE target  (2 instructions)
+                const uint32_t rn = node.op_a & 0x1Fu;
+                const uint32_t rm = node.op_b & 0x1Fu;
+                // SUBS XZR, Xn, Xm  (CMP Xn,Xm)
+                const uint32_t cmp_insn = 0xEB000000u | (rm << 16) | (rn << 5) | 0x1Fu;
+                code.push_back(cmp_insn & 0xFF);
+                code.push_back((cmp_insn >> 8) & 0xFF);
+                code.push_back((cmp_insn >> 16) & 0xFF);
+                code.push_back((cmp_insn >> 24) & 0xFF);
+                // B.NE placeholder
+                patches.push_back({code.size(), resolve_target(node.op_c), true, 0xFFu}); // 0xFF = sentinel for B.cond
+                const uint32_t bne_placeholder = 0x54000001u; // B.NE #0
+                code.push_back(bne_placeholder & 0xFF);
+                code.push_back((bne_placeholder >> 8) & 0xFF);
+                code.push_back((bne_placeholder >> 16) & 0xFF);
+                code.push_back((bne_placeholder >> 24) & 0xFF);
+                continue;
+            }
+
             const uint32_t insn = encode_arm64_instruction(node);
             code.push_back(static_cast<uint8_t>(insn & 0xFF));
             code.push_back(static_cast<uint8_t>((insn >> 8) & 0xFF));
             code.push_back(static_cast<uint8_t>((insn >> 16) & 0xFF));
             code.push_back(static_cast<uint8_t>((insn >> 24) & 0xFF));
+        }
+        node_byte_offsets[count] = code.size();
+
+        // --- Pass 2: Patch branch displacements ---
+        for (const auto& p : patches) {
+            const size_t target_node = (p.target_node < count) ? p.target_node : count;
+            const size_t target_byte = node_byte_offsets[target_node];
+            // PC-relative offset in instructions (ARM64 branches are instruction-aligned)
+            const int64_t delta_bytes = static_cast<int64_t>(target_byte) -
+                                        static_cast<int64_t>(p.insn_byte_offset);
+            const int64_t delta_insns = delta_bytes / 4;
+
+            uint32_t insn = 0;
+            std::memcpy(&insn, &code[p.insn_byte_offset], 4);
+
+            if (!p.is_cond) {
+                // Unconditional B: bits [25:0] = imm26 (signed)
+                if (delta_insns >= -(1 << 25) && delta_insns < (1 << 25)) {
+                    insn = 0x14000000u | (static_cast<uint32_t>(delta_insns) & 0x3FFFFFFu);
+                }
+            } else if (p.cond_reg == 0xFFu) {
+                // B.NE: bits [23:5] = imm19 (signed)
+                if (delta_insns >= -(1 << 18) && delta_insns < (1 << 18)) {
+                    insn = 0x54000001u | ((static_cast<uint32_t>(delta_insns) & 0x7FFFFu) << 5);
+                }
+            } else {
+                // CBNZ x{reg}: bits [23:5] = imm19 (signed)
+                if (delta_insns >= -(1 << 18) && delta_insns < (1 << 18)) {
+                    insn = 0xB5000000u | ((static_cast<uint32_t>(delta_insns) & 0x7FFFFu) << 5)
+                                       | (p.cond_reg & 0x1Fu);
+                }
+            }
+
+            std::memcpy(&code[p.insn_byte_offset], &insn, 4);
         }
 
         return code;
@@ -320,7 +447,7 @@ private:
                 if (!is_valid_gpr_slot(node.result_id) || !is_valid_gpr_slot(node.op_a)) {
                     return 0xD503201Fu;
                 }
-                // MOV Wd, Wn ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ ORR Wd, WZR, Wn
+                // MOV Wd, Wn Ã¢â€ â€™ ORR Wd, WZR, Wn
                 return 0x2A0003E0u | (rn << 16) | rd;
             case dgtl::ir::OpCode::LOAD_IMM:
             case dgtl::ir::OpCode::IMMEDIATE: {
@@ -337,7 +464,11 @@ private:
                 }
                 // LDR Wd, [Xn, #offset] (unsigned offset, scaled by 4)
                 const uint32_t base = node.op_a & 0x1F;
-                const uint32_t off12 = (node.op_c & 0xFFF) >> 2;
+                if ((node.op_c & 0x3u) != 0u) {
+                    return 0xD503201Fu;
+                }
+                const uint32_t off_bytes = node.op_c & 0xFFF;
+                const uint32_t off12 = off_bytes >> 2;
                 return 0xB9400000u | (off12 << 10) | (base << 5) | rd;
             }
             case dgtl::ir::OpCode::STORE: {
@@ -345,9 +476,13 @@ private:
                     return 0xD503201Fu;
                 }
                 // STR Wb, [Xn, #offset]
-                const uint32_t base = node.op_a & 0x1F;
-                const uint32_t val = node.op_b & 0x1F;
-                const uint32_t off12 = (node.op_c & 0xFFF) >> 2;
+                const uint32_t val = node.op_a & 0x1F;
+                const uint32_t base = node.op_b & 0x1F;
+                if ((node.op_c & 0x3u) != 0u) {
+                    return 0xD503201Fu;
+                }
+                const uint32_t off_bytes = node.op_c & 0xFFF;
+                const uint32_t off12 = off_bytes >> 2;
                 return 0xB9000000u | (off12 << 10) | (base << 5) | val;
             }
             case dgtl::ir::OpCode::RET:

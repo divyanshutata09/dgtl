@@ -9,35 +9,37 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include <immintrin.h>
+#include "dgtl/dgtl_all.hpp"
+
 #include <chrono>
-#include <vector>
+#include <immintrin.h>
+#include <iostream>
 #include <memory>
-#include "dgtl/pipeline/Pass_Manager.hpp" 
-#include "dgtl/ir/Global_IR.hpp"
 #include "dgtl/pipeline/Performance_Test_Probes.hpp"
 
-using namespace dgtl;
-
 void run_test_simd_5() {
-    std::cout << "--- DGTL-X: BIT-PACKED SIMD STRIKE (V1.0) ---" << std::endl;
+    constexpr size_t kNodeCount = 1000000;
+
+    std::cout << "--- DGTL-X: BIT-PACKED SIMD STRIKE (v1.0.0) ---\n";
     
-    constexpr size_t NODE_COUNT = 1000000;
     // Aligning to 64 bytes for the optManager's Prefetcher
     // FLAG FIXED: Using _aligned_malloc for Windows/MinGW stability
-    void* raw_ptr = _aligned_malloc(NODE_COUNT * sizeof(ir::IRNode), 64);
-    ir::IRNode* buffer = static_cast<ir::IRNode*>(raw_ptr);
+    void* raw_ptr = _aligned_malloc(kNodeCount * sizeof(dgtl::ir::IRNode), 64);
+    auto* buffer = static_cast<dgtl::ir::IRNode*>(raw_ptr);
+    if (buffer == nullptr) {
+        std::cout << "[FAIL] _aligned_malloc failed for SIMD buffer allocation.\n";
+        return;
+    }
 
     // Initialize Bit-Packed Nodes
-    for(size_t i = 0; i < NODE_COUNT; ++i) {
-        buffer[i].opcode = ir::OpCode::MUL_I32;
-        buffer[i].flags = ir::Flags::IS_SIMD_BURST;
+    for (size_t i = 0; i < kNodeCount; ++i) {
+        buffer[i].opcode = dgtl::ir::OpCode::MUL_I32;
+        buffer[i].flags = dgtl::ir::Flags::IS_SIMD_BURST;
         buffer[i].op_a = static_cast<uint32_t>(i);
         buffer[i].op_b = 2; // Factor of 2
     }
 
-    ir::IRStream global_stream(buffer, NODE_COUNT);
+    dgtl::ir::IRStream global_stream(buffer, kNodeCount);
 
     dgtl::pipeline::DGTLoptManager manager;
     auto fold_opt = std::make_unique<dgtl::pipeline::probes::SIMDIntMulFoldingPass>();
@@ -51,15 +53,18 @@ void run_test_simd_5() {
 
     // Integrity Check on Bit-Packed Data
     if (buffer[500].op_a == 1000) {
-        std::cout << "[SUCCESS] Bit-Packed SIMD Strike Verified." << std::endl;
-        std::cout << "[PERF] Execution Time: " << duration << " us" << std::endl;
+        std::cout << "[SUCCESS] Bit-Packed SIMD Strike Verified.\n";
+        std::cout << "[PERF] Execution Time: " << duration << " us\n";
     } else {
-        std::cout << "[FAIL] Data Corruption in op_a. Value: " << buffer[500].op_a << std::endl;
+        std::cout << "[FAIL] Data Corruption in op_a. Value: " << buffer[500].op_a << "\n";
     }
 
     _aligned_free(buffer);
     return;
 }
+
+
+
 
 
 

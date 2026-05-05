@@ -163,6 +163,33 @@ SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
 		case BackendKind::wasm:
 			emit_ok = emit_wasm(a, bytes_a, asm_a) && emit_wasm(b, bytes_b, asm_b);
 			break;
+		case BackendKind::arm32:
+			emit_ok = emit_arm32(asm_a) && emit_arm32(asm_b);
+			break;
+		case BackendKind::riscv64:
+			emit_ok = emit_riscv64(asm_a) && emit_riscv64(asm_b);
+			break;
+		case BackendKind::cuda:
+			emit_ok = emit_cuda(a, asm_a) && emit_cuda(b, asm_b);
+			break;
+		case BackendKind::rocm:
+			emit_ok = emit_rocm(a, asm_a) && emit_rocm(b, asm_b);
+			break;
+		case BackendKind::macho:
+			emit_ok = emit_macho(a, symbols, bytes_a, asm_a) && emit_macho(b, symbols, bytes_b, asm_b);
+			break;
+		case BackendKind::elfobj:
+			emit_ok = emit_elfobj(a, bytes_a, asm_a) && emit_elfobj(b, bytes_b, asm_b);
+			break;
+		case BackendKind::staticlib:
+			emit_ok = emit_staticlib(a, bytes_a, asm_a) && emit_staticlib(b, bytes_b, asm_b);
+			break;
+		case BackendKind::coffobj:
+			emit_ok = emit_coffobj(a, bytes_a, asm_a) && emit_coffobj(b, bytes_b, asm_b);
+			break;
+		case BackendKind::cofflib:
+			emit_ok = emit_cofflib(a, bytes_a, asm_a) && emit_cofflib(b, bytes_b, asm_b);
+			break;
 	}
 
 	const bool deterministic = emit_ok && a.generate_logic_hash() == b.generate_logic_hash() && asm_a == asm_b;
@@ -243,8 +270,9 @@ void run_evolution_step(dgtl::ir::IRStream& stream) {
 		const auto node = stream.get_node(i);
 		if (!node.is_terminator() && node.opcode != dgtl::ir::OpCode::NOP) {
 			auto& node_ref = stream.get_node_ref(i);
-			evolver.mutate(&node_ref);
-			stream.set_node(i, node_ref);
+			if (evolver.apply_mutation(&node_ref, dgtl::ir::evolution::MutationType::CONSTANT_FOLDING)) {
+				stream.set_node(i, node_ref);
+			}
 			return;
 		}
 	}

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -14,11 +14,11 @@
  * STEP 13: GLOBAL VALUE NUMBERING (GVN) - VERSION 3.1 (STABLE FINAL)
  *
  * FIXES:
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â Proper ID propagation (chain resolution bug FIXED)
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â Constant folding restored (critical for pipeline1)
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â PRE-lite strengthened
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â Memory version isolation retained
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â SIMD-safe hashing retained
+ * Ã¢Å“â€ Proper ID propagation (chain resolution bug FIXED)
+ * Ã¢Å“â€ Constant folding restored (critical for pipeline1)
+ * Ã¢Å“â€ PRE-lite strengthened
+ * Ã¢Å“â€ Memory version isolation retained
+ * Ã¢Å“â€ SIMD-safe hashing retained
  */
 
 #pragma once
@@ -70,10 +70,10 @@ class DGTLGVN {
 
     std::vector<uint32_t> id_map;
 
-    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ Memory versioning
+    // Ã°Å¸â€Â¥ Memory versioning
     uint32_t memory_version = 0;
 
-    // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ PRE-lite
+    // Ã°Å¸â€Â¥ PRE-lite
     static constexpr size_t PRE_WINDOW = 64;
     std::vector<ValueKey> pre_keys;
     std::vector<uint32_t> pre_ids;
@@ -115,7 +115,7 @@ public:
             const auto& atom = stream.get_atom_readonly(i);
             const auto& core = stream.get_core_readonly(i);
 
-            // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ Memory barrier
+            // Ã°Å¸â€Â¥ Memory barrier
             if (ir::IRTraits::has_side_effects(atom.opcode, atom.flags)) {
                 memory_version++;
             }
@@ -131,7 +131,7 @@ public:
                 continue;
             }
 
-            // Side effects ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ barrier
+            // Side effects Ã¢â€ â€™ barrier
             const bool has_se =
                 ir::IRTraits::has_side_effects(atom.opcode, atom.flags) ||
                 atom.opcode == ir::OpCode::SYSCALL ||
@@ -163,7 +163,7 @@ public:
             uint32_t b = resolve(core.op_b);
             uint32_t c = resolve(core.op_c);
 
-            // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ CONSTANT FOLDING (RESTORED)
+            // Ã°Å¸â€Â¥ CONSTANT FOLDING (RESTORED)
             if (atom.opcode == ir::OpCode::ADD_I32) {
                 if (is_zero(stream, a, i)) {
                     map_id(core.result_id, b);
@@ -202,10 +202,10 @@ public:
                 static_cast<uint16_t>(temp.opcode),
                 sem_flags,
                 a,b,c,
-                hash ^ memory_version // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ critical isolation
+                hash ^ memory_version // Ã°Å¸â€Â¥ critical isolation
             };
 
-            // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ PRE-LITE STRONG CHECK
+            // Ã°Å¸â€Â¥ PRE-LITE STRONG CHECK
             for (size_t k = pre_keys.size(); k-- > 0;) {
                 if (pre_keys[k] == key) {
                     uint32_t gid = pre_ids[k];
@@ -269,7 +269,7 @@ private:
         while (root < id_map.size() && id_map[root] != root)
             root = id_map[root];
 
-        // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¥ FULL path compression
+        // Ã°Å¸â€Â¥ FULL path compression
         while (id < id_map.size() && id_map[id] != id) {
             uint32_t p = id_map[id];
             id_map[id] = root;

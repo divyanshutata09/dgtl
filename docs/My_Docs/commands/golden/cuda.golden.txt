@@ -1,0 +1,39 @@
+[DGTL] Starting production smoke pipeline
+[DGTL] running constant-fold
+[DGTL] running fusion
+[DGTL] running simd-legalize
+[DGTL] running ai-cost
+[DGTL] running pressure-zero-spill
+[DGTL] running determinism
+[DGTL] running latency
+[DGTL] Release smoke checks
+  [PASS] constant-fold :: <normalized>
+  [PASS] fusion :: mul+add -> fma structural check
+  [PASS] simd-legalize :: expected=0x204 nodes=12
+  [PASS] ai-cost :: <normalized>
+  [PASS] pressure-zero-spill :: spill_candidates=0
+  [PASS] determinism :: hash=0xb413c402303ba602
+  [PASS] latency :: <normalized>
+[DGTL] Backend=cuda (text)
+[DGTL] Nodes=5 PolyMode=off PolyParallel=auto PolyTile=0 LogicHash=0xb413c402303ba602
+.version 7.0
+.target sm_80
+.address_size 64
+
+.visible .entry DGTL_kernel(.param .u64 input, .param .u64 output) {
+    .reg .u64 %rd<16>;
+    .reg .s32 %r<64>;
+    .reg .pred %p<16>;
+    .L0:
+    add.s32 %r20, %r10, %r11;
+    .L1:
+    add.s32 %r21, %r12, %r20;
+    .L2:
+    add.s32 %r22, %r13, %r20;
+    .L3:
+    mul.lo.s32 %r23, %r21, %r22;
+    .L4:
+    ret;
+    ret;
+}
+[DGTL] Pipeline completed successfully

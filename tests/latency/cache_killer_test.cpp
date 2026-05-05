@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,28 +9,31 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <random>
+#include "dgtl/dgtl_all.hpp"
+
 #include <intrin.h>
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/core/Arena.hpp"
+#include <iostream>
 
 void run_cache_killer_test() {
-    // PILLAR 1: Allocate a massive 512MB Strike Zone
-    size_t arena_size_mb = 512;
-    dgtl::core::DGTL_Arena arena(1, arena_size_mb);
-    dgtl::ir::IRStream stream(arena, 10000);
+    constexpr size_t kArenaMbPerThread = 512;
+    constexpr size_t kReservedNodes = 10000;
+    constexpr size_t kThrashBytes = 128ull * 1024ull * 1024ull;
 
-    std::cout << "\033[1;36m[DGTL-STRESS]\033[0m Initialized " << arena_size_mb << "MB Arena." << std::endl;
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
+
+    std::cout << "\033[1;36m[DGTL-STRESS]\033[0m Initialized " << kArenaMbPerThread << "MB Arena.\n";
 
     // PILLAR 2: Cache & TLB Thrashing
     // We write to 128MB of memory in a non-linear fashion to force cache eviction
-    std::cout << "[DGTL-STRESS] Thrashing Caches..." << std::endl;
+    std::cout << "[DGTL-STRESS] Thrashing Caches...\n";
     volatile uint8_t* raw = arena.raw_data();
-    size_t thrash_size = 128 * 1024 * 1024;
-    for (size_t i = 0; i < thrash_size; i += 64) { // Jump by cache lines
+    if (raw == nullptr) {
+        std::cout << "\033[1;31m[FAIL]\033[0m Arena memory was not provisioned.\n";
+        return;
+    }
+
+    for (size_t i = 0; i < kThrashBytes; i += 64) { // Jump by cache lines
         raw[i] = static_cast<uint8_t>(i % 255);
     }
 
@@ -46,12 +49,12 @@ void run_cache_killer_test() {
     uint64_t end = __rdtsc();
     uint64_t latency = end - start;
     
-    std::cout << "\033[1;33m[RESULT]\033[0m Cold-Cache GVN Latency: " << latency << " cycles" << std::endl;
+    std::cout << "\033[1;33m[RESULT]\033[0m Cold-Cache GVN Latency: " << latency << " cycles\n";
 
     if (latency < 2500) {
-        std::cout << "\033[1;32m[opt]\033[0m Stability Verified. Zero-Latency pillars held under pressure." << std::endl;
+        std::cout << "\033[1;32m[opt]\033[0m Stability Verified. Zero-Latency pillars held under pressure.\n";
     } else {
-        std::cout << "\033[1;31m[WARN]\033[0m Cache-miss penalty detected. Analyze TLB pressure." << std::endl;
+        std::cout << "\033[1;31m[WARN]\033[0m Cache-miss penalty detected. Analyze TLB pressure.\n";
     }
 
     return;

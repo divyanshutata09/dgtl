@@ -1,0 +1,12 @@
+=== DGTL VECTOR + OPTIMIZATION AUDIT START ===
+[Alias] 3.77952e+10
+[Reduction] 5.90549e+09
+[Fusion] 441
+[Strided] 1100
+[Branch] 240916852
+[Reg] 210
+[IPO] 118
+[Atomic] 2147450880
+[Vector] 661
+[FalseDep] 33431
+=== AUDIT END ===

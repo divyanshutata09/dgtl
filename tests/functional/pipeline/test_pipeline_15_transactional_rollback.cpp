@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,18 +9,22 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include <iostream>
+#include "dgtl/dgtl_all.hpp"
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
+#include <iostream>
 
 
 void run_test_pipeline_15_transactional_rollback() {
-    std::cout << "--- [DGTL-TEST] 15_rollback_gate ---" << std::endl;
-    dgtl::core::DGTL_Arena arena(512); 
-    dgtl::ir::IRStream stream(arena, 1024);
+    constexpr size_t kArenaMbPerThread = 2;
+    constexpr size_t kReservedNodes = 1024;
 
-    size_t start_size = stream.size();
+    std::cout << "--- [DGTL-TEST] 15_rollback_gate ---\n";
+
+    // Keep this test deterministic: 1 thread, explicit per-thread MB size.
+    dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
+    dgtl::ir::IRStream stream(arena, kReservedNodes);
+
+    const size_t start_size = stream.size();
 
     stream.begin_transaction();
     stream.push_node(dgtl::ir::OpCode::STORE, dgtl::ir::Flags::NONE, 0, 100, 200, 0, 0);
@@ -28,11 +32,10 @@ void run_test_pipeline_15_transactional_rollback() {
     // FAIL THE TRANSACTION
     stream.rollback_transaction();
 
-    // The size should have returned to start_size
     if (stream.size() == start_size) {
-        std::cout << "SUCCESS" << std::endl;
+        std::cout << "SUCCESS\n";
     } else {
-        std::cout << "FAIL: Stream size changed after rollback!" << std::endl;
+        std::cout << "FAIL: Stream size changed after rollback!\n";
         return;
     }
     return;

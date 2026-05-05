@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-/* ---------- IR OpCodes (mirrored from internal IR_Types) ---------- */
+/* ---------- IR OpCodes (stable SDK opcode set translated by bridge) ---------- */
 typedef enum dgtl_opcode {
     DGTL_OP_NOP       = 0x00,
     DGTL_OP_CONST     = 0x01,

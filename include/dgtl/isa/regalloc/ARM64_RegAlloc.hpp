@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -125,9 +125,26 @@ public:
             
             // Check if this is a SIMD operation to use the correct mapping table
             const bool is_simd = (atoms[i].flags & ir::Flags::IS_SIMD_BURST);
+            const bool is_imm_node =
+                atoms[i].opcode == ir::OpCode::LOAD_IMM ||
+                atoms[i].opcode == ir::OpCode::IMMEDIATE ||
+                atoms[i].opcode == ir::OpCode::CONST;
 
+            if (cores[i].result_id != ir::INVALID_SLOT) {
+                ensure_capacity(cores[i].result_id);
+            }
             if (cores[i].op_a != ir::INVALID_SLOT) {
+                ensure_capacity(cores[i].op_a);
+            }
+            if (cores[i].op_b != ir::INVALID_SLOT) {
+                ensure_capacity(cores[i].op_b);
+            }
+
+            if (!is_imm_node && cores[i].op_a != ir::INVALID_SLOT) {
                 uint8_t phys = is_simd ? get_phys_vec_reg(cores[i].op_a) : get_phys_reg(cores[i].op_a);
+                if (phys == UNMAPPED_REG) {
+                    phys = is_simd ? map_live_in_vec_reg(cores[i].op_a) : map_live_in_reg(cores[i].op_a);
+                }
                 if (phys != UNMAPPED_REG) {
                     cores[i].op_a = phys; 
                     changed = true; 
@@ -138,8 +155,11 @@ public:
                     }
                 }
             }
-            if (cores[i].op_b != ir::INVALID_SLOT) {
+            if (!is_imm_node && cores[i].op_b != ir::INVALID_SLOT) {
                 uint8_t phys = is_simd ? get_phys_vec_reg(cores[i].op_b) : get_phys_reg(cores[i].op_b);
+                if (phys == UNMAPPED_REG) {
+                    phys = is_simd ? map_live_in_vec_reg(cores[i].op_b) : map_live_in_reg(cores[i].op_b);
+                }
                 if (phys != UNMAPPED_REG) {
                     cores[i].op_b = phys; 
                     changed = true; 
@@ -162,6 +182,30 @@ public:
                     phys_dest = is_simd ? occupy_vec_reg_specific(cores[i].result_id, preferred_reg)
                                         : occupy_reg_specific(cores[i].result_id, preferred_reg);
                 }
+
+                    // If coalescing failed, the preferred register is still occupied by the dying
+                    // operand (expire_dead_registers runs at the TOP of the loop, before operand
+                    // resolution, so the old mapping was never cleared). Release it now so the
+                    // result can inherit the slot without consuming a fresh register.
+                    if (phys_dest == UNMAPPED_REG && preferred_reg != UNMAPPED_REG) {
+                        auto release_dying = [&](uint32_t reg, bool simd) {
+                            uint32_t old_vid = simd ? vec_reg_to_id[reg] : reg_to_id[reg];
+                            if (old_vid == ir::INVALID_SLOT) return;
+                            if (liveness.is_live_after(old_vid, i)) return; // still needed
+                            if (simd) {
+                                vec_free_mask |= (1u << reg);
+                                if (old_vid < id_to_vec_reg.size()) id_to_vec_reg[old_vid] = UNMAPPED_REG;
+                                vec_reg_to_id[reg] = ir::INVALID_SLOT;
+                            } else {
+                                free_mask |= (1u << reg);
+                                if (old_vid < id_to_reg.size()) id_to_reg[old_vid] = UNMAPPED_REG;
+                                reg_to_id[reg] = ir::INVALID_SLOT;
+                            }
+                        };
+                        release_dying(preferred_reg, is_simd);
+                        phys_dest = is_simd ? occupy_vec_reg_specific(cores[i].result_id, preferred_reg)
+                                           : occupy_reg_specific(cores[i].result_id, preferred_reg);
+                    }
 
                 // Fallback to hardware-accelerated scan if coalescing fails
                 if (phys_dest == UNMAPPED_REG) {
@@ -197,6 +241,34 @@ public:
     }
 
 private:
+    void ensure_capacity(uint32_t virtual_id) {
+        if (virtual_id == ir::INVALID_SLOT) {
+            return;
+        }
+        const size_t needed = static_cast<size_t>(virtual_id) + 1u;
+        if (needed <= id_to_reg.size()) {
+            return;
+        }
+        id_to_reg.resize(needed, UNMAPPED_REG);
+        id_to_vec_reg.resize(needed, UNMAPPED_REG);
+    }
+
+    [[nodiscard]] uint8_t map_live_in_reg(uint32_t virtual_id) noexcept {
+        const uint32_t phys = find_and_occupy_reg(virtual_id);
+        if (phys == UNMAPPED_REG) {
+            return UNMAPPED_REG;
+        }
+        return static_cast<uint8_t>(phys);
+    }
+
+    [[nodiscard]] uint8_t map_live_in_vec_reg(uint32_t virtual_id) noexcept {
+        const uint32_t phys = find_and_occupy_vec_reg(virtual_id);
+        if (phys == UNMAPPED_REG) {
+            return UNMAPPED_REG;
+        }
+        return static_cast<uint8_t>(phys);
+    }
+
     /**
      * @brief Specific occupancy for register coalescing.
      */

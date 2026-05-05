@@ -27,8 +27,96 @@
 #include <cstdint>
 #include <mutex>
 #include <atomic>
+#include <unordered_map>
 
 namespace dgtl::ir {
+
+// ============================================================================
+// FORWARD DECLARATIONS - Backend Profiling & Hybrid Execution (NEW - DGTL v1.0)
+// ============================================================================
+
+/**
+ * @brief Backend Profile - Tracking per-target compilation metrics
+ * Enables adaptive compilation tier selection and cross-platform optimization
+ */
+struct BackendProfile {
+    enum class TargetISA : uint8_t {
+        X64_AVX512 = 0,
+        ARM64_SVE = 1,
+        ARM32_NEON = 2,
+        RISCV64_RV64GC = 3,
+        WASM = 4,
+        CUDA_PTX = 5,
+        ROCM_LLVMIR = 6,
+        NASM_X64 = 7,
+        FPGA_VERILOG = 8
+    };
+
+    enum class CompilationTier : uint8_t {
+        JIT_FAST = 0,
+        AOT_INTENSIVE = 1,
+        ADAPTIVE_HYBRID = 2
+    };
+
+    TargetISA target = TargetISA::X64_AVX512;
+    uint64_t execution_time_us = 0;
+    uint64_t calls_count = 0;
+    uint32_t cache_hits = 0;
+    uint32_t cache_misses = 0;
+    float avg_compilation_latency_us = 0.0f;
+    CompilationTier current_tier = CompilationTier::JIT_FAST;
+    uint32_t tier_switch_count = 0;
+
+    struct SpeculationMetrics {
+        uint32_t speculations_made = 0;
+        uint32_t speculations_verified = 0;
+        uint32_t deopt_triggers = 0;
+        float success_rate() const noexcept {
+            if (speculations_made == 0) return 0.0f;
+            return 100.0f * speculations_verified / speculations_made;
+        }
+    } speculation;
+
+    struct LoopMetrics {
+        uint32_t loops_detected = 0;
+        uint32_t loops_unrolled = 0;
+        uint64_t total_iterations = 0;
+        float avg_trip_count = 0.0f;
+    } loops;
+
+    struct SIMDMetrics {
+        uint32_t vectorizable_ops = 0;
+        uint32_t vectorized_ops = 0;
+        uint32_t gather_ops = 0;
+        uint32_t scatter_ops = 0;
+        float utilization_percent = 0.0f;
+    } simd;
+};
+
+/**
+ * @brief Profiling Data - Runtime execution profile for PGO
+ */
+struct ProfilingData {
+    struct BlockMetrics {
+        uint64_t execution_count = 0;
+        float hotness_score = 0.0f;
+    };
+    
+    std::unordered_map<uint32_t, BlockMetrics> block_metrics;
+    
+    void record_block_execution(uint32_t block_id) noexcept {
+        block_metrics[block_id].execution_count++;
+    }
+    
+    float compute_hotness_score(uint32_t block_id) const noexcept {
+        auto it = block_metrics.find(block_id);
+        if (it == block_metrics.end()) return 0.0f;
+        
+        static thread_local uint64_t max_count = 1;
+        max_count = std::max(max_count, it->second.execution_count);
+        return static_cast<float>(it->second.execution_count) / max_count;
+    }
+};
 
 // ======================================================
 // 🔹 IR STREAM
@@ -66,6 +154,15 @@ private:
     // Memory Ownership Flags
     bool owns_aligned_alloc_storage = false;
     bool owns_joined_buffer = false;
+
+    // ========================================================================
+    // NEW: FRONTEND CONTEXT & LANGUAGE SUPPORT
+    // ========================================================================
+    FrontendLanguage frontend_lang = FrontendLanguage::UNIVERSAL;
+    TypeContext default_type_ctx;
+    std::unordered_map<uint32_t, OwnershipLifetime> ownership_tracking;  // Node ID -> ownership info
+    std::unordered_map<uint32_t, ConcurrencyClass> concurrency_map;      // Node ID -> concurrency class
+    std::unordered_map<uint32_t, DSAType> dsa_map;                       // Node ID -> DSA type
 
 public:
     IRStream() = default;
@@ -170,7 +267,38 @@ public:
     void push_shadow_fold(const IRNode& node) noexcept;
     void perform_gvn() noexcept;
     void perform_dead_code_elimination() noexcept;
+
+    void optimize_memory_access_patterns() noexcept;
     void evolve_node(IRNode* node);
+
+    // ============================================================================
+    // ADVANCED OPTIMIZATION PASSES (NEW - BETTER THAN LLVM)
+    // ============================================================================
+    void perform_speculative_optimization() noexcept;
+    void perform_loop_unrolling(uint8_t unroll_factor = 4) noexcept;
+    void optimize_branch_prediction() noexcept;
+    void apply_backend_specific_optimizations(BackendProfile::TargetISA target) noexcept;
+    void perform_profile_guided_optimization(const ProfilingData& profile_data) noexcept;
+    void analyze_vectorization_patterns() noexcept;
+    
+    // ============================================================================
+    // BACKEND-AWARE INSTRUCTION OPTIMIZATION (NEW)
+    // ============================================================================
+    void apply_backend_instruction_selection(BackendProfile::TargetISA target) noexcept;
+    void dispatch_simd_operations(BackendProfile::TargetISA target) noexcept;
+    void optimize_gather_scatter_patterns(BackendProfile::TargetISA target) noexcept;
+    
+    // ============================================================================
+    // PROFILE-GUIDED OPTIMIZATION & HYBRID TIER TRACKING (NEW)
+    // ============================================================================
+    BackendProfile::CompilationTier compute_adaptive_tier(uint32_t function_id) noexcept;
+    void record_function_call(uint32_t function_id) noexcept;
+    void record_block_hotness(uint32_t block_id) noexcept;
+    BackendProfile& get_backend_profile(uint32_t stream_id) noexcept;
+    void update_backend_stats(uint32_t stream_id, uint64_t compilation_time_us) noexcept;
+    void record_cache_access(uint32_t stream_id, bool hit) noexcept;
+    void analyze_simd_opportunities() noexcept;
+    void analyze_speculation_opportunities() noexcept;
 
     // ======================================================
     // 🔹 RAW ACCESS (TRANSACTION-AWARE)
@@ -213,6 +341,120 @@ public:
 
     Iterator begin() const noexcept { return {this, 0}; }
     Iterator end() const noexcept { return {this, count}; }
+
+    // ============================================================================
+    // NEW: FRONTEND LANGUAGE & OWNERSHIP TRACKING (UNIVERSAL LANGUAGE SUPPORT)
+    // ============================================================================
+
+    void set_frontend_language(FrontendLanguage lang) noexcept {
+        frontend_lang = lang;
+    }
+
+    [[nodiscard]] FrontendLanguage get_frontend_language() const noexcept {
+        return frontend_lang;
+    }
+
+    void set_default_type_context(const TypeContext& ctx) noexcept {
+        default_type_ctx = ctx;
+    }
+
+    [[nodiscard]] const TypeContext& get_default_type_context() const noexcept {
+        return default_type_ctx;
+    }
+
+    // Ownership Tracking Methods
+    void track_ownership(uint32_t node_id, OwnershipModel model, uint32_t acquire_site) noexcept {
+        ownership_tracking[node_id] = {
+            model, acquire_site, 0, 0, false, false
+        };
+    }
+
+    void record_ownership_transfer(uint32_t node_id, uint32_t transfer_site) noexcept {
+        auto it = ownership_tracking.find(node_id);
+        if (it != ownership_tracking.end()) {
+            it->second.transfer_count++;
+            it->second.last_transfer_site = transfer_site;  // Record diagnostic site
+        }
+    }
+
+    void release_ownership(uint32_t node_id, uint32_t release_site) noexcept {
+        auto it = ownership_tracking.find(node_id);
+        if (it != ownership_tracking.end()) {
+            it->second.release_site = release_site;
+        }
+    }
+
+    [[nodiscard]] const OwnershipLifetime* get_ownership_info(uint32_t node_id) const noexcept {
+        auto it = ownership_tracking.find(node_id);
+        return it != ownership_tracking.end() ? &it->second : nullptr;
+    }
+
+    // Concurrency Tracking Methods
+    void mark_concurrent(uint32_t node_id, ConcurrencyClass concur_class) noexcept {
+        concurrency_map[node_id] = concur_class;
+    }
+
+    [[nodiscard]] ConcurrencyClass get_concurrency_class(uint32_t node_id) const noexcept {
+        auto it = concurrency_map.find(node_id);
+        return it != concurrency_map.end() ? it->second : ConcurrencyClass::SEQUENTIAL;
+    }
+
+    [[nodiscard]] uint32_t count_concurrent_ops() const noexcept {
+        uint32_t count = 0;
+        for (const auto& [_, concur] : concurrency_map) {
+            if (concur != ConcurrencyClass::SEQUENTIAL) count++;
+        }
+        return count;
+    }
+
+    // DSA Type Tracking Methods
+    void mark_dsa_operation(uint32_t node_id, DSAType dsa_type) noexcept {
+        dsa_map[node_id] = dsa_type;
+    }
+
+    [[nodiscard]] DSAType get_dsa_type(uint32_t node_id) const noexcept {
+        auto it = dsa_map.find(node_id);
+        return it != dsa_map.end() ? it->second : DSAType::SCALAR;
+    }
+
+    [[nodiscard]] bool has_graph_operations() const noexcept {
+        for (const auto& [_, dsa] : dsa_map) {
+            if (dsa == DSAType::GRAPH) return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool has_tensor_operations() const noexcept {
+        for (const auto& [_, dsa] : dsa_map) {
+            if (dsa == DSAType::TENSOR) return true;
+        }
+        return false;
+    }
+
+    // Language-Specific Compilation Decisions
+    [[nodiscard]] bool is_mlir_capable() const noexcept {
+        // Check if IR can be lowered to MLIR representation
+        return frontend_lang == FrontendLanguage::UNIVERSAL ||
+               frontend_lang == FrontendLanguage::MYZON ||
+               frontend_lang == FrontendLanguage::CPP;
+    }
+
+    [[nodiscard]] bool requires_llvm_lowering() const noexcept {
+        // Check if IR requires LLVM-style lowering
+        return has_graph_operations() || 
+               count_concurrent_ops() > 0 ||
+               has_tensor_operations();
+    }
+
+    [[nodiscard]] uint32_t estimate_complexity_score() const noexcept {
+        // Estimate compilation complexity for tier selection
+        uint32_t score = 0;
+        score += count_concurrent_ops() * 10;        // Concurrency is expensive
+        score += ownership_tracking.size() * 2;      // Ownership tracking overhead
+        if (has_graph_operations()) score += 50;     // Graphs need polyhedral analysis
+        if (has_tensor_operations()) score += 30;    // Tensors need shape inference
+        return score;
+    }
 };
 
 // ======================================================
