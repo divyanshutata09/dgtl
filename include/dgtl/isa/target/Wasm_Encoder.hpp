@@ -25,6 +25,12 @@
 #include <string_view> 
 #include <limits>
 #include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/core/Target.hpp"
+#include "dgtl/semantic/Symbol_Table.hpp"
+#include "dgtl/utils/assert/Assertions.hpp"
+#include "dgtl/utils/container/Flat_Map.hpp"
+#include "dgtl/backend/lowering/ABI_Lowering.hpp"
+#include "dgtl/ir/interop/IR_Analysis_Bridge.hpp"
 
 namespace dgtl::exec {
 
@@ -44,8 +50,7 @@ public:
      * PILLAR 3: Validates stream integrity before encoding to prevent malformed WASM.
      */
     void encode(const ir::IRStream& stream) {
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
-        if (!stream.validate_shadow_integrity()) [[unlikely]] return;
+        if (!dgtl::ir::bridge_validation::is_stream_ready(stream, true)) [[unlikely]] return;
 
         _binary_buffer.clear();
 
@@ -200,9 +205,44 @@ public:
                         break;
 
                     case ir::OpCode::CALL: {
-                        // Runtime call placeholder: push 0 as result (import linking TODO).
-                        body.push_back(0x41); // i32.const 0
-                        this->emit_leb128_to(body, 0);
+                        std::vector<uint32_t> args;
+                        args.reserve(8);
+                        if (node.op_b != ir::INVALID_SLOT) args.push_back(node.op_b);
+                        if (node.op_c != ir::INVALID_SLOT) args.push_back(node.op_c);
+                        if (node.logic_flags != ir::INVALID_SLOT) args.push_back(node.logic_flags);
+                        for (uint32_t extra : stream.get_call_overflow_args(i)) {
+                            if (extra != ir::INVALID_SLOT) {
+                                args.push_back(extra);
+                            }
+                        }
+
+                        const std::vector<uint32_t> layout_words = stream.get_call_abi_layout_words(i);
+                        if (layout_words.size() >= 4) {
+                            const uint32_t param_count = layout_words[0];
+                            const size_t required_words = 4u + static_cast<size_t>(param_count) * 4u;
+                            if (layout_words.size() >= required_words) {
+                                const size_t count = std::min<size_t>(param_count, args.size());
+                                for (size_t ai = 0; ai < count; ++ai) {
+                                    if (!this->is_valid_local(args[ai], max_reg)) {
+                                        continue;
+                                    }
+                                    body.push_back(0x20); // local.get
+                                    this->emit_leb128_to(body, args[ai]);
+                                }
+                            }
+                        } else {
+                            for (uint32_t arg : args) {
+                                if (!this->is_valid_local(arg, max_reg)) {
+                                    continue;
+                                }
+                                body.push_back(0x20); // local.get
+                                this->emit_leb128_to(body, arg);
+                            }
+                        }
+
+                        body.push_back(0x10); // call
+                        this->emit_leb128_to(body, node.op_a == ir::INVALID_SLOT ? 0u : node.op_a);
+
                         if (node.result_id != ir::INVALID_SLOT && this->is_valid_local(node.result_id, max_reg)) {
                             body.push_back(0x21); // local.set
                             this->emit_leb128_to(body, node.result_id);

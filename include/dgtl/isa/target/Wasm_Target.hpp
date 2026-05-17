@@ -23,6 +23,12 @@
 #include <stdexcept>
 #include <unordered_map>
 #include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/ir/base/IR_PrintSerialDumper.hpp"
+#include "dgtl/core/Target.hpp"
+#include "dgtl/semantic/Symbol_Table.hpp"
+#include "dgtl/utils/assert/Assertions.hpp"
+#include "dgtl/utils/container/Flat_Map.hpp"
+#include "dgtl/backend/lowering/ABI_Lowering.hpp"
 
 namespace dgtl::target {
 
@@ -240,13 +246,72 @@ public:
                     out += "    jne L_" + std::to_string(resolve_target(n.op_c)) + "\n";
                     break;
                 case ir::OpCode::CALL:
-                    out += "    sub rsp, 32\n";
-                    if (n.op_b != ir::INVALID_SLOT)
-                        out += "    mov rcx, r" + std::to_string(n.op_b % 16) + "\n";
-                    if (n.op_c != ir::INVALID_SLOT)
-                        out += "    mov rdx, r" + std::to_string(n.op_c % 16) + "\n";
-                    out += "    call __myzon_print_i64\n";
-                    out += "    add rsp, 32\n";
+                    {
+                        std::vector<uint32_t> args;
+                        args.reserve(8);
+                        if (n.op_b != ir::INVALID_SLOT) args.push_back(n.op_b);
+                        if (n.op_c != ir::INVALID_SLOT) args.push_back(n.op_c);
+                        if (n.logic_flags != ir::INVALID_SLOT) args.push_back(n.logic_flags);
+                        for (uint32_t extra : stream.get_call_overflow_args(i)) {
+                            if (extra != ir::INVALID_SLOT) {
+                                args.push_back(extra);
+                            }
+                        }
+
+                        auto map_reg_name = [](uint32_t reg_id) -> const char* {
+                            switch (reg_id) {
+                                case 0u: return "rdi";
+                                case 1u: return "rsi";
+                                case 2u: return "rdx";
+                                case 3u: return "rcx";
+                                case 4u: return "r8";
+                                case 5u: return "r9";
+                                default: return nullptr;
+                            }
+                        };
+
+                        const std::vector<uint32_t> layout_words = stream.get_call_abi_layout_words(i);
+                        if (layout_words.size() >= 4) {
+                            const uint32_t param_count = layout_words[0];
+                            const uint32_t stack_size = layout_words[1];
+                            const size_t required_words = 4u + static_cast<size_t>(param_count) * 4u;
+                            if (layout_words.size() >= required_words && stack_size > 0u) {
+                                out += "    sub rsp, " + std::to_string(stack_size) + "\n";
+                            }
+
+                            if (layout_words.size() >= required_words) {
+                                size_t w = 4u;
+                                const size_t count = std::min<size_t>(param_count, args.size());
+                                for (size_t ai = 0; ai < count; ++ai, w += 4u) {
+                                    const bool in_register = (layout_words[w] != 0u);
+                                    const uint32_t reg_id = layout_words[w + 1u];
+                                    const uint32_t stack_offset = layout_words[w + 2u];
+
+                                    if (in_register) {
+                                        if (const char* dst = map_reg_name(reg_id); dst != nullptr) {
+                                            out += "    mov " + std::string(dst) + ", r" + std::to_string(args[ai] % 16u) + "\n";
+                                        }
+                                    } else {
+                                        out += "    mov rax, r" + std::to_string(args[ai] % 16u) + "\n";
+                                        out += "    mov [rsp + " + std::to_string(stack_offset) + "], rax\n";
+                                    }
+                                }
+                            }
+
+                            out += "    call _DGTL_fn_" + std::to_string(n.op_a) + "\n";
+                            if (layout_words.size() >= required_words && stack_size > 0u) {
+                                out += "    add rsp, " + std::to_string(stack_size) + "\n";
+                            }
+                        } else {
+                            out += "    sub rsp, 32\n";
+                            if (n.op_b != ir::INVALID_SLOT)
+                                out += "    mov rcx, r" + std::to_string(n.op_b % 16) + "\n";
+                            if (n.op_c != ir::INVALID_SLOT)
+                                out += "    mov rdx, r" + std::to_string(n.op_c % 16) + "\n";
+                            out += "    call _DGTL_fn_" + std::to_string(n.op_a) + "\n";
+                            out += "    add rsp, 32\n";
+                        }
+                    }
                     break;
                 case ir::OpCode::SYSCALL:
                     out += "    syscall\n";
@@ -267,7 +332,11 @@ public:
                     break;
                 default:
                     // Stable fallback to preserve assembly validity.
-                    out += "    nop ; Unsupported Op fallback\n";
+                    out += "    nop ; Unsupported Op fallback (";
+                    out += std::string(ir::opcode_name(n.opcode));
+                    out += " #";
+                    out += std::to_string(static_cast<uint32_t>(n.opcode));
+                    out += ")\n";
                     break;
             }
         }

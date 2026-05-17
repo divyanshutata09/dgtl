@@ -36,6 +36,41 @@ struct DGTLBasicBlock {
 
 class DGTLControlFlowGraph {
 public:
+    /// Rebuild this CFG from IRStream's canonical block/edge view.
+    /// This keeps frontend/core CFG structures linked to the IR-layer CFG
+    /// without re-parsing branch opcodes in multiple places.
+    [[nodiscard]] bool rebuild_from_ir_stream(const ir::IRStream& stream) {
+        blocks_.clear();
+        next_block_id_ = 0;
+
+        const auto& ir_blocks = stream.get_basic_blocks();
+        const auto& ir_edges  = stream.get_cfg_edges();
+        if (ir_blocks.empty()) {
+            return true;
+        }
+
+        blocks_.reserve(ir_blocks.size());
+        uint32_t max_id = 0;
+        for (const auto& b : ir_blocks) {
+            DGTLBasicBlock blk;
+            blk.id = b.id;
+            blk.begin_index = b.begin;
+            blk.end_index = b.end;
+            blk.sealed = true;
+            blocks_.push_back(blk);
+            if (b.id > max_id) max_id = b.id;
+        }
+        next_block_id_ = max_id + 1u;
+
+        for (const auto& e : ir_edges) {
+            if (!add_edge(e.from, e.to)) {
+                return false;
+            }
+        }
+
+        return validate();
+    }
+
     [[nodiscard]] uint32_t create_block(size_t begin_index = 0) {
         const uint32_t id = next_block_id_++;
         blocks_.push_back(DGTLBasicBlock{id, begin_index, begin_index, false, {}, {}});
@@ -87,14 +122,64 @@ public:
                                       uint32_t result_slot,
                                       std::span<const DGTLPhiInput> inputs,
                                       uint16_t flags = dgtl::ir::Flags::NONE) {
-        (void)merge_block;
         if (inputs.empty()) {
             return dgtl::ir::INVALID_SLOT;
         }
+        if (result_slot == dgtl::ir::INVALID_SLOT) {
+            return dgtl::ir::INVALID_SLOT;
+        }
 
-        const uint32_t op_a = inputs.size() > 0 ? inputs[0].slot_id : dgtl::ir::INVALID_SLOT;
-        const uint32_t op_b = inputs.size() > 1 ? inputs[1].slot_id : dgtl::ir::INVALID_SLOT;
-        const uint32_t op_c = inputs.size() > 2 ? inputs[2].slot_id : dgtl::ir::INVALID_SLOT;
+        const DGTLBasicBlock* merge = find_block(merge_block);
+        if (!merge) {
+            return dgtl::ir::INVALID_SLOT;
+        }
+
+        for (const auto& in : inputs) {
+            if (in.predecessor_block == dgtl::ir::INVALID_SLOT ||
+                in.slot_id == dgtl::ir::INVALID_SLOT) {
+                return dgtl::ir::INVALID_SLOT;
+            }
+            if (std::find(merge->predecessors.begin(),
+                          merge->predecessors.end(),
+                          in.predecessor_block) == merge->predecessors.end()) {
+                return dgtl::ir::INVALID_SLOT;
+            }
+        }
+
+        std::vector<uint32_t> work;
+        work.reserve(inputs.size());
+        for (const auto& in : inputs) {
+            work.push_back(in.slot_id);
+        }
+
+        uint32_t next_temp_slot = std::max(stream.get_max_id(), result_slot);
+        if (next_temp_slot == dgtl::ir::INVALID_SLOT) {
+            return dgtl::ir::INVALID_SLOT;
+        }
+        ++next_temp_slot;
+
+        // IRNode stores up to 3 incoming slots; fold larger joins into a PHI tree.
+        while (work.size() > 3) {
+            if (next_temp_slot == dgtl::ir::INVALID_SLOT) {
+                return dgtl::ir::INVALID_SLOT;
+            }
+
+            const uint32_t temp_slot = next_temp_slot++;
+            stream.push_node(dgtl::ir::OpCode::PHI_NODE,
+                             flags,
+                             temp_slot,
+                             work[0],
+                             work[1],
+                             work[2],
+                             0);
+
+            work.erase(work.begin(), work.begin() + 3);
+            work.insert(work.begin(), temp_slot);
+        }
+
+        const uint32_t op_a = work.size() > 0 ? work[0] : dgtl::ir::INVALID_SLOT;
+        const uint32_t op_b = work.size() > 1 ? work[1] : dgtl::ir::INVALID_SLOT;
+        const uint32_t op_c = work.size() > 2 ? work[2] : dgtl::ir::INVALID_SLOT;
 
         stream.push_node(dgtl::ir::OpCode::PHI_NODE,
                          flags,

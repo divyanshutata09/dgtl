@@ -11,8 +11,8 @@
 
 /*
  * DGTL (Deep General-purpose Transformation Layer) version 1.0.0
- * STEP 6: TLS Ã¢â€ â€™ IRStream FLUSH & MERGE LAYER
- * VERSION 3.3: FINAL STABLE (TLS-FIXED + ZERO-RED + V4-ALIGNED)
+ * STEP 6: TLS -> IRStream FLUSH & MERGE LAYER
+ * VERSION 3.4: LINEARIZED FLUSH ACCOUNTING + CLEAN HEADER SURFACE
  */
 
 #pragma once
@@ -23,8 +23,8 @@
 #include <chrono>
 #include <thread>
 
-#include "dgtl/core/Context.hpp"        // brings g_tls_buffer
-#include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/core/Compiler_Context.hpp"  // brings g_tls_buffer
+#include "dgtl/ir/base/IR_Stream.hpp"
 
 namespace dgtl::runtime {
 
@@ -72,6 +72,35 @@ private:
         tls.remaining_shadow = ::dgtl::core::DGTLContext::PageSizeNodes;
     }
 
+    class PendingFlushScope {
+    public:
+        explicit PendingFlushScope(TLSFlushMerge& owner) noexcept
+            : owner_(owner) {
+            owner_.pending_flushes.fetch_add(1, std::memory_order_acq_rel);
+        }
+
+        ~PendingFlushScope() {
+            owner_.pending_flushes.fetch_sub(1, std::memory_order_acq_rel);
+        }
+
+        PendingFlushScope(const PendingFlushScope&) = delete;
+        PendingFlushScope& operator=(const PendingFlushScope&) = delete;
+
+    private:
+        TLSFlushMerge& owner_;
+    };
+
+    static void append_nodes(
+        ir::IRStream& global_stream,
+        const ir::IRAtom* atoms,
+        const ir::IRCore* cores,
+        size_t used
+    ) noexcept {
+        for (size_t i = 0; i < used; ++i) {
+            global_stream.push_node(atoms[i], cores[i]);
+        }
+    }
+
 public:
     TLSFlushMerge() = default;
     TLSFlushMerge(const TLSFlushMerge&) = delete;
@@ -83,7 +112,7 @@ public:
     void flush_primary(ir::IRStream& global_stream) noexcept {
         auto& tls = ::dgtl::core::g_tls_buffer;
 
-        // Ã°Å¸â€â€™ Safety: ensure valid buffers
+        // Safety: ensure valid buffers
         if (!tls.base_atom_ptr || !tls.base_core_ptr ||
             !tls.atom_ptr || !tls.core_ptr) {
             return;
@@ -96,16 +125,13 @@ public:
             return;
         }
 
+        PendingFlushScope pending_scope(*this);
         std::lock_guard<std::mutex> lock(merge_mutex);
 
-        for (size_t i = 0; i < used; ++i) {
-            global_stream.push_node(
-                tls.base_atom_ptr[i],
-                tls.base_core_ptr[i]
-            );
-        }
+        append_nodes(global_stream, tls.base_atom_ptr, tls.base_core_ptr, used);
+        flush_epoch.fetch_add(1, std::memory_order_release);
 
-        // Ã°Å¸â€Â Reset primary buffer
+        // Reset primary buffer
         reset_primary(tls);
     }
 
@@ -115,7 +141,7 @@ public:
     void flush_shadow(ir::IRStream& global_stream) noexcept {
         auto& tls = ::dgtl::core::g_tls_buffer;
 
-        // Ã°Å¸â€â€™ Safety: ensure valid buffers
+        // Safety: ensure valid buffers
         if (!tls.base_shadow_atom_ptr || !tls.base_shadow_core_ptr ||
             !tls.shadow_atom_ptr || !tls.shadow_core_ptr) {
             return;
@@ -128,16 +154,13 @@ public:
             return;
         }
 
+        PendingFlushScope pending_scope(*this);
         std::lock_guard<std::mutex> lock(merge_mutex);
 
-        for (size_t i = 0; i < used; ++i) {
-            global_stream.push_node(
-                tls.base_shadow_atom_ptr[i],
-                tls.base_shadow_core_ptr[i]
-            );
-        }
+        append_nodes(global_stream, tls.base_shadow_atom_ptr, tls.base_shadow_core_ptr, used);
+        flush_epoch.fetch_add(1, std::memory_order_release);
 
-        // Ã°Å¸â€Â Reset shadow buffer
+        // Reset shadow buffer
         reset_shadow(tls);
     }    
     /**
@@ -162,33 +185,55 @@ public:
      * @return true if all flushes completed, false if timeout
      */
     [[nodiscard]] bool wait_pending_flushes(uint64_t timeout_ns = 0) noexcept {
-        auto start = std::chrono::high_resolution_clock::now();
+        const auto start = std::chrono::steady_clock::now();
+        uint32_t spin_count = 0;
         
         while (pending_flushes.load(std::memory_order_acquire) > 0) {
             if (timeout_ns > 0) {
-                auto elapsed = std::chrono::high_resolution_clock::now() - start;
+                const auto elapsed = std::chrono::steady_clock::now() - start;
                 if (std::chrono::nanoseconds(elapsed).count() > static_cast<int64_t>(timeout_ns)) {
-                    return false; // Timeout
+                    return false;
                 }
             }
-            // Exponential backoff to prevent busy-wait CPU waste
-            std::this_thread::yield();
+
+            if (spin_count < 64) {
+                ++spin_count;
+                std::this_thread::yield();
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
         }
         return true;
     }
     
     /**
-     * @brief Concurrent-safe merge with memory ordering guarantees (BETTER THAN LLVM)
+     * @brief Concurrent-safe merge with a single linearization point.
      */
     void merge_concurrent(ir::IRStream& global_stream) noexcept {
-        // Establish acquire semantics for visibility of prior flushes
-        flush_epoch.load(std::memory_order_acquire);
-        
-        // Both primary and shadow flushes in atomic sequence
-        flush_primary(global_stream);
-        flush_shadow(global_stream);
-        
-        // Ensure all previous operations visible to other threads (release semantics)
+        auto& tls = ::dgtl::core::g_tls_buffer;
+
+        const size_t primary_used = pending_primary_nodes(tls);
+        const size_t shadow_used = pending_shadow_nodes(tls);
+
+        if (primary_used == 0 && shadow_used == 0) {
+            reset_primary(tls);
+            reset_shadow(tls);
+            return;
+        }
+
+        PendingFlushScope pending_scope(*this);
+        std::lock_guard<std::mutex> lock(merge_mutex);
+
+        if (primary_used > 0) {
+            append_nodes(global_stream, tls.base_atom_ptr, tls.base_core_ptr, primary_used);
+        }
+        if (shadow_used > 0) {
+            append_nodes(global_stream, tls.base_shadow_atom_ptr, tls.base_shadow_core_ptr, shadow_used);
+        }
+
+        flush_epoch.fetch_add(1, std::memory_order_release);
+        reset_primary(tls);
+        reset_shadow(tls);
         std::atomic_thread_fence(std::memory_order_release);
     }
     
@@ -197,7 +242,8 @@ public:
      */
     void advance_epoch() noexcept {
         flush_epoch.fetch_add(1, std::memory_order_release);
-    }};
+    }
+};
 
 } // namespace dgtl::runtime
 

@@ -53,7 +53,7 @@ B --> X[Guard and Early Exit]
 - #include <unordered_map>
 - #include <span>
 - #include <memory>
-- #include "dgtl/ir/base/IR_Types.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
 - #include "dgtl/core/Arena.hpp"
 
 ## Class and Struct Catalog

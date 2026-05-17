@@ -26,6 +26,8 @@
 #include "dgtl.h"
 #include "dgtl_core.h"
 
+#include <cstdio>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -47,6 +49,80 @@ typedef struct dgtl_perf_metrics {
 } dgtl_perf_metrics_t;
 
 DGTL_API int dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgtl_perf_metrics_t* out);
+
+/**
+ * @brief CFG edge kinds exposed through the stable C ABI.
+ */
+typedef enum dgtl_cfg_edge_kind {
+    DGTL_CFG_EDGE_FALLTHROUGH = 0,
+    DGTL_CFG_EDGE_UNCONDITIONAL = 1,
+    DGTL_CFG_EDGE_CONDITIONAL_TRUE = 2,
+    DGTL_CFG_EDGE_CONDITIONAL_FALSE = 3
+} dgtl_cfg_edge_kind_t;
+
+/**
+ * @brief One basic block descriptor from the stream CFG.
+ */
+typedef struct dgtl_cfg_block {
+    uint32_t id;
+    size_t begin;
+    size_t end;
+    uint32_t primary_label;
+    int is_entry;
+} dgtl_cfg_block_t;
+
+/**
+ * @brief One control-flow edge descriptor from the stream CFG.
+ */
+typedef struct dgtl_cfg_edge {
+    uint32_t from;
+    uint32_t to;
+    dgtl_cfg_edge_kind_t kind;
+} dgtl_cfg_edge_t;
+
+/**
+ * @brief Number of CFG basic blocks currently in the stream.
+ */
+DGTL_API size_t dgtl_stream_cfg_block_count(const dgtl_stream_t* s);
+
+/**
+ * @brief Number of CFG edges currently in the stream.
+ */
+DGTL_API size_t dgtl_stream_cfg_edge_count(const dgtl_stream_t* s);
+
+/**
+ * @brief Fetch a basic block descriptor by index.
+ * @return 1 on success, 0 on invalid arguments or out-of-range index.
+ */
+DGTL_API int dgtl_stream_cfg_get_block(const dgtl_stream_t* s,
+                                       size_t index,
+                                       dgtl_cfg_block_t* out);
+
+/**
+ * @brief Fetch a CFG edge descriptor by index.
+ * @return 1 on success, 0 on invalid arguments or out-of-range index.
+ */
+DGTL_API int dgtl_stream_cfg_get_edge(const dgtl_stream_t* s,
+                                      size_t index,
+                                      dgtl_cfg_edge_t* out);
+
+/**
+ * @brief Copy successor block IDs into caller buffer.
+ * @return Total successor count (may exceed out_cap if truncated).
+ */
+DGTL_API size_t dgtl_stream_cfg_get_successors(const dgtl_stream_t* s,
+                                               uint32_t block_id,
+                                               uint32_t* out_ids,
+                                               size_t out_cap);
+
+/**
+ * @brief Copy predecessor block IDs into caller buffer.
+ * @return Total predecessor count (may exceed out_cap if truncated).
+ */
+DGTL_API size_t dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s,
+                                                 uint32_t block_id,
+                                                 uint32_t* out_ids,
+                                                 size_t out_cap);
 
 /**
  * @brief Verify stream integrity (validates all node hashes and dependencies).
@@ -274,6 +350,30 @@ DGTL_API void dgtl_set_verbose(int enabled);
  * @brief Get DGTL build configuration string.
  */
 DGTL_API const char* dgtl_get_build_config(void);
+
+/**
+ * @brief Get number of linker fallback diagnostics captured by the last
+ * linker-backed emission in this thread.
+ *
+ * Linker-backed targets:
+ * - DGTL_TARGET_ELF_OBJ
+ * - DGTL_TARGET_STATIC_LIB
+ * - DGTL_TARGET_COFF_OBJ
+ * - DGTL_TARGET_COFF_LIB
+ */
+DGTL_API size_t dgtl_last_linker_fallback_count(void);
+
+/**
+ * @brief Retrieve one linker fallback diagnostic message by index.
+ *
+ * @param index 0-based fallback diagnostic index
+ * @param out_buffer Destination buffer for UTF-8 text (optional)
+ * @param out_buffer_size Size of destination buffer in bytes
+ * @return Required bytes including trailing NUL, or 0 if index is invalid
+ */
+DGTL_API size_t dgtl_last_linker_fallback_message(size_t index,
+                                                  char* out_buffer,
+                                                  size_t out_buffer_size);
 
 #ifdef __cplusplus
 }

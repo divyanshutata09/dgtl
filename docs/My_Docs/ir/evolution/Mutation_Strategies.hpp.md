@@ -42,8 +42,8 @@ D --> E[Finalize]
 
 ## Include Dependencies
 - #include <functional>
-- #include "dgtl/ir/base/IR_Types.hpp"
-- #include "dgtl/ir/base/IR_Nodes.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
 - #include "IR_Evolver.hpp"
 
 ## Class and Struct Catalog

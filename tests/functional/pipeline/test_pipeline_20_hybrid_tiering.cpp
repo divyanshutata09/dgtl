@@ -19,7 +19,7 @@
 
 void run_test_pipeline_20_hybrid_tiering() {
     using namespace dgtl::ir;
-    using namespace dgtl::exec;
+    using namespace dgtl::jit::runtime;
 
     DGTLJitExecutor jit(1); 
     dgtl::isa::DGTLNasmEmitter aot;

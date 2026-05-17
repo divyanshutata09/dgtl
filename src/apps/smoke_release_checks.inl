@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
 SmokeCheck run_folding_check(dgtl::core::DGTL_Arena& arena, dgtl::analysis::DGTLAICostModel& cost_model) {
 	dgtl::ir::IRStream stream(arena, 64);
 	if (!build_release_emit_ir(stream)) {
@@ -28,7 +38,7 @@ SmokeCheck run_fusion_check(dgtl::core::DGTL_Arena& arena) {
 
 	const size_t size_before = stream.size();
 	dgtl::core::DGTLFormalVerifier verifier;
-	dgtl::pass::DGTLInstructionFusionSynth fusion(verifier);
+	dgtl::pass::transform::DGTLInstructionFusionSynth fusion(verifier);
 	fusion.execute(stream);
 
 	// Fusion either transforms nodes or shrinks the stream post-DCE.
@@ -47,7 +57,7 @@ SmokeCheck run_simd_check(dgtl::core::DGTL_Arena& arena, BackendKind backend) {
 		return {"simd-legalize", false, "failed to build simd IR"};
 	}
 
-	dgtl::pass::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+	dgtl::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
 	legalizer.legalize(stream);
 
 	// Legalization passes if the legalizer ran without error and stream is still valid.
@@ -135,7 +145,7 @@ SmokeCheck run_pressure_check(dgtl::core::DGTL_Arena& arena) {
 }
 
 SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
-								 dgtl::core::SymbolTable& symbols,
+								 dgtl::semantic::SymbolTable& symbols,
 								 BackendKind backend) {
 	dgtl::ir::IRStream a(arena, 64);
 	dgtl::ir::IRStream b(arena, 64);
@@ -200,7 +210,7 @@ SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
 }
 
 SmokeCheck run_latency_check(dgtl::core::DGTL_Arena& arena,
-							 dgtl::core::SymbolTable& symbols,
+							 dgtl::semantic::SymbolTable& symbols,
 							 BackendKind backend) {
 	constexpr size_t iterations = 64;
 	double total_opt_us = 0.0;
@@ -235,7 +245,7 @@ SmokeCheck run_latency_check(dgtl::core::DGTL_Arena& arena,
 
 bool run_release_smoke_suite(const AppOptions& opts,
 							dgtl::core::DGTL_Arena& arena,
-							dgtl::core::SymbolTable& symbols) {
+							dgtl::semantic::SymbolTable& symbols) {
 	dgtl::analysis::DGTLAICostModel cost_model;
 	std::vector<SmokeCheck> checks;
 
@@ -270,7 +280,7 @@ void run_evolution_step(dgtl::ir::IRStream& stream) {
 		const auto node = stream.get_node(i);
 		if (!node.is_terminator() && node.opcode != dgtl::ir::OpCode::NOP) {
 			auto& node_ref = stream.get_node_ref(i);
-			if (evolver.apply_mutation(&node_ref, dgtl::ir::evolution::MutationType::CONSTANT_FOLDING)) {
+			if (evolver.apply_mutation(stream, &node_ref, dgtl::ir::evolution::MutationType::CONSTANT_FOLDING).succeeded) {
 				stream.set_node(i, node_ref);
 			}
 			return;

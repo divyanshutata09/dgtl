@@ -12,100 +12,60 @@
 #include <exception>
 #include <iostream>
 #include <stdexcept>
-#include <string_view>
 
-void run_test_pipeline1();
-void run_test_pipeline_multi_target();
-void run_test_release_ir_modes();
-void run_test_arm64_fcvtl_widening();
-void run_test_arm64_fcvtn_narrowing();
-void run_test_temporal_fusion_predication();
-void run_test_frontend_bridge_smoke();
-void run_test_frontend_link_api_emit();
-void run_test_frontend_pipeline_lowerer();
-void run_test_frontend_payload_io();
-void run_test_poly_matmul_scop_tiling();
-void run_test_robustness_1();
-void run_test_robustness_2();
-void run_test_robustness_3();
-void run_test_robustness_4();
-void run_test_inliner_safety();
-void run_test_speculative_inliner();
-void run_test_performance_mt_arena();
-void run_test_performance_mt_codegen();
-void run_test_opt_strike();
-void run_test_sdk_api_sync_roundtrip();
-void run_test_sdk_runtime_scheduler();
-void run_test_recursive_spawning();
-void run_test_sdk_strike_code_size();
+// --- test entry-points (defined in t01–t11 source files) ---
+void run_test_t01_ir_stream_correctness();
+void run_test_t02_ir_transaction_rollback();
+void run_test_t03_optimizer_gvn_const_fold();
+void run_test_t04_optimizer_fusion();
+void run_test_t05_optimizer_volatile_guard();
+void run_test_t06_codegen_arm64_emission();
+void run_test_t07_frontend_pipeline_lowerer();
+void run_test_t08_sdk_c_api_roundtrip();
+void run_test_t09_runtime_mt_arena_isolation();
+void run_test_t10_optimizer_strike_throughput();
+void run_test_t11_pipeline_production_benchmark();
+void run_test_t12_ir_cfg();
 
 namespace {
-
-bool parse_full_mode(int argc, char** argv) {
-    if (argc <= 1) {
-        return false;
-    }
-
-    const std::string_view arg(argv[1]);
-    if (arg == "--full") {
-        return true;
-    }
-
-    throw std::runtime_error("unknown argument; expected --full");
-}
 
 void run_named_test(const char* name, void (*fn)()) {
     if (fn == nullptr) {
         throw std::runtime_error("test entrypoint pointer was null");
     }
-
-    std::cout << "[DGTL test] START " << name << "\n";
-    fn();
-    std::cout << "[DGTL test] PASS  " << name << "\n";
+    std::cout << "[DGTL] START " << name << "\n";
+    try {
+        fn();
+    } catch (const std::exception& ex) {
+        std::cerr << "[DGTL] FAIL  " << name << " — " << ex.what() << "\n";
+        throw; // propagate so main returns 1
+    }
+    std::cout << "[DGTL] PASS  " << name << "\n";
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int /*argc*/, char** /*argv*/) {
     try {
-        const bool run_full_suite = parse_full_mode(argc, argv);
+        std::cout << "[DGTL] ====== DGTL Aggregate Test Suite (12 tests) ======\n";
 
-        std::cout << "[DGTL test] Running "
-                  << (run_full_suite ? "full" : "sanity")
-                  << " aggregate suite\n";
+        run_named_test("t01.ir_stream_correctness",   &run_test_t01_ir_stream_correctness);
+        run_named_test("t02.ir_transaction_rollback",  &run_test_t02_ir_transaction_rollback);
+        run_named_test("t03.optimizer_gvn_const_fold", &run_test_t03_optimizer_gvn_const_fold);
+        run_named_test("t04.optimizer_fusion",         &run_test_t04_optimizer_fusion);
+        run_named_test("t05.optimizer_volatile_guard", &run_test_t05_optimizer_volatile_guard);
+        run_named_test("t06.codegen_arm64_emission",   &run_test_t06_codegen_arm64_emission);
+        run_named_test("t07.frontend_lowerer",         &run_test_t07_frontend_pipeline_lowerer);
+        run_named_test("t08.sdk_c_api_roundtrip",      &run_test_t08_sdk_c_api_roundtrip);
+        run_named_test("t09.runtime_mt_arena",         &run_test_t09_runtime_mt_arena_isolation);
+        run_named_test("t10.optimizer_strike",         &run_test_t10_optimizer_strike_throughput);
+        run_named_test("t11.pipeline_production",      &run_test_t11_pipeline_production_benchmark);
+        run_named_test("t12.ir_cfg",                   &run_test_t12_ir_cfg);
 
-        run_named_test("functional.pipeline1", &run_test_pipeline1);
-        run_named_test("functional.multi_target", &run_test_pipeline_multi_target);
-        run_named_test("functional.release_ir_modes", &run_test_release_ir_modes);
-        run_named_test("functional.arm64_fcvtl_widening", &run_test_arm64_fcvtl_widening);
-        run_named_test("functional.arm64_fcvtn_narrowing", &run_test_arm64_fcvtn_narrowing);
-        run_named_test("functional.temporal_fusion_predication", &run_test_temporal_fusion_predication);
-        run_named_test("functional.frontend_bridge_smoke", &run_test_frontend_bridge_smoke);
-        run_named_test("functional.frontend_link_api_emit", &run_test_frontend_link_api_emit);
-        run_named_test("functional.frontend_pipeline_lowerer", &run_test_frontend_pipeline_lowerer);
-        run_named_test("functional.frontend_payload_io", &run_test_frontend_payload_io);
-        run_named_test("functional.poly_matmul_scop_tiling", &run_test_poly_matmul_scop_tiling);
-        run_named_test("robustness.core1", &run_test_robustness_1);
-        run_named_test("robustness.core3", &run_test_robustness_3);
-        run_named_test("robustness.inliner_safety", &run_test_inliner_safety);
-        run_named_test("robustness.speculative_inliner", &run_test_speculative_inliner);
-        run_named_test("sdk.api_sync_roundtrip", &run_test_sdk_api_sync_roundtrip);
-        run_named_test("sdk.runtime_scheduler", &run_test_sdk_runtime_scheduler);
-        run_named_test("sdk.recursive_spawning", &run_test_recursive_spawning);
-        run_named_test("sdk.strike_code_size", &run_test_sdk_strike_code_size);
-        run_named_test("performance.mt_arena", &run_test_performance_mt_arena);
-
-        if (run_full_suite) {
-            run_named_test("robustness.core2", &run_test_robustness_2);
-            run_named_test("robustness.core4", &run_test_robustness_4);
-            run_named_test("performance.mt_codegen", &run_test_performance_mt_codegen);
-            run_named_test("performance.opt_strike", &run_test_opt_strike);
-        }
-
-        std::cout << "[DGTL test] Aggregate suite completed\n";
+        std::cout << "[DGTL] ====== All 12 tests PASSED ======\n";
         return 0;
     } catch (const std::exception& ex) {
-        std::cerr << "[DGTL test] FAIL: " << ex.what() << "\n";
+        std::cerr << "[DGTL] ====== Suite FAILED: " << ex.what() << " ======\n";
         return 1;
     }
 }

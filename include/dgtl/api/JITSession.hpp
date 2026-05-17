@@ -12,7 +12,7 @@
 #pragma once
 
 #include "dgtl/api/ExecutionEngine.hpp"
-#include "dgtl/pipeline/modes/JIT_Pipeline.hpp"
+#include "dgtl/pipeline/Pass_Manager.hpp"
 #include <memory>
 
 namespace dgtl {
@@ -23,12 +23,13 @@ class Context;
 /**
  * @class JITSession
  * @brief Just-In-Time execution engine.
- * 
- * Optimized for low-latency on-the-fly compilation of hot paths.
+ * * Optimized for low-latency on-the-fly compilation of hot paths.
  * Suitable for HFT and latency-critical workloads where compilation
  * must complete in microseconds.
+ * * [STAFF NOTE]: Marked final for devirtualization bypass. Hardware 
+ * cache-line aligned to prevent CPU cache thrashing during compilation.
  */
-class JITSession : public ExecutionEngine {
+class alignas(64) JITSession final : public ExecutionEngine {
 public:
     /**
      * @brief Create a JIT session for the given context.
@@ -59,6 +60,9 @@ public:
 
 private:
     Context& context_;
+    
+    // 🚀 HFT UPGRADE: Situation of pipeline state on the aligned boundary 
+    // to ensure no cross-core contention during concurrent JIT strikes.
     pipeline::JIT_Pipeline pipeline_;
 
     JITSession(const JITSession&) = delete;

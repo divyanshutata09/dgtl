@@ -262,7 +262,6 @@ dgtl bench-backend x64 fusion
 dgtl update-goldens
 dgtl run-strict-conformance
 dgtl test
-dgtl test full
 dgtl clean-all
 dgtl clean-build-and-run
 ```
@@ -276,7 +275,7 @@ Use this sequence when building and validating a release for deployment:
 | 1 â€” Build | `dgtl build-release` | Compiles the production binary at `build\dgtl_release.exe`. Only this binary is a production build. |
 | 2 â€” Validate | `dgtl run-all` | Full conformance across all 4 backends (arm64, x64, nasm, wasm). |
 | 2a â€” Strict gate | `dgtl run-strict-conformance` | Strict executable gate â€” catches edge cases not covered by default conformance. |
-| 2b â€” Aggregate tests | `dgtl test` | Functional + robustness sanity suite (fast, incremental). Use `dgtl test full` to include heavy stress tests. |
+| 2b â€” Aggregate tests | `dgtl test` | Functional + robustness sanity suite (fast, incremental). |
 | 3 â€” Benchmark (optional) | `dgtl bench-backend x64` | Timing profile for your target backend before shipping. |
 | All-in-one | `dgtl clean-build-and-run` | Clean â†’ rebuild â†’ full conformance in one command. |
 
@@ -312,7 +311,6 @@ dgtl run-backend nasm
 dgtl run-backend wasm
 dgtl run-strict-conformance
 dgtl test
-dgtl test full
 ```
 
 #### 3) Benchmark Performance
@@ -403,7 +401,6 @@ Alias mapping:
 | `dgtl update-goldens [strict]` | `dgtl update-golden [strict]` |
 | `dgtl run-strict-conformance` | `dgtl srun` |
 | `dgtl test` | `dgtl test` |
-| `dgtl test full` | `dgtl test full` |
 | `dgtl clean-all` | `dgtl clean` |
 | `dgtl clean-build-and-run` | `dgtl crun` |
 
@@ -450,7 +447,6 @@ dgtl run-backend wasm
 | `dgtl update-goldens strict` | `dgtl update-golden strict` | Auto-builds strict if missing | Refreshes strict conformance goldens through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
 | `dgtl run-strict-conformance` | `dgtl srun` | Auto-builds strict if missing | Runs full backend conformance with strict executable through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
 | `dgtl test` | `dgtl test` | Builds test binary if sources changed | Runs functional + robustness sanity suite. Incremental: reuses existing binary when sources are unchanged (~0.04s warm). |
-| `dgtl test full` | `dgtl test full` | Builds test binary if sources changed | Same as `dgtl test` plus heavy stress tests (`robustness.core2`, `robustness.core4`, `performance.mt_codegen`, `performance.opt_strike`). |
 | `dgtl clean-all` | `dgtl clean` | No | Deletes DGTL build outputs, conformance logs, and conformance cache files. |
 | `dgtl clean-build-and-run` | `dgtl crun` | No | Executes `clean -> smoke-build -> run` (full conformance path, so the conformance script is required). |
 
@@ -792,7 +788,7 @@ Object/Library Emission      JIT Execution (--jit-execute)
 - `ARM64_Emitter.hpp` / `X64_Strike_Emitter.hpp`: Assembly generation
 - `ARM64_RegAlloc.hpp` / `X64_Reg_Map.hpp`: Register allocation
 - `Wasm_Encoder.hpp`: WebAssembly binary encoding
-- `MachOs_Emitter.hpp`: Mach-O 64-bit ARM64 object emission with real instruction encoding
+- `MachO_Emitter.hpp`: Mach-O 64-bit ARM64 object emission with real instruction encoding
 - `Linker_Backend.hpp`: ELF64 relocatable, GNU `ar` archive, COFF `.obj`, and COFF `.lib` emission
 - `Stack_Spiller.hpp`: Spill code generation
 
@@ -936,7 +932,7 @@ Compliance is also enforced automatically by validation commands:
 - `dgtl run-all`
 - `dgtl run-strict-conformance`
 - `dgtl update-goldens` (and `strict` mode)
-- `dgtl test` / `dgtl test full`
+- `dgtl test`
 - `dgtl clean-build-and-run`
 - `dgtl header-check`
 
@@ -1017,8 +1013,8 @@ dgtl clean-all
 # 2. Production build
 dgtl build-release
 
-# 3. Aggregate test suite (functional + robustness + performance)
-dgtl test full
+# 3. Aggregate test suite (functional + robustness)
+dgtl test
 
 # 4. Full backend conformance (arm64, x64, nasm, wasm)
 dgtl run-all
@@ -1045,13 +1041,13 @@ Use this during development:
 
 ```powershell
 dgtl build-release
-dgtl test
+dgtl testl
 dgtl run-backend x64
 dgtl build-strict
 dgtl bench-backend x64 fusion
-dgtl brun tests/performance/benchmark_production.cpp
+dgtl brun
 ```
 
 Notes:
 - `dgtl build-release` and `dgtl build-strict` are incremental and reuse binaries when inputs are unchanged.
-- `dgtl test full` and default `dgtl brun` are release gates and intentionally slower.
+- `dgtl test` is the primary test gate. Use `dgtl brun` for the two retained benchmark suites only.

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -31,7 +31,7 @@ void run_test_pipeline_20_the_gauntlet() {
         stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 100, 10, 11, 0, 0);
         stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 101, 10, 11, 0, 0);
         stream.push_node(dgtl::ir::OpCode::GATHER_16,
-                         static_cast<uint16_t>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::Flags::REQUIRES_VEC_PORT),
+                         static_cast<uint16_t>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::HintFlags::RequiresVecPort),
                          102,
                          20,
                          21,

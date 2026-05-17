@@ -16,10 +16,11 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "dgtl/utils/automata/LUT_FSM_Matcher.hpp"
 
 namespace {
 
@@ -48,13 +49,37 @@ bool run_cmd_capture(const std::string& cmd, const std::filesystem::path& out_lo
     return exit_code == 0;
 }
 
-std::string find_first(const std::string& text, const std::string& pattern) {
-    std::smatch m;
-    const std::regex rx(pattern);
-    if (std::regex_search(text, m, rx) && m.size() >= 2) {
-        return m[1].str();
+std::string find_estimated_mib(const std::string& text) {
+    return std::string(dgtl::utils::LUTFsmMatcher::capture_decimal_after_prefix(
+        text,
+        "Allocating ~"));
+}
+
+std::string find_throughput_mnodes(const std::string& text) {
+    size_t pos = text.find("Throughput");
+    while (pos != std::string::npos) {
+        const std::string v = std::string(dgtl::utils::LUTFsmMatcher::capture_decimal_relaxed_after_prefix(
+            text,
+            "Throughput",
+            pos));
+        if (!v.empty()) {
+            return v;
+        }
+        pos = text.find("Throughput", pos + 1);
     }
     return {};
+}
+
+std::string find_nodes_triplet(const std::string& text) {
+    return std::string(dgtl::utils::LUTFsmMatcher::capture_nodes_triplet_after_prefix(text, "nodes="));
+}
+
+std::string find_hot_swaps(const std::string& text) {
+    return std::string(dgtl::utils::LUTFsmMatcher::capture_non_ws_after_prefix(text, "hot_swaps="));
+}
+
+std::string find_logic_hash(const std::string& text) {
+    return std::string(dgtl::utils::LUTFsmMatcher::capture_hex_after_prefix(text, "LogicHash=0x"));
 }
 
 bool contains_all(const std::string& text, const std::vector<std::string>& needles) {
@@ -88,8 +113,8 @@ int main() {
         const bool ok = run_cmd_capture("dgtl.cmd test full", log, code, sec);
         const std::string out = read_file_text(log);
 
-        const std::string mib = find_first(out, R"(Allocating ~([0-9]+(?:\.[0-9]+)?) MiB estimated IRStream storage)");
-        const std::string throughput = find_first(out, R"(Throughput\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*M-Nodes/sec)");
+        const std::string mib = find_estimated_mib(out);
+        const std::string throughput = find_throughput_mnodes(out);
 
         GateResult r;
         r.name = "End-to-end latency + large-stream memory pressure";
@@ -129,8 +154,8 @@ int main() {
             "running latency"
         });
 
-        const std::string nodes = find_first(out, R"(nodes=([0-9]+->[0-9]+->[0-9]+))");
-        const std::string hot_swaps = find_first(out, R"(hot_swaps=([^\s]+))");
+        const std::string nodes = find_nodes_triplet(out);
+        const std::string hot_swaps = find_hot_swaps(out);
 
         GateResult r;
         r.name = "Hot-path pass ordering and skip logic";
@@ -167,7 +192,7 @@ int main() {
                 double sec = 0.0;
                 const bool ok = run_cmd_capture(".\\build\\dgtl_main_strict.exe --backend " + b, log, code, sec);
                 const std::string out = read_file_text(log);
-                std::string h = find_first(out, R"(LogicHash=0x([0-9a-fA-F]+))");
+                std::string h = find_logic_hash(out);
                 if (!h.empty()) h = "0x" + lower_hex(h);
                 const bool completed = out.find("Pipeline completed successfully") != std::string::npos;
 

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,16 +9,18 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/analysis/polyhedral/Scop_Detector.hpp"
+#include "dgtl/analysis/Polyhedral_Scop_Unified.hpp"
 
 #include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <numeric>
 #include <thread>
-#include "dgtl/ir/base/IR_Traits.hpp"
+#include "dgtl/ir/base/IR_Node.hpp"
 
 namespace dgtl::analysis::polyhedral {
+
+namespace graph = dgtl::graph;
 
 namespace {
 

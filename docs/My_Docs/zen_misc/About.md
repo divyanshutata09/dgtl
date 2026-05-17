@@ -125,11 +125,11 @@ Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa/Linker_Backend.hpp#151-151), li
 
 Created [](file:///d%3A/TataG/DGTL/docs/Linker_Backend.hpp.md)
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa/MachOs_Emitter.hpp#1-1), lines 1 to 50
+Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa/MachO_Emitter.hpp#1-1), lines 1 to 50
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa/MachOs_Emitter.hpp#51-51), lines 51 to 125
+Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa/MachO_Emitter.hpp#51-51), lines 51 to 125
 
-Created [](file:///d%3A/TataG/DGTL/docs/MachOs_Emitter.hpp.md)
+Created [](file:///d%3A/TataG/DGTL/docs/MachO_Emitter.hpp.md)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa/MachO_Wasm_Target.hpp#1-1), lines 1 to 50
 
@@ -325,7 +325,7 @@ Perfect! I have successfully completed the comprehensive documentation for all .
 - ARM64_RegAlloc.hpp
 - GPGPU_Fusion_FastEmission.hpp
 - Linker_Backend.hpp
-- MachOs_Emitter.hpp
+- MachO_Emitter.hpp
 - MachO_Wasm_Target.hpp
 - NASM_Emitter.hpp
 - Stack_Spiller.hpp

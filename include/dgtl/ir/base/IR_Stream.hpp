@@ -18,16 +18,25 @@
 
 #pragma once
 
-#include "IR_Types.hpp"
-#include "IR_Nodes.hpp"
-#include "IR_Traits.hpp"
-#include "IR_Storage.hpp"
+#include "IR_Node.hpp"
 #include "dgtl/core/Arena.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <cassert>
 #include <mutex>
 #include <atomic>
 #include <unordered_map>
+#include <ostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <span>
+#include <iomanip>
+#include <array>
+#if defined(_MSC_VER)
+#  include <intrin.h>   // _mm_prefetch on UCRT64 / MSVC
+#endif
 
 namespace dgtl::ir {
 
@@ -103,19 +112,48 @@ struct ProfilingData {
     };
     
     std::unordered_map<uint32_t, BlockMetrics> block_metrics;
-    
+    // Global max across all recorded blocks — updated by record_block_execution.
+    // A member field instead of static thread_local ensures consistent hotness
+    // scores regardless of which thread calls compute_hotness_score.
+    uint64_t max_execution_count = 1;
+
     void record_block_execution(uint32_t block_id) noexcept {
-        block_metrics[block_id].execution_count++;
+        auto& m = block_metrics[block_id];
+        m.execution_count++;
+        if (m.execution_count > max_execution_count)
+            max_execution_count = m.execution_count;
     }
-    
-    float compute_hotness_score(uint32_t block_id) const noexcept {
+
+    [[nodiscard]] float compute_hotness_score(uint32_t block_id) const noexcept {
         auto it = block_metrics.find(block_id);
         if (it == block_metrics.end()) return 0.0f;
-        
-        static thread_local uint64_t max_count = 1;
-        max_count = std::max(max_count, it->second.execution_count);
-        return static_cast<float>(it->second.execution_count) / max_count;
+        return static_cast<float>(it->second.execution_count)
+               / static_cast<float>(max_execution_count);
     }
+};
+
+// ======================================================
+// CFG DATA MODEL
+// ======================================================
+struct IRBasicBlock {
+    uint32_t id = INVALID_SLOT;
+    size_t begin = 0;  // inclusive node index
+    size_t end = 0;    // exclusive node index
+    uint32_t primary_label = INVALID_SLOT;
+    bool is_entry = false;
+};
+
+enum class CFGEdgeKind : uint8_t {
+    Fallthrough = 0,
+    UnconditionalBranch = 1,
+    ConditionalTrue = 2,
+    ConditionalFalse = 3
+};
+
+struct CFGEdge {
+    uint32_t from = INVALID_SLOT;
+    uint32_t to = INVALID_SLOT;
+    CFGEdgeKind kind = CFGEdgeKind::Fallthrough;
 };
 
 // ======================================================
@@ -148,7 +186,7 @@ private:
     // AoS fallback/proxy buffer
     mutable IRNode* joined_buffer = nullptr;
     mutable bool joined_valid = false;
-    mutable IRNode fallback_node{};
+    IRNode fallback_node{};  // sentinel returned on OOB reads; never mutated by const paths
     mutable std::recursive_mutex stream_mutex;
 
     // Memory Ownership Flags
@@ -163,6 +201,23 @@ private:
     std::unordered_map<uint32_t, OwnershipLifetime> ownership_tracking;  // Node ID -> ownership info
     std::unordered_map<uint32_t, ConcurrencyClass> concurrency_map;      // Node ID -> concurrency class
     std::unordered_map<uint32_t, DSAType> dsa_map;                       // Node ID -> DSA type
+    // CALL overflow-argument sidecar: node index -> args[3..N-1] virtual IDs.
+    std::unordered_map<size_t, std::vector<uint32_t>> call_overflow_args_;
+    // CALL ABI layout sidecar: node index -> packed ABI plan words.
+    std::unordered_map<size_t, std::vector<uint32_t>> call_abi_layout_words_;
+
+    // Cached CFG artifacts (rebuilt on-demand after structural mutations)
+    mutable bool cfg_cache_valid = false;
+    mutable std::vector<IRBasicBlock> cfg_blocks_cache;
+    mutable std::vector<CFGEdge> cfg_edges_cache;
+    mutable std::vector<std::vector<uint32_t>> cfg_succ_cache;
+    mutable std::vector<std::vector<uint32_t>> cfg_pred_cache;
+    mutable std::vector<uint32_t> cfg_node_to_block_cache;
+    mutable std::unordered_map<uint32_t, uint32_t> cfg_label_to_block_cache;
+
+    void invalidate_cfg_cache_locked() noexcept;
+    void ensure_cfg_cache_locked() const noexcept;
+    void rebuild_cfg_locked() const noexcept;
 
 public:
     IRStream() = default;
@@ -209,17 +264,42 @@ public:
 
     // ======================================================
     // 🔹 SHADOW ACCESS (FOR PASSES)
+    // Must only be called while a transaction is active (shadow buffers are valid).
     // ======================================================
-    IRAtom& get_shadow_atom(size_t idx) noexcept { return shadow_atoms[idx]; }
-    IRCore& get_shadow_core(size_t idx) noexcept { return shadow_cores[idx]; }
+    [[nodiscard]] IRAtom& get_shadow_atom(size_t idx) noexcept {
+        assert(shadow_atoms != nullptr && idx < _capacity &&
+               "get_shadow_atom: called outside an active transaction or OOB");
+        return shadow_atoms[idx];
+    }
+    [[nodiscard]] IRCore& get_shadow_core(size_t idx) noexcept {
+        assert(shadow_cores != nullptr && idx < _capacity &&
+               "get_shadow_core: called outside an active transaction or OOB");
+        return shadow_cores[idx];
+    }
 
     // ======================================================
     // 🔹 EMIT
     // ======================================================
     void push_node(const IRAtom& atom, const IRCore& core) noexcept;
-    void push_node(OpCode op, uint16_t fl, uint32_t res, uint32_t a, uint32_t b, uint32_t c, uint64_t h = 0) noexcept;
+    void push_node(OpCode op,
+                   uint16_t fl,
+                   uint32_t res,
+                   uint32_t a,
+                   uint32_t b,
+                   uint32_t c,
+                   uint64_t h = 0) noexcept;
     void push_back(const IRNode& node) noexcept;
     void set_node(size_t idx, const IRNode& node) noexcept;
+
+    // ======================================================
+    // 🔹 CALL OVERFLOW ARG SIDECAR
+    // ======================================================
+    void set_call_overflow_args(size_t node_idx, std::span<const uint32_t> extra_args);
+    [[nodiscard]] std::vector<uint32_t> get_call_overflow_args(size_t node_idx) const;
+    void clear_call_overflow_args(size_t node_idx);
+    void set_call_abi_layout_words(size_t node_idx, std::span<const uint32_t> words);
+    [[nodiscard]] std::vector<uint32_t> get_call_abi_layout_words(size_t node_idx) const;
+    void clear_call_abi_layout_words(size_t node_idx);
 
     // ======================================================
     // 🔹 TRANSACTION CORE
@@ -265,8 +345,6 @@ public:
     [[nodiscard]] uint32_t get_max_id() const noexcept;
 
     void push_shadow_fold(const IRNode& node) noexcept;
-    void perform_gvn() noexcept;
-    void perform_dead_code_elimination() noexcept;
 
     void optimize_memory_access_patterns() noexcept;
     void evolve_node(IRNode* node);
@@ -301,16 +379,45 @@ public:
     void analyze_speculation_opportunities() noexcept;
 
     // ======================================================
-    // 🔹 RAW ACCESS (TRANSACTION-AWARE)
+    // CFG: BASIC BLOCKS / EDGES / TRAVERSALS
     // ======================================================
-    [[nodiscard]] const IRAtom* raw_atoms() const noexcept { return atoms; }
-    [[nodiscard]] const IRCore* raw_cores() const noexcept { return cores; }
-    
-    [[nodiscard]] IRAtom* raw_atoms() noexcept { 
-        return in_transaction.load(std::memory_order_relaxed) ? shadow_atoms : atoms; 
+    void invalidate_cfg_cache() noexcept;
+    [[nodiscard]] const std::vector<IRBasicBlock>& get_basic_blocks() const noexcept;
+    [[nodiscard]] const std::vector<CFGEdge>& get_cfg_edges() const noexcept;
+    [[nodiscard]] const std::vector<uint32_t>& get_successors(uint32_t block_id) const noexcept;
+    [[nodiscard]] const std::vector<uint32_t>& get_predecessors(uint32_t block_id) const noexcept;
+    [[nodiscard]] uint32_t get_entry_block_id() const noexcept;
+    [[nodiscard]] uint32_t get_block_id_for_node(size_t node_index) const noexcept;
+    [[nodiscard]] std::vector<uint32_t> traversal_preorder(uint32_t entry_block = INVALID_SLOT) const noexcept;
+    [[nodiscard]] std::vector<uint32_t> traversal_postorder(uint32_t entry_block = INVALID_SLOT) const noexcept;
+    [[nodiscard]] std::vector<uint32_t> traversal_reverse_postorder(uint32_t entry_block = INVALID_SLOT) const noexcept;
+    [[nodiscard]] std::vector<uint32_t> traversal_breadth_first(uint32_t entry_block = INVALID_SLOT) const noexcept;
+
+    // ======================================================
+    // CFG: DOMINANCE & LOOP DISCOVERY
+    // ======================================================
+    [[nodiscard]] std::vector<uint32_t> compute_immediate_dominators(uint32_t entry_block = INVALID_SLOT) const noexcept;
+    [[nodiscard]] std::vector<std::vector<uint32_t>> compute_dominance_frontier(uint32_t entry_block = INVALID_SLOT) const noexcept;
+    [[nodiscard]] std::vector<uint32_t> find_natural_loop_headers(uint32_t entry_block = INVALID_SLOT) const noexcept;
+
+    // ======================================================
+    // 🔹 RAW ACCESS (TRANSACTION-AWARE)
+    // Both const and non-const overloads respect transaction state so that
+    // a const caller inside an active transaction sees shadow data, not
+    // the stale live buffer.
+    // ======================================================
+    [[nodiscard]] const IRAtom* raw_atoms() const noexcept {
+        return in_transaction.load(std::memory_order_acquire) ? shadow_atoms : atoms;
     }
-    [[nodiscard]] IRCore* raw_cores() noexcept { 
-        return in_transaction.load(std::memory_order_relaxed) ? shadow_cores : cores; 
+    [[nodiscard]] const IRCore* raw_cores() const noexcept {
+        return in_transaction.load(std::memory_order_acquire) ? shadow_cores : cores;
+    }
+
+    [[nodiscard]] IRAtom* raw_atoms() noexcept {
+        return in_transaction.load(std::memory_order_relaxed) ? shadow_atoms : atoms;
+    }
+    [[nodiscard]] IRCore* raw_cores() noexcept {
+        return in_transaction.load(std::memory_order_relaxed) ? shadow_cores : cores;
     }
 
     [[nodiscard]] bool is_active_transaction() const noexcept { 
@@ -322,8 +429,10 @@ public:
 #if defined(__GNUC__) || defined(__clang__)
         __builtin_prefetch(&atoms[idx], 0, 1);
         __builtin_prefetch(&cores[idx], 0, 1);
-#else
-        (void)idx;
+#elif defined(_MSC_VER)
+        // UCRT64 / MSVC: use SSE prefetch intrinsic (available on all x64 targets)
+        _mm_prefetch(reinterpret_cast<const char*>(&atoms[idx]), _MM_HINT_T1);
+        _mm_prefetch(reinterpret_cast<const char*>(&cores[idx]), _MM_HINT_T1);
 #endif
     }
 
@@ -400,11 +509,13 @@ public:
     }
 
     [[nodiscard]] uint32_t count_concurrent_ops() const noexcept {
-        uint32_t count = 0;
+        // Note: local variable renamed from 'count' to 'n' — 'count' is an IRStream
+        // member field and the old name silently shadowed it.
+        uint32_t n = 0;
         for (const auto& [_, concur] : concurrency_map) {
-            if (concur != ConcurrencyClass::SEQUENTIAL) count++;
+            if (concur != ConcurrencyClass::SEQUENTIAL) ++n;
         }
-        return count;
+        return n;
     }
 
     // DSA Type Tracking Methods
@@ -468,7 +579,13 @@ struct IRTransactionGuard {
         stream.begin_transaction();
     }
 
-    void commit() {
+    // Non-copyable: an accidental copy would cause a double-rollback when both
+    // destructors fire, silently reverting a committed transaction.
+    IRTransactionGuard(const IRTransactionGuard&) = delete;
+    IRTransactionGuard& operator=(const IRTransactionGuard&) = delete;
+
+    // commit_transaction() is noexcept on IRStream, so this can be noexcept too.
+    void commit() noexcept {
         stream.commit_transaction();
         committed = true;
     }
@@ -481,3 +598,4 @@ struct IRTransactionGuard {
 };
 
 } // namespace dgtl::ir
+

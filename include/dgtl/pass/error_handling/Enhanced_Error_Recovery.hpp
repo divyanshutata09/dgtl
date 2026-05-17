@@ -123,8 +123,8 @@ private:
             const auto& node = stream.get_node_readonly(i);
 
             // Check 1: Array bounds access
-            if (node.opcode == dgtl::ir::OpCode::LOAD ||
-                node.opcode == dgtl::ir::OpCode::STORE) {
+            const bool is_mem_access = dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::Memory);
+            if (is_mem_access) {
                 
                 // Heuristic: if op_b suggests fixed offset, check bounds
                 if (node.op_b != 0xFFFFFFFF && node.op_b > 1000000) {
@@ -147,8 +147,8 @@ private:
             }
 
             // Check 3: Risky float conversions
-            if (node.opcode == dgtl::ir::OpCode::MUL_F32 ||
-                node.opcode == dgtl::ir::OpCode::ADD_F32) {
+            const bool is_arithmetic = dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::Arithmetic);
+            if (is_mem_access || is_arithmetic) {
                 // Risky conversion - add runtime check
                 errors.push_back(ErrorInfo{
                     .node_idx = i,

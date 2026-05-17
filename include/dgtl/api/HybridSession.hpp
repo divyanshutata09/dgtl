@@ -12,7 +12,7 @@
 #pragma once
 
 #include "dgtl/api/ExecutionEngine.hpp"
-#include "dgtl/pipeline/modes/Hybrid_Pipeline.hpp"
+#include "dgtl/pipeline/Pass_Manager.hpp"
 #include <memory>
 
 namespace dgtl {
@@ -23,13 +23,14 @@ class Context;
 /**
  * @class HybridSession
  * @brief Adaptive tiered execution engine.
- * 
- * Dynamically selects between JIT and AOT based on runtime characteristics
+ * * Dynamically selects between JIT and AOT based on runtime characteristics
  * of code being compiled. JIT handles cold paths with minimal latency,
  * while AOT handles hot loops with maximum optimization intensity.
  * Intelligent tier switching optimizes for the best of both worlds.
+ * * [STAFF NOTE]: Marked final for devirtualization. alignas(64) guarantees 
+ * safe lockless L1 cache residency.
  */
-class HybridSession : public ExecutionEngine {
+class alignas(64) HybridSession final : public ExecutionEngine {
 public:
     /**
      * @brief Create a hybrid session for the given context.

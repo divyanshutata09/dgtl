@@ -6,20 +6,12 @@
  * Repository: github.com/TataG-Systems/DGTL
  */
 
-#include "dgtl/jit/runtime/Hardware_Scheduler.hpp"
-#include "dgtl/pipeline/Pass_Decision_Engine.hpp"
-#include <thread>
-
-#ifdef _WIN32
-    #include <windows.h>
-#endif
-
 /**
  * @brief Dispatches the optimized IR stream to the requested backend.
  */
 bool emit_backend(BackendKind backend,
                   const dgtl::ir::IRStream& stream,
-                  const dgtl::core::SymbolTable& symbols,
+                  const dgtl::semantic::SymbolTable& symbols,
                   bool verbose_asm,
                   bool arm64_binary_stream,
                   EmissionResult& result) {
@@ -99,7 +91,7 @@ bool emit_backend(BackendKind backend,
  * @brief Executes a single end-to-end pipeline pass with Titan-Stable hardware pinning.
  */
 TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
-                                         dgtl::core::SymbolTable& symbols,
+                                         dgtl::semantic::SymbolTable& symbols,
                                          BackendKind backend,
                                          bool verbose_asm,
                                          BenchmarkProfile profile,
@@ -134,16 +126,16 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     // 1. Profile-Specific Pass (Gated by Decision Engine)
     if (profile == BenchmarkProfile::fusion) {
         dgtl::core::DGTLFormalVerifier verifier;
-        dgtl::pass::DGTLInstructionFusionSynth fusion_pass(verifier);
+        dgtl::pass::transform::DGTLInstructionFusionSynth fusion_pass(verifier);
         dgtl::graph::Region region;
         if (pde.should_run_pass(&fusion_pass, &region, am, ai_model)) {
             fusion_pass.execute(stream);
         }
     } else if (profile == BenchmarkProfile::simd) {
-        dgtl::pass::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+        dgtl::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
         legalizer.legalize(stream);
     } else if (profile == BenchmarkProfile::predication) {
-        dgtl::pass::DGTLMaskedPredicationLowering predication_pass;
+        dgtl::pass::transform::DGTLMaskedPredicationLowering predication_pass;
         predication_pass.execute(stream);
     }
 
@@ -153,7 +145,7 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
         temporal_fusion.execute(stream);
         
         if (timed.ai_predicted_cost_pre > 65.0f) {
-            dgtl::pass::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+            dgtl::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
             legalizer.legalize(stream);
             timed.hot_swap_mode = "int->float-simd/predication";
         } else {
@@ -199,7 +191,7 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
  * @brief Runs multiple iterations of the pipeline to calculate averages and check stability.
  */
 BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
-                                       dgtl::core::SymbolTable& symbols,
+                                       dgtl::semantic::SymbolTable& symbols,
                                        BackendKind backend,
                                        size_t iterations,
                                        bool verbose_asm,
@@ -262,7 +254,7 @@ BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
     if (backend == BackendKind::x64 && profile == BenchmarkProfile::fold &&
         !last_emission.emitted_bytes.empty()) {
         
-        dgtl::exec::StrikeRunner runner;
+        dgtl::jit::StrikeRunner runner;
         const size_t injected = runner.inject_code(arena, last_emission.emitted_bytes);
         
         if (injected != 0) {

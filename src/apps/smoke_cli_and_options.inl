@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
 enum class ExitCode : int {
     ok = 0,
     invalid_args = 2,
@@ -129,7 +139,7 @@ struct BackendBenchmark {
 };
 
 bool emit_arm64(const dgtl::ir::IRStream& stream,
-                const dgtl::core::SymbolTable& symbols,
+                const dgtl::semantic::SymbolTable& symbols,
                 bool verbose_asm,
                 std::string& out_text,
                 std::vector<uint8_t>* out_binary_stream = nullptr);
@@ -140,7 +150,7 @@ bool emit_x64(const dgtl::ir::IRStream& stream,
               size_t* out_fallback_ops = nullptr);
 
 bool emit_nasm(const dgtl::ir::IRStream& stream,
-               const dgtl::core::SymbolTable& symbols,
+               const dgtl::semantic::SymbolTable& symbols,
                std::string& out_text);
 
 bool emit_wasm(const dgtl::ir::IRStream& stream,
@@ -151,13 +161,13 @@ std::string bytes_to_hex(const std::vector<uint8_t>& bytes);
 
 bool emit_backend(BackendKind backend,
                   const dgtl::ir::IRStream& stream,
-                  const dgtl::core::SymbolTable& symbols,
+                  const dgtl::semantic::SymbolTable& symbols,
                   bool verbose_asm,
                   bool arm64_binary_stream,
                   EmissionResult& result);
 
 TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
-                                         dgtl::core::SymbolTable& symbols,
+                                         dgtl::semantic::SymbolTable& symbols,
                                          BackendKind backend,
                                          bool verbose_asm,
                                          BenchmarkProfile profile = BenchmarkProfile::fold,
@@ -165,7 +175,7 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
                                          bool arm64_binary_stream = false);
 
 BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
-                                       dgtl::core::SymbolTable& symbols,
+                                       dgtl::semantic::SymbolTable& symbols,
                                        BackendKind backend,
                                        size_t iterations,
                                        bool verbose_asm,
@@ -199,123 +209,69 @@ void print_usage(const char* argv0) {
         << "  --emit-asm <path>      Write emitted output to file\n";
 }
 
-std::string to_lower_ascii(std::string value) {
-    for (char& ch : value) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    return value;
-}
-
 bool parse_backend(std::string backend_str, BackendKind& out_kind, std::string& out_name) {
-    backend_str = to_lower_ascii(std::move(backend_str));
-    if (backend_str == "arm64") {
-        out_kind = BackendKind::arm64;
-        out_name = backend_str;
-        return true;
-    }
-    if (backend_str == "x64") {
-        out_kind = BackendKind::x64;
-        out_name = backend_str;
-        return true;
-    }
-    if (backend_str == "nasm") {
-        out_kind = BackendKind::nasm;
-        out_name = backend_str;
-        return true;
-    }
-    if (backend_str == "wasm") {
-        out_kind = BackendKind::wasm;
-        out_name = backend_str;
-        return true;
-    }
-    if (backend_str == "arm32") {
-        out_kind = BackendKind::arm32;
-        out_name = backend_str;
-        return true;
-    }
-    if (backend_str == "riscv64" || backend_str == "riscv" || backend_str == "rv64") {
-        out_kind = BackendKind::riscv64;
-        out_name = "riscv64";
-        return true;
-    }
-    if (backend_str == "cuda" || backend_str == "ptx" || backend_str == "nvptx") {
-        out_kind = BackendKind::cuda;
-        out_name = "cuda";
-        return true;
-    }
-    if (backend_str == "rocm" || backend_str == "amdgcn" || backend_str == "hip") {
-        out_kind = BackendKind::rocm;
-        out_name = "rocm";
-        return true;
-    }
-    if (backend_str == "macho") {
-        out_kind = BackendKind::macho;
-        out_name = backend_str;
-        return true;
-    }
-    if (backend_str == "elfobj" || backend_str == "elf") {
-        out_kind = BackendKind::elfobj;
-        out_name = "elfobj";
-        return true;
-    }
-    if (backend_str == "staticlib" || backend_str == "archive") {
-        out_kind = BackendKind::staticlib;
-        out_name = "staticlib";
-        return true;
-    }
-    if (backend_str == "coffobj" || backend_str == "coff") {
-        out_kind = BackendKind::coffobj;
-        out_name = "coffobj";
-        return true;
-    }
-    if (backend_str == "cofflib" || backend_str == "coffarchive") {
-        out_kind = BackendKind::cofflib;
-        out_name = "cofflib";
+    backend_str = dgtl::backend::driver::shared::to_lower_ascii(std::move(backend_str));
+    dgtl::backend::driver::BackendDriverTarget driver_target{};
+    if (dgtl::backend::driver::parse_backend_driver_target(backend_str, driver_target)) {
+        switch (driver_target) {
+            case dgtl::backend::driver::BackendDriverTarget::arm64:
+                out_kind = BackendKind::arm64;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::x64:
+                out_kind = BackendKind::x64;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::nasm:
+                out_kind = BackendKind::nasm;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::wasm:
+                out_kind = BackendKind::wasm;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::arm32:
+                out_kind = BackendKind::arm32;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::riscv64:
+                out_kind = BackendKind::riscv64;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::cuda:
+                out_kind = BackendKind::cuda;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::rocm:
+                out_kind = BackendKind::rocm;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::macho:
+                out_kind = BackendKind::macho;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::elfobj:
+                out_kind = BackendKind::elfobj;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::staticlib:
+                out_kind = BackendKind::staticlib;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::coffobj:
+                out_kind = BackendKind::coffobj;
+                break;
+            case dgtl::backend::driver::BackendDriverTarget::cofflib:
+                out_kind = BackendKind::cofflib;
+                break;
+            default:
+                return false;
+        }
+        out_name = dgtl::backend::driver::backend_driver_target_name(driver_target);
         return true;
     }
     return false;
 }
 
 bool parse_polyhedral_mode(std::string mode_str, PolyhedralMode& out_mode, std::string& out_name) {
-    mode_str = to_lower_ascii(std::move(mode_str));
-    if (mode_str == "off") {
-        out_mode = PolyhedralMode::off;
-        out_name = "off";
-        return true;
-    }
-    if (mode_str == "safe") {
-        out_mode = PolyhedralMode::safe;
-        out_name = "safe";
-        return true;
-    }
-    if (mode_str == "aggressive") {
-        out_mode = PolyhedralMode::aggressive;
-        out_name = "aggressive";
-        return true;
-    }
-    return false;
+    return dgtl::backend::driver::shared::parse_polyhedral_mode(
+        std::move(mode_str), out_mode, out_name);
 }
 
 bool parse_polyhedral_parallel_policy(std::string policy_str,
                                       PolyhedralParallelPolicy& out_policy,
                                       std::string& out_name) {
-    policy_str = to_lower_ascii(std::move(policy_str));
-    if (policy_str == "auto") {
-        out_policy = PolyhedralParallelPolicy::auto_policy;
-        out_name = "auto";
-        return true;
-    }
-    if (policy_str == "off") {
-        out_policy = PolyhedralParallelPolicy::off;
-        out_name = "off";
-        return true;
-    }
-    if (policy_str == "on") {
-        out_policy = PolyhedralParallelPolicy::on;
-        out_name = "on";
-        return true;
-    }
-    return false;
+    return dgtl::backend::driver::shared::parse_polyhedral_parallel_policy(
+        std::move(policy_str), out_policy, out_name);
 }
 
 ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {

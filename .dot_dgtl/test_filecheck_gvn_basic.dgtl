@@ -1,0 +1,11 @@
+; RUN: dgtl-opt --pass=gvn --filecheck %s
+; FileCheck test for Global Value Numbering (GVN) pass
+;
+; This test verifies that GVN correctly identifies and eliminates
+; redundant computations by matching patterns in the optimized IR output.
+
+; CHECK: DGTL IR Text Format
+; CHECK-NEXT: Stream size:
+; CHECK-NOT: redundant_value
+; CHECK: opcode=
+; CHECK: result=

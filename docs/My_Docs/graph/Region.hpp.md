@@ -43,9 +43,9 @@ D --> E[Finalize]
 ## Include Dependencies
 - #include <vector>
 - #include <unordered_set>
-- #include "dgtl/ir/base/IR_Types.hpp"
-- #include "dgtl/ir/base/IR_Nodes.hpp"
-- #include "dgtl/ir/base/IR_Traits.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
 
 ## Class and Struct Catalog
 ### Classes

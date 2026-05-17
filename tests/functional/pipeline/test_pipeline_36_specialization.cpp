@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -29,7 +29,7 @@ void run_test_pipeline_36_specialization() {
     // Push a guard node that models specialization/deoptimization gate metadata.
     stream.push_node(
         dgtl::ir::OpCode::GUARD_VALUE, 
-        dgtl::ir::Flags::REQUIRES_DEPASS_TARGET, 
+        dgtl::ir::HintFlags::RequiresDepassTarget, 
         0, 0, 0, 0, kGuardTag
     );
     
@@ -38,7 +38,7 @@ void run_test_pipeline_36_specialization() {
     if (stream.size() == 1) {
         const auto node = stream.get_node(0);
         if (node.opcode == dgtl::ir::OpCode::GUARD_VALUE &&
-            (node.flags & dgtl::ir::Flags::REQUIRES_DEPASS_TARGET) &&
+            (node.flags & dgtl::ir::HintFlags::RequiresDepassTarget) &&
             node.intent_hash == kGuardTag) {
             std::cout << "SUCCESS\n";
             return;

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -25,7 +25,8 @@
 #include <algorithm>
 #include <limits>
 #include "dgtl/ir/Global_IR.hpp"
-#include "../../analysis/dataflow/Liveness_Analyzer.hpp"
+#include "dgtl/analysis/Liveness_Memory_Dependency_Unified.hpp"
+#include "dgtl/ir/interop/IR_Analysis_Bridge.hpp"
 
 namespace dgtl::isa {
 
@@ -83,7 +84,7 @@ public:
      * Operates on the Shadow Buffer during the DGTLoptManager strike phase.
      */
     void execute(ir::IRStream& stream, const dgtl::analysis::LivenessAnalyzer& liveness) {
-        if (stream.is_null() || stream.size() == 0) {
+        if (!dgtl::ir::bridge_validation::is_stream_ready(stream)) {
             return;
         }
 
@@ -216,10 +217,10 @@ public:
                 if (phys_dest != UNMAPPED_REG) [[likely]] {
                     // Update op_c as the physical destination register
                     cores[i].op_c = phys_dest; 
-                    atoms[i].flags |= ir::Flags::SVE_ACTIVE; // Mark as Hardware-Mapped
+                    atoms[i].flags |= ir::HintFlags::SVEActive; // Mark as Hardware-Mapped
                     changed = true;
                 } else {
-                    atoms[i].flags |= ir::Flags::IS_SPILL_CANDIDATE; 
+                    atoms[i].flags |= ir::HintFlags::IsSpillCandidate; 
                 }
             }
 

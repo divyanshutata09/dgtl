@@ -20,6 +20,9 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <shared_mutex>
+#include <mutex>
+#include <functional>
 
 namespace dgtl::core {
 
@@ -69,35 +72,175 @@ enum class DGTLCallValidationMode : uint8_t {
 struct DGTLCallValidationOptions {
     DGTLCallValidationMode mode = DGTLCallValidationMode::exact_arity;
     bool allow_missing_signature = false;
+    bool allow_runtime_intrinsic_bypass = false;
+    // Safety budget for total outbound ABI argument storage.
+    // Effective max arg count = min(kDGTLAbiMaxCallArgsHard, arg_memory_budget_bytes / 8).
+    size_t arg_memory_budget_bytes = 2048;
+
+    [[nodiscard]] static constexpr DGTLCallValidationOptions strict_production() noexcept {
+        return DGTLCallValidationOptions{
+            DGTLCallValidationMode::exact_arity,
+            false,
+            false,
+            2048
+        };
+    }
+
+    [[nodiscard]] static constexpr DGTLCallValidationOptions lenient_runtime_intrinsics() noexcept {
+        return DGTLCallValidationOptions{
+            DGTLCallValidationMode::exact_arity,
+            false,
+            true,
+            2048
+        };
+    }
 };
 
-[[nodiscard]] inline bool is_concurrency_boundary_callee(std::string_view callee) {
-    std::string lower(callee);
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
+inline constexpr size_t kDGTLAbiMaxCallArgsHard = 256;
+inline constexpr size_t kDGTLAbiArgBytesFloor = sizeof(uint64_t);
 
-    if (lower == "spawn" || lower == "async" || lower == "fiber" || lower == "thread" ||
-        lower == "yield" || lower == "lock" || lower == "unlock" || lower == "release" ||
-        lower == "fence" || lower == "barrier" ||
-        lower == "atomic_cas" || lower == "atomic_add" || lower == "atomic_sub" ||
-        lower == "__myzon_spawn" || lower == "__myzon_yield" ||
-        lower == "__myzon_atomic_add" || lower == "__myzon_atomic_sub" ||
-        lower == "__myzon_concurrent_op" || lower == "__myzon_select_arm") {
+[[nodiscard]] inline size_t max_abi_args_for_budget(size_t budget_bytes) noexcept {
+    const size_t by_memory = budget_bytes / kDGTLAbiArgBytesFloor;
+    return std::min(kDGTLAbiMaxCallArgsHard, by_memory);
+}
+
+// --- C++20 Transparent Hashing for Zero-Allocation ABI Lookups ---
+struct ABIStringViewHash {
+    using is_transparent = void;
+    [[nodiscard]] size_t operator()(std::string_view sv) const noexcept {
+        return std::hash<std::string_view>{}(sv);
+    }
+};
+
+struct ABIStringViewEqual {
+    using is_transparent = void;
+    [[nodiscard]] bool operator()(std::string_view lhs, std::string_view rhs) const noexcept {
+        return lhs == rhs;
+    }
+};
+
+using DGTLExternalIntrinsicMigrator = std::string_view(*)(std::string_view) noexcept;
+using DGTLExternalIntrinsicPredicate = bool(*)(std::string_view) noexcept;
+
+inline DGTLExternalIntrinsicMigrator g_external_intrinsic_migrator = nullptr;
+inline DGTLExternalIntrinsicPredicate g_external_intrinsic_predicate = nullptr;
+
+inline void set_external_intrinsic_hooks(DGTLExternalIntrinsicMigrator migrator,
+                                         DGTLExternalIntrinsicPredicate predicate) noexcept {
+    g_external_intrinsic_migrator = migrator;
+    g_external_intrinsic_predicate = predicate;
+}
+
+/**
+ * @brief Canonical runtime intrinsic migrator and name normalizer.
+ * Keeps DGTL core language-agnostic while supporting external language adapters
+ * through pluggable hook callbacks.
+ */
+[[nodiscard]] inline std::string_view migrate_callee_name(std::string_view name) noexcept {
+    if (name.empty() || name[0] != '_') return name;
+
+    if (g_external_intrinsic_migrator != nullptr) {
+        const std::string_view migrated = g_external_intrinsic_migrator(name);
+        if (!migrated.empty()) {
+            return migrated;
+        }
+    }
+
+    if (name.find("__builtin_detect_") == 0 || name.find("__builtin_get_") == 0) {
+        return name;
+    }
+
+    return name;
+}
+
+/**
+ * @brief Recognize runtime intrinsics (platform + adapter-provided domains).
+ * Used to skip signature validation or apply lenient validation.
+ */
+[[nodiscard]] inline bool is_runtime_intrinsic(std::string_view callee) noexcept {
+    if (callee.empty()) return false;
+
+    if (callee.find("__dgtl_rt_") == 0) {
         return true;
     }
 
-    return lower.find("lock") != std::string::npos;
+    if (callee.find("__builtin_detect_") == 0 || callee.find("__builtin_get_") == 0) {
+        return true;
+    }
+
+    if (g_external_intrinsic_predicate != nullptr && g_external_intrinsic_predicate(callee)) {
+        return true;
+    }
+
+    return false;
+}
+
+[[nodiscard]] inline bool is_myzon_runtime_intrinsic(std::string_view callee) noexcept {
+    return is_runtime_intrinsic(callee);
+}
+
+/**
+ * @brief HFT-Upgraded Concurrency Boundary Check
+ * Allocation-free, case-insensitive string parsing.
+ */
+[[nodiscard]] inline bool is_concurrency_boundary_callee(std::string_view callee) noexcept {
+    if (callee.empty()) return false;
+
+    if (callee.starts_with("__dgtl_rt_")) {
+        if (callee == "__dgtl_rt_spawn" || callee == "__dgtl_rt_yield" ||
+            callee == "__dgtl_rt_atomic_add" || callee == "__dgtl_rt_atomic_sub" ||
+            callee == "__dgtl_rt_concurrent_op" || callee == "__dgtl_rt_select_arm") {
+            return true;
+        }
+        return false;
+    }
+
+    // Zero-allocation case-insensitive compare
+    auto equals_ignore_case = [](std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(a[i])) != 
+                std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        }
+        return true;
+    };
+
+    if (equals_ignore_case(callee, "spawn") || equals_ignore_case(callee, "async") ||
+        equals_ignore_case(callee, "fiber") || equals_ignore_case(callee, "thread") ||
+        equals_ignore_case(callee, "yield") || equals_ignore_case(callee, "lock") ||
+        equals_ignore_case(callee, "unlock") || equals_ignore_case(callee, "release") ||
+        equals_ignore_case(callee, "fence") || equals_ignore_case(callee, "barrier") ||
+        equals_ignore_case(callee, "atomic_cas") || equals_ignore_case(callee, "atomic_add") ||
+        equals_ignore_case(callee, "atomic_sub")) {
+        return true;
+    }
+
+    // Fast substring check for "lock"
+    for (size_t i = 0; i + 3 < callee.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(callee[i])) == 'l' &&
+            std::tolower(static_cast<unsigned char>(callee[i+1])) == 'o' &&
+            std::tolower(static_cast<unsigned char>(callee[i+2])) == 'c' &&
+            std::tolower(static_cast<unsigned char>(callee[i+3])) == 'k') {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 class DGTLABIRegistry {
 public:
     void register_signature(DGTLCallSignature signature) {
-        signatures_[signature.callee] = std::move(signature);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::string migrated_name(migrate_callee_name(signature.callee));
+        signatures_.insert_or_assign(std::move(migrated_name), std::move(signature));
     }
 
     [[nodiscard]] const DGTLCallSignature* find_signature(std::string_view callee) const noexcept {
-        const auto it = signatures_.find(std::string(callee));
+        std::string_view actual_callee = migrate_callee_name(callee);
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        
+        const auto it = signatures_.find(actual_callee);
         return it == signatures_.end() ? nullptr : &it->second;
     }
 
@@ -114,6 +257,7 @@ public:
                                      std::string* error = nullptr) const noexcept {
         return validate_call(callee,
                              arg_count,
+                             std::span<const DGTLABIValueClass>{},
                              DGTLCallValidationOptions{},
                              error);
     }
@@ -122,13 +266,42 @@ public:
                                      size_t arg_count,
                                      const DGTLCallValidationOptions& options,
                                      std::string* error = nullptr) const noexcept {
-        const DGTLCallSignature* signature = find_signature(callee);
+        return validate_call(callee,
+                     arg_count,
+                     std::span<const DGTLABIValueClass>{},
+                     options,
+                     error);
+        }
+
+        [[nodiscard]] bool validate_call(std::string_view callee,
+                         size_t arg_count,
+                         std::span<const DGTLABIValueClass> argument_classes,
+                         const DGTLCallValidationOptions& options,
+                         std::string* error = nullptr) const noexcept {
+        std::string_view actual_callee = migrate_callee_name(callee);
+
+        const size_t max_args = max_abi_args_for_budget(options.arg_memory_budget_bytes);
+        if (arg_count > max_args) {
+            if (error) {
+                *error = "ABI arg limit exceeded for callee: " + std::string(actual_callee) +
+                         " (arg_count=" + std::to_string(arg_count) +
+                         ", max=" + std::to_string(max_args) + ")";
+            }
+            return false;
+        }
+        
+        if (options.allow_runtime_intrinsic_bypass && is_runtime_intrinsic(actual_callee)) {
+            return true;
+        }
+        
+        const DGTLCallSignature* signature = find_signature(actual_callee);
+        
         if (!signature) {
             if (options.allow_missing_signature) {
                 return true;
             }
             if (error) {
-                *error = "missing ABI signature for callee: " + std::string(callee);
+                *error = "missing ABI signature for callee: " + std::string(actual_callee);
             }
             return false;
         }
@@ -145,9 +318,29 @@ public:
 
             if (!arity_ok) {
                 if (error) {
-                    *error = "arity mismatch for callee: " + std::string(callee);
+                    *error = "arity mismatch for callee: " + std::string(actual_callee);
                 }
                 return false;
+            }
+
+            if (!argument_classes.empty()) {
+                const size_t comparable = std::min(expected, argument_classes.size());
+                for (size_t i = 0; i < comparable; ++i) {
+                    const DGTLABIValueClass actual = argument_classes[i];
+                    const DGTLABIValueClass expected_cls = signature->parameters[i].value_class;
+                    if (actual == DGTLABIValueClass::none || actual == DGTLABIValueClass::custom) {
+                        continue;
+                    }
+                    if (expected_cls == DGTLABIValueClass::none || expected_cls == DGTLABIValueClass::custom) {
+                        continue;
+                    }
+                    if (actual != expected_cls) {
+                        if (error) {
+                            *error = "ABI value-class mismatch for callee: " + std::string(actual_callee);
+                        }
+                        return false;
+                    }
+                }
             }
         }
 
@@ -163,18 +356,22 @@ public:
         signature.callee = std::string(callee);
         signature.calling_convention = DGTLCallingConvention::dgtl_internal;
         signature.return_value = DGTLABIParameter{"ret", return_class, 0xFF, 0, return_type_handle};
-        signature.parameters.assign(parameters.begin(), parameters.end());
+        const size_t param_count = std::min(parameters.size(), kDGTLAbiMaxCallArgsHard);
+        signature.parameters.assign(parameters.begin(), parameters.begin() + param_count);
         signature.is_variadic = is_variadic;
         signature.is_foreign = false;
+        
         register_signature(std::move(signature));
     }
 
     [[nodiscard]] size_t size() const noexcept {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         return signatures_.size();
     }
 
 private:
-    std::unordered_map<std::string, DGTLCallSignature> signatures_;
+    alignas(64) mutable std::shared_mutex mutex_;
+    std::unordered_map<std::string, DGTLCallSignature, ABIStringViewHash, ABIStringViewEqual> signatures_;
 };
 
 } // namespace dgtl::core

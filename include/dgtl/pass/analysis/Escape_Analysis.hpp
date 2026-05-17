@@ -139,8 +139,8 @@ private:
                 info.definitions.push_back(i);
                 
                 // Default: conservative assumption (may escape)
-                if (node.opcode == dgtl::ir::OpCode::LOAD ||
-                    node.opcode == dgtl::ir::OpCode::STORE) {
+                const bool is_memory_op = dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::Memory);
+                if (is_memory_op) {
                     info.escape_status = EscapeStatus::NoEscape;
                 } else {
                     info.escape_status = EscapeStatus::GlobalEscape;

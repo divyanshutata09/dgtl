@@ -1,5 +1,15 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
 bool emit_arm64(const dgtl::ir::IRStream& stream,
-				const dgtl::core::SymbolTable& symbols,
+				const dgtl::semantic::SymbolTable& symbols,
 				bool verbose_asm,
 				std::string& out_text,
 				std::vector<uint8_t>* out_binary_stream) {
@@ -19,18 +29,7 @@ bool emit_arm64(const dgtl::ir::IRStream& stream,
 }
 
 std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
-	static constexpr char kHex[] = "0123456789ABCDEF";
-	std::string out;
-	out.reserve(bytes.size() * 3);
-	for (size_t i = 0; i < bytes.size(); ++i) {
-		const uint8_t b = bytes[i];
-		out.push_back(kHex[(b >> 4) & 0xF]);
-		out.push_back(kHex[b & 0xF]);
-		if (i + 1 < bytes.size()) {
-			out.push_back(' ');
-		}
-	}
-	return out;
+	return dgtl::backend::driver::shared::bytes_to_hex(bytes);
 }
 
 bool emit_x64(const dgtl::ir::IRStream& stream,
@@ -55,7 +54,7 @@ bool emit_x64(const dgtl::ir::IRStream& stream,
 }
 
 bool emit_nasm(const dgtl::ir::IRStream& stream,
-			   const dgtl::core::SymbolTable& symbols,
+			   const dgtl::semantic::SymbolTable& symbols,
 			   std::string& out_text) {
 	out_text.clear();
 	dgtl::isa::DGTLNasmEmitter emitter;
@@ -80,113 +79,46 @@ bool emit_wasm(const dgtl::ir::IRStream& stream,
 }
 
 bool write_text_file(const std::string& path, const std::string& content) {
-	const std::filesystem::path p(path);
-	if (p.has_parent_path()) {
-		std::error_code ec;
-		std::filesystem::create_directories(p.parent_path(), ec);
-		if (ec) return false;
-	}
-
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	if (!out.is_open()) {
-		return false;
-	}
-	out.write(content.data(), static_cast<std::streamsize>(content.size()));
-	return out.good();
+	return dgtl::backend::driver::shared::write_text_file(path, content);
 }
 
 bool write_binary_file(const std::string& path, const std::vector<uint8_t>& bytes) {
-	const std::filesystem::path p(path);
-	if (p.has_parent_path()) {
-		std::error_code ec;
-		std::filesystem::create_directories(p.parent_path(), ec);
-		if (ec) return false;
-	}
-
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	if (!out.is_open()) {
-		return false;
-	}
-	if (!bytes.empty()) {
-		out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-	}
-	return out.good();
+	return dgtl::backend::driver::shared::write_binary_file(path, bytes);
 }
 
 // ---------------------------------------------------------------------------
 // ARM32 NEON: canonical gather+scatter assembly sequence
 // ---------------------------------------------------------------------------
 bool emit_arm32(std::string& out_text) {
-	std::vector<std::string> lines;
-	lines.reserve(64);
-	lines.push_back(".arch armv7-a");
-	lines.push_back(".fpu neon");
-	lines.push_back(".syntax unified");
-	lines.push_back("DGTL_arm32_entry:");
-	// Canonical gather: base=r0, indices=q0, data=q1, elem_size=4, num_lanes=4
-	dgtl::isa::ARM32NEONGatherScatter::emit_gather(lines, 0, 0, 1, 4, 4);
-	lines.push_back("@ scatter result");
-	// Canonical scatter: base=r2, indices=q2, data=q1, elem_size=4
-	dgtl::isa::ARM32NEONGatherScatter::emit_scatter(lines, 2, 2, 1, 4);
-	lines.push_back("bx lr");
-
-	std::ostringstream oss;
-	for (const auto& line : lines) {
-		oss << line << '\n';
-	}
-	out_text = oss.str();
-	return !out_text.empty();
+	return dgtl::backend::driver::shared::emit_arm32_text(out_text);
 }
 
 // ---------------------------------------------------------------------------
 // RISC-V 64: canonical V-extension gather+scatter assembly sequence
 // ---------------------------------------------------------------------------
 bool emit_riscv64(std::string& out_text) {
-	std::vector<std::string> lines;
-	lines.reserve(64);
-	lines.push_back("# RISC-V 64 (RV64GC + V-extension) Emission");
-	lines.push_back(".arch rv64gcv");
-	lines.push_back("DGTL_riscv64_entry:");
-	// Canonical gather: base=a0(0), indices=v0(0), data=v1(1), elem_size=4, use_v_ext=true
-	dgtl::isa::RiscV64GatherScatter::emit_gather(lines, 0, 0, 1, 4, true);
-	lines.push_back("# scatter result");
-	// Canonical scatter: base=a1(1), indices=v0(0), data=v1(1), elem_size=4, use_v_ext=true
-	dgtl::isa::RiscV64GatherScatter::emit_scatter(lines, 1, 0, 1, 4, true);
-	lines.push_back("ret");
-
-	std::ostringstream oss;
-	for (const auto& line : lines) {
-		oss << line << '\n';
-	}
-	out_text = oss.str();
-	return !out_text.empty();
+	return dgtl::backend::driver::shared::emit_riscv64_text(out_text);
 }
 
 // ---------------------------------------------------------------------------
 // CUDA PTX: fuse IR stream into NVIDIA PTX source via GPGPUFusionEngine
 // ---------------------------------------------------------------------------
 bool emit_cuda(const dgtl::ir::IRStream& stream, std::string& out_text) {
-	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX512);
-	dgtl::isa::GPGPUFusionEngine engine(dgtl::isa::DeviceType::NVIDIA_PTX, target);
-	out_text = engine.fuse_to_source(stream);
-	return !out_text.empty();
+	return dgtl::backend::driver::shared::emit_cuda_text(stream, out_text);
 }
 
 // ---------------------------------------------------------------------------
 // ROCm AMD GCN CDNA: fuse IR stream into AMD kernel source via GPGPUFusionEngine
 // ---------------------------------------------------------------------------
 bool emit_rocm(const dgtl::ir::IRStream& stream, std::string& out_text) {
-	dgtl::core::TargetMachine target(dgtl::core::ArchType::AARCH64_SVE);
-	dgtl::isa::GPGPUFusionEngine engine(dgtl::isa::DeviceType::AMD_GCN_CDNA, target);
-	out_text = engine.fuse_to_source(stream);
-	return !out_text.empty();
+	return dgtl::backend::driver::shared::emit_rocm_text(stream, out_text);
 }
 
 // ---------------------------------------------------------------------------
 // Mach-O ARM64: produce Mach-O 64-bit relocatable binary via MachOEmitter
 // ---------------------------------------------------------------------------
 bool emit_macho(const dgtl::ir::IRStream& stream,
-				const dgtl::core::SymbolTable& symbols,
+				const dgtl::semantic::SymbolTable& symbols,
 				std::vector<uint8_t>& out_bytes,
 				std::string& out_text) {
 	dgtl::isa::MachOEmitter emitter(stream, symbols);

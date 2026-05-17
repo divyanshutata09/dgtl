@@ -12,7 +12,7 @@
 #pragma once
 
 #include "dgtl/api/ExecutionEngine.hpp"
-#include "dgtl/pipeline/modes/AOT_Pipeline.hpp"
+#include "dgtl/pipeline/Pass_Manager.hpp"
 #include <memory>
 #include <string_view>
 

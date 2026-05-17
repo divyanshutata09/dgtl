@@ -43,8 +43,8 @@ D --> E[Finalize]
 ## Include Dependencies
 - #include <vector>
 - #include <memory>
-- #include "dgtl/ir/base/IR_Types.hpp"
-- #include "dgtl/ir/base/IR_Nodes.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
+- #include "dgtl/ir/base/IR_Core.hpp"
 - #include "dgtl/analysis/cost/AI_Cost_Model.hpp"
 
 ## Class and Struct Catalog

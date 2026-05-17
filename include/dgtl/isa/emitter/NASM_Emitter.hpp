@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -19,7 +19,11 @@
 #include <functional>
 #include <unordered_map>
 #include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/core/Symbol_Table.hpp"
+#include "dgtl/ir/base/IR_PrintSerialDumper.hpp"
+#include "dgtl/utils/assert/Assertions.hpp"
+#include "dgtl/utils/container/Flat_Map.hpp"
+#include "dgtl/semantic/Symbol_Table.hpp"
+#include "dgtl/backend/lowering/ABI_Lowering.hpp"
 
 namespace dgtl::isa {
 
@@ -36,10 +40,10 @@ public:
     }
 
     /**
-     * @brief Updated signature to utilize the dgtl::core::SymbolTable.
+     * @brief Updated signature to utilize the dgtl::semantic::SymbolTable.
      * This matches the high-velocity identity resolution Pillar 2.
      */
-    void emit(const ir::IRStream& stream, const dgtl::core::SymbolTable& symbols) {
+    void emit(const ir::IRStream& stream, const dgtl::semantic::SymbolTable& symbols) {
         // PERMANENT FIX: Clear previous runs to ensure the assertion 
         // in baked_kernel.cpp sees fresh data.
         this->clear();
@@ -103,7 +107,7 @@ public:
                 continue;
             }
 
-            std::string asm_code = translate_node(stream, node, resolve_target);
+            std::string asm_code = translate_node(stream, node, i, resolve_target);
             
             // Format intent hash for debugging within the ASM
             std::string comment = std::format(" ; [Node {:03d}] Hash:0x{:08X}", i, node.intent_hash);
@@ -175,7 +179,9 @@ private:
         _asm_buffer.append("\n");
     }
 
-    std::string translate_node(const ir::IRStream& stream, const ir::IRNode& node,
+    std::string translate_node(const ir::IRStream& stream,
+                               const ir::IRNode& node,
+                               size_t node_idx,
                                const std::function<size_t(uint32_t)>& resolve_target) {
         auto r = [](uint32_t idx) -> const char* {
             static constexpr const char* regs[] = { 
@@ -194,7 +200,6 @@ private:
         };
 
         switch (node.opcode) {
-            // FIX: Added LOAD_IMM to match your test cases
             case ir::OpCode::LOAD_IMM:
             case ir::OpCode::IMMEDIATE: {
                 const uint32_t high = (node.op_a == ir::INVALID_SLOT) ? 0u : node.op_a;
@@ -349,7 +354,9 @@ private:
 
             case ir::OpCode::BRANCH_COND:
                 // op_a = condition register, op_b = target block label
-                return std::format("test {0}, {0} \n    jnz .L{1}", r(node.op_a), resolve_target(node.op_b));
+                return std::format("    nop ; Unsupported Op fallback ({} #{})",
+                                   std::string(ir::opcode_name(node.opcode)),
+                                   static_cast<uint32_t>(node.opcode));
 
             case ir::OpCode::BRANCH_COMPARE_FUSED:
                 // op_a = lhs register, op_b = rhs register, op_c = target block label
@@ -361,15 +368,117 @@ private:
                                    node.result_id, node.op_a, node.op_b, node.op_c);
 
             case ir::OpCode::CALL: {
-                // Windows x64 ABI: arg0 (str pool idx) -> rcx, arg1 (value) -> rdx
-                // op_b = first arg register, op_c = second arg register
-                std::string cs = "sub rsp, 32";
-                if (node.op_b != ir::INVALID_SLOT)
-                    cs += std::format(" \n    mov rcx, {}", r(node.op_b));
-                if (node.op_c != ir::INVALID_SLOT)
-                    cs += std::format(" \n    mov rdx, {}", r(node.op_c));
-                cs += " \n    call __myzon_print_i64";
-                cs += " \n    add rsp, 32";
+                std::vector<uint32_t> args;
+                args.reserve(8);
+                if (node.op_b != ir::INVALID_SLOT) args.push_back(node.op_b);
+                if (node.op_c != ir::INVALID_SLOT) args.push_back(node.op_c);
+                if (node.logic_flags != ir::INVALID_SLOT) args.push_back(node.logic_flags);
+                for (uint32_t extra : stream.get_call_overflow_args(node_idx)) {
+                    if (extra != ir::INVALID_SLOT) {
+                        args.push_back(extra);
+                    }
+                }
+
+                auto map_reg_name = [](uint32_t reg_id) -> const char* {
+                    switch (reg_id) {
+                        case 0u: return "rdi";
+                        case 1u: return "rsi";
+                        case 2u: return "rdx";
+                        case 3u: return "rcx";
+                        case 4u: return "r8";
+                        case 5u: return "r9";
+                        // Microsoft x64 canonical integer arg order IDs from ABI_Lowering.
+                        case 6u: return "rax";
+                        case 7u: return "rbx";
+                        case 8u: return "rsp";
+                        case 9u: return "rbp";
+                        case 10u: return "rsi";
+                        case 11u: return "rdi";
+                        case 12u: return "r8";
+                        case 13u: return "r9";
+                        case 14u: return "r10";
+                        case 15u: return "r11";
+                        default: return nullptr;
+                    }
+                };
+
+                auto map_xmm_index = [](uint32_t reg_id) -> int {
+                    if (reg_id >= 16u && reg_id <= 31u) {
+                        return static_cast<int>(reg_id - 16u);
+                    }
+                    return -1;
+                };
+
+                auto is_ms_integer_arg_id = [](uint32_t reg_id) -> bool {
+                    return reg_id == 2u || reg_id == 3u || reg_id == 4u || reg_id == 5u;
+                };
+
+                auto map_ms_arg_reg_name = [](uint32_t reg_id) -> const char* {
+                    switch (reg_id) {
+                        case 3u: return "rcx";
+                        case 0u: return "rdi";
+                        case 2u: return "rdx";
+                        case 4u: return "r8";
+                        case 5u: return "r9";
+                        default: return nullptr;
+                    }
+                };
+
+                const std::vector<uint32_t> layout_words = stream.get_call_abi_layout_words(node_idx);
+                std::string cs;
+                if (layout_words.size() >= 4) {
+                    const uint32_t param_count = layout_words[0];
+                    const uint32_t stack_size = layout_words[1];
+                    const size_t required_words = 4u + static_cast<size_t>(param_count) * 4u;
+
+                    if (layout_words.size() >= required_words && stack_size > 0u) {
+                        cs += std::format("sub rsp, {}", stack_size);
+                    }
+
+                    if (layout_words.size() >= required_words) {
+                        size_t w = 4u;
+                        const size_t count = std::min<size_t>(param_count, args.size());
+                        for (size_t i = 0; i < count; ++i, w += 4u) {
+                            const bool in_register = (layout_words[w] != 0u);
+                            const uint32_t reg_id = layout_words[w + 1u];
+                            const uint32_t stack_offset = layout_words[w + 2u];
+
+                            if (in_register) {
+                                const int xmm_idx = map_xmm_index(reg_id);
+                                if (xmm_idx >= 0) {
+                                    if (!cs.empty()) cs += " \n    ";
+                                    cs += std::format("movq xmm{}, {}", xmm_idx, r(args[i]));
+                                } else {
+                                    const char* dst = is_ms_integer_arg_id(reg_id)
+                                        ? map_ms_arg_reg_name(reg_id)
+                                        : map_reg_name(reg_id);
+                                    if (dst != nullptr) {
+                                        if (!cs.empty()) cs += " \n    ";
+                                        cs += std::format("mov {}, {}", dst, r(args[i]));
+                                    }
+                                }
+                            } else {
+                                if (!cs.empty()) cs += " \n    ";
+                                cs += std::format("mov rax, {}", r(args[i]));
+                                cs += std::format(" \n    mov [rsp + {}], rax", stack_offset);
+                            }
+                        }
+                    }
+
+                    if (!cs.empty()) cs += " \n    ";
+                    cs += std::format("call _DGTL_fn_{}", node.op_a);
+                    if (layout_words.size() >= required_words && stack_size > 0u) {
+                        cs += std::format(" \n    add rsp, {}", stack_size);
+                    }
+                } else {
+                    cs = "sub rsp, 32";
+                    if (node.op_b != ir::INVALID_SLOT)
+                        cs += std::format(" \n    mov rcx, {}", r(node.op_b));
+                    if (node.op_c != ir::INVALID_SLOT)
+                        cs += std::format(" \n    mov rdx, {}", r(node.op_c));
+                    cs += std::format(" \n    call _DGTL_fn_{}", node.op_a);
+                    cs += " \n    add rsp, 32";
+                }
                 return cs;
             }
 
@@ -384,6 +493,3 @@ private:
 };
 
 } // namespace dgtl::isa
-
-
-

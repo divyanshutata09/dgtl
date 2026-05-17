@@ -23,8 +23,13 @@
 #include <functional>
 
 #include "dgtl/ir/Global_IR.hpp"
+#include "dgtl/ir/base/IR_Node.hpp"
+#include "dgtl/ir/base/IR_PrintSerialDumper.hpp"
 #include "dgtl/core/Target.hpp"
-#include "dgtl/core/Symbol_Table.hpp"
+#include "dgtl/semantic/Symbol_Table.hpp"
+#include "dgtl/utils/assert/Assertions.hpp"
+#include "dgtl/utils/container/Flat_Map.hpp"
+#include "dgtl/backend/lowering/ABI_Lowering.hpp"
 
 namespace dgtl::isa {
 
@@ -33,7 +38,7 @@ using dgtl::ir::OpCode;
 using dgtl::ir::IRNode;
 using dgtl::ir::IRCore;
 using dgtl::ir::IRStream;
-using dgtl::core::SymbolTable;
+using dgtl::semantic::SymbolTable;
 using dgtl::ir::INVALID_SLOT;
 
 // FIX: Namespace aliasing instead of 'using' to prevent GCC/MinGW ambiguity
@@ -134,7 +139,7 @@ public:
                 case OpCode::BRANCH_COND: emit_branch_cond(out, core, resolve_target); break;
                 case OpCode::BRANCH_COMPARE_FUSED: emit_branch_compare_fused(out, core, resolve_target); break;
                 case OpCode::PHI_NODE:  emit_phi_comment(out, core); break;
-                case OpCode::CALL:      emit_call(out, core); break;
+                case OpCode::CALL:      emit_call(out, core, i); break;
                 case OpCode::SYSCALL:   emit_syscall(out); break;
                 case OpCode::BIT_FIELD_INSERT: emit_bitfield_insert(out, core); break;
                 case OpCode::BIT_FIELD_EXTRACT: emit_bitfield_extract(out, core); break;
@@ -258,7 +263,7 @@ private:
     }
 
     void emit_load_imm(std::ostream& out, const IRCore& core) {
-        const uint32_t high = (core.op_a == INVALID_SLOT) ? 0u : core.op_a;
+        const uint32_t high = (core.op_a == ir::INVALID_SLOT) ? 0u : core.op_a;
         const uint64_t imm = (static_cast<uint64_t>(high) << 32) | core.op_b;
         const uint32_t part0 = static_cast<uint32_t>(imm & 0xFFFFULL);
         const uint32_t part1 = static_cast<uint32_t>((imm >> 16) & 0xFFFFULL);
@@ -332,15 +337,61 @@ private:
         out << "    cset x" << core.result_id << ", " << cond;
     }
 
-    void emit_call(std::ostream& out, const IRCore& core) {
-        // op_b = arg0 register (string pool index -> x0), op_c = arg1 register (value -> x1)
-        if (core.op_b != ir::INVALID_SLOT && core.op_c != ir::INVALID_SLOT) {
-            out << "mov x0, x" << (core.op_b & 0x1Fu) << "\n";
-            out << "    mov x1, x" << (core.op_c & 0x1Fu) << "\n";
-            out << "    bl __myzon_print_i64";
-        } else {
-            out << "bl _DGTL_fn_" << core.op_a;
+    void emit_call(std::ostream& out, const IRCore& core, size_t node_idx) {
+        std::vector<uint32_t> args;
+        args.reserve(8);
+        if (core.op_b != ir::INVALID_SLOT) args.push_back(core.op_b);
+        if (core.op_c != ir::INVALID_SLOT) args.push_back(core.op_c);
+        if (core.logic_flags != ir::INVALID_SLOT) args.push_back(core.logic_flags);
+        for (uint32_t extra : m_stream.get_call_overflow_args(node_idx)) {
+            if (extra != ir::INVALID_SLOT) {
+                args.push_back(extra);
+            }
         }
+
+        const std::vector<uint32_t> layout_words = m_stream.get_call_abi_layout_words(node_idx);
+        if (layout_words.size() >= 4) {
+            const uint32_t param_count = layout_words[0];
+            const uint32_t stack_size = layout_words[1];
+            const size_t required_words = 4u + static_cast<size_t>(param_count) * 4u;
+            if (layout_words.size() >= required_words && stack_size > 0u) {
+                out << "sub sp, sp, #" << stack_size << "\n";
+            }
+
+            if (layout_words.size() >= required_words) {
+                size_t w = 4u;
+                const size_t count = std::min<size_t>(param_count, args.size());
+                for (size_t i = 0; i < count; ++i, w += 4u) {
+                    const bool in_register = (layout_words[w] != 0u);
+                    const uint32_t reg_id = layout_words[w + 1u];
+                    const uint32_t stack_offset = layout_words[w + 2u];
+                    const uint32_t src = args[i] & 0x1Fu;
+
+                    if (in_register && reg_id < 8u) {
+                        out << "mov x" << reg_id << ", x" << src << "\n";
+                    } else if (in_register && reg_id >= 32u && reg_id < 40u) {
+                        out << "fmov d" << (reg_id - 32u) << ", d" << src << "\n";
+                    } else {
+                        out << "str x" << src << ", [sp, #" << stack_offset << "]\n";
+                    }
+                }
+            }
+
+            out << "bl _DGTL_fn_" << core.op_a;
+            if (layout_words.size() >= required_words && stack_size > 0u) {
+                out << "\n    add sp, sp, #" << stack_size;
+            }
+            return;
+        }
+
+        // Conservative fallback if ABI sidecar is unavailable.
+        if (core.op_b != ir::INVALID_SLOT) {
+            out << "mov x0, x" << (core.op_b & 0x1Fu) << "\n";
+        }
+        if (core.op_c != ir::INVALID_SLOT) {
+            out << "    mov x1, x" << (core.op_c & 0x1Fu) << "\n";
+        }
+        out << "    bl _DGTL_fn_" << core.op_a;
     }
 
     void emit_syscall(std::ostream& out) {
@@ -361,11 +412,12 @@ private:
 
     void emit_fallback(std::ostream& out, OpCode opcode) {
         out << "nop";
-        out << " // [DGTL-EMIT-FALLBACK] OpCode=" << static_cast<uint32_t>(opcode);
+        out << " // [DGTL-EMIT-FALLBACK] OpCode=" << dgtl::ir::opcode_name(opcode)
+            << "(" << static_cast<uint32_t>(opcode) << ")";
     }
 
     void emit_ret(std::ostream& out, const IRCore& core) {
-        if (core.op_a != INVALID_SLOT) {
+        if (core.op_a != ir::INVALID_SLOT) {
             uint64_t ret_imm = 0;
             if (resolve_ret_immediate(core.op_a, ret_imm)) {
                 const uint32_t part0 = static_cast<uint32_t>(ret_imm & 0xFFFFULL);

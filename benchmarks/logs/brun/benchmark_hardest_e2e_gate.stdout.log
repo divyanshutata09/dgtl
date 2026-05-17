@@ -2,13 +2,13 @@
  DGTL HARDEST E2E C++ GATE
 ===========================================================
 [PASS] End-to-end latency + large-stream memory pressure
-       exit=0 wall_s=29.423 est_mib=3.25 strike_throughput_mnodes=192.567
+       exit=0 wall_s=0.986 est_mib=30.52 strike_throughput_mnodes=203.500204
 [PASS] Hot-path pass ordering and skip logic
-       exit=0 order_trace=present nodes=6->6->6 hot_swaps=0 wall_s=0.432
+       exit=0 order_trace=present nodes=6->6->6 hot_swaps=0 wall_s=0.441
 [PASS] Deterministic output and traceability signals
-       arm64=0x9c13c402303ba602 x64=0x9c13c402303ba602 nasm=0x9c13c402303ba602 wasm=0x9c13c402303ba602 
+       arm64=0xb413c402303ba602 x64=0xb413c402303ba602 nasm=0xb413c402303ba602 wasm=0xb413c402303ba602 arm32=0xb413c402303ba602 riscv64=0xb413c402303ba602 cuda=0xb413c402303ba602 rocm=0xb413c402303ba602 macho=0xb413c402303ba602 elfobj=0xb413c402303ba602 staticlib=0xb413c402303ba602 coffobj=0xb413c402303ba602 cofflib=0xb413c402303ba602 
 [PASS] Multi-target backend parity under strict mode
-       exit=0 conformance=pass wall_s=0.467
+       exit=0 conformance=pass wall_s=0.431
 
 Score: 4/4
 Logs: build\logs\hardest_e2e_cpp

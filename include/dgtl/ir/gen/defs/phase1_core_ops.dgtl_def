@@ -1,0 +1,293 @@
+#@ version: 1.0
+#@ namespace: dgtl::ir
+#@ generated_by: tools/scripts/dgtl_gen.ps1
+
+# ============================================================================
+# SECTION 1: TYPE DEFINITIONS
+# ============================================================================
+
+[types]
+type I32: builtin, width=32
+type I64: builtin, width=64
+type F16: builtin, width=16
+type F32: builtin, width=32
+type F64: builtin, width=64
+type VectorF32x16: vector, element_type=F32, width=512
+type VectorI32x16: vector, element_type=I32, width=512
+type VectorF16x32: vector, element_type=F16, width=512
+type TensorI64: tensor, element_type=I64
+
+# ============================================================================
+# SECTION 2: TRAIT DEFINITIONS
+# ============================================================================
+
+[traits]
+trait Commutative: "Binary operations with commutative operands"
+trait HasNoSideEffects: "Operation has no observable side effects"
+trait IsTerminator: "Control flow terminator (branch, return, etc.)"
+trait IsMemoryRead: "Reads from memory"
+trait IsMemoryWrite: "Writes to memory"
+trait IsMemoryOp: "Generic memory operation"
+trait IsVectorizable: "Can be vectorized by SIMD passes"
+trait IsFusible: "Can be fused with other operations"
+trait IsSpeculative: "May trigger deoptimization"
+trait IsGuard: "Guards against speculative assumptions"
+trait IsGPU: "GPU-specific operation"
+trait IsTensor: "Tensor/ML operation"
+trait IsGraph: "Graph data structure operation"
+trait IsAsyncSpawnable: "Can be spawned asynchronously"
+
+# ============================================================================
+# SECTION 3: INTERFACE DEFINITIONS
+# ============================================================================
+
+[interfaces]
+interface Arithmetic: "Binary arithmetic operations (add, sub, mul, div)"
+interface Memory: "Memory operations (load, store, prefetch)"
+interface ControlFlow: "Control flow operations"
+interface Terminator: "Terminating operations (return, branch)"
+interface Comparison: "Comparison operations"
+interface BitwiseOp: "Bitwise operations"
+interface SIMD: "SIMD vector operations"
+interface GPU: "GPU-specific operations"
+interface Tensor: "Tensor/ML operations"
+interface Concurrency: "Concurrency primitives (spawn, barrier, lock)"
+interface DSA: "Data structure operations (graph, tree, trie)"
+interface Ownership: "Ownership and memory safety operations"
+
+# ============================================================================
+# SECTION 3B: ATTRIBUTE DEFINITIONS
+# ============================================================================
+
+[attributes]
+attribute NoWrap: "Arithmetic does not wrap on overflow"
+attribute Exact: "Semantics require exact (non-approximate) result"
+attribute FastMath: "Floating point operation permits fast-math transforms"
+attribute Aligned: "Memory operand is guaranteed aligned"
+attribute NoAlias: "Memory operand is proven no-alias"
+
+# ============================================================================
+# SECTION 4: DIALECT DEFINITIONS
+# ============================================================================
+
+[dialects]
+# Contract: dialect opcode ranges must be pairwise disjoint.
+# Generator/runtime validation should fail if ranges overlap.
+dialect core: namespace=dgtl::ir::core, opcode_range=[0, 0x2FF]
+dialect simd: namespace=dgtl::ir::simd, opcode_range=[0x500, 0x5FF]
+dialect gpu: namespace=dgtl::ir::gpu, opcode_range=[0x400, 0x4FF]
+dialect tensor: namespace=dgtl::ir::tensor, opcode_range=[0x460, 0x47F]
+dialect concurrency: namespace=dgtl::ir::concurrency, opcode_range=[0x410, 0x42F]
+dialect dsa: namespace=dgtl::ir::dsa, opcode_range=[0x440, 0x45F]
+dialect custom: namespace=dgtl::ir::custom, opcode_range=[0x8000, 0xFFFF]
+
+# ============================================================================
+# SECTION 5: CORE OPERATIONS
+# ============================================================================
+
+[operations:core]
+
+# ---- Special ----
+op Nop: opcode=NOP, operands=0, result=void, traits=HasNoSideEffects, interfaces=, description="No operation"
+
+# ---- Memory Operations ----
+op Load: opcode=LOAD, operands=1, result=I64, traits=IsMemoryRead, interfaces=Memory, description="Load from memory"
+op Store: opcode=STORE, operands=2, result=void, traits=IsMemoryWrite, interfaces=Memory, description="Store to memory"
+op RegMove: opcode=REG_MOVE, operands=1, result=I64, traits=HasNoSideEffects, interfaces=, description="Register move"
+op LoadImm: opcode=LOAD_IMM, operands=0, result=I64, traits=HasNoSideEffects, interfaces=, description="Load immediate value"
+op Lea: opcode=LEA, operands=1, result=I64, traits=HasNoSideEffects, interfaces=Memory, description="Load effective address"
+op Prefetch: opcode=PREFETCH, operands=1, result=void, traits=HasNoSideEffects|IsMemoryRead, interfaces=Memory, description="Memory prefetch hint"
+op Immediate: opcode=IMMEDIATE, operands=0, result=I64, traits=HasNoSideEffects, interfaces=, description="Folded constant node"
+
+# ---- Integer 32-bit ----
+op AddI32: opcode=ADD_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="32-bit integer addition"
+op SubI32: opcode=SUB_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit integer subtraction"
+op MulI32: opcode=MUL_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="32-bit integer multiplication"
+op DivI32: opcode=DIV_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit integer division"
+op ShlI32: opcode=SHL_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=BitwiseOp, description="32-bit shift left"
+op AndI32: opcode=AND_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=BitwiseOp, description="32-bit bitwise AND"
+op OrI32: opcode=OR_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=BitwiseOp, description="32-bit bitwise OR"
+op XorI32: opcode=XOR_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=BitwiseOp, description="32-bit bitwise XOR"
+op ModI32: opcode=MOD_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit integer modulo"
+op ShrI32: opcode=SHR_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=BitwiseOp, description="32-bit shift right"
+
+# ---- Integer 64-bit ----
+op AddI64: opcode=ADD_I64, operands=2, result=I64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="64-bit integer addition"
+op SubI64: opcode=SUB_I64, operands=2, result=I64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit integer subtraction"
+op MulI64: opcode=MUL_I64, operands=2, result=I64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="64-bit integer multiplication"
+op DivI64: opcode=DIV_I64, operands=2, result=I64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit integer division"
+op ModI64: opcode=MOD_I64, operands=2, result=I64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit integer modulo"
+
+# ---- Floating Point 32-bit ----
+op AddF32: opcode=ADD_F32, operands=2, result=F32, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="32-bit float addition"
+op SubF32: opcode=SUB_F32, operands=2, result=F32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit float subtraction"
+op MulF32: opcode=MUL_F32, operands=2, result=F32, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="32-bit float multiplication"
+op DivF32: opcode=DIV_F32, operands=2, result=F32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit float division"
+op FmaF32: opcode=FMA_F32, operands=3, result=F32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit fused multiply-add"
+op FmaWidenF16F32: opcode=FMA_WIDEN_F16_F32, operands=2, result=F32, traits=HasNoSideEffects, interfaces=SIMD, description="Fused multiply-add with F16 to F32 widening"
+
+# ---- Floating Point 64-bit ----
+op AddF64: opcode=ADD_F64, operands=2, result=F64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="64-bit float addition"
+op SubF64: opcode=SUB_F64, operands=2, result=F64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit float subtraction"
+op MulF64: opcode=MUL_F64, operands=2, result=F64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="64-bit float multiplication"
+op DivF64: opcode=DIV_F64, operands=2, result=F64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit float division"
+
+# ---- Comparison (32-bit) ----
+op CmpEqI32: opcode=CMP_EQ_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=Comparison, description="32-bit integer equality comparison"
+op CmpNeI32: opcode=CMP_NE_I32, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=Comparison, description="32-bit integer not-equal comparison"
+op CmpLtI32: opcode=CMP_LT_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Comparison, description="32-bit integer less-than comparison"
+op CmpLeI32: opcode=CMP_LE_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Comparison, description="32-bit integer less-equal comparison"
+op CmpGtI32: opcode=CMP_GT_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Comparison, description="32-bit integer greater-than comparison"
+op CmpGeI32: opcode=CMP_GE_I32, operands=2, result=I32, traits=HasNoSideEffects, interfaces=Comparison, description="32-bit integer greater-equal comparison"
+
+# ---- Bitfield Operations ----
+op BitFieldInsert: opcode=BIT_FIELD_INSERT, operands=3, result=I64, traits=HasNoSideEffects, interfaces=BitwiseOp, description="Insert bitfield into value"
+op BitFieldExtract: opcode=BIT_FIELD_EXTRACT, operands=3, result=I64, traits=HasNoSideEffects, interfaces=BitwiseOp, description="Extract bitfield from value"
+
+# ---- Control Flow ----
+op Label: opcode=LABEL, operands=0, result=void, traits=HasNoSideEffects, interfaces=ControlFlow, description="Basic block label"
+op Goto: opcode=GOTO, operands=0, result=void, traits=IsTerminator, interfaces=ControlFlow|Terminator, description="Unconditional branch"
+op Branch: opcode=BRANCH, operands=1, result=void, traits=IsTerminator, interfaces=ControlFlow|Terminator, description="Unconditional branch to successor"
+op BranchCond: opcode=BRANCH_COND, operands=3, result=void, traits=IsTerminator, interfaces=ControlFlow|Terminator, description="Conditional branch"
+op BranchCompareFused: opcode=BRANCH_COMPARE_FUSED, operands=4, result=void, traits=IsTerminator, interfaces=ControlFlow|Terminator, description="Fused compare and branch"
+op Call: opcode=CALL, operands=1, result=I64, traits=IsSpeculative, interfaces=ControlFlow, description="Function call"
+op Syscall: opcode=SYSCALL, operands=1, result=I64, traits=, interfaces=ControlFlow, description="System call"
+op GuardAlias: opcode=GUARD_ALIAS, operands=2, result=void, traits=IsGuard, interfaces=ControlFlow, description="Alias analysis guard"
+op Return: opcode=RET, operands=1, result=void, traits=IsTerminator, interfaces=ControlFlow|Terminator, description="Return from function"
+
+# ---- SSA / IR ----
+op PhiNode: opcode=PHI_NODE, operands=2, result=I64, traits=HasNoSideEffects, interfaces=, description="Phi node for SSA"
+
+# ---- Speculation ----
+op GuardValue: opcode=GUARD_VALUE, operands=1, result=I64, traits=IsGuard|IsSpeculative, interfaces=, description="Guard against value assumption"
+op DeoptTrigger: opcode=DEOPT_TRIGGER, operands=1, result=void, traits=IsSpeculative, interfaces=, description="Trigger deoptimization"
+op Assume: opcode=ASSUME, operands=1, result=void, traits=HasNoSideEffects, interfaces=, description="Assume condition is true"
+
+# ---- Region/Fusion ----
+op RegionBegin: opcode=REGION_BEGIN, operands=0, result=void, traits=HasNoSideEffects, interfaces=, description="Region begin marker"
+op RegionEnd: opcode=REGION_END, operands=0, result=void, traits=HasNoSideEffects, interfaces=, description="Region end marker"
+op FusionGroup: opcode=FUSION_GROUP, operands=0, result=void, traits=HasNoSideEffects, interfaces=, description="Fusion group marker"
+
+# ============================================================================
+# SECTION 6: SIMD OPERATIONS
+# ============================================================================
+
+[operations:simd]
+
+op GatherF32x512: opcode=GATHER_F32_512, operands=1, result=VectorF32x16, traits=IsMemoryRead|IsVectorizable, interfaces=SIMD|Memory, description="Gather 16x F32 values into 512-bit vector"
+op Gather16: opcode=GATHER_16, operands=1, result=VectorF32x16, traits=IsMemoryRead|IsVectorizable, interfaces=SIMD|Memory, description="Gather 16 values"
+op StoreV512: opcode=STORE_V512, operands=2, result=void, traits=IsMemoryWrite|IsVectorizable, interfaces=SIMD|Memory, description="Store 512-bit vector to memory"
+op VecAddF32x512: opcode=VEC_ADD_F32_512, operands=2, result=VectorF32x16, traits=Commutative|HasNoSideEffects|IsVectorizable, interfaces=SIMD|Arithmetic, description="512-bit F32 vector addition"
+op VecMulF32x512: opcode=VEC_MUL_F32_512, operands=2, result=VectorF32x16, traits=Commutative|HasNoSideEffects|IsVectorizable, interfaces=SIMD|Arithmetic, description="512-bit F32 vector multiplication"
+op SimdBslPredicate: opcode=SIMD_BSL_PREDICATE, operands=3, result=VectorF32x16, traits=HasNoSideEffects, interfaces=SIMD, description="SIMD bitwise select with predicate"
+op FcvtlF16ToF32: opcode=FCVTL_F16_TO_F32, operands=1, result=VectorF32x16, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD, description="Convert F16 vector to F32"
+op FcvtnF32ToF16: opcode=FCVTN_F32_TO_F16, operands=1, result=VectorF16x32, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD, description="Convert F32 vector to F16"
+op VecLoad: opcode=VEC_LOAD, operands=1, result=VectorF32x16, traits=IsMemoryRead|IsVectorizable, interfaces=SIMD|Memory, description="Vector load"
+op VecStore: opcode=VEC_STORE, operands=2, result=void, traits=IsMemoryWrite|IsVectorizable, interfaces=SIMD|Memory, description="Vector store"
+op VecShuffle: opcode=VEC_SHUFFLE, operands=2, result=VectorF32x16, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD, description="Vector shuffle"
+op VecReduceAdd: opcode=VEC_REDUCE_ADD, operands=1, result=F32, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD|Arithmetic, description="Vector reduce-add"
+
+# Advanced SIMD
+op SimdReduceMax: opcode=SIMD_REDUCE_MAX, operands=1, result=F32, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD|Arithmetic, description="SIMD reduce maximum"
+op SimdReduceMin: opcode=SIMD_REDUCE_MIN, operands=1, result=F32, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD|Arithmetic, description="SIMD reduce minimum"
+op SimdScatterIndirect: opcode=SIMD_SCATTER_INDIRECT, operands=3, result=void, traits=IsMemoryWrite|IsVectorizable, interfaces=SIMD|Memory, description="SIMD indirect scatter to memory"
+op SimdMaskedStore: opcode=SIMD_MASKED_STORE, operands=3, result=void, traits=IsMemoryWrite|IsVectorizable, interfaces=SIMD|Memory, description="SIMD masked store to memory"
+op SimdInterleavedLoad: opcode=SIMD_INTERLEAVED_LOAD, operands=1, result=VectorF32x16, traits=IsMemoryRead|IsVectorizable, interfaces=SIMD|Memory, description="SIMD interleaved load from memory"
+op SimdComplexFma: opcode=SIMD_COMPLEX_FMA, operands=3, result=VectorF32x16, traits=HasNoSideEffects|IsVectorizable, interfaces=SIMD|Arithmetic, description="SIMD complex fused multiply-add"
+
+# ============================================================================
+# SECTION 7: GPU OPERATIONS
+# ============================================================================
+
+[operations:gpu]
+
+op GpuLaunch: opcode=GPU_LAUNCH, operands=1, result=void, traits=IsAsyncSpawnable, interfaces=GPU, description="Launch GPU kernel"
+op OwnershipAcquire: opcode=OWNERSHIP_ACQUIRE, operands=1, result=I64, traits=, interfaces=Ownership, description="Acquire ownership of value"
+op OwnershipRelease: opcode=OWNERSHIP_RELEASE, operands=1, result=void, traits=, interfaces=Ownership, description="Release ownership of value"
+op OwnershipTransfer: opcode=OWNERSHIP_TRANSFER, operands=2, result=I64, traits=, interfaces=Ownership, description="Transfer ownership (move semantics)"
+op AtomicSnapshot: opcode=ATOMIC_SNAPSHOT, operands=1, result=I64, traits=IsMemoryRead, interfaces=Ownership, description="Atomic capture of current value"
+
+# GPU advanced
+op GpuMemTransfer: opcode=GPU_MEM_TRANSFER, operands=2, result=void, traits=IsMemoryRead|IsMemoryWrite, interfaces=GPU|Memory, description="GPU memory transfer"
+op GpuBarrier: opcode=GPU_BARRIER, operands=0, result=void, traits=, interfaces=GPU, description="GPU synchronization barrier"
+op GpuSyncPoint: opcode=GPU_SYNC_POINT, operands=0, result=void, traits=, interfaces=GPU, description="GPU synchronization point"
+op GpuKernelFuse: opcode=GPU_KERNEL_FUSE, operands=2, result=void, traits=IsFusible, interfaces=GPU, description="Fuse GPU kernels"
+op GpuAnnotateDevice: opcode=GPU_ANNOTATE_DEVICE, operands=1, result=void, traits=HasNoSideEffects, interfaces=GPU, description="Annotate GPU device type"
+
+# ============================================================================
+# SECTION 8: CONCURRENCY OPERATIONS
+# ============================================================================
+
+[operations:concurrency]
+
+op AsyncSpawn: opcode=ASYNC_SPAWN, operands=1, result=I64, traits=IsAsyncSpawnable, interfaces=Concurrency, description="Spawn async task"
+op AsyncAwait: opcode=ASYNC_AWAIT, operands=1, result=I64, traits=, interfaces=Concurrency, description="Await async result"
+op FiberYield: opcode=FIBER_YIELD, operands=0, result=void, traits=, interfaces=Concurrency, description="Yield from fiber"
+op BarrierSync: opcode=BARRIER_SYNC, operands=0, result=void, traits=, interfaces=Concurrency, description="Synchronization barrier"
+op ChanSend: opcode=CHAN_SEND, operands=2, result=void, traits=, interfaces=Concurrency, description="Send on channel"
+op ChanRecv: opcode=CHAN_RECV, operands=1, result=I64, traits=, interfaces=Concurrency, description="Receive from channel"
+op LockAcquire: opcode=LOCK_ACQUIRE, operands=1, result=void, traits=, interfaces=Concurrency, description="Lock acquisition"
+op LockRelease: opcode=LOCK_RELEASE, operands=1, result=void, traits=, interfaces=Concurrency, description="Lock release"
+op MemoryFence: opcode=MEMORY_FENCE, operands=0, result=void, traits=IsMemoryOp, interfaces=Concurrency|Memory, description="Memory fence"
+op ThreadSpawn: opcode=THREAD_SPAWN, operands=1, result=I64, traits=IsAsyncSpawnable, interfaces=Concurrency, description="Spawn OS thread"
+
+# ============================================================================
+# SECTION 9: DATA STRUCTURE OPERATIONS
+# ============================================================================
+
+[operations:dsa]
+
+op GraphBuild: opcode=GRAPH_BUILD, operands=2, result=I64, traits=, interfaces=DSA, description="Construct graph from edges"
+op GraphTraverse: opcode=GRAPH_TRAVERSE, operands=1, result=I64, traits=, interfaces=DSA, description="Traverse graph (DFS/BFS)"
+op TreeBuild: opcode=TREE_BUILD, operands=2, result=I64, traits=, interfaces=DSA, description="Construct tree structure"
+op TreeTraverse: opcode=TREE_TRAVERSE, operands=1, result=I64, traits=, interfaces=DSA, description="Traverse tree"
+op TrieBuild: opcode=TRIE_BUILD, operands=2, result=I64, traits=, interfaces=DSA, description="Build trie (prefix tree)"
+op TrieLookup: opcode=TRIE_LOOKUP, operands=2, result=I64, traits=IsMemoryRead, interfaces=DSA, description="Trie key lookup"
+op TrieInsert: opcode=TRIE_INSERT, operands=2, result=void, traits=IsMemoryWrite, interfaces=DSA, description="Insert into trie"
+op DsaAllocate: opcode=DSA_ALLOCATE, operands=1, result=I64, traits=, interfaces=DSA, description="Allocate DSA node"
+op DsaDeallocate: opcode=DSA_DEALLOCATE, operands=1, result=void, traits=, interfaces=DSA, description="Deallocate DSA node"
+op ScopAnalyze: opcode=SCOP_ANALYZE, operands=1, result=I64, traits=HasNoSideEffects, interfaces=DSA, description="Analyze polyhedral loop structure"
+
+# ============================================================================
+# SECTION 10: TENSOR/ML OPERATIONS
+# ============================================================================
+
+[operations:tensor]
+
+op TensorReshape: opcode=TENSOR_RESHAPE, operands=2, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor, description="Reshape tensor dimensions"
+op TensorReduce: opcode=TENSOR_REDUCE, operands=2, result=F64, traits=HasNoSideEffects, interfaces=Tensor|Arithmetic, description="Reduce tensor (sum, max, etc)"
+op TensorTranspose: opcode=TENSOR_TRANSPOSE, operands=2, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor, description="Transpose/permute dimensions"
+op TensorSlice: opcode=TENSOR_SLICE, operands=3, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor, description="Extract tensor slice"
+op TensorConcat: opcode=TENSOR_CONCAT, operands=2, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor, description="Concatenate tensors"
+op TensorBroadcast: opcode=TENSOR_BROADCAST, operands=2, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor, description="Broadcast to shape"
+op TensorGemm: opcode=TENSOR_GEMM, operands=3, result=TensorI64, traits=, interfaces=Tensor|Arithmetic, description="General matrix multiplication"
+op TensorConv: opcode=TENSOR_CONV, operands=3, result=TensorI64, traits=, interfaces=Tensor|Arithmetic, description="Convolution operation"
+op TensorPool: opcode=TENSOR_POOL, operands=2, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor, description="Pooling operation"
+op TensorSoftmax: opcode=TENSOR_SOFTMAX, operands=1, result=TensorI64, traits=, interfaces=Tensor|Arithmetic, description="Softmax normalization"
+
+# ML-specific
+op TensorRelu: opcode=TENSOR_RELU, operands=1, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor|Arithmetic, description="ReLU activation"
+op TensorBatchnorm: opcode=TENSOR_BATCHNORM, operands=3, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor|Arithmetic, description="Batch normalization"
+op TensorGather: opcode=TENSOR_GATHER, operands=2, result=TensorI64, traits=IsMemoryRead, interfaces=Tensor|Memory, description="Tensor gather"
+op TensorScatterD: opcode=TENSOR_SCATTER_D, operands=3, result=void, traits=IsMemoryWrite, interfaces=Tensor|Memory, description="Tensor scatter"
+
+# ============================================================================
+# SECTION 11: CUSTOM DIALECT OPERATIONS (FROM LEGACY DIALECTS)
+# ============================================================================
+
+[operations:custom]
+
+# IR_Dialect_Interface.hpp opcodes (0x8001-0x8102)
+op DgtlFastAdd: opcode=DGTL_FAST_ADD, operands=2, result=I64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="DGTL-specific fast add"
+op DgtlFastFma: opcode=DGTL_FAST_FMA, operands=3, result=F64, traits=HasNoSideEffects, interfaces=Arithmetic, description="DGTL-specific fast FMA"
+op CppTemplateSpec: opcode=CPP_TEMPLATE_SPEC, operands=1, result=I64, traits=HasNoSideEffects, interfaces=, description="C++ template specialization", verifier="verify_cpp_template_specialization"
+op RustBorrowMut: opcode=RUST_BORROW_MUT, operands=1, result=I64, traits=, interfaces=Ownership, description="Rust mutable borrow", verifier="verify_rust_borrow_mut"
+
+# Pattern_Rewriter analysis-invalidation hooks
+# (Note: Analysis invalidation is metadata-only, handled by PassManager traits)
+
+# Pattern rewriting infrastructure:
+#   - MutationKind: Replace | Erase
+#   - AnalysisInvalidation: DominatorTree | LoopInfo | Liveness | AliasAnalysis | MemoryDependence | ValueNumbering | All
+#   - This is handled by Pass traits and rewrite summaries (not IR ops themselves)
+

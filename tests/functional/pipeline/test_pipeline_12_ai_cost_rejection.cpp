@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -17,7 +17,7 @@ void run_test_pipeline_12_ai_cost_rejection() {
     constexpr size_t kArenaMbPerThread = 2;
     constexpr size_t kReservedNodes = 64;
     constexpr dgtl::ir::Flags kGatherFlags =
-        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::Flags::REQUIRES_VEC_PORT);
+        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::HintFlags::RequiresVecPort);
 
     std::cout << "--- [DGTL-TEST] 12_ai_cost_rejection ---\n";
 

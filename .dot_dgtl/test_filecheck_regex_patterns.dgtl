@@ -1,0 +1,12 @@
+; RUN: dgtl-opt --pass=inlining --filecheck %s
+; FileCheck test for Aggressive Inlining pass with regex patterns
+;
+; Demonstrates FileCheck's regex matching capabilities for validating
+; that inlining transformations produce expected IR patterns.
+
+; CHECK: \[\d+\] opcode
+; CHECK-NEXT: result
+; CHECK: flags
+; CHECK-NOT: exception
+; CHECK-DAG: opcode
+; CHECK-DAG: result

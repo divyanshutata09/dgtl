@@ -33,13 +33,9 @@ Successfully implemented production-grade Query Optimizer and ML Backend Integra
 #### Implementation Files
 | File | Lines | Purpose |
 |------|-------|---------|
-| Query_Plan.cpp | 290 | DAG operations, topological sort, cardinality propagation |
-| Query_Cardinality_Estimator.cpp | 220 | Cost estimation, selectivity learning |
-| Predicate_Pusher.cpp | 110 | Predicate classification and pushdown |
-| Join_Order_Optimizer.cpp | 280 | DP join ordering, strategy selection |
-| Query_Optimizer.cpp | 200 | Pass orchestration and pipeline integration |
+| Query_Optimizer_Unified.cpp | 1,100 | Unified implementation: QueryPlan, CardinalityEstimator, PredicatePusher, JoinOrderOptimizer, QueryOptimizer |
 
-**Total**: 1,100 lines of production implementation
+**Total**: 1,100 lines of production implementation (consolidated from 5 files)
 
 ### Phase 2: ML Backend Integration (MYZON Rule 79)
 
@@ -156,11 +152,7 @@ include/dgtl/pass/
 ```
 src/dgtl/pass/
 ├── query/
-│   ├── Query_Plan.cpp
-│   ├── Query_Cardinality_Estimator.cpp
-│   ├── Predicate_Pusher.cpp
-│   ├── Join_Order_Optimizer.cpp
-│   └── Query_Optimizer.cpp
+│   └── Query_Optimizer_Unified.cpp
 └── ml/
     ├── Tensor_Fusion.cpp
     ├── Tensor_Specializer.cpp

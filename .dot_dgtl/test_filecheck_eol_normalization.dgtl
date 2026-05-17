@@ -1,0 +1,12 @@
+; RUN: dgtl-opt --pass=predication --filecheck %s
+; FileCheck test for Control Predication pass with cross-platform EOL normalization
+;
+; This test ensures that the FileCheck directive matching works identically
+; on Windows (\r\n line endings) and Unix (\n line endings) systems.
+; The tool normalizes all line endings before directive matching.
+
+; CHECK: DGTL IR Text
+; CHECK-NEXT: Format
+; CHECK: Stream size
+; CHECK: nodes
+; CHECK-NOT: FAILED

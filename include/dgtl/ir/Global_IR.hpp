@@ -18,34 +18,20 @@
 
 #pragma once
 
-// PART 1: FUNDAMENTAL TYPES (The Opcodes and Bitmasks)
-#include "base/IR_Types.hpp"       // Enum OpCode, struct Flags, struct IRTraits
-#include "base/IR_Nodes.hpp"       // Unified IRNode architecture
+#include "base/IR_Node.hpp"
+#include "base/IR_PrintSerialDumper.hpp"
+#include "base/IR_SSA.hpp"
+#include "base/IR_Stream.hpp"
+#include "base/IR_Verifier.hpp"
 
-// PART 2: UNIFIED NODE ARCHITECTURE (The Physical Layout)
-// Ã¢Å“â€¦ Added: Provides IRAtom, IRCore, and IRNode (the 24-byte unified view)
 
-// PART 3: META-PROGRAMMING TRAITS (The Compiler's Logic)
-// Depends on IR_Types and Global_IR for concept satisfaction
-#include "base/IR_Traits.hpp"      // SFINAE/Concepts for IR validity
+#include "gen/DGTL_Gen_Ops.hpp"
+#include "interfaces/Op_Traits.hpp"
 
-// PART 4: THE DIALECT ABSTRACTION (The Domain Bridge)
-#include "dialect/IR_Dialect_Interface.hpp" // Rules for AI, HFT, and Custom Dialects
+#include "evolver/IR_Evolver_Mutation.hpp"
 
-// PART 5: MEMORY ARCHITECTURE (The Physical Backing)
-// Depends on Global_IR for IRNode-specific arena allocation
-#include "base/IR_Storage.hpp"     // Arena-backed storage logic
+#include "runtime/TLS_Flush_Merge.hpp"
 
-// PART 6: THE ORCHESTRATOR (The Public Interface)
-#include "base/IR_Stream.hpp"      // The IRStream class and utilities
-
-/**
- * @namespace dgtl::ir
- * @brief High-performance, bit-packed Intermediate Representation.
- * * DESIGN ARCHITECTURE (The UIL Chain):
- * 1. Types (Opcodes) -> 2. Global (Nodes) -> 3. Traits (Logic) -> 
- * 4. Dialect (Extension) -> 5. Storage (Memory) -> 6. Stream (Flow)
- */
 namespace dgtl::ir {
     // This namespace is now fully populated via the headers above.
 }

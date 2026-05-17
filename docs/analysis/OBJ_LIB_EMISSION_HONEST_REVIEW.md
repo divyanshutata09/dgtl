@@ -108,7 +108,7 @@ else if (out_path.substr(out_path.size() - 2) == ".o") {
 
 This routes `.o` extension to `dispatch_to_macho()`. This is **incorrect**: on Linux/Windows, `.o` is an ELF/COFF relocatable object, not a Mach-O file. Mach-O `.o` files are only valid on macOS/iOS. This path will produce non-linkable output on any non-Apple host.
 
-### 3.5 Mach-O Emitter (`MachOs_Emitter.hpp`) Is a Stub
+### 3.5 Mach-O Emitter (`MachO_Emitter.hpp`) Is a Stub
 
 ```cpp
 std::vector<uint8_t> generate_machine_code() {

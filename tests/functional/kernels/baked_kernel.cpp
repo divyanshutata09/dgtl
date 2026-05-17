@@ -20,7 +20,7 @@
 
 void run_baked_kernel() {
     using namespace dgtl::ir;
-    using namespace dgtl::isa;
+    using namespace dgtl::jit::runtime;
 
     DGTLJitExecutor jit(1); // 1MB JIT Buffer
     dgtl::isa::DGTLNasmEmitter aot;

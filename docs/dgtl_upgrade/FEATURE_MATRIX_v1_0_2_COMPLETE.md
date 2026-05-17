@@ -21,7 +21,7 @@
 | **CUDA PTX** | ✅ | GPGPU_Fusion_FastEmission | Native CUDA gather/scatter with warp-level coordination |
 | **ROCm LLVM IR** | ✅ | GPGPU_Fusion_FastEmission | Native AMD RDNA gather/scatter via ROCm ISA |
 | **NASM x64** | ✅ | NASM_Emitter | x86-64 scalar loop fallback with indexed addressing |
-| **FPGA Verilog** | ✅ | MachOs_Emitter (logic synthesis) | Dataflow graph emission for hardware gather/scatter blocks |
+| **FPGA Verilog** | ✅ | MachO_Emitter (logic synthesis) | Dataflow graph emission for hardware gather/scatter blocks |
 
 **Coverage**: 9/9 backends (**100%**)
 
@@ -39,7 +39,7 @@
 | **CUDA PTX** | ✅ | GPGPU_Fusion_FastEmission | Native FMA via `fma.f32 / fma.f64` PTX instructions |
 | **ROCm LLVM IR** | ✅ | GPGPU_Fusion_FastEmission | Native FMA via RDNA FMA instruction encoding |
 | **NASM x64** | ✅ | NASM_Emitter | Synthetic FMA via MOV + MULSD + ADDSD (3-instruction fallback) |
-| **FPGA Verilog** | ✅ | MachOs_Emitter | Single-cycle FMA block in DSP slices (synthesized) |
+| **FPGA Verilog** | ✅ | MachO_Emitter | Single-cycle FMA block in DSP slices (synthesized) |
 
 **Coverage**: 9/9 backends (**100%**)
 

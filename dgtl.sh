@@ -1,9 +1,10 @@
 #!/bin/bash
 ###############################################################################
-# DGTL Command Runner - Cross-Platform Build & Execution
-# Bash equivalent of dgtl.ps1 for Linux/macOS
+# DGTL Command Runner - Direct Memory & SDK Architecture Edition
+# Optimized for MSYS2 UCRT64 / Linux / macOS
 ###############################################################################
 
+set -e # Exit on error
 set -o pipefail
 
 # ============================================================================
@@ -11,18 +12,10 @@ set -o pipefail
 # ============================================================================
 
 case "$OSTYPE" in
-  linux*)
-    OS="Linux"
-    ;;
-  darwin*)
-    OS="macOS"
-    ;;
-  msys|cygwin|win32)
-    OS="Windows"
-    ;;
-  *)
-    OS="Unknown"
-    ;;
+  linux*)   OS="Linux" ;;
+  darwin*)  OS="macOS" ;;
+  msys*|cygwin*|win32*) OS="Windows" ;;
+  *) OS="Unknown" ;;
 esac
 
 echo "[dgtl] Detected platform: $OS"
@@ -36,6 +29,14 @@ SRC_DIR="$ROOT/src"
 BUILD_DIR="$ROOT/build"
 INCLUDE_DIR="$ROOT/include"
 BENCHMARKS_LOG_DIR="$ROOT/benchmarks/logs"
+
+# SDK & Tools Paths
+SDK_DIR="$BUILD_DIR/DGTL_SDK"
+SDK_LIB="$SDK_DIR/lib/x64/dgtl.lib"
+GEN_TOOL_SRC="$ROOT/tools/cpp/dgtl_gen_main.cpp"
+GEN_TOOL_EXE="$BUILD_DIR/tools/dgtl-gen"
+DEF_FILE="$INCLUDE_DIR/dgtl/ir/gen/defs/phase1_core_ops.dgtl_def"
+GEN_HEADER="$INCLUDE_DIR/dgtl/ir/gen/DGTL_Gen_Ops.hpp"
 
 # Main entry points
 PROD_MAIN="$SRC_DIR/main.cpp"
@@ -56,38 +57,41 @@ show_usage() {
 DGTL command runner
 
 Pick by intent:
+  Build DGTL SDK for Myzon        dgtl build-sdk
+  Generate IR Operations (DSL)    dgtl gen
   Build release binary            dgtl build-release
   Build smoke/conformance binary  dgtl build-smoke
   Build strict binary             dgtl build-strict
   Run full conformance            dgtl run-all
   Run one backend quickly         dgtl run-backend x64
   Run backend benchmark           dgtl bench-backend x64 fusion
-  Build and run one source        dgtl brun tests/performance/foo.cpp
+  Build and run benchmark suite   dgtl brun
   Clean outputs/logs              dgtl clean-all
   Clean + build + run             dgtl clean-build-and-run
 
 Categories (recommended):
 
-1) Build binaries
+1) SDK & Infrastructure
+  dgtl build-sdk                          -> build/DGTL_SDK/ (For Myzon Linking)
+  dgtl gen                                -> Generates DGTL_Gen_Ops.hpp
+
+2) Build binaries
   dgtl build-release                      -> build/dgtl_release
   dgtl build-smoke                        -> build/dgtl_main
   dgtl build-strict                       -> build/dgtl_main_strict
 
-2) Validate correctness
+3) Validate correctness
   dgtl run-all                            # full conformance
-  dgtl run-backend <arm64|x64|nasm|wasm> # quick backend check
+  dgtl run-backend <arm64|x64|nasm|wasm>  # quick backend check
   dgtl test [full]                        # aggregate source-backed tests
 
-3) Benchmark performance
+4) Benchmark performance
   dgtl bench-backend <backend> [profile|iterations] [pressure-vars]
-  dgtl brun <path-to-cpp> [program args...]
+  dgtl brun [program args...]
 
-4) Clean and one-shot workflows
+5) Clean and one-shot workflows
   dgtl clean-all
   dgtl clean-build-and-run
-
-Legacy short names (still supported):
-  help | build | smoke-build | strict | run | bench | brun | test | clean | crun
 
 Alias mapping:
   build-release -> build
@@ -112,30 +116,16 @@ find_tool() {
 }
 
 find_g_plusplus() {
-  local candidates=(
-    "g++"
-    "g++-12"
-    "g++-11"
-    "clang++"
-    "c++"
-  )
-  
+  local candidates=("g++" "g++-12" "g++-11" "clang++" "c++")
   for candidate in "${candidates[@]}"; do
     if command -v "$candidate" &>/dev/null; then
-      # Exclude clang if we haven't found gcc yet
       if [[ "$candidate" != "clang"* ]]; then
         echo "$candidate"
         return 0
       fi
     fi
   done
-  
-  # Last resort: clang
-  if command -v clang++ &>/dev/null; then
-    echo "clang++"
-    return 0
-  fi
-  
+  if command -v clang++ &>/dev/null; then echo "clang++"; return 0; fi
   echo "g++"
   return 1
 }
@@ -149,7 +139,6 @@ get_source_files() {
     return 1
   fi
   
-  # Find all .cpp files except the excluded ones
   local all_sources
   all_sources=$(find "$SRC_DIR" -name "*.cpp" -type f | sort)
   
@@ -157,24 +146,83 @@ get_source_files() {
   while IFS= read -r src; do
     local skip=false
     for exclude in "${exclude_paths[@]}"; do
-      if [[ "$src" == "$exclude" ]]; then
-        skip=true
-        break
-      fi
+      if [[ "$src" == "$exclude" ]]; then skip=true; break; fi
     done
     [[ $skip == false ]] && sources+=("$src")
   done <<< "$all_sources"
   
-  # Add entry point at end
   sources+=("$entry_point")
   
   if [[ ${#sources[@]} -eq 0 ]]; then
     echo "[dgtl] ERROR: No source files found under $SRC_DIR" >&2
     return 1
   fi
-  
   printf '%s\n' "${sources[@]}"
 }
+
+# ============================================================================
+# NEW ARCHITECTURE: DSL GEN & SDK BUILDER
+# ============================================================================
+
+run_gen() {
+  local g_plusplus
+  g_plusplus=$(find_g_plusplus) || { echo "[dgtl] ERROR: C++ compiler not found" >&2; return 1; }
+
+  mkdir -p "$(dirname "$GEN_TOOL_EXE")"
+  
+  # 1. Build the generator if needed
+  if [[ ! -f "$GEN_TOOL_EXE" || "$GEN_TOOL_SRC" -nt "$GEN_TOOL_EXE" ]]; then
+      echo "[dgtl] Compiling dgtl-gen tool..."
+      "$g_plusplus" -std=c++26 -O2 "$GEN_TOOL_SRC" -o "$GEN_TOOL_EXE"
+  fi
+
+  # 2. Run the generator
+  echo "[dgtl] Generating IR Ops from DSL..."
+  "$GEN_TOOL_EXE" --root "$ROOT"
+}
+
+build_sdk() {
+  run_gen # Always generate ops first
+
+  echo "[dgtl] Building DGTL Static Library (SDK)..."
+  mkdir -p "$SDK_DIR/lib/x64"
+  mkdir -p "$SDK_DIR/include"
+  local OBJ_DIR="$BUILD_DIR/obj_sdk"
+  mkdir -p "$OBJ_DIR"
+
+  local g_plusplus
+  g_plusplus=$(find_g_plusplus)
+
+  local cflags=("-std=c++26" "-O3" "-march=native" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
+  local sources=$(find "$SRC_DIR" -name "*.cpp" ! -path "*/apps/*" ! -name "main.cpp" ! -path "*/tools/*")
+
+  local objects=()
+  for src in $sources; do
+      local rel_path="${src#$SRC_DIR/}"
+      local obj="$OBJ_DIR/${rel_path//\//_}.o"
+      
+      if [[ "$src" -nt "$obj" ]]; then
+          echo "[dgtl] Compiling $rel_path"
+          "$g_plusplus" "${cflags[@]}" -c "$src" -o "$obj"
+      fi
+      objects+=("$obj")
+  done
+
+  echo "[dgtl] Archiving to $SDK_LIB"
+  ar rcs "$SDK_LIB" "${objects[@]}"
+
+  echo "[dgtl] Packaging Public Headers..."
+  cp -r "$INCLUDE_DIR/dgtl" "$SDK_DIR/include/"
+  
+  # RUTHLESS PURGE: Remove private/frontend logic from SDK
+  rm -rf "$SDK_DIR/include/dgtl/frontend"
+  
+  echo "[dgtl] SDK successfully built at $SDK_DIR"
+}
+
+# ============================================================================
+# COMPILATION CORE
+# ============================================================================
 
 build_dgtl_binary() {
   local output_path="$1"
@@ -183,40 +231,27 @@ build_dgtl_binary() {
   shift 3
   local exclude_paths=("$@")
   
+  run_gen # Enforce auto-generation before any binary build
+
   mkdir -p "$(dirname "$output_path")"
   
   local g_plusplus
-  g_plusplus=$(find_g_plusplus) || {
-    echo "[dgtl] ERROR: g++ not found in PATH" >&2
-    return 1
-  }
+  g_plusplus=$(find_g_plusplus) || { echo "[dgtl] ERROR: g++ not found" >&2; return 1; }
   
   echo "[dgtl] Using compiler: $g_plusplus"
   
-  # Common flags
-  local cflags=(
-    "-std=c++23"
-    "-O2"
-    "-Wall"
-    "-Wextra"
-    "-I$INCLUDE_DIR"
-  )
-  
+  local cflags=("-std=c++26" "-O2" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
   if [[ "$strict" == "true" ]]; then
     cflags+=("-Wpedantic" "-Werror")
   fi
   
-  # Get source files
   local sources
   sources=$(get_source_files "$entry_point" "${exclude_paths[@]}") || return 1
   
   echo "[dgtl] Compiling $(basename "$output_path")"
   
-  # Convert source list to array
   local source_array=()
-  while IFS= read -r src; do
-    source_array+=("$src")
-  done <<< "$sources"
+  while IFS= read -r src; do source_array+=("$src"); done <<< "$sources"
   
   "$g_plusplus" "${cflags[@]}" "${source_array[@]}" -o "$output_path" || {
     echo "[dgtl] ERROR: Compilation failed for $output_path" >&2
@@ -238,7 +273,6 @@ ensure_dgtl_binary() {
     return 0
   fi
   
-  # Check if sources are newer than executable
   local exe_time
   exe_time=$(stat -c%Y "$output_path" 2>/dev/null || stat -f%m "$output_path" 2>/dev/null)
   
@@ -246,10 +280,7 @@ ensure_dgtl_binary() {
   while IFS= read -r src; do
     local src_time
     src_time=$(stat -c%Y "$src" 2>/dev/null || stat -f%m "$src" 2>/dev/null)
-    if [[ $src_time -gt $exe_time ]]; then
-      needs_rebuild=true
-      break
-    fi
+    if [[ $src_time -gt $exe_time ]]; then needs_rebuild=true; break; fi
   done < <(find "$SRC_DIR" -name "*.hpp" -o -name "*.h" -o -name "*.cpp")
   
   if [[ "$needs_rebuild" == "true" ]]; then
@@ -266,29 +297,15 @@ invoke_single_backend() {
   shift 2
   local extra_args=("$@")
   
-  if [[ ! -f "$exe_path" ]]; then
-    echo "[dgtl] ERROR: Missing executable: $exe_path. Run 'dgtl build' first." >&2
-    return 1
-  fi
+  if [[ ! -f "$exe_path" ]]; then echo "[dgtl] ERROR: Missing executable: $exe_path" >&2; return 1; fi
   
   local valid_backends=(arm64 x64 nasm wasm)
   local valid=false
-  for b in "${valid_backends[@]}"; do
-    if [[ "$backend" == "$b" ]]; then
-      valid=true
-      break
-    fi
-  done
+  for b in "${valid_backends[@]}"; do if [[ "$backend" == "$b" ]]; then valid=true; break; fi; done
   
-  if [[ $valid == false ]]; then
-    echo "[dgtl] ERROR: Unsupported backend '$backend'. Expected one of: ${valid_backends[*]}" >&2
-    return 1
-  fi
+  if [[ $valid == false ]]; then echo "[dgtl] ERROR: Unsupported backend '$backend'" >&2; return 1; fi
   
-  "$exe_path" --backend "$backend" "${extra_args[@]}" || {
-    echo "[dgtl] ERROR: Execution failed for backend '$backend'" >&2
-    return 1
-  }
+  "$exe_path" --backend "$backend" "${extra_args[@]}" || { echo "[dgtl] ERROR: Execution failed" >&2; return 1; }
 }
 
 invoke_backend_benchmark() {
@@ -297,140 +314,56 @@ invoke_backend_benchmark() {
   shift 2
   local extra_args=("$@")
   
-  if [[ ! -f "$exe_path" ]]; then
-    echo "[dgtl] ERROR: Missing executable: $exe_path. Run 'dgtl strict' first." >&2
-    return 1
-  fi
-  
-  local valid_backends=(arm64 x64 nasm wasm)
-  local valid=false
-  for b in "${valid_backends[@]}"; do
-    if [[ "$backend" == "$b" ]]; then
-      valid=true
-      break
-    fi
-  done
-  
-  if [[ $valid == false ]]; then
-    echo "[dgtl] ERROR: Unsupported backend '$backend'" >&2
-    return 1
-  fi
-  
-  local bench_args=(--backend "$backend" --benchmark)
-  bench_args+=("${extra_args[@]}")
-  
-  "$exe_path" "${bench_args[@]}" || {
-    echo "[dgtl] ERROR: Benchmark failed for backend '$backend'" >&2
-    return 1
-  }
+  if [[ ! -f "$exe_path" ]]; then echo "[dgtl] ERROR: Missing executable: $exe_path" >&2; return 1; fi
+  local bench_args=(--backend "$backend" --benchmark "${extra_args[@]}")
+  "$exe_path" "${bench_args[@]}" || { echo "[dgtl] ERROR: Benchmark failed" >&2; return 1; }
 }
 
 invoke_brun() {
-  local source_path="${1:-}"
-  shift || true
   local program_args=("$@")
-  
-  if [[ -z "$source_path" ]]; then
-    echo "[dgtl] Using default performance sources"
-    local default_sources=(
-      "tests/performance/benchmark_hardest_e2e_gate.cpp"
-      "tests/performance/benchmark_production.cpp"
-    )
-    
-    for src in "${default_sources[@]}"; do
-      if [[ -f "$ROOT/$src" ]]; then
-        invoke_brun "$ROOT/$src" || return 1
-      fi
-    done
-    return 0
-  fi
-  
-  # Resolve source path
-  local resolved_source
-  if [[ "$source_path" = /* ]]; then
-    resolved_source="$source_path"
-  else
-    resolved_source="$ROOT/$source_path"
-  fi
-  
-  if [[ ! -f "$resolved_source" ]]; then
-    echo "[dgtl] ERROR: Missing source file: $resolved_source" >&2
-    return 1
-  fi
-  
-  # Determine output path
+  local default_sources=(
+    "tests/performance/benchmarks/benchmark_full_production_stress.cpp"
+    "tests/performance/benchmarks/benchmark_hardest_e2e_gate.cpp"
+  )
+
+  echo "[dgtl] Using retained benchmark sources"
   local output_dir="$BUILD_DIR/brun"
   mkdir -p "$output_dir"
-  
-  local output_path="$output_dir/$(basename "${resolved_source%.cpp}")"
-  
-  # Compile with optimizations
+
   local g_plusplus
-  g_plusplus=$(find_g_plusplus) || {
-    echo "[dgtl] ERROR: g++ not found" >&2
-    return 1
-  }
-  
-  local cflags=(
-    "-std=c++23"
-    "-O3"
-    "-march=native"
-    "-I$INCLUDE_DIR"
-  )
-  
-  local needs_compile=true
-  if [[ -f "$output_path" ]]; then
-    local exe_time
-    exe_time=$(stat -c%Y "$output_path" 2>/dev/null || stat -f%m "$output_path" 2>/dev/null)
-    local src_time
-    src_time=$(stat -c%Y "$resolved_source" 2>/dev/null || stat -f%m "$resolved_source" 2>/dev/null)
-    
-    if [[ $src_time -le $exe_time ]]; then
-      needs_compile=false
+  g_plusplus=$(find_g_plusplus) || return 1
+  local cflags=("-std=c++26" "-O3" "-march=native" "-I$INCLUDE_DIR")
+
+  for src in "${default_sources[@]}"; do
+    if [[ ! -f "$ROOT/$src" ]]; then echo "[dgtl] ERROR: Missing benchmark $ROOT/$src" >&2; return 1; fi
+
+    local output_path="$output_dir/$(basename "${src%.cpp}")"
+    local needs_compile=true
+    if [[ -f "$output_path" ]]; then
+      local exe_time=$(stat -c%Y "$output_path" 2>/dev/null || stat -f%m "$output_path" 2>/dev/null)
+      local src_time=$(stat -c%Y "$ROOT/$src" 2>/dev/null || stat -f%m "$ROOT/$src" 2>/dev/null)
+      if [[ $src_time -le $exe_time ]]; then needs_compile=false; fi
     fi
-  fi
-  
-  if [[ $needs_compile == true ]]; then
-    echo "[dgtl] Compiling $(basename "$resolved_source")"
-    "$g_plusplus" "${cflags[@]}" "$resolved_source" -o "$output_path" || {
-      echo "[dgtl] ERROR: Compilation failed for $resolved_source" >&2
-      return 1
-    }
-  else
-    echo "[dgtl] Reusing up-to-date $(basename "$output_path")"
-  fi
-  
-  echo "[dgtl] Running $(basename "$output_path")"
-  "$output_path" "${program_args[@]}" || {
-    echo "[dgtl] ERROR: Execution failed" >&2
-    return 1
-  }
+
+    if [[ $needs_compile == true ]]; then
+      echo "[dgtl] Compiling $(basename "$src")"
+      "$g_plusplus" "${cflags[@]}" "$ROOT/$src" -o "$output_path" || return 1
+    else
+      echo "[dgtl] Reusing up-to-date $(basename "$output_path")"
+    fi
+
+    echo "[dgtl] Running $(basename "$output_path")"
+    "$output_path" "${program_args[@]}" || return 1
+  done
 }
 
 clean_dgtl_artifacts() {
   echo "[dgtl] Cleaning artifacts"
+  local paths=("$BUILD_DIR/dgtl_release" "$BUILD_DIR/dgtl_main" "$BUILD_DIR/dgtl_main_strict" "$BUILD_DIR/dgtl_tests")
+  for path in "${paths[@]}"; do rm -f "$path"; done
   
-  local paths=(
-    "$BUILD_DIR/dgtl_release"
-    "$BUILD_DIR/dgtl_main"
-    "$BUILD_DIR/dgtl_main_strict"
-    "$BUILD_DIR/dgtl_tests"
-  )
-  
-  for path in "${paths[@]}"; do
-    rm -f "$path"
-  done
-  
-  local dirs=(
-    "$BUILD_DIR/sdk_obj"
-    "$BUILD_DIR/DGTL_SDK"
-    "$BUILD_DIR/obj"
-  )
-  
-  for dir in "${dirs[@]}"; do
-    rm -rf "$dir"
-  done
-  
+  local dirs=("$BUILD_DIR/sdk_obj" "$BUILD_DIR/DGTL_SDK" "$BUILD_DIR/obj" "$BUILD_DIR/obj_sdk")
+  for dir in "${dirs[@]}"; do rm -rf "$dir"; done
   echo "[dgtl] Removed build outputs"
 }
 
@@ -443,44 +376,28 @@ shift || true
 
 # Handle command aliases
 case "$command" in
-  build-release)
-    command="build"
-    ;;
-  build-smoke)
-    command="smoke-build"
-    ;;
-  build-strict)
-    command="strict"
-    ;;
-  run-all)
-    command="run"
-    ;;
-  run-backend)
-    command="run"
-    ;;
-  bench-backend)
-    command="bench"
-    ;;
-  run-tests)
-    command="test"
-    ;;
-  update-goldens|update-golden)
-    command="update-golden"
-    ;;
-  run-strict-conformance)
-    command="srun"
-    ;;
-  clean-all)
-    command="clean"
-    ;;
-  clean-build-and-run)
-    command="crun"
-    ;;
+  build-release) command="build" ;;
+  build-smoke)   command="smoke-build" ;;
+  build-strict)  command="strict" ;;
+  run-all)       command="run" ;;
+  run-backend)   command="run" ;;
+  bench-backend) command="bench" ;;
+  run-tests)     command="test" ;;
+  update-goldens|update-golden) command="update-golden" ;;
+  run-strict-conformance)       command="srun" ;;
+  clean-all)           command="clean" ;;
+  clean-build-and-run) command="crun" ;;
 esac
 
 case "$command" in
   help)
     show_usage
+    ;;
+  gen)
+    run_gen
+    ;;
+  build-sdk)
+    build_sdk
     ;;
   build)
     build_dgtl_binary "$PROD_EXE" "$PROD_MAIN" "false" "$SMOKE_MAIN" || exit 1
@@ -505,17 +422,12 @@ case "$command" in
   bench)
     backend="${1:-}"
     shift || true
-    if [[ -z "$backend" ]]; then
-      echo "[dgtl] ERROR: Missing backend for bench" >&2
-      exit 1
-    fi
+    if [[ -z "$backend" ]]; then echo "[dgtl] ERROR: Missing backend" >&2; exit 1; fi
     ensure_dgtl_binary "$SMOKE_STRICT_EXE" "$SMOKE_MAIN" "true" "$PROD_MAIN" || exit 1
     invoke_backend_benchmark "$SMOKE_STRICT_EXE" "$backend" "$@" || exit 1
     ;;
   brun)
-    source_path="${1:-}"
-    shift || true
-    invoke_brun "$source_path" "$@" || exit 1
+    invoke_brun "$@" || exit 1
     ;;
   test)
     mode="${1:-}"

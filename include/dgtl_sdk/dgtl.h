@@ -13,8 +13,8 @@
  * dgtl.h — DGTL SDK Public Entry Point
  *
  * This is the single include for C and C++ consumers of the DGTL SDK.
- * It exposes the stable C ABI surface for pipeline ingestion, backend
- * emission, and payload serialization.
+ * It exposes the stable C ABI surface for direct IR construction, backend
+ * emission, runtime execution, advanced IR inspection, and SIMD helpers.
  *
  * Usage:
  *   #include "dgtl.h"
@@ -69,7 +69,7 @@ extern "C" {
 #define DGTL_VERSION_MAJOR  1
 #define DGTL_VERSION_MINOR  1
 #define DGTL_VERSION_PATCH  0
-#define DGTL_VERSION_STRING "1.0.0"
+#define DGTL_VERSION_STRING "1.1.0"
 
 DGTL_API const char* dgtl_version_string(void);
 
@@ -119,6 +119,11 @@ DGTL_API uint32_t dgtl_emit_sub_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs
 DGTL_API uint32_t dgtl_emit_mul_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
 DGTL_API uint32_t dgtl_emit_div_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
 DGTL_API uint32_t dgtl_emit_mod_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t dgtl_emit_add_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t dgtl_emit_sub_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t dgtl_emit_mul_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t dgtl_emit_div_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t dgtl_emit_mod_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
 DGTL_API void     dgtl_emit_return(dgtl_stream_t* s, uint32_t value_slot);
 
 /* ---------- Optimization ---------- */
@@ -138,9 +143,19 @@ DGTL_API dgtl_strike_result_t dgtl_strike_stream(dgtl_stream_t* s, dgtl_target_t
 DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_target_t target,
                                           const char* output_path);
 
-/* ---------- Payload Serialization ---------- */
-DGTL_API dgtl_status_t dgtl_write_payload(const dgtl_stream_t* s, const char* path);
-DGTL_API dgtl_status_t dgtl_read_payload(dgtl_stream_t* s, const char* path);
+/* ---------- Linker Fallback Diagnostics ---------- */
+/*
+ * These APIs expose diagnostics captured from the linker backend when unsupported
+ * opcodes were lowered to deterministic fallback instructions.
+ *
+ * Lifecycle:
+ * - Populated by the most recent linker-backed emit/strike call in this thread.
+ * - Cleared for non-linker targets.
+ */
+DGTL_API size_t dgtl_last_linker_fallback_count(void);
+DGTL_API size_t dgtl_last_linker_fallback_message(size_t index,
+                                                  char* out_buffer,
+                                                  size_t out_buffer_size);
 
 /* ---------- Runtime Scheduler API ---------- */
 typedef struct dgtl_runtime_context dgtl_runtime_context_t;
@@ -160,6 +175,10 @@ DGTL_API void dgtl_runtime_yield(dgtl_runtime_context_t* ctx);
 DGTL_API void dgtl_yield(void);
 DGTL_API uint64_t dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg);
 DGTL_API void dgtl_join_task(uint64_t task_handle);
+
+#include "dgtl_core.h"
+#include "dgtl_c_api.h"
+#include "dgtl_simd.h"
 
 #ifdef __cplusplus
 }  /* extern "C" */

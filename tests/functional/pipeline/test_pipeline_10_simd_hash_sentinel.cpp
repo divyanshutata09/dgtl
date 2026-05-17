@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -17,7 +17,7 @@ void run_test_pipeline_10_simd_hash_sentinel() {
     constexpr size_t kArenaMbPerThread = 2;
     constexpr size_t kReservedNodes = 2048;
     constexpr dgtl::ir::Flags kRequiredFlags =
-        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::Flags::REQUIRES_VEC_PORT);
+        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::HintFlags::RequiresVecPort);
 
     std::cout << "--- [DGTL-TEST] 10_simd_512_alignment ---\n";
 
@@ -40,7 +40,7 @@ void run_test_pipeline_10_simd_hash_sentinel() {
         const auto node = stream.get_node(0);
         if (node.opcode == dgtl::ir::OpCode::GATHER_F32_512 &&
             (node.flags & dgtl::ir::Flags::IS_SIMD_BURST) &&
-            (node.flags & dgtl::ir::Flags::REQUIRES_VEC_PORT)) {
+            (node.flags & dgtl::ir::HintFlags::RequiresVecPort)) {
             std::cout << "SUCCESS\n";
             return;
         }

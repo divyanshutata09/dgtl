@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
 bool build_release_emit_ir(dgtl::ir::IRStream& stream) {
     stream.reset();
     stream.begin_transaction();
@@ -151,7 +161,7 @@ void run_core_optimizations(dgtl::ir::IRStream& stream) {
     stream.perform_gvn();
     dgtl::pass::DGTLTemporalVectorFusion temporal_fusion;
     temporal_fusion.execute(stream);
-    dgtl::pass::DGTLMaskedPredicationLowering masked_predication;
+    dgtl::pass::transform::DGTLMaskedPredicationLowering masked_predication;
     masked_predication.execute(stream);
     stream.perform_dead_code_elimination();
 }
@@ -170,14 +180,14 @@ std::optional<dgtl::ir::IRNode> find_node_by_result(const dgtl::ir::IRStream& st
     checks.push_back({std::move(name), passed, std::move(detail)});
 }
 
-dgtl::pass::TargetArch target_arch_for_backend(BackendKind backend) {
+dgtl::pass::simd::TargetArch target_arch_for_backend(BackendKind backend) {
     switch (backend) {
         case BackendKind::arm64:
         case BackendKind::arm32:
         case BackendKind::macho:
-            return dgtl::pass::TargetArch::ARM_NEON;
+            return dgtl::pass::simd::TargetArch::ARM_NEON;
         case BackendKind::wasm:
-            return dgtl::pass::TargetArch::WASM_SIMD128;
+            return dgtl::pass::simd::TargetArch::WASM_SIMD128;
         case BackendKind::riscv64:
         case BackendKind::cuda:
         case BackendKind::rocm:
@@ -190,12 +200,12 @@ dgtl::pass::TargetArch target_arch_for_backend(BackendKind backend) {
         default:
             switch (dgtl::core::preferred_simd_tier()) {
                 case dgtl::core::SimdTier::AVX512:
-                    return dgtl::pass::TargetArch::X86_AVX512;
+                    return dgtl::pass::simd::TargetArch::X86_AVX512;
                 case dgtl::core::SimdTier::AVX2:
-                    return dgtl::pass::TargetArch::X86_AVX2;
+                    return dgtl::pass::simd::TargetArch::X86_AVX2;
                 case dgtl::core::SimdTier::Scalar:
                 default:
-                    return dgtl::pass::TargetArch::GENERIC;
+                    return dgtl::pass::simd::TargetArch::GENERIC;
             }
     }
 }

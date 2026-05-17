@@ -19,8 +19,8 @@
 #include <vector>
 
 #include "dgtl/core/Arena.hpp"
-#include "dgtl/core/Debug_Metadata.hpp"
-#include "dgtl/core/Symbol_Table.hpp"
+#include "dgtl/ir/debug/debug_Metadata.hpp"
+#include "dgtl/semantic/Symbol_Table.hpp"
 #include "dgtl/ir/base/IR_Stream.hpp"
 
 namespace dgtl::core {
@@ -34,6 +34,12 @@ struct DGTLFunctionParameter {
     bool is_variadic = false;
 };
 
+/**
+ * @class DGTLFunction
+ * @brief Represents a single unit of compilation within the DGTL framework.
+ * [STAFF NOTE]: Version 1.1.0 optimization replaces unordered_map with 
+ * Arena-backed contiguous vectors for $O(1)$ type/hint resolution.
+ */
 class DGTLFunction {
 public:
     DGTLFunction(DGTL_Arena& arena, std::string_view name, size_t reserved_nodes = 256)
@@ -41,18 +47,25 @@ public:
           name_(name),
           stream_(arena, reserved_nodes),
           symbols_(arena),
-          debug_store_(arena, reserved_nodes) {}
+          debug_store_(arena, reserved_nodes) {
+        // Pre-reserve metadata vectors to minimize reallocations during lowering
+        slot_type_handles_.reserve(reserved_nodes);
+        temp_type_hints_.reserve(reserved_nodes);
+    }
 
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
     [[nodiscard]] ir::IRStream& stream() noexcept { return stream_; }
     [[nodiscard]] const ir::IRStream& stream() const noexcept { return stream_; }
-    [[nodiscard]] SymbolTable& symbols() noexcept { return symbols_; }
-    [[nodiscard]] const SymbolTable& symbols() const noexcept { return symbols_; }
-    [[nodiscard]] debug::DGTLDebugStore& debug_store() noexcept { return debug_store_; }
-    [[nodiscard]] const debug::DGTLDebugStore& debug_store() const noexcept { return debug_store_; }
+    [[nodiscard]] dgtl::semantic::SymbolTable& symbols() noexcept { return symbols_; }
+    [[nodiscard]] const dgtl::semantic::SymbolTable& symbols() const noexcept { return symbols_; }
+    [[nodiscard]] dgtl::ir::debug::DGTLDebugStore& debug_store() noexcept { return debug_store_; }
+    [[nodiscard]] const dgtl::ir::debug::DGTLDebugStore& debug_store() const noexcept { return debug_store_; }
     [[nodiscard]] const std::vector<DGTLFunctionParameter>& parameters() const noexcept { return parameters_; }
 
     [[nodiscard]] uint32_t allocate_slot() noexcept {
+        if (next_slot_id_ == dgtl::ir::INVALID_SLOT) {
+            return dgtl::ir::INVALID_SLOT;
+        }
         return next_slot_id_++;
     }
 
@@ -61,9 +74,16 @@ public:
                                          dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP,
                                          bool is_variadic = false) {
         const uint32_t slot_id = allocate_slot();
-        symbols_.define(name, slot_id, type_hint);
+        if (slot_id == dgtl::ir::INVALID_SLOT) [[unlikely]] {
+            return dgtl::ir::INVALID_SLOT;
+        }
+        if (!symbols_.define(name, slot_id, type_hint)) [[unlikely]] {
+            return dgtl::ir::INVALID_SLOT;
+        }
         parameters_.push_back(DGTLFunctionParameter{std::string(name), slot_id, type_handle, is_variadic});
+        
         if (type_handle != 0) {
+            ensure_metadata_capacity(slot_id);
             slot_type_handles_[slot_id] = type_handle;
         }
         return slot_id;
@@ -73,10 +93,14 @@ public:
                                     uint32_t slot_id,
                                     FrontendTypeHandle type_handle = 0,
                                     dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
-        if (!symbols_.define(name, slot_id, type_hint)) {
+        if (slot_id == dgtl::ir::INVALID_SLOT) [[unlikely]] {
+            return false;
+        }
+        if (!symbols_.define(name, slot_id, type_hint)) [[unlikely]] {
             return false;
         }
         if (type_handle != 0) {
+            ensure_metadata_capacity(slot_id);
             slot_type_handles_[slot_id] = type_handle;
         }
         return true;
@@ -91,10 +115,14 @@ public:
     }
 
     [[nodiscard]] uint32_t define_or_get_local(std::string_view name,
-                                               FrontendTypeHandle type_handle = 0,
-                                               dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
+                                                 FrontendTypeHandle type_handle = 0,
+                                                 dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
         if (const auto existing = resolve_slot(name); existing.has_value()) {
+            if (*existing == dgtl::ir::INVALID_SLOT) [[unlikely]] {
+                return dgtl::ir::INVALID_SLOT;
+            }
             if (type_handle != 0) {
+                ensure_metadata_capacity(*existing);
                 slot_type_handles_[*existing] = type_handle;
             }
             return *existing;
@@ -102,7 +130,7 @@ public:
 
         const uint32_t slot_id = allocate_slot();
         const bool defined = define_local(name, slot_id, type_handle, type_hint);
-        if (!defined) {
+        if (!defined) [[unlikely]] {
             return dgtl::ir::INVALID_SLOT;
         }
         return slot_id;
@@ -111,6 +139,11 @@ public:
     [[nodiscard]] uint32_t define_temp(FrontendTypeHandle type_handle = 0,
                                        dgtl::ir::OpCode type_hint = dgtl::ir::OpCode::NOP) {
         const uint32_t slot_id = allocate_slot();
+        if (slot_id == dgtl::ir::INVALID_SLOT) [[unlikely]] {
+            return dgtl::ir::INVALID_SLOT;
+        }
+        ensure_metadata_capacity(slot_id);
+        
         if (type_handle != 0) {
             slot_type_handles_[slot_id] = type_handle;
         }
@@ -129,19 +162,22 @@ public:
     }
 
     void set_slot_type(uint32_t slot_id, FrontendTypeHandle type_handle) noexcept {
-        if (type_handle == 0) {
-            slot_type_handles_.erase(slot_id);
+        if (slot_id == dgtl::ir::INVALID_SLOT) [[unlikely]] {
             return;
         }
+        ensure_metadata_capacity(slot_id);
         slot_type_handles_[slot_id] = type_handle;
     }
 
     [[nodiscard]] std::optional<FrontendTypeHandle> get_slot_type(uint32_t slot_id) const noexcept {
-        const auto it = slot_type_handles_.find(slot_id);
-        if (it == slot_type_handles_.end()) {
+        if (slot_id == dgtl::ir::INVALID_SLOT) [[unlikely]] {
             return std::nullopt;
         }
-        return it->second;
+        if (slot_id >= slot_type_handles_.size()) [[unlikely]] {
+            return std::nullopt;
+        }
+        FrontendTypeHandle h = slot_type_handles_[slot_id];
+        return (h != 0) ? std::make_optional(h) : std::nullopt;
     }
 
     void begin_scope() {
@@ -153,14 +189,30 @@ public:
     }
 
 private:
+    /**
+     * @brief Ensures flat metadata vectors can accommodate the given slot index.
+     * [STAFF NOTE]: Using vectors instead of maps eliminates hashing overhead
+     * and utilizes CPU prefetching during linear IR lowering.
+     */
+    void ensure_metadata_capacity(uint32_t slot_id) noexcept {
+        if (slot_id >= slot_type_handles_.size()) [[unlikely]] {
+            const size_t new_size = static_cast<size_t>(slot_id) + 128;
+            slot_type_handles_.resize(new_size, 0);
+            temp_type_hints_.resize(new_size, dgtl::ir::OpCode::NOP);
+        }
+    }
+
     DGTL_Arena& arena_;
     std::string name_;
     ir::IRStream stream_;
-    SymbolTable symbols_;
-    debug::DGTLDebugStore debug_store_;
+    dgtl::semantic::SymbolTable symbols_;
+    dgtl::ir::debug::DGTLDebugStore debug_store_;
     std::vector<DGTLFunctionParameter> parameters_;
-    std::unordered_map<uint32_t, FrontendTypeHandle> slot_type_handles_;
-    std::unordered_map<uint32_t, dgtl::ir::OpCode> temp_type_hints_;
+
+    // 🚀 HFT UPGRADE: Contiguous storage for metadata
+    std::vector<FrontendTypeHandle> slot_type_handles_;
+    std::vector<dgtl::ir::OpCode> temp_type_hints_;
+
     FrontendTypeHandle return_type_handle_ = 0;
     uint32_t next_slot_id_ = 1;
 };

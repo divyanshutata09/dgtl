@@ -15,8 +15,9 @@
 // dgtl/api/Runtime.hpp
 //
 // Public C++ API tier for the DGTL native task scheduler.
+// [POLICY_CHECK]: runtime API header must include TaskScheduler implementation header
 //
-// Consumers (e.g. MYZON's compile-time interpreter) include this header
+// Consumers (e.g. external language frontends) include this header
 // to access dgtl::runtime::TaskScheduler without reaching into the internal
 // include tree directly.  This is the canonical stable surface:
 //
@@ -37,5 +38,8 @@
 // can use either dgtl::api::TaskScheduler or dgtl::runtime::TaskScheduler.
 namespace dgtl::api {
     using TaskScheduler = dgtl::runtime::TaskScheduler;
-    using TaskEntryFn   = dgtl::runtime::TaskEntryFn;
-} // namespace dgtl::api
+    // Note: TaskGroup alias removed until defined in implementation
+    using TaskEntryFn = dgtl::runtime::TaskEntryFn;
+    using ParallelLoopFn = dgtl::runtime::ParallelLoopFn;
+    using RuntimeStats = dgtl::runtime::RuntimeStats;
+}

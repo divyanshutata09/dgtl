@@ -21,6 +21,9 @@
 #include "dgtl_sdk/dgtl_core.h"
 #include "dgtl_sdk/dgtl_simd.h"
 #include "dgtl_sdk/dgtl_c_api.h"
+#include "dgtl/backend/driver/Backend_Driver_API.hpp"
+#include "dgtl/utils/bit/Bit_Pack.hpp"
+#include "dgtl/utils/hashing/Hashing.hpp"
 
 #include <cstring>
 #include <cstdio>
@@ -33,6 +36,9 @@
 
 /* ── Global default runtime context for MYZON compatibility ── */
 static dgtl_runtime_context_t* g_default_runtime_ctx = nullptr;
+
+/* ── Thread-local linker fallback diagnostics for SDK consumers ── */
+static thread_local std::vector<std::string> g_last_linker_fallbacks;
 
 /* ── Internal wrapper structs ── */
 
@@ -80,6 +86,51 @@ static dgtl_strike_result_t make_strike_err(const char* msg) {
     return r;
 }
 
+static bool is_linker_backed_target(dgtl_target_t target) noexcept {
+    switch (target) {
+        case DGTL_TARGET_ELF_OBJ:
+        case DGTL_TARGET_STATIC_LIB:
+        case DGTL_TARGET_COFF_OBJ:
+        case DGTL_TARGET_COFF_LIB:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void capture_linker_fallback_diagnostics(const dgtl::ir::IRStream& stream,
+                                                dgtl_target_t target) {
+    g_last_linker_fallbacks.clear();
+    if (!is_linker_backed_target(target)) {
+        return;
+    }
+
+    dgtl::exec::DGTLLinker linker;
+    std::vector<uint8_t> scratch;
+    bool ok = false;
+
+    switch (target) {
+        case DGTL_TARGET_ELF_OBJ:
+            ok = linker.build_elf_relocatable_binary(stream, scratch, "DGTL_kernel_entry");
+            break;
+        case DGTL_TARGET_STATIC_LIB:
+            ok = linker.build_static_archive_binary(stream, scratch, "module.o");
+            break;
+        case DGTL_TARGET_COFF_OBJ:
+            ok = linker.build_coff_relocatable_binary(stream, scratch, "DGTL_kernel_entry");
+            break;
+        case DGTL_TARGET_COFF_LIB:
+            ok = linker.build_coff_archive_binary(stream, scratch, "module.obj", "DGTL_kernel_entry");
+            break;
+        default:
+            break;
+    }
+
+    (void)ok;
+    const auto& diags = linker.fallback_diagnostics();
+    g_last_linker_fallbacks.assign(diags.begin(), diags.end());
+}
+
 static void sdk_prime_simd_units() {
     static std::once_flag once;
     std::call_once(once, []() {
@@ -100,7 +151,7 @@ static void sdk_prime_simd_units() {
             out[i] = 0.0f;
         }
 
-        dgtl::pass::AVX2DualPumpKernel<float>::blend_mul_add(lhs, rhs, predicate, out, 16, 37.0f, 19.0f);
+        dgtl::pass::simd::AVX2DualPumpKernel<float>::blend_mul_add(lhs, rhs, predicate, out, 16, 37.0f, 19.0f);
         if (out[0] == 0.0f && out[1] == 0.0f) {
             std::fputs("", stderr);
         }
@@ -159,8 +210,20 @@ static bool is_immediate_opcode(dgtl::ir::OpCode op) noexcept {
            op == dgtl::ir::OpCode::IMMEDIATE;
 }
 
+static uint64_t encode_immediate_payload(uint32_t op_a, uint32_t op_b) noexcept {
+    uint64_t payload = 0;
+    payload = dgtl::utils::BitPack::pack(payload, 0u, 32u, op_a);
+    payload = dgtl::utils::BitPack::pack(payload, 32u, 32u, op_b);
+    return payload;
+}
+
 static uint64_t decode_immediate_payload(uint32_t op_a, uint32_t op_b) noexcept {
-    return (static_cast<uint64_t>(op_b) << 32) | static_cast<uint64_t>(op_a);
+    return encode_immediate_payload(op_a, op_b);
+}
+
+static void split_immediate_payload(uint64_t payload, uint32_t& out_a, uint32_t& out_b) noexcept {
+    out_a = static_cast<uint32_t>(dgtl::utils::BitPack::extract64(payload, 0u, 32u));
+    out_b = static_cast<uint32_t>(dgtl::utils::BitPack::extract64(payload, 32u, 32u));
 }
 
 static bool sdk_opcode_to_internal(dgtl_opcode_t op, dgtl::ir::OpCode& out) noexcept {
@@ -349,8 +412,9 @@ extern "C" DGTL_API uint64_t dgtl_stream_logic_hash(const dgtl_stream_t* s) {
 
 extern "C" DGTL_API uint32_t dgtl_emit_const_i64(dgtl_stream_t* s, uint64_t value) {
     if (!s) return 0;
-    const uint32_t lo = static_cast<uint32_t>(value & 0xFFFFFFFFull);
-    const uint32_t hi = static_cast<uint32_t>(value >> 32);
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    split_immediate_payload(value, lo, hi);
     return push_ir_node(s, dgtl::ir::OpCode::CONST,
                         dgtl::ir::Flags::IS_CONST,
                         lo, hi, dgtl::ir::INVALID_SLOT, 0);
@@ -379,6 +443,31 @@ extern "C" DGTL_API uint32_t dgtl_emit_div_i32(dgtl_stream_t* s, uint32_t lhs, u
 extern "C" DGTL_API uint32_t dgtl_emit_mod_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
     if (!s) return 0;
     return push_ir_node(s, dgtl::ir::OpCode::MOD_I32, 0, lhs, rhs, 0);
+}
+
+extern "C" DGTL_API uint32_t dgtl_emit_add_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::ADD_I64, 0, lhs, rhs, 0);
+}
+
+extern "C" DGTL_API uint32_t dgtl_emit_sub_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::SUB_I64, 0, lhs, rhs, 0);
+}
+
+extern "C" DGTL_API uint32_t dgtl_emit_mul_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::MUL_I64, 0, lhs, rhs, 0);
+}
+
+extern "C" DGTL_API uint32_t dgtl_emit_div_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::DIV_I64, 0, lhs, rhs, 0);
+}
+
+extern "C" DGTL_API uint32_t dgtl_emit_mod_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::MOD_I64, 0, lhs, rhs, 0);
 }
 
 extern "C" DGTL_API void dgtl_emit_return(dgtl_stream_t* s, uint32_t value_slot) {
@@ -429,8 +518,10 @@ extern "C" DGTL_API dgtl_strike_result_t dgtl_strike_stream(dgtl_stream_t* s, dg
     dgtl::pipeline::DGTLoptManager mgr;
     mgr.execute(stream);
 
+    capture_linker_fallback_diagnostics(stream, target);
+
     /* Use the orchestrator with a temp path to trigger the right backend */
-    dgtl::core::DGTLOrchestrator orchestrator;
+    dgtl::jit::DGTLOrchestrator orchestrator;
     std::string tmp_path = std::string("__dgtl_strike_tmp") + extension_for_target(target);
 
     dgtl_strike_result_t r{};
@@ -463,6 +554,8 @@ extern "C" DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_targe
 
     auto& stream = s->function.stream();
 
+    capture_linker_fallback_diagnostics(stream, target);
+
     const std::string_view output_path_view(output_path);
     const char* ext = extension_for_target(target);
     const std::string_view ext_view(ext);
@@ -479,7 +572,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_targe
         final_path = owned_path;
     }
 
-    dgtl::core::DGTLOrchestrator orchestrator;
+    dgtl::jit::DGTLOrchestrator orchestrator;
     try {
         orchestrator.compile_to_binary(final_path, stream);
     } catch (const std::exception& e) {
@@ -488,181 +581,27 @@ extern "C" DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_targe
     return make_ok();
 }
 
-/* ── Payload Serialization ── */
-
-/* Helper: reverse-map IRNode opcode → FrontendInstructionKind (returns false if unmappable) */
-static bool opcode_to_frontend_kind(dgtl::ir::OpCode op, [[maybe_unused]] uint16_t flags,
-                                     dgtl::core::FrontendInstructionKind& out) {
-    using FK = dgtl::core::FrontendInstructionKind;
-    using OC = dgtl::ir::OpCode;
-    switch (op) {
-        case OC::LOAD_IMM:    out = FK::const_i64;  return true;
-        case OC::ADD_I32:     out = FK::add_i32;    return true;
-        case OC::SUB_I32:     out = FK::sub_i32;    return true;
-        case OC::MUL_I32:     out = FK::mul_i32;    return true;
-        case OC::DIV_I32:     out = FK::div_i32;    return true;
-        case OC::MOD_I32:     out = FK::mod_i32;    return true;
-        case OC::CMP_EQ_I32:  out = FK::cmp_eq;     return true;
-        case OC::CMP_NE_I32:  out = FK::cmp_ne;     return true;
-        case OC::CMP_LT_I32:  out = FK::cmp_lt;     return true;
-        case OC::CMP_LE_I32:  out = FK::cmp_le;     return true;
-        case OC::CMP_GT_I32:  out = FK::cmp_gt;     return true;
-        case OC::CMP_GE_I32:  out = FK::cmp_ge;     return true;
-        case OC::CALL:        out = FK::call;        return true;
-        case OC::RET:         out = FK::ret;         return true;
-        case OC::GOTO:        out = FK::jmp;         return true;
-        case OC::BRANCH_COND: out = FK::br_if;       return true;
-        default:              return false;
-    }
+extern "C" DGTL_API size_t dgtl_last_linker_fallback_count(void) {
+    return g_last_linker_fallbacks.size();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_write_payload(const dgtl_stream_t* s, const char* path) {
-    if (!s || !path) return make_err(1, "null argument");
+extern "C" DGTL_API size_t dgtl_last_linker_fallback_message(size_t index,
+                                                              char* out_buffer,
+                                                              size_t out_buffer_size) {
+    if (index >= g_last_linker_fallbacks.size()) return 0;
 
-    const auto& stream = s->function.stream();
-    const auto& fn_name = s->function.name();
+    const std::string& msg = g_last_linker_fallbacks[index];
+    const size_t needed = msg.size() + 1; // include NUL
 
-    dgtl::core::FrontendPayloadModule payload;
-    dgtl::core::FrontendLoweringFunction fn;
-    fn.name = fn_name;
-    fn.return_type_handle = static_cast<dgtl::core::FrontendTypeHandle>(
-        s->function.return_type());
-    fn.return_abi_class = dgtl::core::DGTLABIValueClass::i32;
-
-    /* Export parameters from the function object */
-    for (const auto& param : s->function.parameters()) {
-        dgtl::core::FrontendLoweringParameter fp{};
-        fp.value_id    = param.slot_id;
-        fp.name        = param.name;
-        fp.type_handle = static_cast<dgtl::core::FrontendTypeHandle>(param.type_handle);
-        fp.abi_class   = dgtl::core::DGTLABIValueClass::custom;
-        fn.parameters.push_back(std::move(fp));
+    if (out_buffer && out_buffer_size > 0) {
+        const size_t copy_len = (needed <= out_buffer_size) ? msg.size() : (out_buffer_size - 1);
+        if (copy_len > 0) {
+            std::memcpy(out_buffer, msg.data(), copy_len);
+        }
+        out_buffer[copy_len] = '\0';
     }
 
-    /* Reverse-map each IRNode to a FrontendLoweringInstruction */
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
-
-        dgtl::core::FrontendInstructionKind kind;
-        if (!opcode_to_frontend_kind(node.opcode, node.flags, kind))
-            continue;  /* skip opcodes that have no frontend representation */
-
-        dgtl::core::FrontendLoweringInstruction ins{};
-        ins.kind            = kind;
-        ins.result_value_id = node.result_id;
-
-        auto slot_type = s->function.get_slot_type(node.result_id);
-        ins.type_handle = slot_type.value_or(0);
-
-        switch (kind) {
-            using FK = dgtl::core::FrontendInstructionKind;
-            case FK::const_i64:
-                ins.immediate = node.intent_hash;
-                break;
-            case FK::add_i32: case FK::sub_i32: case FK::mul_i32:
-            case FK::div_i32: case FK::mod_i32:
-            case FK::cmp_eq:  case FK::cmp_ne:  case FK::cmp_lt:
-            case FK::cmp_le:  case FK::cmp_gt:  case FK::cmp_ge:
-                ins.lhs_value_id = node.op_a;
-                ins.rhs_value_id = node.op_b;
-                break;
-            case FK::call:
-                ins.lhs_value_id = node.op_a;
-                break;
-            case FK::ret:
-                ins.ret_value_id = node.op_a;
-                break;
-            case FK::jmp:
-                ins.lhs_value_id = node.op_a;
-                break;
-            case FK::br_if:
-                ins.lhs_value_id = node.op_a;
-                ins.rhs_value_id = node.op_b;
-                break;
-            default: break;
-        }
-        fn.instructions.push_back(std::move(ins));
-    }
-
-    payload.functions.push_back(std::move(fn));
-
-    std::string error;
-    if (!dgtl::core::write_frontend_payload_file(payload, path, &error))
-        return make_err(3, error.c_str());
-
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_read_payload(dgtl_stream_t* s, const char* path) {
-    if (!s || !path) return make_err(1, "null argument");
-
-    dgtl::core::FrontendPayloadModule payload;
-    std::string error;
-    if (!dgtl::core::read_frontend_payload_file(path, payload, &error))
-        return make_err(3, error.c_str());
-
-    if (payload.functions.empty())
-        return make_err(4, "payload contains no functions");
-
-    /* Lower the first function into this stream */
-    const auto& src_fn = payload.functions[0];
-
-    /* Reset stream to receive fresh IR */
-    s->function.stream().reset();
-
-    dgtl::core::DGTLControlFlowGraph cfg;
-    dgtl::core::DGTLABIRegistry abi;
-
-    // ── Seed ABI registry (mirrors build_ir_from_frontend_payload in main.cpp) ─
-    // Without this, every CALL instruction silently skips ABI validation and the
-    // lowered call nodes carry no signature info, producing an empty x64 binary.
-    {
-        dgtl::core::DGTLABIParameter size_param{"size", dgtl::core::DGTLABIValueClass::i64, 0xFF, 0, 0};
-        dgtl::core::DGTLABIParameter ptr_param{"ptr",  dgtl::core::DGTLABIValueClass::pointer, 0xFF, 0, 0};
-        std::vector<dgtl::core::DGTLABIParameter> one_i64{size_param};
-        std::vector<dgtl::core::DGTLABIParameter> one_ptr{ptr_param};
-        abi.register_internal_signature("__myzon_alloc_huge",
-            dgtl::core::DGTLABIValueClass::pointer, 0, one_i64);
-        abi.register_internal_signature("__myzon_free",
-            dgtl::core::DGTLABIValueClass::i32,    0, one_ptr);
-
-        // Register all payload functions so cross-function calls resolve correctly.
-        for (const auto& fn : payload.functions) {
-            std::vector<dgtl::core::DGTLABIParameter> params;
-            params.reserve(fn.parameters.size());
-            for (const auto& p : fn.parameters) {
-                params.push_back({p.name, dgtl::core::DGTLABIValueClass::i32,
-                                  0xFF, 0, p.type_handle});
-            }
-            abi.register_internal_signature(fn.name, fn.return_abi_class,
-                                            fn.return_type_handle, params);
-        }
-
-        // Register any remaining call-site callees not yet in the registry
-        // (external/runtime symbols) as variadic i32 so lowering doesn't block them.
-        for (const auto& fn : payload.functions) {
-            for (const auto& ins : fn.instructions) {
-                if (ins.kind == dgtl::core::FrontendInstructionKind::call &&
-                    !ins.callee_name.empty()) {
-                    if (!abi.find_signature(ins.callee_name)) {
-                        abi.register_internal_signature(
-                            ins.callee_name,
-                            dgtl::core::DGTLABIValueClass::i32, 0,
-                            std::span<const dgtl::core::DGTLABIParameter>{},
-                            /*is_variadic=*/true);
-                    }
-                }
-            }
-        }
-    }
-
-    auto result = dgtl::core::FrontendPipelineLowerer::lower_function(
-        src_fn, s->function, cfg, &abi);
-
-    if (!result.ok)
-        return make_err(5, result.message.c_str());
-
-    return make_ok();
+    return needed;
 }
 
 /* ── Extended Core API ── */
@@ -690,8 +629,7 @@ extern "C" DGTL_API uint32_t dgtl_emit_op(dgtl_stream_t* s, dgtl_opcode_t op,
     uint32_t op_b = rhs;
     uint32_t op_c = 0u;
     if (is_immediate_opcode(mapped_opcode)) {
-        op_a = static_cast<uint32_t>(immediate & 0xFFFFFFFFull);
-        op_b = static_cast<uint32_t>(immediate >> 32);
+        split_immediate_payload(immediate, op_a, op_b);
         op_c = dgtl::ir::INVALID_SLOT;
     }
 
@@ -740,18 +678,18 @@ extern "C" DGTL_API dgtl_status_t dgtl_optimize_with_profile(dgtl_stream_t* s,
     /* For SIMD profile, also run the SIMD legalizer */
     if (profile == DGTL_OPT_PROFILE_SIMD) {
         sdk_prime_simd_units();
-        const dgtl::pass::TargetArch simd_arch = []() noexcept {
+        const dgtl::pass::simd::TargetArch simd_arch = []() noexcept {
             switch (dgtl::core::preferred_simd_tier()) {
                 case dgtl::core::SimdTier::AVX512:
-                    return dgtl::pass::TargetArch::X86_AVX512;
+                    return dgtl::pass::simd::TargetArch::X86_AVX512;
                 case dgtl::core::SimdTier::AVX2:
-                    return dgtl::pass::TargetArch::X86_AVX2;
+                    return dgtl::pass::simd::TargetArch::X86_AVX2;
                 case dgtl::core::SimdTier::Scalar:
                 default:
-                    return dgtl::pass::TargetArch::GENERIC;
+                    return dgtl::pass::simd::TargetArch::GENERIC;
             }
         }();
-        dgtl::pass::DGTLSIMDLegalizer legalizer(simd_arch);
+        dgtl::pass::simd::DGTLSIMDLegalizer legalizer(simd_arch);
         legalizer.legalize(stream);
     }
 
@@ -883,16 +821,16 @@ extern "C" DGTL_API dgtl_status_t dgtl_legalize_simd(dgtl_stream_t* s,
     sdk_prime_simd_units();
     auto& stream = s->function.stream();
 
-    dgtl::pass::TargetArch ta;
+    dgtl::pass::simd::TargetArch ta;
     switch (arch) {
-        case DGTL_SIMD_X86_AVX512:   ta = dgtl::pass::TargetArch::X86_AVX512;   break;
-        case DGTL_SIMD_X86_AVX2:     ta = dgtl::pass::TargetArch::X86_AVX2;     break;
-        case DGTL_SIMD_ARM_NEON:     ta = dgtl::pass::TargetArch::ARM_NEON;     break;
-        case DGTL_SIMD_WASM_SIMD128: ta = dgtl::pass::TargetArch::WASM_SIMD128; break;
-        default:                     ta = dgtl::pass::TargetArch::GENERIC;       break;
+        case DGTL_SIMD_X86_AVX512:   ta = dgtl::pass::simd::TargetArch::X86_AVX512;   break;
+        case DGTL_SIMD_X86_AVX2:     ta = dgtl::pass::simd::TargetArch::X86_AVX2;     break;
+        case DGTL_SIMD_ARM_NEON:     ta = dgtl::pass::simd::TargetArch::ARM_NEON;     break;
+        case DGTL_SIMD_WASM_SIMD128: ta = dgtl::pass::simd::TargetArch::WASM_SIMD128; break;
+        default:                     ta = dgtl::pass::simd::TargetArch::GENERIC;       break;
     }
 
-    dgtl::pass::DGTLSIMDLegalizer legalizer(ta);
+    dgtl::pass::simd::DGTLSIMDLegalizer legalizer(ta);
     legalizer.legalize(stream);
     return make_ok();
 }
@@ -913,6 +851,97 @@ extern "C" DGTL_API int dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgt
     out->estimated_cycle_count = stream.size() * 3; /* Conservative estimate: 3 cycles per IR node */
     
     return 1;
+}
+
+static dgtl_cfg_edge_kind_t to_sdk_cfg_edge_kind(dgtl::ir::CFGEdgeKind kind) noexcept {
+    switch (kind) {
+        case dgtl::ir::CFGEdgeKind::Fallthrough:
+            return DGTL_CFG_EDGE_FALLTHROUGH;
+        case dgtl::ir::CFGEdgeKind::UnconditionalBranch:
+            return DGTL_CFG_EDGE_UNCONDITIONAL;
+        case dgtl::ir::CFGEdgeKind::ConditionalTrue:
+            return DGTL_CFG_EDGE_CONDITIONAL_TRUE;
+        case dgtl::ir::CFGEdgeKind::ConditionalFalse:
+            return DGTL_CFG_EDGE_CONDITIONAL_FALSE;
+        default:
+            return DGTL_CFG_EDGE_FALLTHROUGH;
+    }
+}
+
+extern "C" DGTL_API size_t dgtl_stream_cfg_block_count(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return s->function.stream().get_basic_blocks().size();
+}
+
+extern "C" DGTL_API size_t dgtl_stream_cfg_edge_count(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return s->function.stream().get_cfg_edges().size();
+}
+
+extern "C" DGTL_API int dgtl_stream_cfg_get_block(const dgtl_stream_t* s,
+                                                    size_t index,
+                                                    dgtl_cfg_block_t* out) {
+    if (!s || !out) return 0;
+
+    const auto& blocks = s->function.stream().get_basic_blocks();
+    if (index >= blocks.size()) return 0;
+
+    const auto& b = blocks[index];
+    out->id = b.id;
+    out->begin = b.begin;
+    out->end = b.end;
+    out->primary_label = b.primary_label;
+    out->is_entry = b.is_entry ? 1 : 0;
+    return 1;
+}
+
+extern "C" DGTL_API int dgtl_stream_cfg_get_edge(const dgtl_stream_t* s,
+                                                   size_t index,
+                                                   dgtl_cfg_edge_t* out) {
+    if (!s || !out) return 0;
+
+    const auto& edges = s->function.stream().get_cfg_edges();
+    if (index >= edges.size()) return 0;
+
+    const auto& e = edges[index];
+    out->from = e.from;
+    out->to = e.to;
+    out->kind = to_sdk_cfg_edge_kind(e.kind);
+    return 1;
+}
+
+extern "C" DGTL_API size_t dgtl_stream_cfg_get_successors(const dgtl_stream_t* s,
+                                                            uint32_t block_id,
+                                                            uint32_t* out_ids,
+                                                            size_t out_cap) {
+    if (!s) return 0;
+
+    const auto& succ = s->function.stream().get_successors(block_id);
+    const size_t total = succ.size();
+    if (!out_ids || out_cap == 0) return total;
+
+    const size_t n = (out_cap < total) ? out_cap : total;
+    for (size_t i = 0; i < n; ++i) {
+        out_ids[i] = succ[i];
+    }
+    return total;
+}
+
+extern "C" DGTL_API size_t dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s,
+                                                              uint32_t block_id,
+                                                              uint32_t* out_ids,
+                                                              size_t out_cap) {
+    if (!s) return 0;
+
+    const auto& pred = s->function.stream().get_predecessors(block_id);
+    const size_t total = pred.size();
+    if (!out_ids || out_cap == 0) return total;
+
+    const size_t n = (out_cap < total) ? out_cap : total;
+    for (size_t i = 0; i < n; ++i) {
+        out_ids[i] = pred[i];
+    }
+    return total;
 }
 
 extern "C" DGTL_API int dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* error_buffer, size_t error_len) {
@@ -999,9 +1028,10 @@ extern "C" DGTL_API uint32_t dgtl_emit_const_f32(dgtl_stream_t* s, float value) 
 extern "C" DGTL_API uint32_t dgtl_emit_const_f64(dgtl_stream_t* s, double value) {
     if (!s) return 0;
     
-    uint64_t bits = std::bit_cast<uint64_t>(value);
-    const uint32_t lo = static_cast<uint32_t>(bits & 0xFFFFFFFFull);
-    const uint32_t hi = static_cast<uint32_t>(bits >> 32);
+    const uint64_t bits = std::bit_cast<uint64_t>(value);
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    split_immediate_payload(bits, lo, hi);
     return push_ir_node(s, dgtl::ir::OpCode::CONST,
                         dgtl::ir::Flags::IS_CONST,
                         lo, hi, dgtl::ir::INVALID_SLOT, 0);
@@ -1010,18 +1040,15 @@ extern "C" DGTL_API uint32_t dgtl_emit_const_f64(dgtl_stream_t* s, double value)
 extern "C" DGTL_API uint32_t dgtl_emit_const_binary(dgtl_stream_t* s, 
                                                       const void* data, size_t len) {
     if (!s || !data || len == 0) return 0;
-    
-    /* Hash the binary data to create a constant identifier */
-    uint64_t hash = 0;
-    const uint8_t* bytes = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < len && i < 8; ++i) {
-        hash = (hash << 8) | bytes[i];
-    }
+    const uint64_t hash = dgtl::utils::Hashing::xxhash64(data, len);
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    split_immediate_payload(hash, lo, hi);
     
     return push_ir_node(s, dgtl::ir::OpCode::CONST,
                         dgtl::ir::Flags::IS_CONST,
-                        static_cast<uint32_t>(hash & 0xFFFFFFFFull),
-                        static_cast<uint32_t>(hash >> 32),
+                        lo,
+                        hi,
                         dgtl::ir::INVALID_SLOT, hash);
 }
 
@@ -1040,18 +1067,15 @@ extern "C" DGTL_API uint32_t dgtl_emit_phi(dgtl_stream_t* s,
 extern "C" DGTL_API uint32_t dgtl_emit_label(dgtl_stream_t* s, const char* label_name) {
     if (!s || !label_name) return 0;
     
-    /* Compute a unique ID from the label name using simple FNV-1a */
-    uint64_t label_hash = 14695981039346656037ULL;  /* FNV offset basis */
-    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(label_name);
-    for (size_t i = 0; label_name[i] != '\0'; ++i) {
-        label_hash ^= bytes[i];
-        label_hash *= 1099511628211ULL;  /* FNV prime */
-    }
+    const uint64_t label_hash = dgtl::utils::Hashing::fnv1a(label_name, std::strlen(label_name));
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    split_immediate_payload(label_hash, lo, hi);
     
     return push_ir_node(s, dgtl::ir::OpCode::LABEL,
                         dgtl::ir::Flags::NONE,
-                        static_cast<uint32_t>(label_hash & 0xFFFFFFFFull),
-                        static_cast<uint32_t>(label_hash >> 32),
+                        lo,
+                        hi,
                         dgtl::ir::INVALID_SLOT, label_hash);
 }
 

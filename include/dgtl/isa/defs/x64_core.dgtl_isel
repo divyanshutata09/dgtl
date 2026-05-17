@@ -1,0 +1,6 @@
+# DGTL ISel DSL bootstrap rules
+# Syntax:
+# rule <name>: <match-pattern> -> <replacement> [targets=<t0>|<t1>, benefit=<n>, require_fma=<bool>]
+
+rule x64_scalar_fma: AddF32(MulF32($a,$b),$c) -> FMA_F32($a,$b,$c) [targets=x86_64_avx2|x86_64_avx512, benefit=100, require_fma=true]
+rule x64_vector_mul_add_fold: VecAddF32512(VecMulF32512($a,$b),$c) -> VEC_ADD_F32_512($a,$b,$c) [targets=x86_64_avx512, benefit=20]

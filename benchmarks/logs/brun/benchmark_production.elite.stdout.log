@@ -1,0 +1,621 @@
+=============================================
+ DGTL TITAN-STABLE v1.0.0  [Policy-Based HAL]
+ Mechanical Sympathy Benchmark Harness
+=============================================
+
+execution_tier:      Elite  (large pages + core affinity, gate=0.10%)
+measured_runs:       31
+warmup_runs:         3
+suite_repeats:       5
+inter_suite_recovery: scalar fence + 2500ms downclock mitigation
+timer_mode:          rdtscp (cycles-primary) + steady_clock
+simd_mode:           native AVX2 dual-pump kernels
+page_mode:           large pages (2MB)
+mmcss_profile:       Pro Audio
+affinity_mask:       0x4
+core_isolation_note: affinity set; for hard RT isolate core via OS policy (interrupt shielding/process-class tools)
+stability_gate:      drift < 0.10% (Cycles Per Node primary)
+throughput_gate:     >= 100000000 nodes/sec
+cycles_gate:         <= 24 cycles/node
+batch_lock:          calibrated once per benchmark before suite repeats
+
+tsc_crosscheck:      ticks/ns=2.496003 status=OK (steady_clock vs perf_counter)
+
+--- Suite Run 1/5 ---
+[Suite 1/5] Dependency Chain
+  batch:              32 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2526937.50
+  median_ns:          2559618.75
+  p95_ns:             2637743.75
+  mad_ns:             14106.25
+  cold_cycles:        6306954.72
+  median_cycles:      6388557.19
+  p95_cycles:         6583569.62
+  mad_cycles:         35166.16
+  cycles_per_node:    3.19
+  nodes_per_sec:      781366365.60
+  golden_checksum:    3201339863433201866
+  observed_checksum:  3201339863433201866
+  mad_over_median:    0.55%
+  p95_over_median:    1.03x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 1/5] ECS Update
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3355978.57
+  median_ns:          3019575.00
+  p95_ns:             3412614.29
+  mad_ns:             65850.00
+  cold_cycles:        8376172.00
+  median_cycles:      7536527.29
+  p95_cycles:         8517571.98
+  mad_cycles:         164314.29
+  cycles_per_node:    3.77
+  nodes_per_sec:      662344866.41
+  golden_checksum:    18279559578498687635
+  observed_checksum:  18279559578498687635
+  mad_over_median:    2.18%
+  p95_over_median:    1.13x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 1/5] Loop Fusion Sensitivity
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2594125.00
+  median_ns:          2725500.00
+  p95_ns:             2820550.00
+  mad_ns:             51589.29
+  cold_cycles:        6474567.71
+  median_cycles:      6802531.68
+  p95_cycles:         7039797.61
+  mad_cycles:         128775.00
+  cycles_per_node:    3.40
+  nodes_per_sec:      733810310.03
+  golden_checksum:    3562419033449615718
+  observed_checksum:  3562419033449615718
+  mad_over_median:    1.89%
+  p95_over_median:    1.03x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 1/5] SIMD YMM Dual-Pump Kernel
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3115421.43
+  median_ns:          3276389.29
+  p95_ns:             3739812.50
+  mad_ns:             119975.00
+  cold_cycles:        7775749.46
+  median_cycles:      8177527.82
+  p95_cycles:         9334240.88
+  mad_cycles:         299472.79
+  cycles_per_node:    4.09
+  nodes_per_sec:      610428073.59
+  golden_checksum:    3170864083513429402
+  observed_checksum:  3170864083513429402
+  mad_over_median:    3.66%
+  p95_over_median:    1.14x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 1/5] HFT Branch-Blind
+  batch:              27 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3188607.41
+  median_ns:          3138851.85
+  p95_ns:             3406216.67
+  mad_ns:             69755.56
+  cold_cycles:        7958446.48
+  median_cycles:      7834286.44
+  p95_cycles:         8501616.41
+  mad_cycles:         174166.22
+  cycles_per_node:    3.92
+  nodes_per_sec:      637175659.89
+  golden_checksum:    11184943886215210235
+  observed_checksum:  11184943886215210235
+  mad_over_median:    2.22%
+  p95_over_median:    1.09x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+
+--- Suite Run 2/5 ---
+[Suite 2/5] Dependency Chain
+  batch:              32 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2661553.12
+  median_ns:          2574656.25
+  p95_ns:             2643521.88
+  mad_ns:             22884.38
+  cold_cycles:        6643002.72
+  median_cycles:      6426080.84
+  p95_cycles:         6597990.86
+  mad_cycles:         57148.16
+  cycles_per_node:    3.21
+  nodes_per_sec:      776802728.52
+  golden_checksum:    3201339863433201866
+  observed_checksum:  3201339863433201866
+  mad_over_median:    0.89%
+  p95_over_median:    1.03x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 2/5] ECS Update
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3100700.00
+  median_ns:          3048282.14
+  p95_ns:             3173541.07
+  mad_ns:             59635.71
+  cold_cycles:        7739040.46
+  median_cycles:      7608237.54
+  p95_cycles:         7920817.70
+  mad_cycles:         148909.71
+  cycles_per_node:    3.80
+  nodes_per_sec:      656107245.42
+  golden_checksum:    18279559578498687635
+  observed_checksum:  18279559578498687635
+  mad_over_median:    1.96%
+  p95_over_median:    1.04x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 2/5] Loop Fusion Sensitivity
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2641085.71
+  median_ns:          2622535.71
+  p95_ns:             2746003.57
+  mad_ns:             24710.71
+  cold_cycles:        6591863.43
+  median_cycles:      6545508.93
+  p95_cycles:         6853709.11
+  mad_cycles:         61607.25
+  cycles_per_node:    3.27
+  nodes_per_sec:      762620691.53
+  golden_checksum:    3562419033449615718
+  observed_checksum:  3562419033449615718
+  mad_over_median:    0.94%
+  p95_over_median:    1.05x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 2/5] SIMD YMM Dual-Pump Kernel
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2973300.00
+  median_ns:          2994121.43
+  p95_ns:             3165071.43
+  mad_ns:             37542.86
+  cold_cycles:        7421016.79
+  median_cycles:      7472978.36
+  p95_cycles:         7899686.82
+  mad_cycles:         93722.07
+  cycles_per_node:    3.74
+  nodes_per_sec:      667975580.72
+  golden_checksum:    3170864083513429402
+  observed_checksum:  3170864083513429402
+  mad_over_median:    1.25%
+  p95_over_median:    1.06x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 2/5] HFT Branch-Blind
+  batch:              27 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3096688.89
+  median_ns:          3035281.48
+  p95_ns:             3132857.41
+  mad_ns:             16662.96
+  cold_cycles:        7729030.89
+  median_cycles:      7575729.41
+  p95_cycles:         7819302.70
+  mad_cycles:         41618.41
+  cycles_per_node:    3.79
+  nodes_per_sec:      658917471.81
+  golden_checksum:    11184943886215210235
+  observed_checksum:  11184943886215210235
+  mad_over_median:    0.55%
+  p95_over_median:    1.03x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+
+--- Suite Run 3/5 ---
+[Suite 3/5] Dependency Chain
+  batch:              32 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2707131.25
+  median_ns:          2562709.38
+  p95_ns:             2611823.44
+  mad_ns:             13834.38
+  cold_cycles:        6756769.69
+  median_cycles:      6396293.69
+  p95_cycles:         6518878.12
+  mad_cycles:         34485.06
+  cycles_per_node:    3.20
+  nodes_per_sec:      780424038.52
+  golden_checksum:    3201339863433201866
+  observed_checksum:  3201339863433201866
+  mad_over_median:    0.54%
+  p95_over_median:    1.02x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 3/5] ECS Update
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2956535.71
+  median_ns:          2969171.43
+  p95_ns:             3032714.29
+  mad_ns:             20471.43
+  cold_cycles:        7379194.79
+  median_cycles:      7410710.04
+  p95_cycles:         7569345.00
+  mad_cycles:         51122.18
+  cycles_per_node:    3.71
+  nodes_per_sec:      673588591.33
+  golden_checksum:    18279559578498687635
+  observed_checksum:  18279559578498687635
+  mad_over_median:    0.69%
+  p95_over_median:    1.02x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 3/5] Loop Fusion Sensitivity
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2627892.86
+  median_ns:          2610217.86
+  p95_ns:             2642860.71
+  mad_ns:             11878.57
+  cold_cycles:        6558934.04
+  median_cycles:      6514822.39
+  p95_cycles:         6596239.75
+  mad_cycles:         29503.36
+  cycles_per_node:    3.26
+  nodes_per_sec:      766219568.43
+  golden_checksum:    3562419033449615718
+  observed_checksum:  3562419033449615718
+  mad_over_median:    0.46%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 3/5] SIMD YMM Dual-Pump Kernel
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2998028.57
+  median_ns:          2984996.43
+  p95_ns:             3043003.57
+  mad_ns:             13739.29
+  cold_cycles:        7482805.21
+  median_cycles:      7450116.68
+  p95_cycles:         7595002.75
+  mad_cycles:         34210.25
+  cycles_per_node:    3.73
+  nodes_per_sec:      670017552.07
+  golden_checksum:    3170864083513429402
+  observed_checksum:  3170864083513429402
+  mad_over_median:    0.46%
+  p95_over_median:    1.02x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 3/5] HFT Branch-Blind
+  batch:              27 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3019777.78
+  median_ns:          3022770.37
+  p95_ns:             3055725.93
+  mad_ns:             15888.89
+  cold_cycles:        7537065.52
+  median_cycles:      7544528.19
+  p95_cycles:         7626781.54
+  mad_cycles:         39643.93
+  cycles_per_node:    3.77
+  nodes_per_sec:      661644701.70
+  golden_checksum:    11184943886215210235
+  observed_checksum:  11184943886215210235
+  mad_over_median:    0.53%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+
+--- Suite Run 4/5 ---
+[Suite 4/5] Dependency Chain
+  batch:              32 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2658812.50
+  median_ns:          2557943.75
+  p95_ns:             2590723.44
+  mad_ns:             9868.75
+  cold_cycles:        6636200.31
+  median_cycles:      6384421.03
+  p95_cycles:         6466195.88
+  mad_cycles:         24663.75
+  cycles_per_node:    3.19
+  nodes_per_sec:      781878022.14
+  golden_checksum:    3201339863433201866
+  observed_checksum:  3201339863433201866
+  mad_over_median:    0.39%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 4/5] ECS Update
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2991407.14
+  median_ns:          2976950.00
+  p95_ns:             3052862.50
+  mad_ns:             20189.29
+  cold_cycles:        7466234.64
+  median_cycles:      7430166.82
+  p95_cycles:         7619599.57
+  mad_cycles:         50391.54
+  cycles_per_node:    3.72
+  nodes_per_sec:      671828549.35
+  golden_checksum:    18279559578498687635
+  observed_checksum:  18279559578498687635
+  mad_over_median:    0.68%
+  p95_over_median:    1.03x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 4/5] Loop Fusion Sensitivity
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2657192.86
+  median_ns:          2626235.71
+  p95_ns:             2662878.57
+  mad_ns:             13260.71
+  cold_cycles:        6632079.86
+  median_cycles:      6554789.71
+  p95_cycles:         6646232.39
+  mad_cycles:         33197.75
+  cycles_per_node:    3.28
+  nodes_per_sec:      761546265.30
+  golden_checksum:    3562419033449615718
+  observed_checksum:  3562419033449615718
+  mad_over_median:    0.50%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 4/5] SIMD YMM Dual-Pump Kernel
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3052603.57
+  median_ns:          2996664.29
+  p95_ns:             3024907.14
+  mad_ns:             11639.29
+  cold_cycles:        7618925.54
+  median_cycles:      7479386.64
+  p95_cycles:         7549856.89
+  mad_cycles:         29123.79
+  cycles_per_node:    3.74
+  nodes_per_sec:      667408761.65
+  golden_checksum:    3170864083513429402
+  observed_checksum:  3170864083513429402
+  mad_over_median:    0.39%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 4/5] HFT Branch-Blind
+  batch:              27 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3034637.04
+  median_ns:          3024740.74
+  p95_ns:             3070272.22
+  mad_ns:             13633.33
+  cold_cycles:        7574137.56
+  median_cycles:      7549453.96
+  p95_cycles:         7663100.22
+  mad_cycles:         34016.52
+  cycles_per_node:    3.77
+  nodes_per_sec:      661213694.47
+  golden_checksum:    11184943886215210235
+  observed_checksum:  11184943886215210235
+  mad_over_median:    0.45%
+  p95_over_median:    1.02x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+
+--- Suite Run 5/5 ---
+[Suite 5/5] Dependency Chain
+  batch:              32 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2700828.12
+  median_ns:          2556131.25
+  p95_ns:             2589421.88
+  mad_ns:             13000.00
+  cold_cycles:        6741036.06
+  median_cycles:      6379823.19
+  p95_cycles:         6462965.72
+  mad_cycles:         32389.19
+  cycles_per_node:    3.19
+  nodes_per_sec:      782432435.74
+  golden_checksum:    3201339863433201866
+  observed_checksum:  3201339863433201866
+  mad_over_median:    0.51%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 5/5] ECS Update
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2968942.86
+  median_ns:          2957889.29
+  p95_ns:             3013771.43
+  mad_ns:             10496.43
+  cold_cycles:        7410126.46
+  median_cycles:      7382531.39
+  p95_cycles:         7522019.86
+  mad_cycles:         26129.82
+  cycles_per_node:    3.69
+  nodes_per_sec:      676157829.73
+  golden_checksum:    18279559578498687635
+  observed_checksum:  18279559578498687635
+  mad_over_median:    0.35%
+  p95_over_median:    1.02x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 5/5] Loop Fusion Sensitivity
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   2604750.00
+  median_ns:          2599950.00
+  p95_ns:             2649460.71
+  mad_ns:             16614.29
+  cold_cycles:        6501178.00
+  median_cycles:      6489144.57
+  p95_cycles:         6612740.38
+  mad_cycles:         41468.04
+  cycles_per_node:    3.24
+  nodes_per_sec:      769245562.41
+  golden_checksum:    3562419033449615718
+  observed_checksum:  3562419033449615718
+  mad_over_median:    0.64%
+  p95_over_median:    1.02x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 5/5] SIMD YMM Dual-Pump Kernel
+  batch:              28 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3012489.29
+  median_ns:          2978664.29
+  p95_ns:             3013292.86
+  mad_ns:             16271.43
+  cold_cycles:        7518869.71
+  median_cycles:      7434383.57
+  p95_cycles:         7520867.30
+  mad_cycles:         40558.04
+  cycles_per_node:    3.72
+  nodes_per_sec:      671441897.49
+  golden_checksum:    3170864083513429402
+  observed_checksum:  3170864083513429402
+  mad_over_median:    0.55%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+[Suite 5/5] HFT Branch-Blind
+  batch:              27 invocations/sample
+  warmup_runs:        3 (discarded)
+  measured_runs:      31
+  cold_ns_per_iter:   3018270.37
+  median_ns:          3010514.81
+  p95_ns:             3047127.78
+  mad_ns:             12085.19
+  cold_cycles:        7533273.26
+  median_cycles:      7513904.44
+  p95_cycles:         7605321.44
+  mad_cycles:         30064.07
+  cycles_per_node:    3.76
+  nodes_per_sec:      664338202.28
+  golden_checksum:    11184943886215210235
+  observed_checksum:  11184943886215210235
+  mad_over_median:    0.40%
+  p95_over_median:    1.01x
+  correctness_gate:   PASS
+  feature_gate:       PASS
+  throughput_gate:    PASS (>= 100000000)
+  cycles_gate:        PASS
+  variance_flag:      OK
+
+--- Run-to-Run Drift (Cycles Per Node primary) ---
+Dependency Chain: drift=0.1211% gate=0.10% flag=UNSTABLE
+ECS Update: drift=0.6411% gate=0.10% flag=UNSTABLE
+Loop Fusion Sensitivity: drift=0.4688% gate=0.10% flag=UNSTABLE
+SIMD YMM Dual-Pump Kernel: drift=0.3059% gate=0.10% flag=UNSTABLE
+HFT Branch-Blind: drift=0.3480% gate=0.10% flag=UNSTABLE
+
+--- Attestation ---
+CHECKSUM:    13808030543705230761
+GLOBAL_SINK: 15434225437382992065
+
+Final Target Standard: NOT YET
+Standing: correctness, throughput, or microarchitectural drift exceeds gates.

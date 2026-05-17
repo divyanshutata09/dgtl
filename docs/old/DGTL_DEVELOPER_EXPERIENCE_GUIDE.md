@@ -1259,7 +1259,7 @@ MYZON compiles **with or without** DGTL headers. The pattern:
 #include "dgtl/api/Function.hpp"
 #include "dgtl/api/Frontend_Pipeline.hpp"
 #include "dgtl/api/Frontend_Payload.hpp"
-#include "dgtl/ir/base/IR_Types.hpp"
+#include "dgtl/ir/base/IR_Core.hpp"
 // ... all DGTL integration code ...
 #endif
 ```

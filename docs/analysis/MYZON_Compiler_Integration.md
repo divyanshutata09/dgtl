@@ -47,7 +47,7 @@ The Query Optimizer implements four passes:
 In `dgtl/pipeline/Pass_Manager.hpp`:
 
 ```cpp
-#include "dgtl/pass/query/Query_Optimizer.hpp"
+#include "dgtl/pass/query/Query_Optimizer_Unified.hpp"
 
 void Pass_Manager::register_builtin_passes() {
     // ... existing passes ...
@@ -361,12 +361,8 @@ Recommended pass order in compilation pipeline:
 Update `dgtl/dgtl_all.hpp`:
 
 ```cpp
-// Query optimization
-#include "dgtl/pass/query/Query_Plan.hpp"
-#include "dgtl/pass/query/Query_Cardinality_Estimator.hpp"
-#include "dgtl/pass/query/Predicate_Pusher.hpp"
-#include "dgtl/pass/query/Join_Order_Optimizer.hpp"
-#include "dgtl/pass/query/Query_Optimizer.hpp"
+// Query optimization (unified module)
+#include "dgtl/pass/query/Query_Optimizer_Unified.hpp"
 
 // ML backend integration
 #include "dgtl/pass/ml/Tensor_Fusion.hpp"
@@ -529,7 +525,7 @@ Complete example integrating both passes:
 
 ```cpp
 #include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/pass/query/Query_Optimizer.hpp"
+#include "dgtl/pass/query/Query_Optimizer_Unified.hpp"
 #include "dgtl/pass/ml/ML_Optimizer.hpp"
 
 void compile_myzon_to_native(const std::string& myzon_code,

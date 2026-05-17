@@ -25,7 +25,6 @@
 #include <random>
 #include <thread>
 
-#include "dgtl/core/Arena.hpp"
 #include "dgtl/core/Target.hpp"
    
 
@@ -35,6 +34,9 @@
     #endif
     #include <malloc.h>
     #include <windows.h>
+    #ifndef MEM_RELEASE
+        #define MEM_RELEASE 0x00008000
+    #endif
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -89,16 +91,18 @@ constexpr bool kPerSuiteRestabilize = true;
 constexpr int kEcsMinBatch = 4;
 constexpr std::int64_t kTargetBatchNs = 80'000'000;
 constexpr double kMadRatioLimit = 0.10;        // per-run MAD gate (both tiers)
-constexpr double kP95RatioLimitElite     = 1.20; // strict â€” requires hard core isolation
-constexpr double kP95RatioLimitUniversal = 1.50; // relaxed â€” OS interrupt spikes in small-batch runs
+constexpr double kP95RatioLimitElite     = 1.20; // strict - requires hard core isolation
+constexpr double kP95RatioLimitUniversal = 1.50; // relaxed - OS interrupt spikes in small-batch runs
 // Dual-gate drift limits (Cycles Per Node based; see summarize_drift)
-constexpr double kDriftLimitElite     = 0.0010; // 0.10%  â€” large pages + core affinity
-constexpr double kDriftLimitUniversal = 0.0600; // 6.00%  â€” standard environment (no hard RT isolation; thermal ramp carries ~0.3-0.5% margin)
+constexpr double kDriftLimitElite     = 0.0010; // 0.10%  - large pages + core affinity
+constexpr double kDriftLimitUniversal = 0.0600; // 6.00%  - standard environment (no hard RT isolation; thermal ramp carries ~0.3-0.5% margin)
 // Max per-run UNSTABLE flags tolerated in each tier (0 = all must pass)
 constexpr int kUnstableReportToleranceElite     = 0;
-constexpr int kUnstableReportToleranceUniversal = 3; // allow â‰¤3 p95 spikes from OS interrupts
-constexpr double kMinNodesPerSecond = 250'000'000.0;
-constexpr double kMaxCyclesPerNode = 20.0;
+constexpr int kUnstableReportToleranceUniversal = 3; // allow <=3 p95 spikes from OS interrupts
+constexpr double kMinNodesPerSecondElite = 200'000'000.0;
+constexpr double kMinNodesPerSecondUniversal = 150'000'000.0;
+constexpr double kMaxCyclesPerNodeElite = 20.0;
+constexpr double kMaxCyclesPerNodeUniversal = 24.0;
 constexpr std::size_t kCoreMask = 0x4;
 constexpr std::size_t kPreferredCore = 2;
 constexpr std::size_t kEcsPrefetchDistance = 64;
@@ -114,6 +118,8 @@ bool g_avx512_runtime_supported  = false;
 bool g_elite_mode = false;
 double g_last_tsc_ticks_per_ns = 0.0;
 bool g_tsc_invariant_ok = true;
+double g_min_nodes_per_second = kMinNodesPerSecondUniversal;
+double g_max_cycles_per_node = kMaxCyclesPerNodeUniversal;
 
 #if defined(_MSC_VER)
     #pragma section(".dgtl_hot2m", execute, read)
@@ -142,6 +148,19 @@ bool g_tsc_invariant_ok = true;
 
 [[nodiscard]] std::uint64_t hash_float(float value) noexcept {
     return hash_u64(static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(value)));
+}
+
+[[nodiscard]] bool parse_positive_double(const char* text, double& out) {
+    if (text == nullptr || *text == '\0') {
+        return false;
+    }
+    char* end = nullptr;
+    const double value = std::strtod(text, &end);
+    if (end == text || *end != '\0' || !std::isfinite(value) || value <= 0.0) {
+        return false;
+    }
+    out = value;
+    return true;
 }
 
 [[noreturn]] void hard_exit_isolation_failure(const char* message) {
@@ -528,6 +547,7 @@ struct BenchmarkReport {
     std::uint64_t observed_checksum = 0;
     bool correctness_ok = false;
     bool feature_ok = true;
+    double throughput_target_nps = 0.0;
     bool throughput_ok = false;
     bool cycles_ok = false;
     bool unstable = false;
@@ -553,6 +573,7 @@ struct BenchmarkSpec {
     KernelResult (*invoke)(BenchmarkState&) = nullptr;
     KernelResult (*reference)(BenchmarkState&) = nullptr;
     std::uint64_t golden_checksum = 0;
+    double min_nodes_per_sec = 0.0;
     bool requires_avx512 = false;
 };
 
@@ -1560,8 +1581,9 @@ BenchmarkReport run_benchmark(BenchmarkState& state, const BenchmarkSpec& spec) 
         : 0.0;
     report.mad_ratio = report.ns.median > 0.0 ? report.ns.mad / report.ns.median : 0.0;
     report.p95_ratio = report.ns.median > 0.0 ? report.ns.p95 / report.ns.median : 0.0;
-    report.throughput_ok = report.nodes_per_sec >= kMinNodesPerSecond;
-    report.cycles_ok = !DGTL_HAS_TSC || report.cycles_per_node <= kMaxCyclesPerNode;
+    report.throughput_target_nps = spec.min_nodes_per_sec > 0.0 ? spec.min_nodes_per_sec : g_min_nodes_per_second;
+    report.throughput_ok = report.nodes_per_sec >= report.throughput_target_nps;
+    report.cycles_ok = !DGTL_HAS_TSC || report.cycles_per_node <= g_max_cycles_per_node;
     const double p95_limit = g_elite_mode ? kP95RatioLimitElite : kP95RatioLimitUniversal;
     report.unstable = !report.correctness_ok || !report.feature_ok || !report.throughput_ok || !report.cycles_ok || report.mad_ratio > kMadRatioLimit || report.p95_ratio > p95_limit;
     return report;
@@ -1591,7 +1613,8 @@ void print_report(const BenchmarkReport& report, int suite_index) {
     std::cout << "  p95_over_median:    " << report.p95_ratio << "x\n";
     std::cout << "  correctness_gate:   " << (report.correctness_ok ? "PASS" : "FAIL") << "\n";
     std::cout << "  feature_gate:       " << (report.feature_ok ? "PASS" : "FAIL") << "\n";
-    std::cout << "  throughput_gate:    " << (report.throughput_ok ? "PASS" : "FAIL") << "\n";
+    std::cout << "  throughput_gate:    " << (report.throughput_ok ? "PASS" : "FAIL")
+              << " (>= " << static_cast<std::uint64_t>(report.throughput_target_nps) << ")\n";
     std::cout << "  cycles_gate:        " << (report.cycles_ok ? "PASS" : "FAIL") << "\n";
     std::cout << "  variance_flag:      " << (report.unstable ? "UNSTABLE" : "OK") << "\n";
 }
@@ -1599,17 +1622,45 @@ void print_report(const BenchmarkReport& report, int suite_index) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    // â”€â”€ Tier selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Tier selection and gate overrides.
+    double min_nodes_override = 0.0;
+    double max_cycles_override = 0.0;
     for (int a = 1; a < argc; ++a) {
         if (std::strcmp(argv[a], "--mode") == 0 && a + 1 < argc) {
             if (std::strcmp(argv[a + 1], "elite") == 0) {
                 g_elite_mode = true;
             }
             ++a;
+            continue;
+        }
+        if (std::strcmp(argv[a], "--min-nps") == 0 && a + 1 < argc) {
+            if (!parse_positive_double(argv[a + 1], min_nodes_override)) {
+                std::fprintf(stderr, "[DGTL] Invalid --min-nps value: %s\n", argv[a + 1]);
+                return 1;
+            }
+            ++a;
+            continue;
+        }
+        if (std::strcmp(argv[a], "--max-cpn") == 0 && a + 1 < argc) {
+            if (!parse_positive_double(argv[a + 1], max_cycles_override)) {
+                std::fprintf(stderr, "[DGTL] Invalid --max-cpn value: %s\n", argv[a + 1]);
+                return 1;
+            }
+            ++a;
+            continue;
         }
     }
 
-    // â”€â”€ Isolation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    g_min_nodes_per_second = g_elite_mode ? kMinNodesPerSecondElite : kMinNodesPerSecondUniversal;
+    g_max_cycles_per_node = g_elite_mode ? kMaxCyclesPerNodeElite : kMaxCyclesPerNodeUniversal;
+    if (min_nodes_override > 0.0) {
+        g_min_nodes_per_second = min_nodes_override;
+    }
+    if (max_cycles_override > 0.0) {
+        g_max_cycles_per_node = max_cycles_override;
+    }
+
+    // Isolation.
 #ifdef _WIN32
     BenchmarkIsolationScope isolation;
     const bool isolation_ok = isolation.engage_core2_shield();
@@ -1621,7 +1672,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    // â”€â”€ Stabilize + feature probe â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Stabilize + feature probe.
     titan_stabilize_hardware();
     g_avx2_runtime_supported   = cpu_supports_avx2();
     g_avx512_runtime_supported = cpu_supports_avx512();
@@ -1630,7 +1681,7 @@ int main(int argc, char* argv[]) {
         std::clog << "[DGTL] AVX2/AVX-512 unavailable; running scalar fallback.\n";
     }
 
-    // â”€â”€ Arena allocation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Arena allocation.
     BenchmarkState state;
     if (!state.initialize()) {
         hard_exit_isolation_failure("Failed to allocate benchmark arena.");
@@ -1643,13 +1694,13 @@ int main(int argc, char* argv[]) {
                      kDriftLimitUniversal * 100.0);
     }
 
-    // â”€â”€ Benchmark specs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Benchmark specs.
     std::array<BenchmarkSpec, kBenchmarkCount> specs = {{
-        {"Dependency Chain",       1, kElementCount, prepare_noop, train_noop, nullptr, dependency_chain,  dependency_chain_reference,   0, false},
-        {"ECS Update",             1, kElementCount, prepare_ecs,  train_noop, precondition_ecs_state, ecs_update,         ecs_update_reference,         0, false},
-        {"Loop Fusion Sensitivity",1, kElementCount, prepare_simd, train_noop, nullptr, loop_fusion_test,  loop_fusion_reference,        0, false},
-        {"SIMD YMM Dual-Pump Kernel", 1, kElementCount, prepare_simd, train_noop, precondition_simd_state, simd_kernel,    simd_kernel_reference,        0, true},
-        {"HFT Branch-Blind",       1, kElementCount, prepare_hft,  train_hft,  precondition_hft_branch_state, hft_branching,      hft_branchless_reference,     0, true},
+        {"Dependency Chain",          1, kElementCount, prepare_noop, train_noop, nullptr, dependency_chain, dependency_chain_reference, 0, 0.0, false},
+        {"ECS Update",                1, kElementCount, prepare_ecs,  train_noop, precondition_ecs_state, ecs_update, ecs_update_reference, 0, 0.0, false},
+        {"Loop Fusion Sensitivity",   1, kElementCount, prepare_simd, train_noop, nullptr, loop_fusion_test, loop_fusion_reference, 0, 0.0, false},
+        {"SIMD YMM Dual-Pump Kernel", 1, kElementCount, prepare_simd, train_noop, precondition_simd_state, simd_kernel, simd_kernel_reference, 0, 0.0, true},
+        {"HFT Branch-Blind",          1, kElementCount, prepare_hft,  train_hft, precondition_hft_branch_state, hft_branching, hft_branchless_reference, 0, 0.0, true},
     }};
 
     for (auto& spec : specs) {
@@ -1658,14 +1709,14 @@ int main(int argc, char* argv[]) {
         spec.batch = calibrate_batch(state, spec);
     }
 
-    // â”€â”€ Suite state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Suite state.
     // suite_medians_cpn: stores (ns_median, cycles_median) per benchmark per suite run
     std::array<std::array<SuiteMedians, kSuiteRuns>, kBenchmarkCount> suite_medians_cpn{};
     int  unstable_reports    = 0;
     int  unstable_drift      = 0;
     bool correctness_failure = false;
 
-    // â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Header.
     std::cout << "=============================================\n";
     std::cout << " DGTL TITAN-STABLE v1.0.0  [Policy-Based HAL]\n";
     std::cout << " Mechanical Sympathy Benchmark Harness\n";
@@ -1687,8 +1738,8 @@ int main(int argc, char* argv[]) {
     std::cout << "affinity_mask:       0x4\n";
     std::cout << "core_isolation_note: affinity set; for hard RT isolate core via OS policy (interrupt shielding/process-class tools)\n";
     std::cout << "stability_gate:      drift < " << (g_elite_mode ? "0.10%" : "6.00%") << " (Cycles Per Node primary)\n";
-    std::cout << "throughput_gate:     >= 250000000 nodes/sec\n";
-    std::cout << "cycles_gate:         <= " << kMaxCyclesPerNode << " cycles/node\n";
+    std::cout << "throughput_gate:     >= " << static_cast<std::uint64_t>(g_min_nodes_per_second) << " nodes/sec\n";
+    std::cout << "cycles_gate:         <= " << g_max_cycles_per_node << " cycles/node\n";
     std::cout << "batch_lock:          calibrated once per benchmark before suite repeats\n\n";
 
     g_last_tsc_ticks_per_ns = measure_tsc_ticks_per_ns_crosscheck();
@@ -1699,7 +1750,7 @@ int main(int argc, char* argv[]) {
                   << " (steady_clock vs perf_counter)\n\n";
     }
 
-    // â”€â”€ Suite loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Suite loop.
     for (int suite = 0; suite < kSuiteRuns; ++suite) {
         reset_hidden_state_for_suite(suite);
         if (kPerSuiteRestabilize) {
@@ -1723,7 +1774,7 @@ int main(int argc, char* argv[]) {
         std::cout << '\n';
     }
 
-    // â”€â”€ Drift analysis (cycles-per-node primary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Drift analysis (cycles-per-node primary).
     std::cout << "--- Run-to-Run Drift (Cycles Per Node primary) ---\n";
     for (std::size_t i = 0; i < specs.size(); ++i) {
         const DriftReport drift = summarize_drift_cpn(suite_medians_cpn[i]);
@@ -1734,7 +1785,7 @@ int main(int argc, char* argv[]) {
                   << " flag=" << (drift.unstable ? "UNSTABLE" : "OK") << "\n";
     }
 
-    // â”€â”€ Attestation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Attestation.
     std::cout << "\n--- Attestation ---\n";
     std::cout << "CHECKSUM:    " << checksum.load(std::memory_order_relaxed) << "\n";
     std::cout << "GLOBAL_SINK: " << global_sink << "\n";

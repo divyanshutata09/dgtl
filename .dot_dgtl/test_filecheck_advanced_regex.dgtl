@@ -1,0 +1,19 @@
+; RUN: dgtl-opt --pass=inlining --filecheck %s
+; FileCheck test with advanced regex patterns
+; Validates that complex patterns match correctly
+
+; IR with various opcode values
+op 0x0A 0x00000001 0x00000000 0x00000000 0x00000000 0x0000
+op 0x0B 0x00000002 0x00000001 0x00000001 0x00000000 0x0001
+op 0x0C 0x00000003 0x00000002 0x00000002 0x00000000 0x0002
+op 0xFF 0x00000004 0x00000003 0x00000003 0x00000000 0x00FF
+
+; CHECK: op 0x[0-9A-Fa-f]{2}
+; CHECK: 0x0000000[1-4]
+; CHECK-NEXT: op 0x[0-9A-Fa-f]{2}
+; CHECK-DAG: op 0x0A
+; CHECK-DAG: op 0x0B
+; CHECK-DAG: op 0x0C
+; CHECK-DAG: op 0xFF
+; CHECK-NOT: exception
+; CHECK: End of IR

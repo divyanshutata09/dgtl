@@ -23,9 +23,10 @@ class Context;
 /**
  * @class ExecutionEngine
  * @brief Abstract base class for compilation and execution engines.
- * 
- * Defines the virtual interface for JIT/AOT/Hybrid execution strategies.
+ * * Defines the virtual interface for JIT/AOT/Hybrid execution strategies.
  * Subclasses implement specific compilation and symbol resolution policies.
+ * * [STAFF NOTE]: This defines the primary polymorphic ABI boundary for the backend.
+ * Instances are thread-compatible but not thread-safe; external sync required.
  */
 class ExecutionEngine {
 public:

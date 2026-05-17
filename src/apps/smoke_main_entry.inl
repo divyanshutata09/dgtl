@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
 int main(int argc, char** argv) {
 	try {
 		AppOptions opts;
@@ -14,7 +24,7 @@ int main(int argc, char** argv) {
 		}
 
 		dgtl::core::DGTL_Arena arena(1, 64);
-		dgtl::core::SymbolTable symbols(arena);
+		dgtl::semantic::SymbolTable symbols(arena);
 
 		if (!run_release_smoke_suite(opts, arena, symbols)) {
 			std::cerr << "[DGTL] Release smoke suite failed\n";
