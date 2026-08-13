@@ -1,0 +1,29 @@
+DGTL Forensic Debugger
+Root: D:\TataG\MYZON
+
+Command fingerprint: 4d8301b23df6550a
+Declaration cache: 116 hits, 0 misses, 0 rescanned files
+[1] Module Graph
+  Modules discovered: 83
+  Cycles detected:    0
+
+[2] Error Clusters
+  Logs scanned: 4
+  Clusters: 0
+
+[2a] Failing Command Context
+  No error clusters available for command attribution.
+
+[3] Cache & Cycle Hints
+  No cache-specific hints emitted.
+
+[4] Symbol Collision Radar
+  Dynamic suspect symbols: 5
+  Suspect symbols: 0
+
+[5] Ownership Arbitration
+  Recommendations: 0
+
+[6] Staff-Level Triage
+  Primary structural risk: no import SCCs detected in scanned units.
+  Regression: Previous run: identical fingerprint to previous snapshot.

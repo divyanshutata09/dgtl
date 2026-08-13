@@ -9,8 +9,8 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-// C:\projects\DGTL_framework\tests\functional\test_pipeline_20_hybrid_tiering.cpp
-#include "dgtl/jit/runtime/JIT_Executor.hpp"
+// C:\projects\DGTL_framework\tests\functional\test_pipeline_20__tiering.cpp
+#include "dgtl//runtime/_Executor.hpp"
 #include "dgtl/isa/emitter/NASM_Emitter.hpp"
 #include "dgtl/core/Arena.hpp"
 #include <iostream>
@@ -20,10 +20,10 @@
 
 void run_baked_kernel() {
     using namespace dgtl::ir;
-    using namespace dgtl::jit::runtime;
+    using namespace dgtl::runtime;
 
-    DGTLJitExecutor jit(1); // 1MB JIT Buffer
-    dgtl::isa::DGTLNasmEmitter aot;
+    DGTLExecutor (1); // 1MB  Buffer
+    dgtl::isa::DGTLNasmEmitter ;
     dgtl::core::DGTL_Arena arena(1, 64);
     IRStream stream(arena, 16);
 
@@ -32,30 +32,30 @@ void run_baked_kernel() {
     stream.push_node(OpCode::ADD_I32, static_cast<uint16_t>(Flags::NONE), 2, 1, 1, 0, 0);
     stream.push_node(OpCode::RET, static_cast<uint16_t>(Flags::NONE), 0, 2, 0, 0, 0);
 
-    std::cout << "[DGTL] Loading JIT Kernel..." << std::endl;
-    // Simulate JIT loading (using empty binary for trace mapping test)
+    std::cout << "[DGTL] Loading  Kernel..." << std::endl;
+    // Simulate  loading (using empty binary for trace mapping test)
     std::vector<uint8_t> dummy_bin = { 0x48, 0xC7, 0xC0, 0x2A, 0x00, 0x00, 0x00, 0xC3 }; // mov rax, 42; ret
-    auto func = jit.load_and_prepare(dummy_bin, stream);
+    auto func = .load_and_prepare(dummy_bin, stream);
     assert(func != nullptr);
 
     if(func) {
-        std::cout << "[DGTL] JIT Execution successful at " << (void*)func << std::endl;
+        std::cout << "[DGTL]  Execution successful at " << (void*)func << std::endl;
         
-        // --- HYBRID TRIGGER ---
+        // ---  TRIGGER ---
         std::cout << "[DGTL] Hot Path Detected! Baking to Disk..." << std::endl;
         
         uintptr_t addr = reinterpret_cast<uintptr_t>(func);
-        auto retrieved_ir = jit.get_ir_from_address(addr);
+        auto retrieved_ir = .get_ir_from_address(addr);
         
         dgtl::core::SymbolTable symbols(arena);
-        aot.emit(retrieved_ir, symbols);
+        .emit(retrieved_ir, symbols);
         
         std::cout << "--- BAKED ASM START ---" << std::endl;
-        std::cout << aot.get_output() << std::endl;
+        std::cout << .get_output() << std::endl;
         std::cout << "--- BAKED ASM END ---" << std::endl;
         
-        assert(aot.get_output().find("DGTL_kernel_entry") != std::string::npos);
-        std::cout << "[TEST optED] Hybrid Handover Verified." << std::endl;
+        assert(.get_output().find("DGTL_kernel_entry") != std::string::npos);
+        std::cout << "[TEST optED]  Handover Verified." << std::endl;
     }
 
     return;

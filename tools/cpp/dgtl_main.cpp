@@ -1,9 +1,9 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:     DGTL (Deep General-purpose Transformation Layer)
- * Owner:       Divyanshu Tata
- * Repository:  github.com/TataG-Systems/DGTL
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
@@ -18,15 +18,21 @@
 #include <string>
 #include <string_view>
 #include <cstdlib>
+#include <cstdint>
 #include <map>
 #include <chrono>
 #include <algorithm>
+#include <iomanip>
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
 #include <sstream>
 #include <fstream>
 #include <regex>
 #include <ctime>
+#include <thread>
+#include <atomic>
+#include <numeric>
 
 namespace fs = std::filesystem;
 using namespace std::literals;
@@ -44,9 +50,71 @@ struct Config {
 // Global context
 Config g_config;
 
+enum class ApiMode {
+    internal,
+    public_sdk,
+    both
+};
+
+void ensure_directory(const fs::path& p);
+std::optional<ApiMode> parse_api_mode(std::vector<std::string>& args,
+                                      ApiMode default_mode,
+                                      std::string* error_out = nullptr);
+int verify_internal_api_artifacts();
+int verify_public_api_artifacts();
+int handle_api_status(ApiMode mode);
+int handle_prepare_api(ApiMode mode);
+int build_internal_static_library();
+
+fs::path make_obj_path(const fs::path& obj_dir, const fs::path& src_path);
+int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool strict);
+int parallel_compile_objects(const std::vector<fs::path>& sources,
+                             const fs::path& obj_dir,
+                             std::vector<fs::path>& out_objs,
+                             int* out_compiled_count,
+                             bool strict);
+
 // Security Utility: Ensures paths with spaces don't break shell commands
 [[nodiscard]] std::string quote_path(const fs::path& p) {
     return "\"" + p.string() + "\"";
+}
+
+[[nodiscard]] std::uint64_t fnv1a64(std::string_view text) {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (unsigned char ch : text) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+[[nodiscard]] std::string hex64(std::uint64_t value) {
+    std::ostringstream out;
+    out << std::hex << std::setw(16) << std::setfill('0') << value;
+    return out.str();
+}
+
+[[nodiscard]] std::string trim(std::string_view text) {
+    std::size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start])) != 0) {
+        ++start;
+    }
+
+    std::size_t end = text.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
+        --end;
+    }
+
+    return std::string(text.substr(start, end - start));
+}
+
+void append_text_file(const fs::path& path, std::string_view text) {
+    ensure_directory(path.parent_path());
+    std::ofstream out(path, std::ios::app | std::ios::binary);
+    if (!out.is_open()) {
+        return;
+    }
+    out << text;
 }
 
 // Utility functions
@@ -54,13 +122,26 @@ Config g_config;
     if (verbose) {
         std::cout << "[orchestrator] $ " << cmd << std::endl;
     }
-    
+
+    const std::string lower_cmd = [&]() {
+        std::string out(cmd);
+        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return out;
+    }();
+    if (lower_cmd.find("g++") != std::string::npos || lower_cmd.find("clang++") != std::string::npos) {
+        const std::string hash = hex64(fnv1a64(cmd));
+        const std::string record = hash + "|" + std::string(cmd) + "\n";
+        append_text_file(g_config.build_dir / "logs" / "last-compiler-invocations.log", record);
+        append_text_file(g_config.build_dir / "logs" / "compiler-invocations.log", record);
+    }
+
     std::string exec_cmd(cmd);
 #ifdef _WIN32
-    // Fix for Windows cmd.exe /c quote stripping behavior:
-    // When multiple quotes exist in the string, cmd strips the first and last quote.
-    // Wrapping the entire command block in outer quotes ensures paths with spaces parse correctly.
-    exec_cmd = "\"" + exec_cmd + "\"";
+    if (!exec_cmd.empty() && exec_cmd.front() == '"') {
+        exec_cmd = "\"" + exec_cmd + "\"";
+    }
 #endif
 
     return std::system(exec_cmd.c_str());
@@ -112,35 +193,25 @@ void touch_file(const fs::path& p) {
 
 int sync_sdk_public_headers() {
     const fs::path sdk_src_dir = g_config.include_dir / "dgtl_sdk";
-    const fs::path dgtl_src_dir = g_config.include_dir / "dgtl";
     const fs::path sdk_include_root = g_config.build_dir / "DGTL_SDK" / "include";
     const fs::path sdk_include_ns = sdk_include_root / "dgtl_sdk";
-    const fs::path sdk_utils_root = sdk_include_root / "dgtl" / "utils";
 
     const std::vector<std::string> sdk_headers = {
+        "dgtl_capabilities.h",
         "dgtl_c_api.h",
         "dgtl_core.h",
+        "dgtl_session.h",
         "dgtl_simd.h",
         "dgtl.h"
     };
 
     ensure_directory(sdk_include_root);
     ensure_directory(sdk_include_ns);
-    ensure_directory(sdk_utils_root / "container");
-    ensure_directory(sdk_utils_root / "hashing");
 
     for (const auto& header : sdk_headers) {
         const fs::path src = sdk_src_dir / header;
         if (!file_exists(src)) {
             std::cerr << "[sdk] Missing public header: " << src.string() << std::endl;
-            return 1;
-        }
-
-        std::error_code ec_root;
-        fs::copy_file(src, sdk_include_root / header, fs::copy_options::overwrite_existing, ec_root);
-        if (ec_root) {
-            std::cerr << "[sdk] Failed to copy header to SDK include root: "
-                      << (sdk_include_root / header).string() << " (" << ec_root.message() << ")" << std::endl;
             return 1;
         }
 
@@ -153,26 +224,14 @@ int sync_sdk_public_headers() {
         }
     }
 
-    const std::vector<std::pair<fs::path, fs::path>> sdk_compat_headers = {
-        {dgtl_src_dir / "utils" / "container" / "Flat_Map.hpp", sdk_utils_root / "container" / "Flat_Map.hpp"},
-        {dgtl_src_dir / "utils" / "hashing" / "Hashing.hpp", sdk_utils_root / "hashing" / "Hashing.hpp"}
-    };
-
-    for (const auto& [src, dst] : sdk_compat_headers) {
-        if (!file_exists(src)) {
-            std::cerr << "[sdk] Missing compatibility header: " << src.string() << std::endl;
-            return 1;
-        }
-        std::error_code ec_copy;
-        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec_copy);
-        if (ec_copy) {
-            std::cerr << "[sdk] Failed to copy compatibility header: "
-                      << dst.string() << " (" << ec_copy.message() << ")" << std::endl;
-            return 1;
-        }
+    // Programmatically clean up legacy non-namespaced root headers and internal subdirectories
+    std::error_code ec_clean;
+    fs::remove_all(sdk_include_root / "dgtl", ec_clean);
+    for (const auto& header : sdk_headers) {
+        fs::remove(sdk_include_root / header, ec_clean);
     }
 
-    std::cout << "[sdk] Synced public headers to " << sdk_include_root.string() << std::endl;
+    std::cout << "[sdk] Synced public headers to " << sdk_include_ns.string() << std::endl;
     return 0;
 }
 
@@ -181,7 +240,8 @@ int compile_tool(std::string_view tool_name, const fs::path& source, const fs::p
     ensure_directory(output.parent_path());
     
     bool needs_build = true;
-    if (file_exists(output)) {
+    std::error_code ec_size;
+    if (file_exists(output) && fs::file_size(output, ec_size) > 0) {
         auto exe_time = get_file_mtime(output);
         auto src_time = get_file_mtime(source);
         if (src_time <= exe_time) {
@@ -195,7 +255,7 @@ int compile_tool(std::string_view tool_name, const fs::path& source, const fs::p
     }
 
     std::cout << "[build] Compiling " << tool_name << std::endl;
-    std::string cmd = std::string(g_config.gpp_path) + " -std=c++26 -O2 -pipe " +
+    std::string cmd = std::string(g_config.gpp_path) + " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir) + " " +
                       quote_path(source) + " -o " + quote_path(output);
     int ec = run_command(cmd);
     if (ec == 0) {
@@ -235,7 +295,7 @@ int invoke_api_policy() {
 int invoke_duplication_gate() {
     auto dup_tool = g_config.build_dir / "tools" / "dgtl-dup-gate.exe";
     auto dup_source = g_config.tools_dir / "dgtl_duplication_gate_main.cpp";
-    return invoke_tool("dgtl-duplication-gate", dup_source, dup_tool,
+    return invoke_tool("dgtl-dup-gate", dup_source, dup_tool,
                       {"--root", quote_path(g_config.root), "--summary-only"});
 }
 
@@ -245,23 +305,360 @@ int invoke_dgtl_gen(const std::vector<std::string>& args = {}) {
     return invoke_tool("dgtl-gen", gen_source, gen_tool, args);
 }
 
+int invoke_dgtl_isel_gen(const std::vector<std::string>& args = {}) {
+    auto isel_tool = g_config.build_dir / "tools" / "dgtl-isel-gen.exe";
+    auto isel_source = g_config.tools_dir / "dgtl_isel_gen_main.cpp";
+    return invoke_tool("dgtl-isel-gen", isel_source, isel_tool, args);
+}
+
 int invoke_dgtl_gen_validate(const std::vector<std::string>& args = {}) {
     auto validate_tool = g_config.build_dir / "tools" / "dgtl-gen-validate.exe";
     auto validate_source = g_config.tools_dir / "validate_dgtl_gen_main.cpp";
     return invoke_tool("dgtl-gen-validate", validate_source, validate_tool, args);
 }
 
+int invoke_dgtl_debugger(const std::vector<std::string>& args = {}) {
+    auto debugger_tool = g_config.build_dir / "tools" / "dgtl-debugger.exe";
+    auto debugger_source = g_config.tools_dir / "dgtl_debugger_main.cpp";
+    return invoke_tool("dgtl-debugger", debugger_source, debugger_tool, args);
+}
+
+// -----------------------------------------------------------------------------
+// Permanent Master Solution Graph Models
+// -----------------------------------------------------------------------------
+struct ModuleUnit {
+    fs::path path;
+    std::string module_name;
+    std::string partition_name;
+    bool is_partition = false;
+    bool is_master = false;
+    std::vector<std::string> imports;
+};
+
+void parse_module_metadata(ModuleUnit& unit) {
+    std::ifstream file(unit.path);
+    if (!file.is_open()) return;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        // Strip trailing carriage return if parsing on Windows environments
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        size_t comment_idx = line.find("//");
+        if (comment_idx != std::string::npos) line = line.substr(0, comment_idx);
+        
+        std::string token;
+        std::stringstream ss(line);
+        if (!(ss >> token)) continue;
+
+        bool is_export = (token == "export");
+        if (is_export) {
+            if (!(ss >> token)) continue;
+        }
+
+        if (token == "module") {
+            if (!(ss >> token)) continue;
+            size_t colon_idx = token.find(':');
+            size_t semi_idx = token.find(';');
+            if (semi_idx != std::string::npos) token = token.substr(0, semi_idx);
+
+            if (colon_idx != std::string::npos) {
+                unit.module_name = token.substr(0, colon_idx);
+                unit.partition_name = token.substr(colon_idx + 1);
+                unit.is_partition = true;
+            } else {
+                unit.module_name = token;
+                unit.is_master = true;
+            }
+        } else if (token == "import") {
+            if (!(ss >> token)) continue;
+            size_t semi_idx = token.find(';');
+            if (semi_idx != std::string::npos) token = token.substr(0, semi_idx);
+            
+            // Clean up any edge spaces or trailing pollution bytes
+            while(!token.empty() && (token.back() == ' ' || token.back() == ';')) {
+                token.pop_back();
+            }
+            if (!token.empty()) {
+                unit.imports.push_back(token);
+            }
+        }
+    }
+}
+
+void resolve_topological_dfs(const std::string& current_key,
+                             const std::unordered_map<std::string, ModuleUnit>& module_map,
+                             std::unordered_set<std::string>& visited,
+                             std::unordered_set<std::string>& active_stack,
+                             std::vector<ModuleUnit>& sorted_output) {
+    if (visited.count(current_key)) return;
+    if (active_stack.count(current_key)) {
+        std::cerr << "[orchestrator] Warning: Circular dependency detected at layout target " << current_key << "\n";
+        return;
+    }
+
+    active_stack.insert(current_key);
+    auto it = module_map.find(current_key);
+    if (it != module_map.end()) {
+        const auto& unit = it->second;
+
+        // Ensure partitions of the same module are sequenced properly before the master interface unit
+        if (unit.is_master) {
+            for (const auto& [key, potential_partition] : module_map) {
+                if (potential_partition.is_partition && potential_partition.module_name == unit.module_name) {
+                    if (!visited.count(key)) {
+                        resolve_topological_dfs(key, module_map, visited, active_stack, sorted_output);
+                    }
+                }
+            }
+        }
+
+        for (const auto& raw_import : unit.imports) {
+            std::string target_key = raw_import;
+            
+            // Handle internal short-form partition imports (e.g., ":fwd")
+            if (!raw_import.empty() && raw_import.front() == ':') {
+                target_key = unit.module_name + raw_import;
+            }
+            
+            // Fix: If a file imports a full module name that is actually registered as an interface 
+            // partition inside our database, resolve the dependency mapping cleanly.
+            if (!module_map.count(target_key)) {
+                for (const auto& [key, potential_unit] : module_map) {
+                    if (potential_unit.is_partition && (potential_unit.module_name + ":" + potential_unit.partition_name == target_key)) {
+                        target_key = key;
+                        break;
+                    }
+                }
+            }
+
+            if (module_map.count(target_key)) {
+                resolve_topological_dfs(target_key, module_map, visited, active_stack, sorted_output);
+            }
+        }
+    }
+
+    active_stack.erase(current_key);
+    visited.insert(current_key);
+    if (it != module_map.end()) {
+        sorted_output.push_back(it->second);
+    }
+}
+
+std::vector<std::string> load_explicit_module_roots(const std::unordered_map<std::string, ModuleUnit>& module_database) {
+    std::vector<std::string> roots;
+    const std::vector<fs::path> order_files{
+        g_config.root / "module_build_order.txt",
+        g_config.root / "build_order.txt"
+    };
+
+    std::unordered_map<std::string, std::string> path_to_key;
+    std::error_code ec;
+    for (const auto& [key, unit] : module_database) {
+        path_to_key[fs::weakly_canonical(unit.path, ec).generic_string()] = key;
+    }
+
+    for (const auto& order_file : order_files) {
+        if (!file_exists(order_file)) {
+            continue;
+        }
+
+        std::ifstream in(order_file);
+        if (!in.is_open()) {
+            continue;
+        }
+
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            line = trim(line);
+            if (line.empty() || line.front() == '#' || line.front() == '"' || line.find('=') != std::string::npos) {
+                continue;
+            }
+
+            fs::path entry_path(line);
+            const std::string generic = fs::weakly_canonical(entry_path, ec).generic_string();
+            if (ec) {
+                ec.clear();
+                continue;
+            }
+            const auto found = path_to_key.find(generic);
+            if (found != path_to_key.end()) {
+                roots.push_back(found->second);
+            }
+        }
+
+        if (!roots.empty()) {
+            break;
+        }
+    }
+
+    return roots;
+}
+
+fs::path module_object_path_for_source(const fs::path& src, const fs::path& mod_obj_dir) {
+    fs::path rel = fs::relative(src, g_config.include_dir);
+    std::string stem = rel.parent_path().string() + "/" + rel.stem().string();
+    std::replace(stem.begin(), stem.end(), '\\', '_');
+    std::replace(stem.begin(), stem.end(), '/', '_');
+    std::replace(stem.begin(), stem.end(), '.', '_');
+    return mod_obj_dir / (stem + ".o");
+}
+
+fs::path module_cache_path_for_name(std::string module_name) {
+    std::replace(module_name.begin(), module_name.end(), ':', '-');
+    return g_config.root / "gcm.cache" / (module_name + ".gcm");
+}
+
+int compile_module_source_if_needed(const fs::path& src, const fs::path& mod_obj_dir, bool force_rebuild = false) {
+    if (!file_exists(src)) {
+        return 0;
+    }
+
+    const fs::path obj = module_object_path_for_source(src, mod_obj_dir);
+    const auto src_time = get_file_mtime(src);
+    const auto obj_time = get_file_mtime(obj);
+
+    std::error_code ec_size;
+    const bool needs_compile = force_rebuild || !file_exists(obj) || (fs::file_size(obj, ec_size) == 0) || src_time > obj_time;
+    if (!needs_compile) {
+        return 0;
+    }
+
+    std::string rel_path = fs::relative(src, g_config.root).string();
+    std::cout << "[build] Compiling module: " << rel_path << "..." << std::endl;
+    std::string cmd = g_config.gpp_path;
+    cmd += " -std=c++26 -fmodules-ts -O0 -pipe -I" + quote_path(g_config.include_dir) + " -c " + quote_path(src) + " -o " + quote_path(obj);
+
+    int ec = run_command(cmd, false);
+    if (ec != 0) {
+        std::cerr << "[build] Failed to compile module: " << rel_path << std::endl;
+    }
+    return ec;
+}
+
+// Module precompilation via dynamic scanning engine topology
+int compile_all_modules() {
+    const fs::path mod_obj_dir = g_config.build_dir / "obj" / "modules";
+    const fs::path module_cache_dir = g_config.root / "gcm.cache";
+    ensure_directory(mod_obj_dir);
+    const bool cold_module_cache = !file_exists(module_cache_dir);
+
+    std::unordered_map<std::string, ModuleUnit> module_database;
+    std::vector<std::string> scan_roots;
+    std::error_code ec_scan;
+
+    // Discover files dynamically from drive configuration footprint
+    for (const auto& entry : fs::recursive_directory_iterator(g_config.include_dir, ec_scan)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".ixx") {
+            ModuleUnit unit;
+            unit.path = entry.path();
+            parse_module_metadata(unit);
+
+            std::string primary_key;
+            if (unit.is_partition) {
+                primary_key = unit.module_name + ":" + unit.partition_name;
+            } else if (unit.is_master) {
+                primary_key = unit.module_name;
+            } else {
+                primary_key = entry.path().filename().string();
+            }
+
+            module_database[primary_key] = unit;
+            scan_roots.push_back(primary_key);
+        }
+    }
+
+    // Stabilize iteration metrics via clear lexical ordering sorting
+    std::sort(scan_roots.begin(), scan_roots.end());
+
+    std::vector<ModuleUnit> deployment_pipeline;
+    std::unordered_set<std::string> visited;
+    std::unordered_set<std::string> active_stack;
+
+    const std::vector<std::string> bootstrap_roots{
+        "dgtl.ir_enums",
+        "dgtl.ir_node",
+        "dgtl.ir_core.stream",
+        "dgtl.op_traits",
+        "dgtl.target",
+        "dgtl.ir_core.arm32neon_emitter",
+        "dgtl.ir_core.riscv64_emitter",
+        "dgtl.ir_core.wasmsimd_fma_emitter"
+    };
+    for (const auto& root_key : bootstrap_roots) {
+        if (module_database.count(root_key)) {
+            resolve_topological_dfs(root_key, module_database, visited, active_stack, deployment_pipeline);
+        }
+    }
+
+    const auto hinted_roots = load_explicit_module_roots(module_database);
+    for (const auto& root_key : hinted_roots) {
+        resolve_topological_dfs(root_key, module_database, visited, active_stack, deployment_pipeline);
+    }
+
+    for (const auto& root_key : scan_roots) {
+        resolve_topological_dfs(root_key, module_database, visited, active_stack, deployment_pipeline);
+    }
+
+    // Rebuild full module closure if any module interface changed after previously built module objects.
+    // This avoids stale BMI CRC mismatches when an upstream module changes but dependents are unchanged.
+    bool force_rebuild_all = cold_module_cache;
+    auto newest_module_src = fs::file_time_type::min();
+    auto oldest_module_obj = fs::file_time_type::max();
+    bool has_any_module_obj = false;
+
+    for (const auto& module_unit : deployment_pipeline) {
+        const auto src_time = get_file_mtime(module_unit.path);
+        if (src_time > newest_module_src) {
+            newest_module_src = src_time;
+        }
+
+        const fs::path obj_path = module_object_path_for_source(module_unit.path, mod_obj_dir);
+        if (file_exists(obj_path)) {
+            has_any_module_obj = true;
+            const auto obj_time = get_file_mtime(obj_path);
+            if (obj_time < oldest_module_obj) {
+                oldest_module_obj = obj_time;
+            }
+        } else {
+            force_rebuild_all = true;
+        }
+    }
+
+    if (!force_rebuild_all && has_any_module_obj && newest_module_src > oldest_module_obj) {
+        force_rebuild_all = true;
+        std::cout << "[build] Module interface change detected; rebuilding full module closure" << std::endl;
+    }
+
+    // Process compiled units deterministically
+    for (const auto& module_unit : deployment_pipeline) {
+        const fs::path& src = module_unit.path;
+        bool force_rebuild = force_rebuild_all;
+        if (!module_unit.module_name.empty()) {
+            const fs::path module_cache = module_cache_path_for_name(
+                module_unit.is_partition
+                    ? (module_unit.module_name + ":" + module_unit.partition_name)
+                    : module_unit.module_name);
+            if (!file_exists(module_cache)) {
+                force_rebuild = true;
+            }
+        }
+
+        int ec = compile_module_source_if_needed(src, mod_obj_dir, force_rebuild);
+        if (ec != 0) return ec;
+    }
+    return 0;
+}
+
 // Binary building
 int build_binary(std::string_view binary_name, const fs::path& output, const fs::path& entry_point,
                  const std::vector<fs::path>& exclude_paths = {}, bool strict = false) {
     ensure_directory(output.parent_path());
-
-    std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -O2 -pipe -I" + quote_path(g_config.include_dir);
-
-    if (strict) {
-        cmd += " -Wall -Wextra -Wpedantic -Werror";
-    }
+    const fs::path obj_dir = g_config.build_dir / "obj" / std::string(binary_name);
+    ensure_directory(obj_dir);
 
     // Normalize excludes and always exclude the chosen entrypoint so it is not compiled twice.
     std::vector<fs::path> normalized_excludes;
@@ -271,6 +668,7 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
         normalized_excludes.push_back(fs::absolute(exc).lexically_normal());
     }
 
+    std::vector<fs::path> cpp_sources;
     std::error_code ec_dir;
     // Collect all source files from src/ except excluded ones.
     for (const auto& entry : fs::recursive_directory_iterator(g_config.src_dir, ec_dir)) {
@@ -286,14 +684,63 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
         }
         if (excluded) continue;
 
-        cmd += " " + quote_path(entry.path());
+        cpp_sources.push_back(entry.path());
     }
+    std::sort(cpp_sources.begin(), cpp_sources.end());
 
-    // Add entry point
-    cmd += " " + quote_path(entry_point) + " -o " + quote_path(output);
+    std::cout << "[build] Compiling " << binary_name << " objects in parallel..." << std::endl;
+    std::vector<fs::path> common_objs;
+    int compiled_count = 0;
+    int ec = parallel_compile_objects(cpp_sources, obj_dir, common_objs, &compiled_count, strict);
+    if (ec != 0) return ec;
 
-    std::cout << "[build] Compiling " << binary_name << std::endl;
-    int ec = run_command(cmd);
+    const fs::path entry_obj = make_obj_path(obj_dir, entry_point);
+    ec = compile_object_if_needed(entry_point, entry_obj, strict);
+    if (ec != 0) return ec;
+
+    std::string cmd = g_config.gpp_path;
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
+    if (strict) {
+        cmd += " -Wall -Wextra -Wpedantic -Werror";
+    }
+    for (const auto& obj : common_objs) {
+        cmd += " " + quote_path(obj);
+    }
+    std::error_code ec_mod;
+    for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            cmd += " " + quote_path(entry.path());
+        }
+    }
+    cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
+
+    std::string final_cmd = cmd;
+#ifdef _WIN32
+    // Windows command-line length can overflow for release links with many objects.
+    if (cmd.size() > 7000) {
+        const fs::path rsp_path = g_config.build_dir / "obj" / (std::string(binary_name) + "_link.rsp");
+        ensure_directory(rsp_path.parent_path());
+
+        const std::size_t prefix_len = g_config.gpp_path.size();
+        std::string rsp_args = (cmd.size() > prefix_len) ? cmd.substr(prefix_len) : std::string{};
+        if (!rsp_args.empty() && rsp_args.front() == ' ') {
+            rsp_args.erase(rsp_args.begin());
+        }
+
+        std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+        if (!rsp_out.is_open()) {
+            std::cerr << "[build] Failed to write response file: " << rsp_path.string() << std::endl;
+            return 1;
+        }
+        rsp_out << rsp_args;
+        rsp_out.close();
+
+        final_cmd = g_config.gpp_path + " @" + quote_path(rsp_path);
+    }
+#endif
+
+    std::cout << "[build] Linking " << binary_name << std::endl;
+    ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << output.string() << std::endl;
     }
@@ -302,8 +749,9 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
 
 int ensure_binary(std::string_view binary_name, const fs::path& output, const fs::path& entry_point,
                   const std::vector<fs::path>& exclude_paths = {}, bool strict = false) {
-    if (!file_exists(output)) {
-        return build_binary(binary_name, output, entry_point, exclude_paths, strict);
+    std::error_code ec_size;
+    if (!file_exists(output) || (fs::file_size(output, ec_size) == 0)) {
+        return build_binary("dgtl_release", output, entry_point, exclude_paths, strict);
     }
 
     auto exe_time = get_file_mtime(output);
@@ -348,16 +796,22 @@ void append_core_sources_for_test_build(std::string& cmd) {
 }
 
 int build_test_suite_binary(const fs::path& output,
-                           const fs::path& entry_point,
-                           const std::vector<fs::path>& test_sources) {
+                            const fs::path& entry_point,
+                            const std::vector<fs::path>& test_sources) {
     ensure_directory(output.parent_path());
 
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -O2 -pipe -I" + quote_path(g_config.include_dir);
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir);
     append_core_sources_for_test_build(cmd);
 
     for (const auto& src : test_sources) {
         cmd += " " + quote_path(src);
+    }
+    std::error_code ec_mod;
+    for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            cmd += " " + quote_path(entry.path());
+        }
     }
     cmd += " " + quote_path(entry_point) + " -o " + quote_path(output);
 
@@ -415,9 +869,15 @@ int build_standalone_test_binary(const fs::path& output, const fs::path& entry_p
     ensure_directory(output.parent_path());
 
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -O2 -pipe -I" + quote_path(g_config.include_dir);
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir);
     append_core_sources_for_test_build(cmd);
 
+    std::error_code ec_mod;
+    for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            cmd += " " + quote_path(entry.path());
+        }
+    }
     cmd += " " + quote_path(entry_point) + " -o " + quote_path(output);
 
     std::cout << "[build] Compiling " << output.filename().string() << std::endl;
@@ -462,19 +922,67 @@ int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool stri
     const auto include_time = latest_mtime({g_config.include_dir});
     const auto obj_time = get_file_mtime(obj);
 
-    const bool needs_compile = !file_exists(obj) || src_time > obj_time || include_time > obj_time;
+    std::error_code ec_size;
+    const bool needs_compile = !file_exists(obj) || (fs::file_size(obj, ec_size) == 0) || src_time > obj_time || include_time > obj_time;
     if (!needs_compile) {
         return 0;
     }
 
+    std::cout << "[build] Compiling: " << src.filename().string() << "..." << std::endl;
     ensure_directory(obj.parent_path());
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -O2 -pipe -I" + quote_path(g_config.include_dir);
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir);
     if (strict) {
         cmd += " -Wall -Wextra -Wpedantic -Werror";
     }
     cmd += " -c " + quote_path(src) + " -o " + quote_path(obj);
     return run_command(cmd, false); // Silence raw object commands for cleaner output
+}
+
+int parallel_compile_objects(const std::vector<fs::path>& sources,
+                             const fs::path& obj_dir,
+                             std::vector<fs::path>& out_objs,
+                             int* out_compiled_count = nullptr,
+                             bool strict = false) {
+    out_objs.resize(sources.size());
+    const unsigned int num_threads = std::max(1u, std::thread::hardware_concurrency());
+    std::atomic<bool> compile_failed{false};
+    std::atomic<int> compiled_count{0};
+    std::atomic<std::size_t> current_work_idx{0};
+
+    auto worker = [&]() {
+        while (!compile_failed.load(std::memory_order_relaxed)) {
+            std::size_t idx = current_work_idx.fetch_add(1, std::memory_order_relaxed);
+            if (idx >= sources.size()) break;
+
+            const auto& src = sources[idx];
+            const fs::path obj = make_obj_path(obj_dir, src);
+            const auto before = get_file_mtime(obj);
+            int ec = compile_object_if_needed(src, obj, strict);
+            if (ec != 0) {
+                compile_failed.store(true, std::memory_order_relaxed);
+                return;
+            }
+            if (get_file_mtime(obj) > before) {
+                compiled_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            out_objs[idx] = obj;
+        }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (unsigned int i = 0; i < num_threads; ++i) {
+        threads.emplace_back(worker);
+    }
+    for (auto& t : threads) {
+        if (t.joinable()) t.join();
+    }
+    if (compile_failed.load()) return 1;
+    if (out_compiled_count) {
+        *out_compiled_count = compiled_count.load();
+    }
+    return 0;
 }
 
 int build_tools_optimized(const fs::path& prod_main,
@@ -518,19 +1026,10 @@ int build_tools_optimized(const fs::path& prod_main,
     std::sort(common_sources.begin(), common_sources.end());
 
     std::vector<fs::path> common_objs;
-    common_objs.reserve(common_sources.size());
     int compiled_count = 0;
-    for (const auto& src : common_sources) {
-        const fs::path obj = make_obj_path(obj_dir, src);
-        const auto before = get_file_mtime(obj);
-        int ec = compile_object_if_needed(src, obj, false);
-        if (ec != 0) {
-            return ec;
-        }
-        if (get_file_mtime(obj) > before) {
-            ++compiled_count;
-        }
-        common_objs.push_back(obj);
+    int ec = parallel_compile_objects(common_sources, obj_dir, common_objs, &compiled_count, false);
+    if (ec != 0) {
+        return ec;
     }
     std::cout << "[build-tools] Shared objects: " << compiled_count
               << " compiled, " << (common_objs.size() - compiled_count)
@@ -543,7 +1042,8 @@ int build_tools_optimized(const fs::path& prod_main,
             return ec;
         }
 
-        bool needs_link = !file_exists(output);
+        std::error_code ec_size;
+        bool needs_link = !file_exists(output) || (fs::file_size(output, ec_size) == 0);
         const auto output_time = get_file_mtime(output);
         if (!needs_link) {
             if (get_file_mtime(entry_obj) > output_time) {
@@ -564,21 +1064,52 @@ int build_tools_optimized(const fs::path& prod_main,
         }
 
         std::string cmd = g_config.gpp_path;
-        cmd += " -std=c++26 -O2 -pipe";
+        cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
         for (const auto& obj : common_objs) {
             cmd += " " + quote_path(obj);
         }
+        std::error_code ec_mod;
+        for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".o") {
+                cmd += " " + quote_path(entry.path());
+            }
+        }
         cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
 
+        std::string final_cmd = cmd;
+#ifdef _WIN32
+        // Tool links can exceed Windows command-line length when many objects are present.
+        if (cmd.size() > 7000) {
+            const fs::path rsp_path = g_config.build_dir / "obj" / "build-tools" / (std::string(name) + "_link.rsp");
+            ensure_directory(rsp_path.parent_path());
+
+            const std::size_t prefix_len = g_config.gpp_path.size();
+            std::string rsp_args = (cmd.size() > prefix_len) ? cmd.substr(prefix_len) : std::string{};
+            if (!rsp_args.empty() && rsp_args.front() == ' ') {
+                rsp_args.erase(rsp_args.begin());
+            }
+
+            std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+            if (!rsp_out.is_open()) {
+                std::cerr << "[build] Failed to write response file: " << rsp_path.string() << std::endl;
+                return 1;
+            }
+            rsp_out << rsp_args;
+            rsp_out.close();
+
+            final_cmd = g_config.gpp_path + " @" + quote_path(rsp_path);
+        }
+#endif
+
         std::cout << "[build] Linking " << name << std::endl;
-        ec = run_command(cmd);
+        ec = run_command(final_cmd);
         if (ec == 0) {
             std::cout << "[build] Wrote " << output.string() << std::endl;
         }
         return ec;
     };
 
-    int ec = 0;
+    ec = 0;
     ec |= link_tool("dgtl-opt", opt_main, opt_exe);
     if (ec != 0) return ec;
     ec |= link_tool("dgtl-llc", llc_main, llc_exe);
@@ -591,8 +1122,16 @@ int build_sdk_static_library() {
     const fs::path sdk_obj_dir = g_config.build_dir / "sdk_obj";
     const fs::path sdk_lib_dir = g_config.build_dir / "DGTL_SDK" / "lib" / "x64";
     const fs::path sdk_lib = sdk_lib_dir / "dgtl.lib";
+    const fs::path mod_obj_dir = g_config.build_dir / "obj" / "modules";
 
     if (sync_sdk_public_headers() != 0) {
+        return 1;
+    }
+
+    // SDK consumers can import DGTL modules indirectly through public/internal API
+    // facades. Ensure module object units are built and archived so module
+    // initializer symbols resolve without client-side linker hacks.
+    if (compile_all_modules() != 0) {
         return 1;
     }
 
@@ -629,15 +1168,20 @@ int build_sdk_static_library() {
     std::sort(sdk_sources.begin(), sdk_sources.end());
 
     std::vector<fs::path> sdk_objs;
-    sdk_objs.reserve(sdk_sources.size());
-    for (const auto& src : sdk_sources) {
-        const fs::path obj = make_obj_path(sdk_obj_dir, src);
-        int ec = compile_object_if_needed(src, obj, false);
-        if (ec != 0) {
-            return ec;
-        }
-        sdk_objs.push_back(obj);
+    int ec_parallel_sdk = parallel_compile_objects(sdk_sources, sdk_obj_dir, sdk_objs, nullptr, false);
+    if (ec_parallel_sdk != 0) {
+        return ec_parallel_sdk;
     }
+
+    std::error_code ec_mod;
+    for (const auto& entry : fs::directory_iterator(mod_obj_dir, ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            sdk_objs.push_back(entry.path());
+        }
+    }
+
+    std::sort(sdk_objs.begin(), sdk_objs.end());
+    sdk_objs.erase(std::unique(sdk_objs.begin(), sdk_objs.end()), sdk_objs.end());
 
     bool needs_archive = !file_exists(sdk_lib);
     const auto lib_time = get_file_mtime(sdk_lib);
@@ -660,10 +1204,139 @@ int build_sdk_static_library() {
         cmd += " " + quote_path(obj);
     }
 
+    std::string final_cmd = cmd;
+#ifdef _WIN32
+    if (cmd.size() > 7000) {
+        const fs::path rsp_path = g_config.build_dir / "obj" / "sdk_archive.rsp";
+        ensure_directory(rsp_path.parent_path());
+
+        std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+        if (!rsp_out.is_open()) {
+            std::cerr << "[build] Failed to write SDK archive response file: " << rsp_path.string() << std::endl;
+            return 1;
+        }
+
+        for (const auto& obj : sdk_objs) {
+            rsp_out << quote_path(obj) << "\n";
+        }
+        rsp_out.close();
+
+        final_cmd = "ar rcs " + quote_path(sdk_lib) + " @" + quote_path(rsp_path);
+    }
+#endif
+
     std::cout << "[build] Archiving dgtl.lib" << std::endl;
-    int ec = run_command(cmd);
+    int ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << sdk_lib.string() << std::endl;
+    }
+    return ec;
+}
+
+int build_internal_static_library() {
+    const fs::path internal_obj_dir = g_config.build_dir / "internal_obj";
+    const fs::path internal_lib_dir = g_config.build_dir / "DGTL_INTERNAL" / "lib" / "x64";
+    const fs::path internal_lib = internal_lib_dir / "dgtl_internal.lib";
+    const fs::path mod_obj_dir = g_config.build_dir / "obj" / "modules";
+
+    if (compile_all_modules() != 0) {
+        return 1;
+    }
+
+    ensure_directory(internal_obj_dir);
+    ensure_directory(internal_lib_dir);
+
+    const fs::path prod_main = fs::absolute(g_config.src_dir / "main.cpp").lexically_normal();
+    const fs::path smoke_main = fs::absolute(g_config.src_dir / "apps" / "smoke_main.cpp").lexically_normal();
+    const fs::path opt_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal();
+    const fs::path llc_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal();
+    const fs::path verify_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal();
+
+    const std::vector<fs::path> excluded = {prod_main, smoke_main, opt_main, llc_main, verify_main};
+
+    std::vector<fs::path> internal_sources;
+    std::error_code ec_dir;
+    for (const auto& entry : fs::recursive_directory_iterator(g_config.src_dir, ec_dir)) {
+        if (!fs::is_regular_file(entry.status()) || entry.path().extension() != ".cpp") {
+            continue;
+        }
+
+        const fs::path abs = fs::absolute(entry.path()).lexically_normal();
+        bool skip = false;
+        for (const auto& ex : excluded) {
+            if (abs == ex) {
+                skip = true;
+                break;
+            }
+        }
+        if (!skip) {
+            internal_sources.push_back(entry.path());
+        }
+    }
+    std::sort(internal_sources.begin(), internal_sources.end());
+
+    std::vector<fs::path> internal_objs;
+    int ec_parallel_int = parallel_compile_objects(internal_sources, internal_obj_dir, internal_objs, nullptr, false);
+    if (ec_parallel_int != 0) {
+        return ec_parallel_int;
+    }
+
+    std::error_code ec_mod;
+    for (const auto& entry : fs::directory_iterator(mod_obj_dir, ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            internal_objs.push_back(entry.path());
+        }
+    }
+
+    std::sort(internal_objs.begin(), internal_objs.end());
+    internal_objs.erase(std::unique(internal_objs.begin(), internal_objs.end()), internal_objs.end());
+
+    bool needs_archive = !file_exists(internal_lib);
+    const auto lib_time = get_file_mtime(internal_lib);
+    if (!needs_archive) {
+        for (const auto& obj : internal_objs) {
+            if (get_file_mtime(obj) > lib_time) {
+                needs_archive = true;
+                break;
+            }
+        }
+    }
+
+    if (!needs_archive) {
+        std::cout << "[build] Reusing up-to-date " << internal_lib.string() << std::endl;
+        return 0;
+    }
+
+    std::string cmd = "ar rcs " + quote_path(internal_lib);
+    for (const auto& obj : internal_objs) {
+        cmd += " " + quote_path(obj);
+    }
+
+    std::string final_cmd = cmd;
+#ifdef _WIN32
+    if (cmd.size() > 7000) {
+        const fs::path rsp_path = g_config.build_dir / "obj" / "internal_archive.rsp";
+        ensure_directory(rsp_path.parent_path());
+
+        std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+        if (!rsp_out.is_open()) {
+            std::cerr << "[build] Failed to write internal archive response file: " << rsp_path.string() << std::endl;
+            return 1;
+        }
+
+        for (const auto& obj : internal_objs) {
+            rsp_out << quote_path(obj) << "\n";
+        }
+        rsp_out.close();
+
+        final_cmd = "ar rcs " + quote_path(internal_lib) + " @" + quote_path(rsp_path);
+    }
+#endif
+
+    std::cout << "[build] Archiving dgtl_internal.lib" << std::endl;
+    int ec = run_command(final_cmd);
+    if (ec == 0) {
+        std::cout << "[build] Wrote " << internal_lib.string() << std::endl;
     }
     return ec;
 }
@@ -672,8 +1345,8 @@ int build_sdk_static_library() {
 void show_usage() {
     std::cout << R"(
 ================================================================================
-                         DGTL C++ Build Orchestrator
-                        Modern Cross-Platform Compilation
+                        DGTL C++ Build Orchestrator
+                         Modern Cross-Platform Compilation
 ================================================================================
 
 USAGE:
@@ -693,7 +1366,12 @@ BUILD COMMANDS:
   build-smoke             Build smoke/conformance test binary
   build-strict            Build with strict validation (Wall, Wextra, Werror)
   build-tools             Compile optimizer tools (dgtl-opt, dgtl-llc, dgtl-verify)
+                          Optional: --api internal|public|both (default: both)
   build-verify            Compile verification tool (dgtl-verify)
+  prepare-api             Prepare DGTL API surfaces explicitly
+                          Usage: dgtl prepare-api --api internal|public|both
+    api-status              Report DGTL API lane readiness
+                                                    Usage: dgtl api-status --api internal|public|both
   clean, clean-all        Remove all build outputs and logs
   crun                    Full cycle: clean -> build -> run conformance tests
 
@@ -707,18 +1385,20 @@ EXECUTION COMMANDS:
                                    coffobj, cofflib
   bench-backend <name>    Benchmark backend performance
                           Usage: dgtl bench-backend x64 [profile] [pressure]
-    brun                  Build and run performance benchmark suite
-                                                    Retained sources: benchmark_full_production_stress.cpp and benchmark_hardest_e2e_gate.cpp
-    test                  Execute the primary relevant test suite
+   brun                   Build and run performance benchmark suite
+                                                     Retained sources: benchmark_full_production_stress.cpp and benchmark_hardest_e2e_gate.cpp
+   test                   Execute the primary relevant test suite
   srun                    Strict conformance test (build + run)
 
 ================================================================================
 CODE GENERATION & VALIDATION:
 ================================================================================
-  gen                     Regenerate DGTL-Gen output from IR definitions
+  gen                     Regenerate IR and ISel generated output from definitions
   gen-validate            Validate DGTL-Gen output integrity
   gen-build               Full cycle: gen -> validate -> build
   header-check            Verify proprietary header compliance gates
+  cppcheck                Run production C++20 static analysis across include/ and src/
+  debug                   Run DGTL forensic debugger for module cycles, build logs, and symbol collisions
   update-golden [strict]  Update baseline expectations for golden outputs
 
 ================================================================================
@@ -728,6 +1408,9 @@ BACKEND & DISTRIBUTION:
                           Output directory: build/out/
   package                 Create SDK distribution package (DGTL_v*.zip)
                           Includes: headers, static library, binaries
+                                                    Public SDK headers: dgtl.h, dgtl_core.h, dgtl_c_api.h,
+                                                                                         dgtl_simd.h, dgtl_capabilities.h,
+                                                                                         dgtl_session.h
 
 ================================================================================
 COMMAND ALIASES (Backward Compatibility):
@@ -774,8 +1457,8 @@ ENVIRONMENT & CONFIGURATION:
   Source Directory:       ./src/
   Include Directory:      ./include/
   Tools Directory:        ./tools/cpp/
-  Compiler:              GCC g++ (auto-detected from toolchain)
-                         Fallback: C:\msys64\ucrt64\bin\g++.exe (MSYS2 UCRT64)
+  Compiler:               GCC g++ (auto-detected from toolchain)
+                          Fallback: C:\msys64\ucrt64\bin\g++.exe (MSYS2 UCRT64)
 
 Configuration Search Order:
   1. .vscode/c_cpp_properties.json (workspace config)
@@ -829,7 +1512,18 @@ Report issues at: https://github.com/TataG/DGTL
 )" << std::endl;
 }
 
-int handle_build() {
+int handle_build(std::vector<std::string> args = {}) {
+    std::string mode_error;
+    const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
+    if (!parsed_mode.has_value()) {
+        std::cerr << "[build] " << mode_error << std::endl;
+        return 1;
+    }
+    if (!args.empty()) {
+        std::cerr << "[build] Unknown argument: " << args.front() << std::endl;
+        return 1;
+    }
+
     if (invoke_api_policy() != 0) return 1;
     if (invoke_duplication_gate() != 0) return 1;
     
@@ -844,10 +1538,39 @@ int handle_build() {
     
     int ec = ensure_binary("dgtl_release", prod_exe, prod_main, exclude);
     if (ec != 0) return ec;
-    return build_sdk_static_library();
+
+    if (*parsed_mode == ApiMode::internal) {
+        ec = build_internal_static_library();
+        if (ec != 0) return ec;
+        return verify_internal_api_artifacts();
+    }
+    if (*parsed_mode == ApiMode::public_sdk) {
+        ec = build_sdk_static_library();
+        if (ec != 0) return ec;
+        return verify_public_api_artifacts();
+    }
+
+    ec = build_internal_static_library();
+    if (ec != 0) return ec;
+    ec = build_sdk_static_library();
+    if (ec != 0) return ec;
+    ec = verify_internal_api_artifacts();
+    if (ec != 0) return ec;
+    return verify_public_api_artifacts();
 }
 
-int handle_build_tools() {
+int handle_build_tools(std::vector<std::string> args = {}) {
+    std::string mode_error;
+    const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
+    if (!parsed_mode.has_value()) {
+        std::cerr << "[build-tools] " << mode_error << std::endl;
+        return 1;
+    }
+    if (!args.empty()) {
+        std::cerr << "[build-tools] Unknown argument: " << args.front() << std::endl;
+        return 1;
+    }
+
     auto smoke_main = g_config.src_dir / "apps" / "smoke_main.cpp";
     auto prod_main = g_config.src_dir / "main.cpp";
     auto opt_main = g_config.src_dir / "apps" / "dgtl_opt_main.cpp";
@@ -861,7 +1584,25 @@ int handle_build_tools() {
     int ec = build_tools_optimized(prod_main, smoke_main, opt_main, llc_main, verify_main,
                                    opt_exe, llc_exe, verify_exe);
     if (ec != 0) return ec;
-    return build_sdk_static_library();
+
+    if (*parsed_mode == ApiMode::internal) {
+        ec = build_internal_static_library();
+        if (ec != 0) return ec;
+        return verify_internal_api_artifacts();
+    }
+    if (*parsed_mode == ApiMode::public_sdk) {
+        ec = build_sdk_static_library();
+        if (ec != 0) return ec;
+        return verify_public_api_artifacts();
+    }
+
+    ec = build_internal_static_library();
+    if (ec != 0) return ec;
+    ec = build_sdk_static_library();
+    if (ec != 0) return ec;
+    ec = verify_internal_api_artifacts();
+    if (ec != 0) return ec;
+    return verify_public_api_artifacts();
 }
 
 int handle_smoke_build() {
@@ -1011,7 +1752,12 @@ int handle_test() {
 }
 
 int handle_gen(const std::vector<std::string>& args = {}) {
-    return invoke_dgtl_gen(args);
+    if (!args.empty()) {
+        return invoke_dgtl_gen(args);
+    }
+
+    if (invoke_dgtl_gen() != 0) return 1;
+    return invoke_dgtl_isel_gen();
 }
 
 int handle_gen_validate(const std::vector<std::string>& args = {}) {
@@ -1020,6 +1766,7 @@ int handle_gen_validate(const std::vector<std::string>& args = {}) {
 
 int handle_gen_build() {
     if (invoke_dgtl_gen() != 0) return 1;
+    if (invoke_dgtl_isel_gen() != 0) return 1;
     if (invoke_dgtl_gen_validate() != 0) return 1;
     if (invoke_api_policy() != 0) return 1;
     if (invoke_duplication_gate() != 0) return 1;
@@ -1030,21 +1777,44 @@ int handle_header_check() {
     return invoke_header_compliance();
 }
 
+int handle_cppcheck(const std::vector<std::string>& args = {}) {
+    std::cout << "[cppcheck] Running production static analysis across include/ and src/..." << std::endl;
+    ensure_directory(g_config.build_dir);
+    const fs::path include_path = g_config.include_dir;
+    const fs::path src_path = g_config.src_dir;
+    const fs::path suppressions_file = g_config.root / "cppcheck_suppressions.txt";
+    const fs::path output_file = g_config.build_dir / "cppcheckoutput.txt";
+
+    std::string cmd = "cppcheck " + quote_path(include_path) + " " + quote_path(src_path) +
+                      " --enable=warning,style,performance,portability --std=c++20 --force --platform=win64 -Dexport=\"\" -Dimport=\"\"" +
+                      " --output-file=" + quote_path(output_file);
+
+    if (file_exists(suppressions_file)) {
+        cmd += " --suppressions-list=" + quote_path(suppressions_file);
+    } else {
+        cmd += " --suppress=missingIncludeSystem";
+    }
+
+    for (const auto& arg : args) {
+        cmd += " " + arg;
+    }
+
+    int ec = run_command(cmd);
+    std::cout << "[cppcheck] Analysis log saved to: " << output_file.string() << std::endl;
+    return ec;
+}
+
 int handle_clean() {
     std::cout << "[clean] Removing build artifacts" << std::endl;
-    std::vector<fs::path> cleanup_paths = {
-        g_config.build_dir / "dgtl_release.exe",
-        g_config.build_dir / "dgtl_main.exe",
-        g_config.build_dir / "dgtl_main_strict.exe",
-        g_config.build_dir / "dgtl_tests.exe",
-        g_config.build_dir / "dgtl_tests_full.exe",
-    };
     std::error_code ec;
-    for (const auto& p : cleanup_paths) {
-        if (fs::exists(p, ec)) {
-            fs::remove(p, ec);
-            std::cout << "[clean] Removed " << p.string() << std::endl;
-        }
+    if (fs::exists(g_config.build_dir, ec)) {
+        fs::remove_all(g_config.build_dir, ec);
+        std::cout << "[clean] Removed build directory: " << g_config.build_dir.string() << std::endl;
+    }
+    fs::path gcm_cache = g_config.root / "gcm.cache";
+    if (fs::exists(gcm_cache, ec)) {
+        fs::remove_all(gcm_cache, ec);
+        std::cout << "[clean] Removed gcm.cache directory" << std::endl;
     }
     return 0;
 }
@@ -1168,6 +1938,7 @@ int handle_package(bool verify_mode = false) {
         return 1;
     }
 
+
     const std::vector<fs::path> bin_candidates = {
         g_config.build_dir / "dgtl_release.exe",
         g_config.build_dir / "dgtl-opt.exe",
@@ -1261,8 +2032,17 @@ int main(int argc, char** argv) {
 
     // Command routing
     if (command == "help") return handle_help();
-    if (command == "build" || command == "build-release") return handle_build();
-    if (command == "build-tools") return handle_build_tools();
+
+    // Auto-compile C++20 modules for build and test commands
+    if (command == "build" || command == "build-release" || command == "build-tools" ||
+        command == "smoke-build" || command == "build-smoke" || command == "strict" ||
+        command == "build-strict" || command == "test" || command == "gen-build") {
+        int ec_mod = compile_all_modules();
+        if (ec_mod != 0) return ec_mod;
+    }
+
+    if (command == "build" || command == "build-release") return handle_build(args);
+    if (command == "build-tools") return handle_build_tools(args);
     if (command == "smoke-build" || command == "build-smoke") return handle_smoke_build();
     if (command == "strict" || command == "build-strict") return handle_strict();
     if (command == "test") {
@@ -1275,8 +2055,36 @@ int main(int argc, char** argv) {
     if (command == "gen") return handle_gen(args);
     if (command == "gen-validate") return handle_gen_validate(args);
     if (command == "gen-build") return handle_gen_build();
+    if (command == "debug") return invoke_dgtl_debugger(args);
     if (command == "header-check") return handle_header_check();
+    if (command == "cppcheck" || command == "static-analysis") return handle_cppcheck(args);
     if (command == "clean" || command == "clean-all") return handle_clean();
+    if (command == "prepare-api") {
+        std::string mode_error;
+        const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
+        if (!parsed_mode.has_value()) {
+            std::cerr << "[prepare-api] " << mode_error << std::endl;
+            return 1;
+        }
+        if (!args.empty()) {
+            std::cerr << "[prepare-api] Unknown argument: " << args.front() << std::endl;
+            return 1;
+        }
+        return handle_prepare_api(*parsed_mode);
+    }
+    if (command == "api-status") {
+        std::string mode_error;
+        const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
+        if (!parsed_mode.has_value()) {
+            std::cerr << "[api-status] " << mode_error << std::endl;
+            return 1;
+        }
+        if (!args.empty()) {
+            std::cerr << "[api-status] Unknown argument: " << args.front() << std::endl;
+            return 1;
+        }
+        return handle_api_status(*parsed_mode);
+    }
     if (command == "run" || command == "run-all") {
         std::cout << "[run] Full conformance not implemented in orchestrator yet" << std::endl;
         return 0;
@@ -1310,4 +2118,159 @@ int main(int argc, char** argv) {
     std::cerr << "Unknown command: " << command << std::endl;
     handle_help();
     return 1;
+}
+
+std::optional<ApiMode> parse_api_mode(std::vector<std::string>& args,
+                                      ApiMode default_mode,
+                                      std::string* error_out) {
+    ApiMode mode = default_mode;
+    std::vector<std::string> passthrough;
+    passthrough.reserve(args.size());
+
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string& arg = args[i];
+        if (arg == "--api" || arg == "--api-mode") {
+            if (i + 1 >= args.size()) {
+                if (error_out != nullptr) {
+                    *error_out = "missing value for --api/--api-mode (expected internal|public|both)";
+                }
+                return std::nullopt;
+            }
+            const std::string& value = args[++i];
+            if (value == "internal") {
+                mode = ApiMode::internal;
+            } else if (value == "public") {
+                mode = ApiMode::public_sdk;
+            } else if (value == "both") {
+                mode = ApiMode::both;
+            } else {
+                if (error_out != nullptr) {
+                    *error_out = "invalid --api value '" + value + "' (expected internal|public|both)";
+                }
+                return std::nullopt;
+            }
+            continue;
+        }
+        passthrough.push_back(arg);
+    }
+
+    args = std::move(passthrough);
+    return mode;
+}
+
+int verify_internal_api_artifacts() {
+    const fs::path internal_anchor = g_config.include_dir / "dgtl" / "api" / "Api_all.ixx";
+    const fs::path internal_lib = g_config.build_dir / "DGTL_INTERNAL" / "lib" / "x64" / "dgtl_internal.lib";
+    if (!file_exists(internal_anchor)) {
+        std::cerr << "[api] Internal API not ready: missing internal API anchor "
+                  << internal_anchor.string() << std::endl;
+        return 1;
+    }
+
+    const fs::path gcm_cache = g_config.root / "gcm.cache";
+    if (!file_exists(gcm_cache)) {
+        std::cerr << "[api] Internal API not ready: missing module cache directory "
+                  << gcm_cache.string() << std::endl;
+        return 1;
+    }
+
+    std::error_code ec;
+    bool has_module = false;
+    for (const auto& entry : fs::recursive_directory_iterator(gcm_cache, ec)) {
+        if (entry.is_regular_file(ec) && entry.path().extension() == ".gcm") {
+            has_module = true;
+            break;
+        }
+    }
+
+    if (!has_module) {
+        std::cerr << "[api] Internal API not ready: no compiled module artifacts found under "
+                  << gcm_cache.string() << std::endl;
+        return 1;
+    }
+
+    if (!file_exists(internal_lib)) {
+        std::cerr << "[api] Internal API not ready: missing internal linkage library "
+                  << internal_lib.string() << std::endl;
+        return 1;
+    }
+
+    std::cout << "[api] Internal API ready (module cache + internal library present)" << std::endl;
+    return 0;
+}
+
+int verify_public_api_artifacts() {
+    const fs::path sdk_include = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl.h";
+    const fs::path sdk_c_api = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_c_api.h";
+    const fs::path sdk_core = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_core.h";
+    const fs::path sdk_simd = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_simd.h";
+    const fs::path sdk_capabilities = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_capabilities.h";
+    const fs::path sdk_session = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_session.h";
+    const fs::path sdk_lib = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl.lib";
+
+    if (!file_exists(sdk_include)) {
+        std::cerr << "[api] Public SDK not ready: missing namespaced header " << sdk_include.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_c_api)) {
+        std::cerr << "[api] Public SDK not ready: missing C ABI header " << sdk_c_api.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_core)) {
+        std::cerr << "[api] Public SDK not ready: missing core definitions header " << sdk_core.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_simd)) {
+        std::cerr << "[api] Public SDK not ready: missing SIMD header " << sdk_simd.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_capabilities)) {
+        std::cerr << "[api] Public SDK not ready: missing capability header " << sdk_capabilities.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_session)) {
+        std::cerr << "[api] Public SDK not ready: missing session header " << sdk_session.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_lib)) {
+        std::cerr << "[api] Public SDK not ready: missing library " << sdk_lib.string() << std::endl;
+        return 1;
+    }
+
+    std::cout << "[api] Public SDK ready (headers + static library present)" << std::endl;
+    return 0;
+}
+
+int handle_api_status(ApiMode mode) {
+    bool overall_ok = true;
+
+    if (mode == ApiMode::internal || mode == ApiMode::both) {
+        const int ec = verify_internal_api_artifacts();
+        overall_ok = overall_ok && (ec == 0);
+    }
+
+    if (mode == ApiMode::public_sdk || mode == ApiMode::both) {
+        const int ec = verify_public_api_artifacts();
+        overall_ok = overall_ok && (ec == 0);
+    }
+
+    return overall_ok ? 0 : 1;
+}
+
+int handle_prepare_api(ApiMode mode) {
+    if (mode == ApiMode::internal || mode == ApiMode::both) {
+        int ec = build_internal_static_library();
+        if (ec != 0) return ec;
+        ec = verify_internal_api_artifacts();
+        if (ec != 0) return ec;
+    }
+
+    if (mode == ApiMode::public_sdk || mode == ApiMode::both) {
+        int ec = build_sdk_static_library();
+        if (ec != 0) return ec;
+        ec = verify_public_api_artifacts();
+        if (ec != 0) return ec;
+    }
+
+    return 0;
 }

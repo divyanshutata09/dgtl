@@ -10,8 +10,8 @@
 DGTL v1.0.0 claims:
 - ✅ **20+ Compilation Passes** - VERIFIED (20 confirmed + 3 bridges)
 - ✅ **9 ISA Backends** - VERIFIED (x64/ARM64/ARM32/RISC-V/WASM/CUDA/ROCm/NASM/FPGA)
-- ✅ **3 Execution Modes** - VERIFIED (JIT <1ms, AOT intensive, Hybrid adaptive)
-- ✅ **Production-Grade JIT** - VERIFIED (W^X memory, I-cache sync, hardware counters)
+- ✅ **3 Execution Modes** - VERIFIED ( <1ms,  intensive,  adaptive)
+- ✅ **Production-Grade ** - VERIFIED (W^X memory, I-cache sync, hardware counters)
 - ⚠️ **LLVM-Quality Feature Parity** - PARTIAL (85% complete, gaps identified)
 
 ---
@@ -47,7 +47,7 @@ DGTL v1.0.0 claims:
 
 #### IR Bridges (3)
 18. **IR_Analysis_Bridge** - Ownership + concurrency safety verification
-19. **IR_Execution_Bridge** - Tier selection (JIT/AOT/Hybrid) based on complexity
+19. **IR_Execution_Bridge** - Tier selection (//) based on complexity
 20. **IR_Codegen_Bridge** - 9-target backend preparation + validation
 
 #### Plus Infrastructure (3)
@@ -86,11 +86,11 @@ DGTL v1.0.0 claims:
 
 | Mode | Compile Time | Optimizations | Determinism | Use Case | Status |
 |---|---|---|---|---|---|
-| **JIT_FAST** | <1ms | Minimal (hot-path only) | Non-deterministic | HFT, on-the-fly | ✅ <100ms target met |
-| **AOT_INTENSIVE** | 100-500ms | Full (all 23 passes) | Deterministic | Cloud, HPC | ✅ Complete |
-| **HYBRID_ADAPTIVE** | Variable | Per-tier | Hybrid | General-purpose | ✅ Tier selection working |
+| **_FAST** | <1ms | Minimal (hot-path only) | Non-deterministic | HFT, on-the-fly | ✅ <100ms target met |
+| **_INTENSIVE** | 100-500ms | Full (all 23 passes) | Deterministic | Cloud, HPC | ✅ Complete |
+| **_ADAPTIVE** | Variable | Per-tier |  | General-purpose | ✅ Tier selection working |
 
-**JIT Capabilities (LLVM-Grade):**
+** Capabilities (LLVM-Grade):**
 - ✅ W^X memory protection (WriteXor Executable)
 - ✅ I-cache synchronization (hardware-specific)
 - ✅ Hardware counter profiling (RDTSC x86, cntvct_el0 ARM)
@@ -98,7 +98,7 @@ DGTL v1.0.0 claims:
 - ✅ Speculative optimization + deoptimization
 - ✅ Closed-loop AI cost model feedback
 
-**Claim: "3 execution modes (AOT/JIT/Hybrid)"** → **VERIFIED as production-ready** ✅
+**Claim: "3 execution modes (//)"** → **VERIFIED as production-ready** ✅
 
 ---
 
@@ -173,7 +173,7 @@ DGTL v1.0.0 claims:
 | **Backend Targets** | 95/100 | 9 backends with strong SIMD support; FPGA/RISC-V need maturation |
 | **Runtime Safety** | 90/100 | Transactional IR, Sentinel validation, ownership checks; no exception handling |
 | **Performance Optimization** | 80/100 | Polyhedral, speculation, SIMD; missing loop fusion and escape analysis |
-| **JIT Capabilities** | 92/100 | W^X, I-cache, hardware profiling; deoptimization working |
+| ** Capabilities** | 92/100 | W^X, I-cache, hardware profiling; deoptimization working |
 | **Documentation** | 85/100 | Comprehensive; could add more optimization theory |
 | **Testing Coverage** | 75/100 | Functional tests pass; need stress tests, fuzzing, fuzz corpus |
 | **Deployment Readiness** | 80/100 | Binary artifacts work; missing LTO, PGO, instrumentation |
@@ -218,8 +218,8 @@ DGTL v1.0.0 claims:
 |---|---|---|
 | "20+ compilation passes" | ✅ VERIFIED | 23 distinct passes identified and audited |
 | "9 ISA backends" | ✅ VERIFIED | All 9 emitters implemented with backend-specific features |
-| "AOT/JIT/Hybrid execution" | ✅ VERIFIED | Three pipeline modes with tier selection |
-| "Production-grade JIT" | ✅ VERIFIED | W^X, I-cache, hardware profiling confirmed |
+| "// execution" | ✅ VERIFIED | Three pipeline modes with tier selection |
+| "Production-grade " | ✅ VERIFIED | W^X, I-cache, hardware profiling confirmed |
 | "Transactional IR semantics" | ✅ VERIFIED | Shadow buffers, Sentinel validation, intent hashing |
 | "LLVM-quality code generation" | ⚠️ PARTIAL (82%) | 23 passes vs LLVM's 100+; core features present, some optimization gaps |
 | "Zero stubs, full implementations" | ✅ VERIFIED | All 80+ files have complete implementations |

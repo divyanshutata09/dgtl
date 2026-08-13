@@ -1,30 +1,42 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
- * Repository: github.com/TataG-Systems/DGTL
+ * Project:      DGTL (Deep General-purpose Transformation Layer)
+ * Owner:        Divyanshu Tata
+ * Repository:   github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/graph/IR_GraphEdgeClusterRegion.hpp"
+module;
 
 #include <algorithm>
-#include <unordered_map>
-#include <unordered_set>
-#include "dgtl/analysis/Polyhedral_Scop_Unified.hpp"
+#include <vector>
+#include <memory>
+#include <limits>
+
+module dgtl.ir_core;
+
+import dgtl.ir_core.graph_region;
+// 🚀 FIXED: grab dgtl.ir_core.stream explicitly
+import dgtl.ir_core.stream;
+import dgtl.target; 
+import dgtl.ir_node;
+import dgtl.flat_map; // 🚀 Natively import your high-performance flat maps
 
 namespace {
 
-inline bool is_valid_vreg(uint32_t id) {
+inline bool is_valid_vreg(uint32_t id) noexcept {
     return id != dgtl::ir::INVALID_SLOT && id != 0;
 }
 
-inline bool is_memory_heavy(const dgtl::ir::IRNode& node) {
+inline bool is_memory_heavy(const dgtl::ir::IRNode& node) noexcept {
     return node.opcode == dgtl::ir::OpCode::LOAD ||
+           node.opcode == dgtl::ir::OpCode::ATOMIC_LOAD ||
            node.opcode == dgtl::ir::OpCode::STORE ||
+           node.opcode == dgtl::ir::OpCode::ATOMIC_STORE ||
+           node.opcode == dgtl::ir::OpCode::ATOMIC_FENCE ||
            node.opcode == dgtl::ir::OpCode::GATHER_F32_512 ||
            node.opcode == dgtl::ir::OpCode::STORE_V512;
 }
@@ -33,7 +45,7 @@ inline bool is_memory_heavy(const dgtl::ir::IRNode& node) {
 
 namespace dgtl::graph {
 
-void ExecutionGraph::build_from_ir(dgtl::ir::IRStream& global_ir) {
+void ExecutionGraph::build_from_ir(::dgtl::ir::IRStream& global_ir) {
     regions.clear();
 
     constexpr size_t kRegionSoftLimit = 64;
@@ -65,14 +77,14 @@ void ExecutionGraph::build_from_ir(dgtl::ir::IRStream& global_ir) {
 
     flush_region();
 
-    // Build producer map: result_id -> owning region.
-    std::unordered_map<uint32_t, Region*> producer_region;
-    producer_region.reserve(global_ir.size());
+    // 🚀 MODERNIZE: Replaced std::unordered_map with HFT-grade FastFlatMap
+    dgtl::utils::FastFlatMap<uint32_t, Region*, 512> producer_region;
+    
     for (auto& region_ptr : regions) {
         Region* r = region_ptr.get();
         for (const auto& node : r->nodes) {
-            if (is_valid_vreg(node.result_id) && !producer_region.contains(node.result_id)) {
-                producer_region[node.result_id] = r;
+            if (is_valid_vreg(node.result_id) && !producer_region.find(node.result_id)) {
+                producer_region.insert_or_assign(node.result_id, r);
             }
         }
     }
@@ -86,9 +98,9 @@ void ExecutionGraph::build_from_ir(dgtl::ir::IRStream& global_ir) {
                 if (!is_valid_vreg(op)) {
                     continue;
                 }
-                auto it = producer_region.find(op);
-                if (it != producer_region.end() && it->second != consumer) {
-                    consumer->add_dependency(it->second);
+                auto** producer_ptr = producer_region.find(op);
+                if (producer_ptr && *producer_ptr != consumer) {
+                    consumer->add_dependency(*producer_ptr);
                 }
             }
         }
@@ -101,14 +113,11 @@ void ExecutionGraph::build_from_ir(dgtl::ir::IRStream& global_ir) {
     }
 
     // === P0-002: SCoP DETECTION AND REGION ANNOTATION ===
-    // Detect affine Static-Control Polyhedra for polyhedral parallelization.
     analysis::polyhedral::ScopDetector detector;
     for (auto& region_ptr : regions) {
         if (region_ptr) {
-            // Analyze region for affine SCoP classification
             auto scop_meta = detector.analyze_region(*region_ptr);
             
-            // Map ScopMetadata classification to Region ScopAnnotation
             if (scop_meta.classification == analysis::polyhedral::ScopClassification::AFFINE_CANDIATE) {
                 region_ptr->scop_annotation.affinity = ScopAffinity::AFFINE_CANDIDATE;
             } else {
@@ -166,16 +175,17 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
         return a->estimated_cycles > b->estimated_cycles;
     };
 
-    std::unordered_map<Region*, size_t> indegree;
-    indegree.reserve(regions.size());
+    // 🚀 MODERNIZE: Replaced std::unordered_map with FastFlatMap for indegree trackers
+    dgtl::utils::FastFlatMap<Region*, size_t, 128> indegree;
     for (const auto& r : regions) {
-        indegree[r.get()] = 0;
+        indegree.insert_or_assign(r.get(), 0);
     }
 
     for (const auto& r : regions) {
         for (Region* dep : r->dependencies) {
-            if (dep && indegree.contains(r.get())) {
-                indegree[r.get()] += 1;
+            if (dep && indegree.find(r.get())) {
+                auto* val = indegree.find(r.get());
+                (*val)++;
             }
         }
     }
@@ -183,7 +193,8 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
     std::vector<Region*> ready;
     ready.reserve(regions.size());
     for (const auto& r : regions) {
-        if (indegree[r.get()] == 0) {
+        auto* val = indegree.find(r.get());
+        if (val && *val == 0) {
             ready.push_back(r.get());
         }
     }
@@ -217,20 +228,20 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
         ordered.push_back(std::move(*pos));
         regions.erase(pos);
 
-        for (Region* dependent : chosen->dependents) {
-            if (!dependent || !indegree.contains(dependent)) {
-                continue;
-            }
-            if (indegree[dependent] > 0) {
-                indegree[dependent] -= 1;
-                if (indegree[dependent] == 0) {
+        for (size_t i = 0; i < chosen->dependents.count; ++i) {
+            Region* dependent = chosen->dependents.storage[i];
+            if (!dependent) continue;
+            
+            auto* deg = indegree.find(dependent);
+            if (deg && *deg > 0) {
+                (*deg)--;
+                if (*deg == 0) {
                     ready.push_back(dependent);
                 }
             }
         }
     }
 
-    // Cycle fallback: keep any remaining regions in prior relative order.
     for (auto& leftover : regions) {
         ordered.push_back(std::move(leftover));
     }
@@ -254,7 +265,6 @@ std::vector<std::vector<Region*>> ExecutionGraph::find_fusion_candidates() const
             continue;
         }
 
-        // Encourage short-range local fusions where there is direct flow.
         bool flow_connected = b->dependents.contains(a) || a->dependents.contains(b);
         flow_connected = flow_connected || std::find(b->dependencies.begin(), b->dependencies.end(), a) != b->dependencies.end();
 
@@ -273,11 +283,11 @@ bool ExecutionGraph::validate() const {
             return false;
         }
 
-        for (Region* dep : region->dependencies) {
-            if (!dep || dep == region) {
-                return false;
-            }
-        }
+        const bool valid_deps = std::all_of(region->dependencies.begin(), region->dependencies.end(),
+            [region](const Region* dep) noexcept {
+                return dep != nullptr && dep != region;
+            });
+        if (!valid_deps) return false;
     }
 
     return true;
@@ -290,10 +300,11 @@ void Region::add_node(const dgtl::ir::IRNode& node) {
 void Region::add_dependency(Region* dep) {
     if (!dep || dep == this) return;
 
-    // Check for existing dependency to prevent duplicates in the stream
-    for (Region* existing : dependencies) {
-        if (existing == dep) return;
-    }
+    const bool exists = std::any_of(dependencies.begin(), dependencies.end(),
+        [dep](const Region* existing) noexcept {
+            return existing == dep;
+        });
+    if (exists) return;
 
     dependencies.push_back(dep);
     dep->dependents.insert(this);
@@ -303,8 +314,6 @@ bool Region::can_fuse_with(const Region& other) const {
     if (this == &other) return false;
     if (nodes.empty() || other.nodes.empty()) return false;
 
-    // BIR 1.0.0 Optimization: Keep fusions bounded for L1-instruction cache locality.
-    // Over-fusing triggers spills in the register allocator.
     constexpr size_t kMaxFusedNodes = 128;
     if (nodes.size() + other.nodes.size() > kMaxFusedNodes) {
         return false;
@@ -313,15 +322,11 @@ bool Region::can_fuse_with(const Region& other) const {
     return true;
 }
 
-std::unordered_set<uint32_t> Region::get_live_ins() const {
-    std::unordered_set<uint32_t> produced;
-    std::unordered_set<uint32_t> live_ins;
-
-    produced.reserve(nodes.size());
-    live_ins.reserve(nodes.size());
+FlatVRegSet Region::get_live_ins() const {
+    FlatVRegSet produced{};
+    FlatVRegSet live_ins{};
 
     for (const auto& node : nodes) {
-        // If an operand is used before it is produced in this region, it's a live-in
         if (is_valid_vreg(node.op_a) && !produced.contains(node.op_a)) live_ins.insert(node.op_a);
         if (is_valid_vreg(node.op_b) && !produced.contains(node.op_b)) live_ins.insert(node.op_b);
         if (is_valid_vreg(node.op_c) && !produced.contains(node.op_c)) live_ins.insert(node.op_c);
@@ -334,38 +339,25 @@ std::unordered_set<uint32_t> Region::get_live_ins() const {
     return live_ins;
 }
 
-std::unordered_set<uint32_t> Region::get_live_outs() const {
-    std::unordered_set<uint32_t> produced;
-    std::unordered_set<uint32_t> used_internally;
-
-    produced.reserve(nodes.size());
-    used_internally.reserve(nodes.size());
+FlatVRegSet Region::get_live_outs() const {
+    FlatVRegSet produced{};
 
     for (const auto& node : nodes) {
         if (is_valid_vreg(node.result_id)) produced.insert(node.result_id);
-        if (is_valid_vreg(node.op_a)) used_internally.insert(node.op_a);
-        if (is_valid_vreg(node.op_b)) used_internally.insert(node.op_b);
-        if (is_valid_vreg(node.op_c)) used_internally.insert(node.op_c);
     }
 
-    // Simplified logic: for now, assume all produced values are potential live-outs
-    // unless they are strictly transient (to be refined by global DFA).
     return produced;
 }
 
 bool Region::validate() const {
-    for (const auto& node : nodes) {
-        if (node.opcode == dgtl::ir::OpCode::NOP) continue;
+    return std::all_of(nodes.begin(), nodes.end(), [](const auto& node) noexcept {
+        if (node.opcode == dgtl::ir::OpCode::NOP) return true;
 
-        // Ensure node is "useful": either has side effects, produces a value, or controls flow.
         const bool has_side_effects = node.has_side_effects();
         const bool produces_value = is_valid_vreg(node.result_id);
 
-        if (!has_side_effects && !produces_value && !node.is_terminator()) {
-            return false;
-        }
-    }
-    return true;
+        return has_side_effects || produces_value || node.is_terminator();
+    });
 }
 
 size_t Region::node_count() const noexcept {
@@ -374,37 +366,28 @@ size_t Region::node_count() const noexcept {
 
 double Region::simd_density() const noexcept {
     if (nodes.empty()) return 0.0;
-    size_t simd = 0;
-    for (const auto& node : nodes) {
-        // Checking for AVX-512 vector opcodes and SIMD burst flags
-        if ((node.flags & dgtl::ir::Flags::IS_SIMD_BURST) != 0 ||
-            static_cast<uint16_t>(node.opcode) >= static_cast<uint16_t>(dgtl::ir::OpCode::VEC_ADD_F32_512)) {
-            ++simd;
-        }
-    }
+    const size_t simd = std::count_if(nodes.begin(), nodes.end(), [](const auto& node) noexcept {
+        return (node.flags & dgtl::ir::Flags::IS_SIMD_BURST) != 0 ||
+               static_cast<uint16_t>(node.opcode) >= static_cast<uint16_t>(dgtl::ir::OpCode::VEC_ADD_F32_512);
+    });
     return static_cast<double>(simd) / static_cast<double>(nodes.size());
 }
 
 double Region::memory_density() const noexcept {
     if (nodes.empty()) return 0.0;
-    size_t mem = 0;
-    for (const auto& node : nodes) {
-        if (node.opcode == dgtl::ir::OpCode::LOAD || node.opcode == dgtl::ir::OpCode::STORE) {
-            ++mem;
-        }
-    }
+    const size_t mem = std::count_if(nodes.begin(), nodes.end(), [](const auto& node) noexcept {
+        return node.opcode == dgtl::ir::OpCode::LOAD || node.opcode == dgtl::ir::OpCode::ATOMIC_LOAD ||
+               node.opcode == dgtl::ir::OpCode::STORE || node.opcode == dgtl::ir::OpCode::ATOMIC_STORE ||
+               node.opcode == dgtl::ir::OpCode::ATOMIC_FENCE;
+    });
     return static_cast<double>(mem) / static_cast<double>(nodes.size());
 }
 
 double Region::control_density() const noexcept {
     if (nodes.empty()) return 0.0;
-    size_t ctrl = 0;
-    for (const auto& node : nodes) {
-        // is_terminator handles RET/BRANCH/GOTO
-        if (node.is_terminator() || node.opcode == dgtl::ir::OpCode::CALL) {
-            ++ctrl;
-        }
-    }
+    const size_t ctrl = std::count_if(nodes.begin(), nodes.end(), [](const auto& node) noexcept {
+        return node.is_terminator() || node.opcode == dgtl::ir::OpCode::CALL;
+    });
     return static_cast<double>(ctrl) / static_cast<double>(nodes.size());
 }
 
@@ -412,8 +395,7 @@ double Region::live_range_pressure() const {
     if (nodes.empty()) return 0.0;
     const auto ins = get_live_ins();
     const auto outs = get_live_outs();
-    return static_cast<double>(ins.size() + outs.size()) / static_cast<double>(nodes.size());
+    return static_cast<double>(ins.count + outs.count) / static_cast<double>(nodes.size());
 }
 
 } // namespace dgtl::graph
-

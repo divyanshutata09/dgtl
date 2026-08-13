@@ -39,15 +39,15 @@ Native object and library outputs are generated under `build/out/` and are gitig
 .\build\dgtl_release.exe --backend macho --emit-output build\out\kernel.macho
 ```
 
-## JIT Execution Proof
+##  Execution Proof
 
 ```powershell
 $env:DGTL_STRIKE_EXECUTE="1"
-.\build\dgtl_release.exe --backend x64 --jit-execute
+.\build\dgtl_release.exe --backend x64 ---execute
 $env:DGTL_STRIKE_EXECUTE=""
 ```
 
-Expected: `[DGTL-JIT] Strike OK status=0x0 executed_instructions=17 code_size=17`
+Expected: `[DGTL-] Strike OK status=0x0 executed_instructions=17 code_size=17`
 
 ## Regenerate
 

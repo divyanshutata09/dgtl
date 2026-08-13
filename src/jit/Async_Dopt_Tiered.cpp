@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -8,10 +8,12 @@
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
-
-#include "dgtl/jit/Async_Dopt_Tiered.hpp"
+module;
 
 #include <memory>
+#include <vector>
+
+module dgtl.ir_core.async_dopt_tiered;
 
 namespace dgtl::jit {
 
@@ -51,7 +53,7 @@ std::vector<SpeculativeVersion> AsyncSpeculator::generate_versions(ir::IRNode* n
     {
         ir::IRNode simd = *node;
         simd.flags |= ir::Flags::IS_SIMD_BURST;
-        simd.flags |= ir::HintFlags::RequiresVecPort;
+        simd.logic_flags |= ir::HintFlags::RequiresVecPort;
         simd.refresh_intent_hash();
         add_variant(simd, 0.68);
     }
@@ -59,8 +61,8 @@ std::vector<SpeculativeVersion> AsyncSpeculator::generate_versions(ir::IRNode* n
     // Branch-likely specialization where control behavior appears stable.
     {
         ir::IRNode branch_hint = *node;
-        branch_hint.flags |= ir::HintFlags::BranchLikely;
-        branch_hint.flags &= ~ir::HintFlags::BranchUnlikely;
+        branch_hint.logic_flags |= ir::HintFlags::BranchLikely;
+        branch_hint.logic_flags &= ~ir::HintFlags::BranchUnlikely;
         branch_hint.refresh_intent_hash();
         add_variant(branch_hint, 0.61);
     }
@@ -69,5 +71,3 @@ std::vector<SpeculativeVersion> AsyncSpeculator::generate_versions(ir::IRNode* n
 }
 
 } // namespace dgtl::jit
-
-

@@ -1,0 +1,20 @@
+{
+  "root": "D:\\TataG\\DGTL",
+  "module_count": 132,
+  "cycle_count": 0,
+  "declaration_cache": {"hits": 253, "misses": 0, "files_scanned": 0},
+  "logs_scanned": ["D:\\TataG\\DGTL\\build\\logs\\last-nondebug-session.log"],
+  "cycles": [
+  ],
+  "error_clusters": [
+  ],
+  "cache_hints": [],
+  "last_command": "dgtl BUILD-RELEASE",
+  "last_exit_code": "1",
+  "likely_failing_command": "g++ -std=c++26 -fmodules-ts -O0 -pipe -I\"D:\\TataG\\DGTL\\include\" -c \"D:\\TataG\\DGTL\\include\\dgtl\\dgtl_all.ixx\" -o \"D:\\TataG\\DGTL\\build\\obj\\modules\\dgtl_dgtl_all.o\"",
+  "compiler_fingerprint": "7bf8294048bf492b",
+  "command_fingerprint": "133f1c5b64917716",
+  "symbol_collisions": [{"symbol": "IRStream", "site_count": 511}, {"symbol": "find_generated_op_def", "site_count": 24}, {"symbol": "TargetMachine", "site_count": 24}, {"symbol": "RuntimeFeedback", "site_count": 2}],
+  "regression_notes": ["Previous run: identical fingerprint to previous snapshot."],
+  "ownership_recommendations": [{"symbol": "find_generated_op_def", "candidate_count": 24, "winner": "D:/TataG/DGTL/include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:6164"}, {"symbol": "IRStream", "candidate_count": 511, "winner": "D:/TataG/DGTL/include/dgtl/backend/driver/Backend_Driver_API.ixx:283"}, {"symbol": "TargetMachine", "candidate_count": 24, "winner": "D:/TataG/DGTL/include/dgtl/isa/lowering/Instruction_Selector.ixx:449"}, {"symbol": "RuntimeFeedback", "candidate_count": 2, "winner": "D:/TataG/DGTL/include/dgtl/analysis/AI_Cost_Model.ixx:45"}]
+}

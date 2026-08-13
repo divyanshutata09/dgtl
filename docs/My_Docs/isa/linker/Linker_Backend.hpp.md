@@ -22,7 +22,7 @@ Universal binary format emission engine. Produces native object files and static
 - Emit GNU `ar` static archives (`.a`) wrapping DGTL-generated ELF objects.
 - Emit COFF relocatable objects (`.obj`, `IMAGE_FILE_MACHINE_AMD64`) with file header, section header, symbol table, and string table — consumable by MSVC `link.exe` and MinGW `ld`.
 - Emit COFF archives (`.lib`) with first linker member (big-endian symbol index) — consumable by MSVC `link.exe`.
-- Keep binary format concerns isolated from ISA emission, pass management, and JIT execution.
+- Keep binary format concerns isolated from ISA emission, pass management, and  execution.
 
 ## Core Logic
 - Inputs are validated early and non-actionable states return fast.

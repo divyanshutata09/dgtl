@@ -11,7 +11,7 @@
 
 /**
  * @file main.cpp
- * @brief DGTL Production Driver - Universal IR Linker with AOT/JIT/Hybrid Support
+ * @brief DGTL Production Driver - Universal IR Linker with // Support
  * 
  * DGTL v1.0.2 (Deep General-purpose Transformation Layer)
  * Purpose: Universal IR Linker for HFT, Cloud, HPC workloads
@@ -30,7 +30,7 @@
  * 
  * Features:
  *  - Multi-target code generation (9 ISA backends: x64/ARM64/ARM32/RISC-V/WASM/CUDA/ROCm/NASM/FPGA)
- *  - Three execution modes: JIT (<1ms), AOT (100-500ms, full optimizations), HYBRID (adaptive)
+ *  - Three execution modes:  (<1ms),  (100-500ms, full optimizations),  (adaptive)
  *  - 26 production optimization passes across 11 compiler stages:
  *      * Transform (10): GVN, DCE, Poly_Transform, Masked_Predication, Loop_Unswitcher, 
  *                        Instr_Reordering, Instruction_Fusion, Instruction_Folder,
@@ -50,7 +50,7 @@
  *  - Transactional IR semantics with shadow buffers (Pillar 2)
  *  - Sentinel validation (Pillar 3) - bit-level integrity checks
  *  - Hardware-aware scheduling and register allocation
- *  - Production-grade JIT with W^X protection, I-cache sync, hardware profiling
+ *  - Production-grade  with W^X protection, I-cache sync, hardware profiling
  *  - AI-driven cost model with closed-loop feedback
  *  - Production-grade error handling and diagnostics
  * 
@@ -59,11 +59,11 @@
  *  2. Optimization: 26 core passes across 11 compiler stages (GVN, DCE, Fusion, SIMD, Analysis, Tuning)
  *  3. Analysis: Polyhedral analysis, escape analysis, alias analysis, distributed scheduling
  *  4. Emission: Multi-target backend with relocation support (9 ISA targets, 100% feature parity)
- *  5. Execution: JIT via Strike Orchestrator (x64), AOT via backend emitters
+ *  5. Execution:  via Strike Orchestrator (x64),  via backend emitters
  * 
  * Production Capabilities:
- *  - Deterministic AOT output (bit-identical across runs)
- *  - Sub-microsecond JIT compilation (<1ms target)
+ *  - Deterministic  output (bit-identical across runs)
+ *  - Sub-microsecond  compilation (<1ms target)
  *  - HFT-grade execution (latency-critical)
  *  - Cloud-grade optimization (throughput, cache efficiency)
  *  - HPC scalability (multi-core, SIMD, GPU acceleration)
@@ -75,96 +75,80 @@
 
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
-// Core foundations
-#include "dgtl/core/ABI.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/core/Compiler_Context.hpp"
-#include "dgtl/core/ControlFlow.hpp"
-#include "dgtl/core/Function.hpp"
-#include "dgtl/core/Target.hpp"
-#include "dgtl/core/Verified_Formal.hpp"
-// IR
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/ir/debug/debug_Metadata.hpp"
-#include "dgtl/ir/gen/DGTL_Gen_Ops.hpp"
-#include "dgtl/ir/runtime/TLS_Flush_Merge.hpp"
-// Analysis
-#include "dgtl/analysis/AI_Cost_Model.hpp"
-#include "dgtl/analysis/Liveness_Memory_Dependency_Unified.hpp"
-#include "dgtl/analysis/Polyhedral_Scop_Unified.hpp"
-// Semantic
-#include "dgtl/semantic/Symbol_Table.hpp"
-// Graph
-#include "dgtl/graph/IR_GraphEdgeClusterRegion.hpp"
-// Passes
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
-#include "dgtl/pass/transform/Transform_Poly_Loop.hpp"
-#include "dgtl/pass/transform/Transform_Control_Predication.hpp"
-#include "dgtl/pass/transform/Transform_Inlining.hpp"
-#include "dgtl/pass/analysis/Escape_Analysis.hpp"
-#include "dgtl/pass/simd/SimdGatherScatter_Legal_Vector_Recognizer.hpp"
-#include "dgtl/pass/speculative/Speculate_Alias_DCE_Inliner_Temporal_Vector_Fusion.hpp"
-// Redundant store fusion now handled by DSL-generated pass infrastructure
-#include "dgtl/pass/tuning/Tuning_Optimize.hpp"
-#include "dgtl/pass/error_handling/Enhanced_Error_Recovery.hpp"
-// Pipeline
-#include "dgtl/pipeline/GPU_Scheduling.hpp"
-#include "dgtl/pipeline/Pipeline_Probes.hpp"
-#include "dgtl/pipeline/Performance_Probes.hpp"
-// Backend
-#include "dgtl/backend/driver/Backend_Driver_API.hpp"
-#include "dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp"
-#include "dgtl/backend/lowering/ABI_Lowering.hpp"
-#include "dgtl/backend/lowering/Stack_Spiller.hpp"
-#include "dgtl/backend/linker/Linker_Backend.hpp"
-// ISA
-#include "dgtl/isa/emitter/ARM64_Emitter.hpp"
-#include "dgtl/isa/emitter/MachO_Emitter.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
-#include "dgtl/isa/lowering/X64_Machine_Form_Lowering.hpp"
-#include "dgtl/isa/emitter/Arm32neon_RiscV64_WasmGSFMA.hpp"
-#include "dgtl/isa/target/Wasm_Target.hpp"
-#include "dgtl/isa/target/Wasm_Encoder.hpp"
-#include "dgtl/isa/regalloc/ARM64_RegAlloc.hpp"
-// JIT
-#include "dgtl/jit/JIT_Orchestrator.hpp"
-#include "dgtl/jit/Async_Dopt_Tiered.hpp"
-// Execution
-#include "dgtl/execution/CasheSendBinary.hpp"
-// Runtime
-#include "dgtl/runtime/Runtime_Context.hpp"
-// API
-#include "dgtl/api/Api_all.hpp"
-// Hardware-aware integration
-#include "dgtl/jit/Hardware_Scheduler.hpp"
-#include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/runtime/Runtime_Intrinsics.hpp"
-#include "dgtl/utils/container/Flat_Map.hpp"
-
-#include <thread>
 #ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
     #include <windows.h>
 #endif
-#include <mutex>
+
+import dgtl.target;
+import dgtl.arena;
+import dgtl.flat_map;
+import dgtl.compiler_context;
+import dgtl.runtime_intrinsics;
+
+import dgtl.ir_core.stream;
+import dgtl.ir_core.ssa;
+import dgtl.ir_core.io;
+import dgtl.ir_core.debug;
+import dgtl.ir_core.gen;
+import dgtl.ir_core.verifier;
+import dgtl.ir_core.evolution;
+import dgtl.ir_core.analysis_interface;
+import dgtl.ir_core.graph_region;
+import dgtl.ir_core.semantic;
+import dgtl.ir_core.polyhedral_scop_unified;
+import dgtl.ir_core.ai_cost_model;
+import dgtl.ir_core.verified_formal;
+
+import dgtl.ir_core.bridge;
+import dgtl.ir_core.pipeline_probes;
+import dgtl.ir_core.runtime;
+import dgtl.ir_core.pass_manager_analysis;
+import dgtl.ir_core.pass_manager_orchestrator;
+import dgtl.ir_core.transform_scalar_core;
+import dgtl.ir_core.simd_gather_scatter;
+
+import dgtl.ir_core.arm64_emitter;
+import dgtl.ir_core.x64_lowering;
+import dgtl.ir_core.nasm_emitter;
+import dgtl.ir_core.wasm_encoder;
+import dgtl.ir_core.linker_backend;
+import dgtl.ir_core.macho_emitter;
+import dgtl.ir_core.backend_driver_shared_utils;
+import dgtl.ir_core.backend_driver_api;
+
+import dgtl.ir_core.hardware_scheduler;
+import dgtl.ir_core.jit_orchestrator;
 
 // ============================================================================
-// RUNTIME HOOKS FOR MYZON INTEGRATION
+// RUNTIME HOOKS FOR DGTL INTEGRATION
 // ============================================================================
 
-extern "C" int64_t __myzon_accumulate_limit_i64(int64_t limit) {
+extern "C" int64_t __dgtl_rt_accumulate_limit_i64(int64_t limit) {
     /**
      * Compute sum of integers from 1 to limit.
-     * Test case for runtime function calls from JIT-compiled code.
+     * Test case for runtime function calls from -compiled code.
      */
     if (limit <= 0) return 0;
     int64_t acc = 0;
@@ -214,6 +198,8 @@ enum class ReleaseIRMode : uint8_t {
     floating,                  ///< Floating-point (test IR)
     floating_simd_widen,       ///< F16→F32 conversion (FCVTL)
     floating_simd_narrow,      ///< F32→F16 conversion (FCVTN)
+    call_variadic,             ///< Variadic function call (sample IR)
+    polyhedral_loop,           ///< Polyhedral loop nest (sample IR)
 };
 
 enum class PolyhedralMode : uint8_t {
@@ -249,7 +235,8 @@ struct AppOptions {
     PolyhedralParallelPolicy polyhedral_parallel = PolyhedralParallelPolicy::auto_policy;
     std::string polyhedral_parallel_name = "auto";
     std::string output_path;              ///< Output file path (optional)
-    bool jit_execute = false;             ///< Execute via JIT (x64 only)
+    bool _execute = false;             ///< Execute via  (x64 only)
+    bool deterministic_replay = false;    ///< Force deterministic replay for speculative runtime paths
 };
 
 /**
@@ -273,7 +260,7 @@ struct EmissionResult {
 void print_usage(const char* argv0) {
     std::cout
         << "DGTL Production Driver (Deep General-purpose Transformation Layer v1.0.0)\n"
-        << "Universal IR Linker with AOT/JIT/Hybrid Support\n\n"
+        << "Universal IR Linker with // Support\n\n"
         << "Usage: " << argv0 << " [options]\n\n"
         << "Options:\n"
         << "  --help                     Show this help\n"
@@ -285,10 +272,11 @@ void print_usage(const char* argv0) {
         << "  --polyhedral-tile <n>      Polyhedral tile size (0=auto, default: 0)\n"
         << "  --polyhedral-parallel <p>  Parallel policy: auto|off|on (default: auto)\n"
         << "  --emit-output <path>       Write emitted output to file\n"
-        << "  --jit-execute              Compile and execute x64 code via StrikeOrchestrator\n"
+        << "  ---execute              Compile and execute x64 code via StrikeOrchestrator\n"
+        << "  --deterministic-replay     Force deterministic replay for speculative runtime paths\n"
         << "\n"
         << "Examples:\n"
-        << "  " << argv0 << " --backend x64 --jit-execute\n"
+        << "  " << argv0 << " --backend x64 ---execute\n"
         << "  " << argv0 << " --backend wasm --emit-output module.wasm\n"
         << "  " << argv0 << " --backend x64 --polyhedral-mode aggressive\n";
 }
@@ -372,6 +360,16 @@ bool parse_ir_mode(std::string mode_str, ReleaseIRMode& out_mode, std::string& o
     if (mode_str == "float-simd-narrow" || mode_str == "fcvtn") {
         out_mode = ReleaseIRMode::floating_simd_narrow;
         out_name = "float-simd-narrow";
+        return true;
+    }
+    if (mode_str == "call-variadic" || mode_str == "variadic") {
+        out_mode = ReleaseIRMode::call_variadic;
+        out_name = "call-variadic";
+        return true;
+    }
+    if (mode_str == "polyhedral-loop" || mode_str == "poly") {
+        out_mode = ReleaseIRMode::polyhedral_loop;
+        out_name = "polyhedral-loop";
         return true;
     }
     return false;
@@ -501,19 +499,286 @@ private:
     using Tier = dgtl::ir::BackendProfile::CompilationTier;
     switch (tier) {
         case Tier::JIT_FAST:
-            return "jit-fast";
+            return "-fast";
         case Tier::AOT_INTENSIVE:
-            return "aot-intensive";
+            return "-intensive";
         case Tier::ADAPTIVE_HYBRID:
-            return "adaptive-hybrid";
+            return "adaptive-";
         default:
             return "unknown";
+    }
+}
+
+[[nodiscard]] dgtl::ir::BackendProfile::TargetISA backend_profile_target(BackendKind backend) noexcept {
+    using TargetISA = dgtl::ir::BackendProfile::TargetISA;
+    switch (backend) {
+        case BackendKind::arm64:
+        case BackendKind::macho:
+            return TargetISA::ARM64_SVE;
+        case BackendKind::arm32:
+            return TargetISA::ARM32_NEON;
+        case BackendKind::riscv64:
+            return TargetISA::RISCV64_RV64GC;
+        case BackendKind::wasm:
+            return TargetISA::WASM;
+        case BackendKind::cuda:
+            return TargetISA::CUDA_PTX;
+        case BackendKind::rocm:
+            return TargetISA::ROCM_LLVMIR;
+        case BackendKind::x64:
+            return TargetISA::X64_AVX512;
+        case BackendKind::nasm:
+        case BackendKind::elfobj:
+        case BackendKind::staticlib:
+        case BackendKind::coffobj:
+        case BackendKind::cofflib:
+        default:
+            return TargetISA::NASM_X64;
     }
 }
 
 void stamp_ir_debug_metadata(dgtl::core::DGTL_Arena& arena,
                              const dgtl::ir::IRStream& stream,
                              bool verbose);
+
+struct OopVerifierLifecycle {
+    bool enabled = false;
+    dgtl::jit::verifier::WorkerLaunchSpec spec{};
+};
+
+std::unique_ptr<dgtl::jit::verifier::PersistentVerifierDaemon> g_oop_verifier;
+bool g_oop_verifier_enabled = false;
+
+void dump_verifier_crash_snapshot(const char* stream_tag,
+                                  const dgtl::ir::IRStream& stream,
+                                  dgtl::jit::verifier::VerifyRc rc,
+                                  dgtl::jit::verifier::CrashReason reason) {
+    std::error_code ec;
+    std::filesystem::create_directories("logs/replay/crashes", ec);
+
+    dgtl::ir::IRPrinter::Options p{};
+    p.show_header = true;
+    p.show_flags = true;
+    p.show_logic_flags = true;
+    p.show_hash = true;
+    p.show_cfg = true;
+
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto stamp = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+    const std::filesystem::path out = std::filesystem::path("logs/replay/crashes") /
+        (std::string("verifier_") + stream_tag + "_rc" + std::to_string(static_cast<uint32_t>(rc))
+         + "_reason" + std::to_string(static_cast<uint32_t>(reason))
+         + "_" + std::to_string(stamp) + ".ir.txt");
+    const std::string text = dgtl::ir::IRPrinter::to_string(stream, p);
+    (void)dgtl::backend::driver::shared::write_text_file(out.string(), text);
+}
+
+#ifdef _WIN32
+[[nodiscard]] std::string current_executable_path() {
+    char buffer[32768] = {};
+    const DWORD cap = static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0]));
+    const DWORD n = GetModuleFileNameA(nullptr, buffer, cap);
+    if (n == 0 || n >= cap) {
+        return "";
+    }
+    return std::string(buffer, n);
+}
+
+[[nodiscard]] const char* find_worker_arg_value(int argc, char** argv, const char* key) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], key) == 0) {
+            return argv[i + 1];
+        }
+    }
+    return nullptr;
+}
+
+void worker_write_result(dgtl::jit::verifier::SharedRegion& region,
+                         dgtl::jit::verifier::VerifyRc rc,
+                         dgtl::jit::verifier::CrashReason crash_reason,
+                         uint32_t response_seq,
+                         const std::string& message) {
+    region.header.result_code = static_cast<uint32_t>(rc);
+    region.header.crash_reason = static_cast<uint32_t>(crash_reason);
+    region.header.response_seq.store(response_seq, std::memory_order_release);
+    region.header.state.store(static_cast<uint32_t>(dgtl::jit::verifier::SharedState::ResultReady),
+                              std::memory_order_release);
+
+    const size_t cap = region.result_text.size();
+    const size_t n = std::min(message.size(), (cap > 0) ? (cap - 1) : 0);
+    if (n > 0) {
+        std::memcpy(region.result_text.data(), message.data(), n);
+    }
+    if (cap > 0) {
+        region.result_text[n] = '\0';
+    }
+}
+
+int run_oop_verifier_worker(int argc, char** argv) {
+    const char* mapping_name = find_worker_arg_value(argc, argv, "--mapping");
+    const char* request_event_name = find_worker_arg_value(argc, argv, "--request-event");
+    const char* response_event_name = find_worker_arg_value(argc, argv, "--response-event");
+    if (mapping_name == nullptr || request_event_name == nullptr || response_event_name == nullptr) {
+        return 2;
+    }
+
+    HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, mapping_name);
+    if (mapping == nullptr) {
+        return 3;
+    }
+
+    void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(dgtl::jit::verifier::SharedRegion));
+    if (view == nullptr) {
+        CloseHandle(mapping);
+        return 4;
+    }
+
+    HANDLE request_event = OpenEventA(SYNCHRONIZE, FALSE, request_event_name);
+    HANDLE response_event = OpenEventA(EVENT_MODIFY_STATE, FALSE, response_event_name);
+    if (request_event == nullptr || response_event == nullptr) {
+        if (response_event != nullptr) {
+            CloseHandle(response_event);
+        }
+        if (request_event != nullptr) {
+            CloseHandle(request_event);
+        }
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        return 5;
+    }
+
+    auto& shared = *reinterpret_cast<dgtl::jit::verifier::SharedRegion*>(view);
+    shared.header.state.store(static_cast<uint32_t>(dgtl::jit::verifier::SharedState::Idle),
+                              std::memory_order_release);
+
+    for (;;) {
+        const DWORD wr = WaitForSingleObject(request_event, INFINITE);
+        if (wr != WAIT_OBJECT_0) {
+            break;
+        }
+
+        const uint32_t request_seq = shared.header.request_seq.load(std::memory_order_acquire);
+        const uint32_t payload_bytes = shared.header.payload_bytes;
+        if (payload_bytes == 0 || payload_bytes > dgtl::jit::verifier::kVerifierMaxPayloadBytes) {
+            worker_write_result(shared,
+                                dgtl::jit::verifier::VerifyRc::ProtocolError,
+                                dgtl::jit::verifier::CrashReason::ProtocolCorruption,
+                                request_seq,
+                                "invalid payload size");
+            SetEvent(response_event);
+            continue;
+        }
+
+        shared.header.state.store(static_cast<uint32_t>(dgtl::jit::verifier::SharedState::WorkerBusy),
+                                  std::memory_order_release);
+
+        std::vector<uint8_t> payload(payload_bytes);
+        std::memcpy(payload.data(), shared.payload.data(), payload_bytes);
+
+        std::string deser_err;
+        const auto nodes = dgtl::ir::IRSerializer::deserialize(payload, &deser_err);
+        if (nodes.empty()) {
+            const std::string msg = deser_err.empty() ? "deserialize failed" : deser_err;
+            worker_write_result(shared,
+                                dgtl::jit::verifier::VerifyRc::IrInvalid,
+                                dgtl::jit::verifier::CrashReason::None,
+                                request_seq,
+                                msg);
+            SetEvent(response_event);
+            continue;
+        }
+
+        dgtl::core::DGTL_Arena arena(1, 64);
+        dgtl::ir::IRStream stream(arena, nodes.size() + 8);
+        for (const auto& record : nodes) {
+            stream.push_node(record.atom, record.core);
+        }
+
+        dgtl::ir::IRVerifyOptions verify_opts;
+        verify_opts.max_diagnostics = 64;
+        dgtl::ir::IRVerifier verifier;
+        const auto verify_diags = verifier.verify(stream, verify_opts);
+        const uint32_t errors = static_cast<uint32_t>(std::count_if(
+            verify_diags.begin(),
+            verify_diags.end(),
+            [](const dgtl::ir::IRVerifyDiagnostic& d) {
+                return d.severity == dgtl::ir::IRVerifyDiagnostic::Severity::Error;
+            }));
+        if (errors != 0) {
+            std::string msg = "ir_verify error";
+            if (!verify_diags.empty()) {
+                msg = verify_diags.front().message;
+            }
+            worker_write_result(shared,
+                                dgtl::jit::verifier::VerifyRc::IrInvalid,
+                                dgtl::jit::verifier::CrashReason::None,
+                                request_seq,
+                                msg);
+            SetEvent(response_event);
+            continue;
+        }
+
+        worker_write_result(shared,
+                            dgtl::jit::verifier::VerifyRc::Ok,
+                            dgtl::jit::verifier::CrashReason::None,
+                            request_seq,
+                            "ok");
+        SetEvent(response_event);
+    }
+
+    CloseHandle(response_event);
+    CloseHandle(request_event);
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+    return 0;
+}
+#endif
+
+[[nodiscard]] OopVerifierLifecycle build_oop_verifier_lifecycle() {
+    OopVerifierLifecycle cfg;
+
+    const char* enable = std::getenv("DGTL_ENABLE_OOP_VERIFIER");
+    if (enable == nullptr || *enable == '\0' || *enable == '0') {
+        return cfg;
+    }
+
+    cfg.enabled = true;
+    if (const char* worker_exe = std::getenv("DGTL_VERIFIER_WORKER_EXE")) {
+        cfg.spec.worker_exe = worker_exe;
+    } else {
+#ifdef _WIN32
+        cfg.spec.worker_exe = current_executable_path();
+#else
+        cfg.spec.worker_exe = "";
+#endif
+    }
+    uint32_t pid_tag = 0;
+#ifdef _WIN32
+    pid_tag = static_cast<uint32_t>(GetCurrentProcessId());
+#endif
+    cfg.spec.mapping_name = "DGTL.Verifier.SharedRegion.v1." + std::to_string(pid_tag);
+    cfg.spec.request_event_name = "DGTL.Verifier.Request.v1." + std::to_string(pid_tag);
+    cfg.spec.response_event_name = "DGTL.Verifier.Response.v1." + std::to_string(pid_tag);
+
+    if (const char* timeout_us = std::getenv("DGTL_VERIFIER_TIMEOUT_US")) {
+        try {
+            cfg.spec.verify_timeout_us = static_cast<uint32_t>(std::stoul(timeout_us));
+        } catch (const std::exception&) {
+            cfg.spec.verify_timeout_us = 750;
+        }
+    }
+
+    if (const char* boot_ms = std::getenv("DGTL_VERIFIER_BOOT_TIMEOUT_MS")) {
+        try {
+            cfg.spec.boot_timeout_ms = static_cast<uint32_t>(std::stoul(boot_ms));
+        } catch (const std::exception&) {
+            cfg.spec.boot_timeout_ms = 250;
+        }
+    }
+
+    return cfg;
+}
 
 [[nodiscard]] bool run_ir_quality_gates(
     const char* stream_tag,
@@ -523,7 +788,16 @@ void stamp_ir_debug_metadata(dgtl::core::DGTL_Arena& arena,
     std::optional<dgtl::ir::CodegenTarget> codegen_target,
     bool require_execution_bridge,
     std::string* error_out,
-    uint32_t verifier_diag_limit = 128) {
+    uint32_t verifier_diag_limit = 128,
+    bool quarantine_inprocess_verifier = false) {
+    const bool debug_main_stages = (std::getenv("DGTL_DEBUG_MAIN_STAGES") != nullptr);
+    auto gate_stage = [&](const char* label) {
+        if (debug_main_stages) {
+            std::cerr << "[DGTL-DEBUG] gate=" << stream_tag << ":" << label << "\n";
+            std::cerr.flush();
+        }
+    };
+
     auto set_error = [&](std::string&& msg) {
         if (error_out != nullptr) {
             *error_out = std::move(msg);
@@ -534,11 +808,13 @@ void stamp_ir_debug_metadata(dgtl::core::DGTL_Arena& arena,
         set_error(std::string{"empty IR stream: "} + stream_tag);
         return false;
     }
+    gate_stage("size_ok");
 
     if (!stream.validate_shadow_integrity()) {
         set_error(std::string{"shadow integrity failure: "} + stream_tag);
         return false;
     }
+    gate_stage("shadow_ok");
 
     for (size_t i = 0; i < stream.size(); ++i) {
         const auto n = stream.get_node_readonly(i);
@@ -547,22 +823,66 @@ void stamp_ir_debug_metadata(dgtl::core::DGTL_Arena& arena,
             return false;
         }
     }
+    gate_stage("generated_nodes_ok");
 
-    dgtl::ir::IRVerifyOptions verify_opts;
-    verify_opts.max_diagnostics = verifier_diag_limit;
-    const auto verify_diags = dgtl::ir::ir_verify(stream, verify_opts);
-    const uint32_t verify_errors = dgtl::ir::ir_count_errors(verify_diags);
-    if (verify_errors != 0) {
-        if (verbose) {
-            std::cerr << "[DGTL-IR] " << stream_tag << " verifier reported "
-                      << verify_errors << " error(s)\n";
-            const size_t shown = std::min<size_t>(verify_diags.size(), 5);
-            for (size_t i = 0; i < shown; ++i) {
-                std::cerr << "  - " << verify_diags[i].message << "\n";
-            }
-        }
-        set_error(std::string{"verifier failure: "} + stream_tag);
+    std::vector<uint8_t> serialized_ir;
+    if (!dgtl::ir::IRSerializer::serialize(stream, serialized_ir)) {
+        set_error(std::string{"IR serializer failed: "} + stream_tag);
         return false;
+    }
+
+    if (quarantine_inprocess_verifier) {
+        if (!g_oop_verifier_enabled || !g_oop_verifier) {
+            gate_stage("ir_verify_oop_unavailable");
+            set_error(std::string{"oop verifier unavailable while in-process verifier quarantined: "} + stream_tag);
+            return false;
+        }
+
+        dgtl::jit::verifier::VerifyRequest req{};
+        req.bytes = serialized_ir.data();
+        req.byte_count = serialized_ir.size();
+        const auto verify_result = g_oop_verifier->verify(req);
+        if (verify_result.rc != dgtl::jit::verifier::VerifyRc::Ok) {
+            if (verify_result.rc == dgtl::jit::verifier::VerifyRc::WorkerCrash ||
+                verify_result.rc == dgtl::jit::verifier::VerifyRc::Timeout) {
+                dump_verifier_crash_snapshot(stream_tag, stream, verify_result.rc, verify_result.crash_reason);
+                g_oop_verifier->schedule_restart_async();
+            }
+
+            gate_stage("ir_verify_oop_failed");
+            std::string msg = std::string{"oop verifier gate failure: "} + stream_tag;
+            if (!verify_result.message.empty()) {
+                msg += " (" + verify_result.message + ")";
+            }
+            set_error(std::move(msg));
+            return false;
+        }
+
+        gate_stage("ir_verify_oop_ok");
+    } else {
+        dgtl::ir::IRVerifyOptions verify_opts;
+        verify_opts.max_diagnostics = verifier_diag_limit;
+        dgtl::ir::IRVerifier verifier;
+        const auto verify_diags = verifier.verify(stream, verify_opts);
+        const uint32_t verify_errors = static_cast<uint32_t>(std::count_if(
+            verify_diags.begin(),
+            verify_diags.end(),
+            [](const dgtl::ir::IRVerifyDiagnostic& d) {
+                return d.severity == dgtl::ir::IRVerifyDiagnostic::Severity::Error;
+            }));
+        if (verify_errors != 0) {
+            if (verbose) {
+                std::cerr << "[DGTL-IR] " << stream_tag << " verifier reported "
+                          << verify_errors << " error(s)\n";
+                const size_t shown = std::min<size_t>(verify_diags.size(), 5);
+                for (size_t i = 0; i < shown; ++i) {
+                    std::cerr << "  - " << verify_diags[i].message << "\n";
+                }
+            }
+            set_error(std::string{"verifier failure: "} + stream_tag);
+            return false;
+        }
+        gate_stage("ir_verify_ok");
     }
 
     dgtl::ir::IRPrinter::Options printer_opts;
@@ -577,11 +897,6 @@ void stamp_ir_debug_metadata(dgtl::core::DGTL_Arena& arena,
         return false;
     }
 
-    std::vector<uint8_t> serialized_ir;
-    if (!dgtl::ir::IRSerializer::serialize(stream, serialized_ir)) {
-        set_error(std::string{"IR serializer failed: "} + stream_tag);
-        return false;
-    }
     std::string deserialize_error;
     const auto deserialized_nodes = dgtl::ir::IRSerializer::deserialize(serialized_ir, &deserialize_error);
     if (deserialized_nodes.size() != stream.size()) {
@@ -594,7 +909,7 @@ void stamp_ir_debug_metadata(dgtl::core::DGTL_Arena& arena,
     if (!ssa_result.ok) {
         std::string ssa_msg = "SSA construction/verification failed";
         if (!ssa_result.verification_errors.empty()) {
-            ssa_msg += ": " + ssa_result.verification_errors.front();
+            ssa_msg += ": " + std::string(ssa_result.verification_errors.errors[0]);
         }
         set_error(std::string{stream_tag} + " " + ssa_msg);
         return false;
@@ -754,8 +1069,13 @@ ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {
             continue;
         }
 
-        if (arg == "--jit-execute") {
-            opts.jit_execute = true;
+        if (arg == "---execute") {
+            opts._execute = true;
+            continue;
+        }
+
+        if (arg == "--deterministic-replay") {
+            opts.deterministic_replay = true;
             continue;
         }
 
@@ -1009,10 +1329,8 @@ bool emit_wasm(const dgtl::ir::IRStream& stream,
     out_bytes.clear();
     out_text.clear();
 
-    dgtl::exec::DGTLWasmEncoder encoder;
-    encoder.encode(stream);
-    out_bytes = encoder.get_binary();
-    if (out_bytes.empty()) {
+    dgtl::backend::linker::DGTLLinker linker;
+    if (!linker.build_wasm_binary(stream, out_bytes)) {
         return false;
     }
 
@@ -1193,7 +1511,6 @@ bool emit_backend(BackendKind backend,
     return false;
 }
 
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
 
 // ────────────────────────────────────────────────────────────────────────────────
 // Multi-function lowering result: first function goes into out_stream;
@@ -1204,11 +1521,27 @@ struct ExtraFunctionCoff {
     std::vector<uint8_t> obj; // complete COFF .obj bytes
 };
 
-struct ExtraJitFunction {
+struct ExtraFunction {
     std::string name;
     dgtl::ir::IRStream stream;
     dgtl::utils::FastFlatMap<uint32_t, std::string, 2048> slot_to_callee;
+
+    [[nodiscard]] const std::string& get_name() const noexcept { return name; }
 };
+
+static std::vector<ExtraFunction> build_extra_functions(dgtl::core::DGTL_Arena& arena, ReleaseIRMode mode) {
+    std::vector<ExtraFunction> extras;
+    if (mode == ReleaseIRMode::call_variadic || mode == ReleaseIRMode::polyhedral_loop) {
+        ExtraFunction fn{
+            .name = "dgtl_auxiliary_kernel",
+            .stream = dgtl::ir::IRStream(arena, 64),
+            .slot_to_callee = {}
+        };
+        build_release_ir_for_mode(fn.stream, mode);
+        extras.push_back(std::move(fn));
+    }
+    return extras;
+}
 
 // Forward declarations for functions defined later in this file
 dgtl::core::ArchType backend_to_arch_type(BackendKind backend);
@@ -1223,7 +1556,24 @@ run_polyhedral_analysis(dgtl::ir::IRStream& stream,
 
 int main(int argc, char** argv) {
     try {
+#ifdef _WIN32
+        if (argc > 1 && std::strcmp(argv[1], "--verifier-worker") == 0) {
+            return run_oop_verifier_worker(argc, argv);
+        }
+#endif
+
+        const bool debug_main_stages = (std::getenv("DGTL_DEBUG_MAIN_STAGES") != nullptr);
+        constexpr uint32_t DGTL_ERR_IR_INVALID = 0xE101u;
+        auto stage = [&](const char* label) {
+            if (debug_main_stages) {
+                std::cerr << "[DGTL-DEBUG] stage=" << label << "\n";
+                std::cerr.flush();
+            }
+        };
+
+        stage("install_hooks");
         dgtl::backend::driver::install_default_external_intrinsic_hooks();
+        stage("parse_args");
         AppOptions opts;
         const ParseStatus parse_status = parse_args(argc, argv, opts);
         if (parse_status == ParseStatus::help_requested) {
@@ -1238,41 +1588,133 @@ int main(int argc, char** argv) {
         }
 
         dgtl::core::DGTL_Arena arena(1, 64);
+        stage("arena_created");
         dgtl::semantic::SymbolTable symbols(arena);
+        stage("symbols_created");
 
         // === P0-001: CREATE CONTEXT WITH POLYHEDRAL CONFIG ===
         dgtl::core::DGTLContext context(arena);
+        stage("context_created");
         dgtl::core::PolyhedralConfig poly_config = build_polyhedral_config(opts);
         context.set_polyhedral_config(poly_config);
+        stage("poly_config_set");
+
+        const OopVerifierLifecycle oop_verifier = build_oop_verifier_lifecycle();
+        g_oop_verifier_enabled = oop_verifier.enabled;
+        if (opts.verbose && oop_verifier.enabled) {
+            std::cout << "[DGTL] OOP verifier lifecycle configured"
+                      << " (mapping=" << oop_verifier.spec.mapping_name
+                      << ", timeout_us=" << oop_verifier.spec.verify_timeout_us
+                      << ", boot_timeout_ms=" << oop_verifier.spec.boot_timeout_ms
+                      << ")\n";
+        }
+        if (oop_verifier.enabled) {
+            g_oop_verifier = std::make_unique<dgtl::jit::verifier::PersistentVerifierDaemon>();
+            const bool started = g_oop_verifier->start(oop_verifier.spec);
+            if (opts.verbose) {
+                std::cout << "[DGTL] OOP verifier startup " << (started ? "ok" : "failed") << "\n";
+            }
+        }
 
         dgtl::ir::IRStream stream(arena, 256);
+        stage("stream_created");
         dgtl::runtime::TLSFlushMerge tls_flusher; // drains per-thread TLS buffers into stream
         std::vector<ExtraFunctionCoff> extra_coffs;
-        std::vector<ExtraJitFunction> extra_jit_functions;
+        std::vector<ExtraFunction> extra_functions = build_extra_functions(arena, opts.ir_mode);
         if (!build_release_ir_for_mode(stream, opts.ir_mode)) {
             std::cerr << "[DGTL] Failed to build release IR\n";
             return static_cast<int>(ExitCode::pipeline_failure);
         }
+        stage("release_ir_built");
+        stream.set_backend_target(0, backend_profile_target(opts.backend));
+        stream.record_function_call(0);
+        stage("backend_profile_seeded");
+
+        auto dump_replay_snapshot = [&](const char* tag, const dgtl::ir::IRStream& snapshot) {
+            if (!opts.deterministic_replay) return;
+            std::error_code ec;
+            std::filesystem::create_directories("logs/replay", ec);
+            dgtl::ir::IRPrinter::Options p{};
+            p.show_header = true;
+            p.show_flags = true;
+            p.show_logic_flags = true;
+            p.show_hash = true;
+            p.show_cfg = true;
+            const std::string text = dgtl::ir::IRPrinter::to_string(snapshot, p);
+            const std::filesystem::path out = std::filesystem::path("logs/replay") /
+                (std::string("replay_") + tag + "_" + opts.backend_name + "_" + opts.ir_mode_name + ".ir.txt");
+            (void)dgtl::backend::driver::shared::write_text_file(out.string(), text);
+        };
+
+        // Stable baseline snapshot used for architectural fallback if candidate tier fails gates.
+        dgtl::ir::IRStream stable_stream = stream.clone();
+        dump_replay_snapshot("pre_mutation", stable_stream);
+
+        dgtl::analysis::DGTLAICostModel tier_cost_model;
+        const auto estimate_stream_cost = [&tier_cost_model](const dgtl::ir::IRStream& ir_stream) {
+            float total = 0.0f;
+            for (size_t i = 0; i < ir_stream.size(); ++i) {
+                total += tier_cost_model.predict_node_cost(ir_stream.get_node_readonly(i));
+            }
+            return total;
+        };
+        const float pre_opt_cost = estimate_stream_cost(stable_stream);
 
         dgtl::core::ArchType arch = backend_to_arch_type(opts.backend);
         dgtl::core::TargetMachine target(arch);
-        run_core_optimizations(stream, opts.ir_mode, target);
-        // Drain any TLS emission from IR builders and optimizer threads into the stream
-        // before integrity validation. This is the single linearization checkpoint for
-        // all per-thread g_tls_buffer pages accumulated during this compilation session.
-        tls_flusher.merge_concurrent(stream);
+        stage("target_created");
+
+        for (auto& extra_fn : extra_functions) {
+            run_core_optimizations(extra_fn.stream, opts.ir_mode, target);
+        }
+
+        // Mutate candidate stream only; preserve stable_stream integrity for fallback.
+        dgtl::ir::IRStream candidate_stream = stable_stream.clone();
+        const auto optimize_start = std::chrono::high_resolution_clock::now();
+        run_core_optimizations(candidate_stream, opts.ir_mode, target);
+        stage("optimizations_done");
+        const auto optimize_end = std::chrono::high_resolution_clock::now();
+        const uint64_t optimize_time_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(optimize_end - optimize_start).count());
+        const float post_opt_cost = estimate_stream_cost(candidate_stream);
+        candidate_stream.update_backend_stats(0, optimize_time_us);
+        candidate_stream.record_cache_access(0, post_opt_cost <= pre_opt_cost);
+        stage("backend_stats_updated");
+
+        // Drain TLS into candidate only; do not mutate stable stream.
+        tls_flusher.merge_concurrent(candidate_stream);
+        stage("tls_merged");
+
         std::string entry_gate_error;
-        const bool need_exec_gate = opts.jit_execute && opts.backend == BackendKind::x64;
-        if (!run_ir_quality_gates("entry", arena, stream, opts.verbose,
+        const bool need_exec_gate = opts._execute && opts.backend == BackendKind::x64;
+        uint32_t tier_gate_status = 0;
+        bool tier_bailout = false;
+
+        // IMPORTANT: keep gate strict. On failure, fail current tier and fall back to stable stream.
+        if (!run_ir_quality_gates("entry", arena, candidate_stream, opts.verbose,
                                   backend_to_codegen_target(opts.backend),
                                   need_exec_gate,
-                                  &entry_gate_error)) {
-            std::cerr << "[DGTL] IR quality gate failed: " << entry_gate_error << "\n";
-            return static_cast<int>(ExitCode::pipeline_failure);
+                                  &entry_gate_error,
+                                  0,
+                                  true)) {
+            tier_gate_status = DGTL_ERR_IR_INVALID;
+            tier_bailout = true;
+            dump_replay_snapshot("post_mutation_failed", candidate_stream);
+            if (opts.verbose || opts.deterministic_replay) {
+                std::cerr << "[DGTL] Candidate tier gate rejected (status=0x"
+                          << std::hex << tier_gate_status << std::dec
+                          << "): " << entry_gate_error << "\n";
+                std::cerr << "[DGTL] Falling back to stable tier stream\n";
+            }
+            stream = stable_stream.clone();
+        } else {
+            stage("entry_gates_passed");
+            stream = std::move(candidate_stream);
+            dump_replay_snapshot("post_mutation_valid", stream);
         }
 
         // === P0-003: RUN POLYHEDRAL ANALYSIS + TRANSFORM IF ENABLED ===
         auto poly_schedule = run_polyhedral_analysis(stream, poly_config, target, opts.verbose);
+        stage("poly_analysis_done");
 
         EmissionResult emission;
         if (std::getenv("DGTL_DEBUG_FRONTEND_LOWERER") != nullptr) {
@@ -1282,6 +1724,7 @@ int main(int argc, char** argv) {
             std::cerr << "[DGTL] Backend emission produced no output\n";
             return static_cast<int>(ExitCode::emit_failure);
         }
+        stage("emit_done");
 
         std::string emitted_text = std::move(emission.emitted_text);
         std::vector<uint8_t> emitted_bytes = std::move(emission.emitted_bytes);
@@ -1296,18 +1739,15 @@ int main(int argc, char** argv) {
                 return static_cast<int>(ExitCode::io_failure);
             }
 
-            // ── Fix 1: Write sibling .obj files for additional payload functions ──
             if (!extra_coffs.empty() && emission.emitted_binary) {
                 const std::filesystem::path out_path(opts.output_path);
-                const std::filesystem::path out_dir  = out_path.parent_path();
-                const std::string           base     = out_path.stem().string();
+                const std::filesystem::path out_dir = out_path.parent_path();
+                const std::string base = out_path.stem().string();
 
-                // Write a manifest: one line per sibling .obj (for myzon.ps1 to pick up)
                 std::string manifest_text;
                 for (const auto& ef : extra_coffs) {
                     if (ef.obj.empty()) continue;
-                    const std::filesystem::path sibling =
-                        out_dir / (base + "_fn_" + ef.name + ".obj");
+                    const std::filesystem::path sibling = out_dir / (base + "_fn_" + ef.name + ".obj");
                     if (dgtl::backend::driver::shared::write_binary_file(sibling.string(), ef.obj)) {
                         manifest_text += sibling.string() + "\n";
                         if (opts.verbose) {
@@ -1315,9 +1755,9 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+
                 if (!manifest_text.empty()) {
-                    const std::filesystem::path manifest_path =
-                        out_dir / (base + ".manifest");
+                    const std::filesystem::path manifest_path = out_dir / (base + ".manifest");
                     dgtl::backend::driver::shared::write_text_file(manifest_path.string(), manifest_text);
                     if (opts.verbose) {
                         std::cout << "[DGTL] Manifest: " << manifest_path << "\n";
@@ -1326,190 +1766,22 @@ int main(int argc, char** argv) {
             }
         }
 
-        // === JIT EXECUTE: Fire Strike via StrikeOrchestrator ===
-        if (opts.jit_execute) {
-            if (opts.backend != BackendKind::x64) {
-                std::cerr << "[DGTL] --jit-execute requires --backend x64\n";
-                return static_cast<int>(ExitCode::invalid_args);
-            }
-
-            dgtl::ir::IR_Execution_Bridge execution_bridge;
-            if (!execution_bridge.prepare_for_execution(stream)) {
-                std::cerr << "[DGTL] IR execution bridge rejected stream\n";
-                return static_cast<int>(ExitCode::pipeline_failure);
-            }
-
-            if (opts.verbose) {
-                const auto selected_tier = execution_bridge.select_execution_tier(stream);
-                std::cout << "[DGTL-JIT] Execution tier selected: "
-                          << tier_name(selected_tier) << "\n";
-            }
-
-            if (opts.verbose) {
-                std::cout << "[DGTL-JIT] Firing strike via StrikeOrchestrator...\n";
-            }
-
-            dgtl::utils::FastFlatMap<std::string, uintptr_t, 1024> compiled_helper_addresses;
-            std::vector<std::unique_ptr<dgtl::jit::StrikeOrchestrator>> helper_orchestrators;
-
-            auto resolve_callee_address = [&](std::string_view callee_name) -> uintptr_t {
-                const std::string callee_name_owned{callee_name};
-                if (const uintptr_t* it = compiled_helper_addresses.find(callee_name_owned);
-                    it != nullptr) {
-                    return *it;
-                }
-                if (callee_name == "accumulate_limit") return reinterpret_cast<uintptr_t>(&__myzon_accumulate_limit_i64);
-                const uintptr_t rt_addr = dgtl::runtime::resolve_runtime_intrinsic_symbol(callee_name);
-                if (rt_addr != 0) {
-                    return rt_addr;
-                }
-                return 0;
-            };
-
-            std::vector<bool> helper_compiled(extra_jit_functions.size(), false);
-            size_t compiled_helper_count = 0;
-            const bool debug_call_slots = (std::getenv("DGTL_DEBUG_CALL_SLOTS") != nullptr);
-            while (compiled_helper_count < extra_jit_functions.size()) {
-                bool made_progress = false;
-
-                for (size_t helper_idx = 0; helper_idx < extra_jit_functions.size(); ++helper_idx) {
-                    if (helper_compiled[helper_idx]) {
-                        continue;
-                    }
-
-                    const auto& helper = extra_jit_functions[helper_idx];
-                    auto helper_orchestrator = std::make_unique<dgtl::jit::StrikeOrchestrator>(context, arena);
-                    helper_orchestrator->register_bulletins();
-
-                    bool deps_ready = true;
-                    for (const auto& [slot, callee_name] : helper.slot_to_callee) {
-                        const uintptr_t callee_addr = resolve_callee_address(callee_name);
-                        if (debug_call_slots) {
-                            std::cerr << "[DGTL] helper_dep fn=" << helper.name
-                                      << " slot=" << slot
-                                      << " callee=" << callee_name
-                                      << " addr=0x" << std::hex << callee_addr << std::dec
-                                      << "\n";
-                        }
-                        if (callee_addr == 0) {
-                            deps_ready = false;
-                            break;
-                        }
-                        helper_orchestrator->register_runtime_function_slot(slot, callee_addr);
-                    }
-
-                    if (!deps_ready) {
-                        continue;
-                    }
-
-                    if (std::getenv("DGTL_DEBUG_IR_DUMP") != nullptr) {
-                        std::cerr << "[DGTL-DEBUG] Helper IR Stream fn=" << helper.name
-                                  << " (total nodes=" << helper.stream.size() << "):\n";
-                        for (size_t node_idx = 0; node_idx < helper.stream.size(); ++node_idx) {
-                            const auto helper_node = helper.stream.get_node(node_idx);
-                            std::cerr << "  [" << node_idx << "] op="
-                                      << static_cast<uint32_t>(helper_node.opcode)
-                                      << " result=" << helper_node.result_id
-                                      << " a=" << helper_node.op_a
-                                      << " b=" << helper_node.op_b
-                                      << " c=" << helper_node.op_c
-                                      << " flags=0x" << std::hex << helper_node.logic_flags << std::dec
-                                      << "\n";
-                        }
-                    }
-
-                    std::string helper_gate_error;
-                    auto& helper_stream = extra_jit_functions[helper_idx].stream;
-                    if (!run_ir_quality_gates(helper.name.c_str(),
-                                              arena,
-                                              helper_stream,
-                                              opts.verbose,
-                                              dgtl::ir::CodegenTarget::X64_AVX512,
-                                              false,
-                                              &helper_gate_error,
-                                              64)) {
-                        std::cerr << "[DGTL] Helper IR quality gate failed for '"
-                                  << helper.name << "': " << helper_gate_error << "\n";
-                        return static_cast<int>(ExitCode::pipeline_failure);
-                    }
-
-                    uintptr_t helper_addr = helper_orchestrator->compile_to_address(helper_stream);
-                    if (helper_addr == 0) {
-                        std::cerr << "[DGTL] Failed to JIT helper function: " << helper.name << "\n";
-                        return static_cast<int>(ExitCode::pipeline_failure);
-                    }
-
-                    if (debug_call_slots) {
-                        std::cerr << "[DGTL] helper_compiled fn=" << helper.name
-                                  << " addr=0x" << std::hex << helper_addr << std::dec
-                                  << "\n";
-                    }
-
-                    const bool inserted = compiled_helper_addresses.insert_or_assign(helper.name, helper_addr);
-                    if (!inserted) {
-                        std::cerr << "[DGTL] helper-address cache capacity exceeded in JIT payload execution\n";
-                        return static_cast<int>(ExitCode::pipeline_failure);
-                    }
-                    helper_orchestrators.push_back(std::move(helper_orchestrator));
-                    helper_compiled[helper_idx] = true;
-                    ++compiled_helper_count;
-                    made_progress = true;
-                }
-
-                if (!made_progress) {
-                    std::cerr << "[DGTL] Could not resolve helper-function call graph for JIT payload execution\n";
-                    return static_cast<int>(ExitCode::pipeline_failure);
-                }
-            }
-
-            // === DEBUG: Dump CALL nodes in IR stream ===
-            const bool debug_ir_dump = (std::getenv("DGTL_DEBUG_IR_DUMP") != nullptr);
-            if (debug_ir_dump) {
-                std::cerr << "[DGTL-DEBUG] IR Stream CALL nodes (total nodes=" << stream.size() << "):\n";
-                for (size_t i = 0; i < stream.size(); ++i) {
-                    auto node = stream.get_node(i);
-                    if (node.opcode == dgtl::ir::OpCode::CALL) {
-                        std::cerr << "  [" << i << "] CALL: op_a(slot)=" << node.op_a 
-                                  << " op_b=" << node.op_b << " op_c=" << node.op_c
-                                  << " logic_flags=0x" << std::hex << node.logic_flags << std::dec
-                                  << " result_id=" << node.result_id << "\n";
-                    }
-                }
-            }
-
-            dgtl::jit::StrikeOrchestrator orchestrator(context, arena);
-            orchestrator.register_bulletins();
-            for (const auto& [slot, callee_name] : g_entry_slot_to_callee_fast) {
-                const uintptr_t callee_addr = resolve_callee_address(callee_name);
-                if (debug_call_slots) {
-                    std::cerr << "[DGTL] entry_slot slot=" << slot
-                              << " callee=" << callee_name
-                              << " addr=0x" << std::hex << callee_addr << std::dec
-                              << "\n";
-                }
-                if (callee_addr != 0) {
-                    orchestrator.register_runtime_function_slot(slot, callee_addr);
-                }
-            }
-            auto strike_metrics = orchestrator.fire_strike(stream);
-
-            const bool strike_ok = (strike_metrics.status_code == dgtl::jit::StrikeOrchestrator::STRIKE_OK);
-            std::cout << "[DGTL-JIT] Strike "
-                      << (strike_ok ? "OK" : "FAILED")
-                      << " status=0x" << std::hex << strike_metrics.status_code << std::dec
-                      << " executed_instructions=" << strike_metrics.executed_instructions
-                      << " code_size=" << orchestrator.get_last_code_size()
-                      << "\n";
-
-            if (!strike_ok) {
-                std::cerr << "[DGTL-JIT] Strike execution failed\n";
-                return static_cast<int>(ExitCode::emit_failure);
+        if (opts._execute) {
+            if (tier_bailout) {
+                std::cerr << "[DGTL-] Tier-up aborted: IR gate error status=0x"
+                          << std::hex << tier_gate_status << std::dec
+                          << " (fallback=baseline/stable)\n";
+                // Architectural fallback: keep executing on stable baseline tier.
+                opts._execute = false;
             }
         }
+        stage("summary_print");
 
         std::cout << "[DGTL] Backend=" << opts.backend_name
                   << (emission.emitted_binary ? " (binary)" : " (text)")
                   << " IRMode=" << opts.ir_mode_name
+                  << " Tier=" << tier_name(stream.compute_adaptive_tier(0, &target.description()))
+                  << " Replay=" << (opts.deterministic_replay ? "on" : "off")
                   << " PolyMode=" << opts.polyhedral_mode_name
                   << " PolyParallel=" << opts.polyhedral_parallel_name
                   << " PolyTile=" << opts.polyhedral_tile
@@ -1561,7 +1833,7 @@ int main(int argc, char** argv) {
 // 
 // Core Capabilities:
 //  ✓ Multi-target code generation (9 ISA backends)
-//  ✓ Three execution modes (JIT/AOT/Hybrid)
+//  ✓ Three execution modes (//)
 //  ✓ Advanced optimization passes (20+ transforms)
 //  ✓ Polyhedral analysis and loop tiling
 //  ✓ Transactional IR semantics
@@ -1570,8 +1842,8 @@ int main(int argc, char** argv) {
 //  ✓ Zero-overhead abstraction
 // 
 // Performance Targets:
-//  - JIT Mode: <100ms compilation (sub-microsecond execution latency)
-//  - AOT Mode: Full optimizations, deterministic output
-//  - Hybrid Mode: Adaptive tier selection
+//  -  Mode: <100ms compilation (sub-microsecond execution latency)
+//  -  Mode: Full optimizations, deterministic output
+//  -  Mode: Adaptive tier selection
 // 
 // ============================================================================

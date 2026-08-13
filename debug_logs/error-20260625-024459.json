@@ -1,0 +1,29 @@
+{
+  "root": "D:\\TataG\\DGTL",
+  "module_count": 130,
+  "cycle_count": 0,
+  "declaration_cache": {"hits": 243, "misses": 0, "files_scanned": 0},
+  "logs_scanned": ["D:\\TataG\\DGTL\\build\\logs\\last-nondebug-session.log"],
+  "cycles": [
+  ],
+  "error_clusters": [
+    {"signature": "##: error: 'class", "count": 4, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 4},
+    {"signature": "##: error: 'DGTLFormalVerifier' is not a", "count": 2, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 2},
+    {"signature": "##: error: 'dgtl::ir::evolution' has not", "count": 2, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 2},
+    {"signature": "##: error: 'dgtl::graph' has not been", "count": 1, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 1},
+    {"signature": "##: error: 'evolver' was not declared in", "count": 1, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 1},
+    {"signature": "##: error: 'region' was not declared in", "count": 1, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 1},
+    {"signature": "##: error: 'verifier' was not declared", "count": 1, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 1},
+    {"signature": "##: error: 'verifier' was not declared in", "count": 1, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 1},
+    {"signature": "##:#: error: global module fragment contents", "count": 1, "likely_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"", "likely_command_hits": 1}
+  ],
+  "cache_hints": [],
+  "last_command": "dgtl build-strict",
+  "last_exit_code": "1",
+  "likely_failing_command": "g++ @\"D:\\TataG\\DGTL\\build\\obj\\dgtl_release_link.rsp\"",
+  "compiler_fingerprint": "7a2fd163db2b539d",
+  "command_fingerprint": "79f8321d6b7ff286",
+  "symbol_collisions": [{"symbol": "IRStream", "site_count": 510}, {"symbol": "find_generated_op_def", "site_count": 24}, {"symbol": "TargetMachine", "site_count": 24}, {"symbol": "dgtl::graph", "site_count": 14}, {"symbol": "dgtl::ir::evolution", "site_count": 2}, {"symbol": "RuntimeFeedback", "site_count": 2}],
+  "regression_notes": ["Previous run: identical fingerprint to previous snapshot."],
+  "ownership_recommendations": [{"symbol": "find_generated_op_def", "candidate_count": 24, "winner": "D:/TataG/DGTL/include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:6164"}, {"symbol": "IRStream", "candidate_count": 510, "winner": "D:/TataG/DGTL/include/dgtl/backend/driver/Backend_Driver_API.ixx:283"}, {"symbol": "TargetMachine", "candidate_count": 24, "winner": "D:/TataG/DGTL/include/dgtl/isa/lowering/Instruction_Selector.ixx:449"}, {"symbol": "RuntimeFeedback", "candidate_count": 2, "winner": "D:/TataG/DGTL/include/dgtl/analysis/AI_Cost_Model.ixx:45"}]
+}

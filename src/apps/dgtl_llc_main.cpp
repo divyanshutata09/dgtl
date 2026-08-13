@@ -33,16 +33,23 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <cctype>
 #include <cstring>
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/core/Target.hpp"
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/isa/lowering/Legalizer.hpp"
-#include "dgtl/isa/regalloc/X64_Reg_Map.hpp"
-#include "dgtl/jit/Hardware_Scheduler.hpp"
-#include "dgtl/analysis/AI_Cost_Model.hpp"
-#include "dgtl/backend/driver/Backend_Driver_API.hpp"
+import dgtl.arena;
+import dgtl.ir_enums;
+import dgtl.ir_node;
+import dgtl.ir_core.stream;
+import dgtl.ir_core.io;
+import dgtl.ir_core.gen;
+import dgtl.target;
+import dgtl.ir_core.legalizer;
+import dgtl.ir_core.x64_reg_map;
+import dgtl.ir_core.ai_cost_model;
+import dgtl.ir_core.hardware_scheduler;
+import dgtl.ir_core.linker_backend;
+import dgtl.ir_core.jit_orchestrator;
+import dgtl.ir_core.binary_loader;
 
 namespace dgtl_llc {
 
@@ -183,6 +190,184 @@ bool write_file(const std::string& path, const std::string& content) {
     return file.good();
 }
 
+std::string lower_ascii(std::string_view value) {
+    std::string lowered(value.size(), '\0');
+    std::transform(value.begin(), value.end(), lowered.begin(), [](unsigned char ch) noexcept {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return lowered;
+}
+
+bool parse_u32_token(std::string_view token, uint32_t& value) {
+    try {
+        std::size_t idx = 0;
+        const auto parsed = std::stoull(std::string(token), &idx, 0);
+        if (idx != token.size() || parsed > 0xFFFFFFFFu) {
+            return false;
+        }
+        value = static_cast<uint32_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::optional<dgtl::ir::OpCode> resolve_opcode_token(std::string_view token) {
+    uint32_t opcode_value = 0;
+    if (parse_u32_token(token, opcode_value)) {
+        if (opcode_value > 0xFFFFu) {
+            return std::nullopt;
+        }
+        const auto opcode = static_cast<dgtl::ir::OpCode>(opcode_value);
+        return dgtl::ir::gen::find_generated_op_def(opcode) != nullptr ? std::optional{opcode} : std::nullopt;
+    }
+
+    const std::string lowered = lower_ascii(token);
+    auto it = std::find_if(std::begin(dgtl::ir::gen::kGeneratedOpDefs), std::end(dgtl::ir::gen::kGeneratedOpDefs),
+        [&lowered](const auto& def) noexcept {
+            return lower_ascii(def.name) == lowered || lower_ascii(dgtl::ir::opcode_name(def.opcode)) == lowered;
+        });
+    return (it != std::end(dgtl::ir::gen::kGeneratedOpDefs)) ? std::optional{it->opcode} : std::nullopt;
+}
+
+void apply_ir_tail_tokens(std::istringstream& tokens,
+                          dgtl::ir::IRStream& stream,
+                          size_t node_idx,
+                          uint32_t& logic_flags,
+                          uint32_t& aux_flags) {
+    std::string field;
+    std::vector<uint32_t> legacy_numeric_fields;
+
+    while (tokens >> field) {
+        if (field.rfind("logic:", 0) == 0) {
+            uint32_t parsed = 0;
+            if (parse_u32_token(std::string_view(field).substr(6), parsed)) {
+                logic_flags = parsed;
+            }
+            continue;
+        }
+        if (field.rfind("aux:", 0) == 0) {
+            uint32_t parsed = 0;
+            if (parse_u32_token(std::string_view(field).substr(4), parsed)) {
+                aux_flags = parsed;
+            }
+            continue;
+        }
+        if (field.rfind("overflow:", 0) == 0) {
+            std::vector<uint32_t> overflow_operands;
+            std::istringstream overflow_stream(field.substr(9));
+            std::string operand;
+            while (std::getline(overflow_stream, operand, ',')) {
+                uint32_t parsed = 0;
+                if (parse_u32_token(operand, parsed)) {
+                    overflow_operands.push_back(parsed);
+                }
+            }
+            if (!overflow_operands.empty()) {
+                stream.set_operand_overflow(node_idx, overflow_operands);
+            }
+            continue;
+        }
+        if (field.rfind("results:", 0) == 0) {
+            std::vector<uint32_t> result_ids;
+            std::istringstream result_stream(field.substr(8));
+            std::string result;
+            while (std::getline(result_stream, result, ',')) {
+                uint32_t parsed = 0;
+                if (parse_u32_token(result, parsed)) {
+                    result_ids.push_back(parsed);
+                }
+            }
+            if (!result_ids.empty()) {
+                stream.set_result_ids(node_idx, result_ids);
+            }
+            continue;
+        }
+        if (field.rfind("effects:", 0) == 0) {
+            uint32_t parsed = 0;
+            if (parse_u32_token(std::string_view(field).substr(8), parsed) && parsed != 0u) {
+                stream.set_node_effects(node_idx, parsed);
+            }
+            continue;
+        }
+
+        uint32_t parsed = 0;
+        if (parse_u32_token(field, parsed)) {
+            legacy_numeric_fields.push_back(parsed);
+        }
+    }
+
+    if (!legacy_numeric_fields.empty()) {
+        if (legacy_numeric_fields.size() >= 2) {
+            logic_flags = legacy_numeric_fields[0];
+            aux_flags = legacy_numeric_fields[1];
+        } else {
+            aux_flags = legacy_numeric_fields[0];
+        }
+    }
+}
+
+bool parse_ir_text(std::string_view text, dgtl::ir::IRStream& stream) {
+    std::istringstream iss{std::string(text)};
+    std::string line;
+    std::size_t line_num = 0;
+
+    while (std::getline(iss, line)) {
+        ++line_num;
+        while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back())) != 0) {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == ';' || line[0] == '#') {
+            continue;
+        }
+
+        std::istringstream tokens(line);
+        std::string op_keyword;
+        if (!(tokens >> op_keyword) || op_keyword != "op") {
+            continue;
+        }
+
+        std::string opcode_str, result_str, op_a_str, op_b_str, op_c_str, flags_str;
+        if (!(tokens >> opcode_str >> result_str >> op_a_str >> op_b_str >> op_c_str >> flags_str)) {
+            std::cerr << "[dgtl-llc] Error: Malformed IR operation at line " << line_num << "\n";
+            return false;
+        }
+
+        uint32_t result_id = 0;
+        uint32_t op_a = 0;
+        uint32_t op_b = 0;
+        uint32_t op_c = 0;
+        uint32_t flags = 0;
+        uint32_t logic_flags = 0;
+        uint32_t aux_flags = 0;
+
+        const auto opcode = resolve_opcode_token(opcode_str);
+        if (!opcode.has_value() ||
+            !parse_u32_token(result_str, result_id) ||
+            !parse_u32_token(op_a_str, op_a) ||
+            !parse_u32_token(op_b_str, op_b) ||
+            !parse_u32_token(op_c_str, op_c) ||
+            !parse_u32_token(flags_str, flags)) {
+            std::cerr << "[dgtl-llc] Error: Parse failure at line " << line_num << "\n";
+            return false;
+        }
+
+        const dgtl::ir::IRAtom atom{*opcode, static_cast<uint16_t>(flags & 0xFFFFu)};
+        const dgtl::ir::IRCore core{result_id, op_a, op_b, op_c,
+                                    dgtl::ir::IRNode::calculate_hash(*opcode, result_id, op_a, op_b, op_c),
+                                    logic_flags, aux_flags, 0u, 0u};
+        stream.push_node(atom, core);
+
+        const size_t node_idx = stream.size() - 1;
+        apply_ir_tail_tokens(tokens, stream, node_idx, logic_flags, aux_flags);
+        auto& pushed_core = const_cast<dgtl::ir::IRCore&>(stream.get_core(node_idx));
+        pushed_core.logic_flags = logic_flags;
+        pushed_core.aux_flags = aux_flags;
+    }
+
+    return stream.validate_shadow_integrity();
+}
+
 /**
  * @brief Lower IR to target-specific code.
  */
@@ -236,10 +421,6 @@ std::string lower_ir_to_asm(
 
     if (opts.verbose) {
         std::cerr << "[dgtl-llc] Register allocation complete\n";
-    }
-
-    // Stage 3: Instruction Scheduling
-    if (opts.verbose) {
         std::cerr << "[dgtl-llc] Stage 3: Instruction Scheduling\n";
     }
 
@@ -340,14 +521,14 @@ int main(int argc, char** argv) {
     dgtl::core::DGTL_Arena arena(1, 64);
     dgtl::ir::IRStream stream(arena, 256);
 
-    // Step 3: Parse IR (placeholder; in production use binary format)
+    // Step 3: Parse IR text
     if (opts.verbose) {
         std::cerr << "[dgtl-llc] Parsing IR\n";
     }
-
-    // For now, we'll just create a minimal IR stream from the input
-    // In production, this would use a proper IR parser
-    (void)input_text;  // Suppress unused warning
+    if (!parse_ir_text(input_text, stream)) {
+        std::cerr << "Error: Failed to parse input IR\n";
+        return static_cast<int>(ExitCode::ParseError);
+    }
 
     // Step 4: Verify IR
     if (opts.verify_ir) {
@@ -382,16 +563,29 @@ int main(int argc, char** argv) {
             std::cerr << "[dgtl-llc] Assembly written to: " << opts.output_file << "\n";
         }
     } else if (opts.output_format == OutputFormat::ObjectFile) {
-        // In production: invoke external assembler (as) to convert .s -> .o
-        // For now, just write the assembly and note that assembly->object conversion is needed
-        const std::string temp_asm = opts.output_file + ".s";
-        if (!write_file(temp_asm, asm_output)) {
-            std::cerr << "Error: Could not write temporary assembly file\n";
-            return static_cast<int>(ExitCode::OutputWriteFailed);
-        }
-        if (opts.verbose) {
-            std::cerr << "[dgtl-llc] Object file generation not yet implemented\n";
-            std::cerr << "[dgtl-llc] Assembly saved to: " << temp_asm << "\n";
+        // 🚀 PRODUCTION CODEGEN: Emit native relocatable object / executable binary via StrikeOrchestrator
+        try {
+            dgtl::jit::DGTLOrchestrator orchestrator;
+            orchestrator.compile_to_binary(opts.output_file, stream);
+
+            if (opts.verbose) {
+                std::cerr << "[dgtl-llc] Native object file emitted to: " << opts.output_file << "\n";
+            }
+        } catch (const std::exception& e) {
+            // Fallback to DGTLLinker raw machine code emission on exception
+            dgtl::backend::linker::DGTLLinker linker;
+            std::vector<uint8_t> raw_bytes;
+            if (linker.build_raw_x64_machine_code(stream, raw_bytes) && !raw_bytes.empty()) {
+                std::string raw_str(reinterpret_cast<const char*>(raw_bytes.data()), raw_bytes.size());
+                if (write_file(opts.output_file, raw_str)) {
+                    if (opts.verbose) {
+                        std::cerr << "[dgtl-llc] Raw machine code written to: " << opts.output_file << "\n";
+                    }
+                    return static_cast<int>(ExitCode::Success);
+                }
+            }
+            std::cerr << "Error during native object emission: " << e.what() << "\n";
+            return static_cast<int>(ExitCode::CodegenFailed);
         }
     }
 

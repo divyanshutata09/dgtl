@@ -1,0 +1,20 @@
+{
+  "root": "D:\\TataG\\MYZON",
+  "module_count": 74,
+  "cycle_count": 0,
+  "declaration_cache": {"hits": 88, "misses": 0, "files_scanned": 0},
+  "logs_scanned": [],
+  "cycles": [
+  ],
+  "error_clusters": [
+  ],
+  "cache_hints": [],
+  "last_command": "",
+  "last_exit_code": "",
+  "likely_failing_command": "g++ -std=c++26 -fmodules-ts -O2 -pipe -I\"D:\\TataG\\MYZON\\include\" -c \"D:\\TataG\\MYZON\\src\\frontend\\lowering\\DGTLAdapter.cpp\" -o \"D:\\TataG\\MYZON\\build\\obj\\build-tools\\frontend_lowering_DGTLAdapter.o\"",
+  "compiler_fingerprint": "e4773bf35045cb98",
+  "command_fingerprint": "185331926cb8d0ca",
+  "symbol_collisions": [],
+  "regression_notes": ["Previous run: identical fingerprint to previous snapshot."],
+  "ownership_recommendations": []
+}

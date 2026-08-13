@@ -39,8 +39,8 @@ A backend is considered reveal-ready when all conditions below are true:
 - COFF library: `cofflib` (`.lib`, first linker member + COFF member)
 - Mach-O ARM64: `macho` (MH_MAGIC_64, LC_SEGMENT_64 + LC_SYMTAB)
 
-### JIT Execution (reveal-ready)
-- `--jit-execute` via StrikeOrchestrator (x64, requires `DGTL_STRIKE_EXECUTE=1`)
+###  Execution (reveal-ready)
+- `---execute` via StrikeOrchestrator (x64, requires `DGTL_STRIKE_EXECUTE=1`)
 
 ## Suggested Validation Sequence
 
@@ -61,9 +61,9 @@ dgtl bench-backend arm64 fold
 .\build\dgtl_release.exe --backend cofflib --emit-output build\out\kernel.lib
 .\build\dgtl_release.exe --backend macho --emit-output build\out\kernel.macho
 
-# JIT execution
+#  execution
 $env:DGTL_STRIKE_EXECUTE="1"
-.\build\dgtl_release.exe --backend x64 --jit-execute
+.\build\dgtl_release.exe --backend x64 ---execute
 $env:DGTL_STRIKE_EXECUTE=""
 ```
 
@@ -94,7 +94,7 @@ Public messaging should position DGTL as:
 - x86-64 bridged with parity evidence
 - NASM/WASM available with documented constraints
 - Native object/library emission for all major platforms (ELF, COFF, Mach-O)
-- JIT execution with closed-loop AI cost feedback
+-  execution with closed-loop AI cost feedback
 - 9 backend targets from a single production binary
 
 ## Exit Condition

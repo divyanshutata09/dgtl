@@ -662,7 +662,7 @@ void IRStream::evolve_node(IRNode* node) {
     // Hook for IR evolution - in production this would integrate with IREvolver
     // For now, this is a placeholder for the self-evolving IR system
     // The evolution would be driven by:
-    // - Runtime feedback from JIT execution
+    // - Runtime feedback from  execution
     // - Cost model predictions
     // - Workload pattern analysis
     

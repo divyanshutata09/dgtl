@@ -15,7 +15,7 @@
 
 ### Summary Points
 - Prelaunch status: Conditionally ready, with focused release blockers to resolve before broad rollout.
-- Architecture posture: Strong modular layering across IR, analysis, pass, pipeline, ISA, and JIT domains.
+- Architecture posture: Strong modular layering across IR, analysis, pass, pipeline, ISA, and  domains.
 - Validation posture: Backend conformance workflow exists and is deterministic in design.
 - Performance posture: Good baseline strategy with cost-model integration, transactional pass mechanics, and backend specialization.
 - Safety posture: Strong intent around invariants, transactional rollback semantics, and explicit error paths.
@@ -47,7 +47,7 @@ DGTL is positioned as a high-performance, retargetable compiler/runtime stack wh
   - Core and IR establish contracts and represent semantics.
   - Analysis and graph modules compute optimization and scheduling signals.
   - Pass and pipeline modules transform IR under policy control.
-  - ISA and JIT modules lower and execute with backend-specific rigor.
+  - ISA and  modules lower and execute with backend-specific rigor.
 - Transactional mutation model:
   - Mutate shadow or staged state.
   - Validate invariants.

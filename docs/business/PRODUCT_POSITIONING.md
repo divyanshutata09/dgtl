@@ -19,7 +19,7 @@ DGTL is a commercial multi-target compiler backend and optimization engine for t
 
 ## Short Elevator Pitch
 
-DGTL gives frontend and runtime teams a fast path to deterministic, optimized code generation across ARM64, x64, NASM, WASM, ELF .o, COFF .obj/.lib, and Mach-O — plus JIT execution — without building a full backend stack from scratch.
+DGTL gives frontend and runtime teams a fast path to deterministic, optimized code generation across ARM64, x64, NASM, WASM, ELF .o, COFF .obj/.lib, and Mach-O — plus  execution — without building a full backend stack from scratch.
 
 ## What DGTL Is
 
@@ -90,7 +90,7 @@ DGTL includes conformance and strict build workflows designed to catch backend r
 
 ### 3. Multi-target coverage
 
-DGTL already focuses on ARM64, x64, NASM, WASM, plus native object/library emission (ELF .o, GNU .a, COFF .obj, COFF .lib, Mach-O) and JIT execution.
+DGTL already focuses on ARM64, x64, NASM, WASM, plus native object/library emission (ELF .o, GNU .a, COFF .obj, COFF .lib, Mach-O) and  execution.
 
 ### 4. Commercial support leverage
 

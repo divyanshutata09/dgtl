@@ -1,0 +1,138 @@
+DGTL Forensic Debugger
+Root: D:\TataG\DGTL
+
+Last command: dgtl build-strict
+Last exit code: 1
+Compiler fingerprint: 7a2fd163db2b539d
+Command fingerprint: 79f8321d6b7ff286
+Declaration cache: 243 hits, 0 misses, 0 rescanned files
+Likely failing command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+Last session log: build/logs/last-nondebug-session.log
+
+[1] Module Graph
+  Modules discovered: 130
+  Cycles detected:    0
+
+[2] Error Clusters
+  Logs scanned: 1
+  Clusters: 9
+  - (x4) ##: error: 'class
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (4 hits)
+       :: 46: error: 'class
+       :: 45: error: 'class
+       :: 44: error: 'class
+       :: 45: error: 'class
+  - (x2) ##: error: 'DGTLFormalVerifier' is not a
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (2 hits)
+       :: 21: error: 'DGTLFormalVerifier' is not a
+       :: 21: error: 'DGTLFormalVerifier' is not a
+  - (x2) ##: error: 'dgtl::ir::evolution' has not
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (2 hits)
+       :: 19: error: 'dgtl::ir::evolution' has not
+       :: 81: error: 'dgtl::ir::evolution' has not
+  - (x1) ##: error: 'dgtl::graph' has not been
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (1 hits)
+       :: 15: error: 'dgtl::graph' has not been
+  - (x1) ##: error: 'evolver' was not declared in
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (1 hits)
+       :: 29: error: 'evolver' was not declared in
+  - (x1) ##: error: 'region' was not declared in
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (1 hits)
+       :: 48: error: 'region' was not declared in
+  - (x1) ##: error: 'verifier' was not declared
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (1 hits)
+       :: 71: error: 'verifier' was not declared
+  - (x1) ##: error: 'verifier' was not declared in
+      command: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp" (1 hits)
+       :: 66: error: 'verifier' was not declared in
+
+[2a] Failing Command Context
+  - ##: error: 'class
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 4
+  - ##: error: 'DGTLFormalVerifier' is not a
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 2
+  - ##: error: 'dgtl::ir::evolution' has not
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 2
+  - ##: error: 'dgtl::graph' has not been
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 1
+  - ##: error: 'evolver' was not declared in
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 1
+  - ##: error: 'region' was not declared in
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 1
+  - ##: error: 'verifier' was not declared
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 1
+  - ##: error: 'verifier' was not declared in
+      compile step: g++ @"D:\TataG\DGTL\build\obj\dgtl_release_link.rsp"
+      evidence hits: 1
+
+[3] Cache & Cycle Hints
+  No cache-specific hints emitted.
+
+[4] Symbol Collision Radar
+  Dynamic suspect symbols: 8
+  Suspect symbols: 6
+  - IRStream appears at 510 sites
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:90 :: void analyze_stream(const ir::IRStream& stream) {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:198 :: [[nodiscard]] float predict_alias_probability(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) noexcept {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:232 :: [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
+  - find_generated_op_def appears at 24 sites
+      include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:217 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
+      include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:249 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
+      include/dgtl/ir/base/IR_SSA.ixx:1377 :: const auto* def = dgtl::ir::gen::find_generated_op_def(node.opcode);
+  - TargetMachine appears at 24 sites
+      include/dgtl/core/Target.ixx:379 :: class alignas(64) TargetMachine {
+      include/dgtl/core/Target.ixx:503 :: using TargetMachine  = dgtl::core::TargetMachine;
+      include/dgtl/graph/IR_GraphEdgeClusterRegion.ixx:370 :: void schedule(const dgtl::core::TargetMachine& target);
+  - dgtl::graph appears at 14 sites
+      include/dgtl/analysis/AI_Cost_Model.ixx:93 :: [[nodiscard]] float predict_region_cost(const dgtl::graph::Region& region) const noexcept {
+      include/dgtl/analysis/Polyhedral_Scop_Unified.ixx:92 :: [[nodiscard]] ScopMetadata analyze_region(const dgtl::graph::Region& region) const;
+      include/dgtl/analysis/Polyhedral_Scop_Unified.ixx:95 :: const std::vector<std::unique_ptr<dgtl::graph::Region>>& regions) const;
+  - dgtl::ir::evolution appears at 2 sites
+      include/dgtl/ir/evolver/IR_Evolver_Mutation.ixx:67 :: export namespace dgtl::ir::evolution { struct ExecutionFeedback; }
+      include/dgtl/ir/evolver/IR_Evolver_Mutation.ixx:80 :: [[nodiscard]] inline float node_hotness_impl(const dgtl::ir::evolution::ExecutionFeedback& fb, size_t i) noexcept;
+  - RuntimeFeedback appears at 2 sites
+      include/dgtl/analysis/AI_Cost_Model.ixx:45 :: struct RuntimeFeedback {
+      include/dgtl/analysis/AI_Cost_Model.ixx:118 :: void update_with_feedback(const dgtl::ir::IRNode& node, const RuntimeFeedback& feedback) {
+
+[5] Ownership Arbitration
+  Recommendations: 4
+  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:6164 (score 110)
+      why: inside DGTL workspace, generated-definition ownership path, importable generated IR interface, inline or constexpr definition
+      6162: }();
+      6163: 
+      6164: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
+      6165:     const size_t index = static_cast<size_t>(opcode);
+      6166:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+  - IRStream -> include/dgtl/backend/driver/Backend_Driver_API.ixx:283 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      281: }
+      282: 
+      283: inline bool emit_arm64_direct(const dgtl::ir::IRStream& stream,
+      284:                               const dgtl::semantic::SymbolTable& symbols,
+      285:                               std::string& out_text) {
+  - TargetMachine -> include/dgtl/isa/lowering/Instruction_Selector.ixx:449 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      447: }
+      448: 
+      449: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
+      450:     if (rule.require_fma && !target.get_caps().has_fma) {
+      451:         return false;
+  - RuntimeFeedback -> include/dgtl/analysis/AI_Cost_Model.ixx:45 (score 20)
+      why: inside DGTL workspace
+      43: 
+      44: // 🚀 PRODUCTION RESOLUTION: True, fully-defined exported struct attaches layout to this module unit.
+      45: struct RuntimeFeedback {
+      46:     double actual_latency = 0.0;
+      47:     double cache_miss_rate = 0.0;
+
+[6] Staff-Level Triage
+  Primary structural risk: no import SCCs detected in scanned units.
+  Primary execution risk: fix the highest-frequency error cluster first because downstream diagnostics are likely derivative noise.
+  Regression: Previous run: identical fingerprint to previous snapshot.

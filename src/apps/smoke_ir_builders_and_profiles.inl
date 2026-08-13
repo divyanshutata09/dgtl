@@ -97,6 +97,20 @@ bool build_predication_ir(dgtl::ir::IRStream& stream) {
     return stream.size() == 4;
 }
 
+bool build_replay_ir(dgtl::ir::IRStream& stream) {
+    stream.reset();
+    stream.begin_transaction();
+    stream.push_node(dgtl::ir::OpCode::LABEL, dgtl::ir::Flags::NONE, 100, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 1, 0, 1, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 2, 0, 0, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::BOOL_SELECT, dgtl::ir::Flags::IS_PREDICATED, 3, 1, 2, 1, 0);
+    stream.push_node(dgtl::ir::OpCode::ACQUIRE_FENCE, dgtl::ir::Flags::NONE, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::RELEASE_FENCE, dgtl::ir::Flags::NONE, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::IS_RETURN, 0, 3, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, 0);
+    stream.commit_transaction();
+    return stream.size() == 7;
+}
+
 // Bench-specific variants: same IR as the smoke builders but include a RET so
 // the full chain stays live through DCE and emission does not fail.
 bool build_fusion_bench_ir(dgtl::ir::IRStream& stream) {
@@ -142,6 +156,7 @@ std::string_view profile_name(BenchmarkProfile profile) {
         case BenchmarkProfile::simd:     return "simd";
         case BenchmarkProfile::pressure: return "pressure";
         case BenchmarkProfile::predication: return "predication";
+        case BenchmarkProfile::replay: return "replay";
     }
     return "unknown";
 }
@@ -153,17 +168,20 @@ bool build_ir_for_profile(dgtl::ir::IRStream& stream, BenchmarkProfile profile, 
         case BenchmarkProfile::simd:     return build_simd_bench_ir(stream);
         case BenchmarkProfile::pressure: return build_pressure_ir(stream, vars);
         case BenchmarkProfile::predication: return build_predication_ir(stream);
+        case BenchmarkProfile::replay:   return build_replay_ir(stream);
     }
     return false;
 }
 
 void run_core_optimizations(dgtl::ir::IRStream& stream) {
-    stream.perform_gvn();
+    dgtl::pass::transform::DGTLGVN gvn;
+    gvn.execute(stream);
     dgtl::pass::DGTLTemporalVectorFusion temporal_fusion;
     temporal_fusion.execute(stream);
     dgtl::pass::transform::DGTLMaskedPredicationLowering masked_predication;
     masked_predication.execute(stream);
-    stream.perform_dead_code_elimination();
+    dgtl::pass::transform::DeadCodeElimination dce;
+    dce.execute(stream);
 }
 
 std::optional<dgtl::ir::IRNode> find_node_by_result(const dgtl::ir::IRStream& stream, uint32_t result_id) {

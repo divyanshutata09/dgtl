@@ -34,12 +34,17 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <cctype>
 #include <cstring>
 #include <iomanip>
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/formal/Formal_Verification_SMT.hpp"
+import dgtl.arena;
+import dgtl.ir_enums;
+import dgtl.ir_node;
+import dgtl.ir_core.stream;
+import dgtl.ir_core.io;
+import dgtl.ir_core.gen;
+import dgtl.ir_core.formal_verification_smt;
 
 namespace dgtl_verify {
 
@@ -110,16 +115,16 @@ bool parse_args(int argc, char** argv, Options& opts) {
         }
         if (arg == "--verbose") {
             opts.verbose = true;
-        } else if (arg.substr(0, 12) == "--original=") {
-            opts.original_file = std::string(arg.substr(12));
-        } else if (arg.substr(0, 13) == "--optimized=") {
-            opts.optimized_file = std::string(arg.substr(13));
+        } else if (arg.substr(0, 11) == "--original=") {
+            opts.original_file = std::string(arg.substr(11));
+        } else if (arg.substr(0, 12) == "--optimized=") {
+            opts.optimized_file = std::string(arg.substr(12));
         } else if (arg.substr(0, 7) == "--pass=") {
             opts.pass_name = std::string(arg.substr(7));
         } else if (arg.substr(0, 9) == "--solver=") {
             opts.solver_name = std::string(arg.substr(9));
-        } else if (arg.substr(0, 8) == "--output=") {
-            opts.output_report = std::string(arg.substr(8));
+        } else if (arg.substr(0, 9) == "--output=") {
+            opts.output_report = std::string(arg.substr(9));
         } else if (arg.substr(0, 9) == "--smtlib=") {
             opts.generate_smtlib = true;
             opts.output_report = std::string(arg.substr(9));
@@ -175,6 +180,185 @@ bool write_file(const std::string& path, const std::string& content) {
     }
     file.write(content.data(), static_cast<std::streamsize>(content.size()));
     return file.good();
+}
+
+std::string lower_ascii(std::string_view value) {
+    std::string lowered(value.size(), '\0');
+    std::transform(value.begin(), value.end(), lowered.begin(), [](unsigned char ch) noexcept {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return lowered;
+}
+
+bool parse_u32_token(std::string_view token, uint32_t& value) {
+    try {
+        std::size_t idx = 0;
+        const auto parsed = std::stoull(std::string(token), &idx, 0);
+        if (idx != token.size() || parsed > 0xFFFFFFFFu) {
+            return false;
+        }
+        value = static_cast<uint32_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::optional<dgtl::ir::OpCode> resolve_opcode_token(std::string_view token) {
+    uint32_t opcode_value = 0;
+    if (parse_u32_token(token, opcode_value)) {
+        if (opcode_value > 0xFFFFu) {
+            return std::nullopt;
+        }
+        const auto opcode = static_cast<dgtl::ir::OpCode>(opcode_value);
+        return dgtl::ir::gen::find_generated_op_def(opcode) != nullptr ? std::optional{opcode} : std::nullopt;
+    }
+
+    const std::string lowered = lower_ascii(token);
+    auto it = std::find_if(std::begin(dgtl::ir::gen::kGeneratedOpDefs), std::end(dgtl::ir::gen::kGeneratedOpDefs),
+        [&lowered](const auto& def) noexcept {
+            return lower_ascii(def.name) == lowered || lower_ascii(dgtl::ir::opcode_name(def.opcode)) == lowered;
+        });
+    return (it != std::end(dgtl::ir::gen::kGeneratedOpDefs)) ? std::optional{it->opcode} : std::nullopt;
+}
+
+void apply_ir_tail_tokens(std::istringstream& tokens,
+                          dgtl::ir::IRStream& stream,
+                          size_t node_idx,
+                          uint32_t& logic_flags,
+                          uint32_t& aux_flags) {
+    std::string field;
+    std::vector<uint32_t> legacy_numeric_fields;
+
+    while (tokens >> field) {
+        if (field.rfind("logic:", 0) == 0) {
+            uint32_t parsed = 0;
+            if (parse_u32_token(std::string_view(field).substr(6), parsed)) {
+                logic_flags = parsed;
+            }
+            continue;
+        }
+        if (field.rfind("aux:", 0) == 0) {
+            uint32_t parsed = 0;
+            if (parse_u32_token(std::string_view(field).substr(4), parsed)) {
+                aux_flags = parsed;
+            }
+            continue;
+        }
+        if (field.rfind("overflow:", 0) == 0) {
+            std::vector<uint32_t> overflow_operands;
+            std::istringstream overflow_stream(field.substr(9));
+            std::string operand;
+            while (std::getline(overflow_stream, operand, ',')) {
+                uint32_t parsed = 0;
+                if (parse_u32_token(operand, parsed)) {
+                    overflow_operands.push_back(parsed);
+                }
+            }
+            if (!overflow_operands.empty()) {
+                stream.set_operand_overflow(node_idx, overflow_operands);
+            }
+            continue;
+        }
+        if (field.rfind("results:", 0) == 0) {
+            std::vector<uint32_t> result_ids;
+            std::istringstream result_stream(field.substr(8));
+            std::string result;
+            while (std::getline(result_stream, result, ',')) {
+                uint32_t parsed = 0;
+                if (parse_u32_token(result, parsed)) {
+                    result_ids.push_back(parsed);
+                }
+            }
+            if (!result_ids.empty()) {
+                stream.set_result_ids(node_idx, result_ids);
+            }
+            continue;
+        }
+        if (field.rfind("effects:", 0) == 0) {
+            uint32_t parsed = 0;
+            if (parse_u32_token(std::string_view(field).substr(8), parsed) && parsed != 0u) {
+                stream.set_node_effects(node_idx, parsed);
+            }
+            continue;
+        }
+
+        uint32_t parsed = 0;
+        if (parse_u32_token(field, parsed)) {
+            legacy_numeric_fields.push_back(parsed);
+        }
+    }
+
+    if (!legacy_numeric_fields.empty()) {
+        if (legacy_numeric_fields.size() >= 2) {
+            logic_flags = legacy_numeric_fields[0];
+            aux_flags = legacy_numeric_fields[1];
+        } else {
+            aux_flags = legacy_numeric_fields[0];
+        }
+    }
+}
+
+bool parse_ir_text(std::string_view text, dgtl::ir::IRStream& stream, std::string_view label) {
+    std::istringstream iss{std::string(text)};
+    std::string line;
+    std::size_t line_num = 0;
+
+    while (std::getline(iss, line)) {
+        ++line_num;
+        while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back())) != 0) {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == ';' || line[0] == '#') {
+            continue;
+        }
+
+        std::istringstream tokens(line);
+        std::string op_keyword;
+        if (!(tokens >> op_keyword) || op_keyword != "op") {
+            continue;
+        }
+
+        std::string opcode_str, result_str, op_a_str, op_b_str, op_c_str, flags_str;
+        if (!(tokens >> opcode_str >> result_str >> op_a_str >> op_b_str >> op_c_str >> flags_str)) {
+            std::cerr << "[dgtl-verify] Error: Malformed " << label << " IR at line " << line_num << "\n";
+            return false;
+        }
+
+        uint32_t result_id = 0;
+        uint32_t op_a = 0;
+        uint32_t op_b = 0;
+        uint32_t op_c = 0;
+        uint32_t flags = 0;
+        uint32_t logic_flags = 0;
+        uint32_t aux_flags = 0;
+
+        const auto opcode = resolve_opcode_token(opcode_str);
+        if (!opcode.has_value() ||
+            !parse_u32_token(result_str, result_id) ||
+            !parse_u32_token(op_a_str, op_a) ||
+            !parse_u32_token(op_b_str, op_b) ||
+            !parse_u32_token(op_c_str, op_c) ||
+            !parse_u32_token(flags_str, flags)) {
+            std::cerr << "[dgtl-verify] Error: Parse failure in " << label << " IR at line "
+                      << line_num << "\n";
+            return false;
+        }
+
+        const dgtl::ir::IRAtom atom{*opcode, static_cast<uint16_t>(flags & 0xFFFFu)};
+        const dgtl::ir::IRCore core{result_id, op_a, op_b, op_c,
+                                    dgtl::ir::IRNode::calculate_hash(*opcode, result_id, op_a, op_b, op_c),
+                                    logic_flags, aux_flags, 0u, 0u};
+        stream.push_node(atom, core);
+
+        const size_t node_idx = stream.size() - 1;
+        apply_ir_tail_tokens(tokens, stream, node_idx, logic_flags, aux_flags);
+        auto& pushed_core = const_cast<dgtl::ir::IRCore&>(stream.get_core(node_idx));
+        pushed_core.logic_flags = logic_flags;
+        pushed_core.aux_flags = aux_flags;
+    }
+
+    return stream.validate_shadow_integrity();
 }
 
 std::string level_to_string(VerificationLevel level) {
@@ -236,8 +420,16 @@ int main(int argc, char** argv) {
     dgtl::ir::IRStream original_ir(arena, 256);
     dgtl::ir::IRStream optimized_ir(arena, 256);
 
+    if (!parse_ir_text(orig_text, original_ir, "original")) {
+        return static_cast<int>(ExitCode::ParseError);
+    }
+    if (!parse_ir_text(opt_text, optimized_ir, "optimized")) {
+        return static_cast<int>(ExitCode::ParseError);
+    }
+
     if (opts.verbose) {
-        std::cerr << "[dgtl-verify] IR streams created\n";
+        std::cerr << "[dgtl-verify] IR streams created: original=" << original_ir.size()
+                  << " optimized=" << optimized_ir.size() << "\n";
     }
 
     // Step 3: Perform formal verification

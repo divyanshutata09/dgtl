@@ -17,7 +17,7 @@ void run_test_pipeline_11_gather_16_strike() {
     constexpr size_t kArenaMbPerThread = 2;
     constexpr size_t kReservedNodes = 64;
     constexpr dgtl::ir::Flags kGatherFlags =
-        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::HintFlags::RequiresVecPort);
+        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST);
 
     std::cout << "--- [DGTL-TEST] 11_gather_16_strike ---\n";
 
@@ -45,7 +45,7 @@ void run_test_pipeline_11_gather_16_strike() {
     if (stream.size() == 2 &&
         n0.opcode == dgtl::ir::OpCode::GATHER_16 &&
         (n0.flags & dgtl::ir::Flags::IS_SIMD_BURST) &&
-        (n0.flags & dgtl::ir::HintFlags::RequiresVecPort) &&
+        (n0.logic_flags & dgtl::ir::HintFlags::RequiresVecPort) &&
         !asm_out.empty()) {
         std::cout << "SUCCESS\n";
         return;

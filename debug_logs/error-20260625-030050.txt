@@ -1,0 +1,31 @@
+DGTL Forensic Debugger
+Root: D:\TataG\MYZON
+
+Compiler fingerprint: 10a3757a4128fa88
+Command fingerprint: 350cd6dbd1d16788
+Declaration cache: 87 hits, 0 misses, 0 rescanned files
+Likely failing command: g++ -std=c++26 -fmodules-ts -O0 -pipe -I"D:\TataG\MYZON\include" -c "D:\TataG\MYZON\include\myzon\frontend\utils\ConcurrencySafety.ixx" -o "D:\TataG\MYZON\build\obj\modules\myzon_frontend_utils_ConcurrencySafety.o"
+[1] Module Graph
+  Modules discovered: 74
+  Cycles detected:    0
+
+[2] Error Clusters
+  Logs scanned: 0
+  Clusters: 0
+
+[2a] Failing Command Context
+  No error clusters available for command attribution.
+
+[3] Cache & Cycle Hints
+  No cache-specific hints emitted.
+
+[4] Symbol Collision Radar
+  Dynamic suspect symbols: 5
+  Suspect symbols: 0
+
+[5] Ownership Arbitration
+  Recommendations: 0
+
+[6] Staff-Level Triage
+  Primary structural risk: no import SCCs detected in scanned units.
+  Regression: Previous run: identical fingerprint to previous snapshot.

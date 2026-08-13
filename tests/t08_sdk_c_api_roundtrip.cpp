@@ -40,6 +40,15 @@ void run_test_t08_sdk_c_api_roundtrip() {
 
     dgtl_emit_return(stream, sum);
 
+    // --- new C-API structures (Myzon lowering tunnels) ---
+    dgtl_emit_label_slot(stream, 10);
+    dgtl_emit_label_slot(stream, 20);
+    dgtl_emit_constant_str(stream, 12, "test_string", 11);
+    dgtl_emit_hardware_affinity(stream, 1);
+    dgtl_emit_branch_predictive(stream, c1, 10, 20, 200);
+    uint32_t val = dgtl_emit_op_with_result(stream, 15, DGTL_OP_ADD_I64, c1, c2, 0, 0);
+    require(val == 15, "dgtl_emit_op_with_result should return slot 15");
+
     // --- node count ---
     const size_t count = dgtl_stream_node_count(stream);
     require(count >= 3, "dgtl_stream_node_count() should be >= 3 after const+add+return");

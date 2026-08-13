@@ -133,7 +133,7 @@ SELECT U.city, COUNT(*) as count
 
 ### Overview
 
-Rule 79 defines model operations with tensor layer definitions and compilation modes (AOT/JIT/HYBRID).
+Rule 79 defines model operations with tensor layer definitions and compilation modes (//).
 
 The ML Optimizer implements three passes:
 

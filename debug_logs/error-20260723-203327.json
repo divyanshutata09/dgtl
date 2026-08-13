@@ -1,0 +1,20 @@
+{
+  "root": "D:\\TataG\\MYZON",
+  "module_count": 83,
+  "cycle_count": 0,
+  "declaration_cache": {"hits": 116, "misses": 0, "files_scanned": 0},
+  "logs_scanned": ["D:\\TataG\\MYZON\\build_output.txt", "D:\\TataG\\MYZON\\liberror.txt", "D:\\TataG\\MYZON\\liberror_current.txt", "D:\\TataG\\MYZON\\loglib.txt"],
+  "cycles": [
+  ],
+  "error_clusters": [
+  ],
+  "cache_hints": [],
+  "last_command": "",
+  "last_exit_code": "",
+  "likely_failing_command": "",
+  "compiler_fingerprint": "",
+  "command_fingerprint": "4d8301b23df6550a",
+  "symbol_collisions": [],
+  "regression_notes": ["Previous run: identical fingerprint to previous snapshot."],
+  "ownership_recommendations": []
+}

@@ -1,8 +1,8 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
  * Repository: github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
@@ -36,18 +36,25 @@ typedef enum dgtl_simd_arch {
 
 /* ---------- SIMD Lane Configuration ---------- */
 #define DGTL_SIMD_MAX_LANES_AVX512   16  /* 512-bit / 32-bit = 16 lanes */
-#define DGTL_SIMD_MAX_LANES_AVX2       8  /* 256-bit / 32-bit = 8 lanes  */
+#define DGTL_SIMD_MAX_LANES_AVX2      8  /* 256-bit / 32-bit = 8 lanes  */
 #define DGTL_SIMD_MAX_LANES_NEON      4  /* 128-bit / 32-bit = 4 lanes  */
 #define DGTL_SIMD_MAX_LANES_WASM128   4  /* 128-bit / 32-bit = 4 lanes  */
 
 /* ---------- SIMD-Aware IR Emission ---------- */
 
 /**
- * Emit a fused-multiply-add: result = (a * b) + c
+ * Emit a 32-bit floating point fused-multiply-add: result = (a * b) + c
  * Flags automatically set: DGTL_FLAG_FMA_FUSED | DGTL_FLAG_IS_FP
  */
 DGTL_API uint32_t dgtl_emit_fma(dgtl_stream_t* s,
-                                 uint32_t a, uint32_t b, uint32_t c);
+                                uint32_t a, uint32_t b, uint32_t c);
+
+/**
+ * Emit a 64-bit floating point fused-multiply-add: result = (a * b) + c
+ * Flags automatically set: DGTL_FLAG_FMA_FUSED | DGTL_FLAG_IS_FP
+ */
+DGTL_API uint32_t dgtl_emit_fma_f64(dgtl_stream_t* s,
+                                    uint32_t a, uint32_t b, uint32_t c);
 
 /**
  * Emit a gather load from base + index vector.
@@ -55,7 +62,7 @@ DGTL_API uint32_t dgtl_emit_fma(dgtl_stream_t* s,
 DGTL_API uint32_t dgtl_emit_gather(dgtl_stream_t* s,
                                     uint32_t base_slot,
                                     uint32_t index_slot,
-                                    uint16_t flags);
+                                    uint32_t flags);
 
 /**
  * Emit a scatter store to base + index vector.
@@ -64,7 +71,42 @@ DGTL_API uint32_t dgtl_emit_scatter(dgtl_stream_t* s,
                                      uint32_t base_slot,
                                      uint32_t index_slot,
                                      uint32_t value_slot,
-                                     uint16_t flags);
+                                     uint32_t flags);
+
+/**
+ * Emit a 512-bit vector addition (32-bit float lanes).
+ */
+DGTL_API uint32_t dgtl_emit_vec_add_f32_512(dgtl_stream_t* s,
+                                            uint32_t lhs,
+                                            uint32_t rhs);
+
+/**
+ * Emit a 512-bit vector multiplication (32-bit float lanes).
+ */
+DGTL_API uint32_t dgtl_emit_vec_mul_f32_512(dgtl_stream_t* s,
+                                            uint32_t lhs,
+                                            uint32_t rhs);
+
+/**
+ * Emit a 512-bit vector addition (64-bit float lanes).
+ */
+DGTL_API uint32_t dgtl_emit_vec_add_f64_512(dgtl_stream_t* s,
+                                            uint32_t lhs,
+                                            uint32_t rhs);
+
+/**
+ * Emit a 512-bit vector multiplication (64-bit float lanes).
+ */
+DGTL_API uint32_t dgtl_emit_vec_mul_f64_512(dgtl_stream_t* s,
+                                            uint32_t lhs,
+                                            uint32_t rhs);
+
+/**
+ * Emit a 512-bit vector store.
+ */
+DGTL_API uint32_t dgtl_emit_store_v512(dgtl_stream_t* s,
+                                       uint32_t addr_id,
+                                       uint32_t val_id);
 
 /* ---------- SIMD Legalization ---------- */
 

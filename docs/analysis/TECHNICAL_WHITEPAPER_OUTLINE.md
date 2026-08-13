@@ -48,7 +48,7 @@ Do not share:
 - Transactional semantics and safety boundaries
 
 3. Register Allocation Strategy (Conceptual)
-- Allocator family (for example, graph-coloring hybrid)
+- Allocator family (for example, graph-coloring )
 - Pressure-handling goals and spill policy intent
 - How tuning differs by backend class
 

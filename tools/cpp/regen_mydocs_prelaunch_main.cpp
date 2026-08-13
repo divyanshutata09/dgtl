@@ -66,7 +66,7 @@ bool write_all(const fs::path& p, std::string_view content) {
     return out;
 }
 
-[[nodiscard]] std::string join_lines(const std::vector<std::string>& lines) {
+[[nodiscard, maybe_unused]] std::string join_lines(const std::vector<std::string>& lines) {
     std::string out;
     for (const auto& l : lines) {
         out += l;
@@ -96,7 +96,7 @@ bool write_all(const fs::path& p, std::string_view content) {
     if (std::regex_search(s, std::regex("emitter|encoder|lowering|linker|target", std::regex::icase))) {
         return "Lower IR into target-specific representation while preserving semantic correctness.";
     }
-    if (std::regex_search(s, std::regex("jit|runtime|orchestrator|scheduler", std::regex::icase))) {
+    if (std::regex_search(s, std::regex("|runtime|orchestrator|scheduler", std::regex::icase))) {
         return "Drive runtime execution, specialization, and backend dispatch with predictable checks.";
     }
     if (std::regex_search(s, std::regex("pass|transform|legalizer|optimizer|dce|gvn|folder", std::regex::icase))) {
@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
     const fs::path include_root = root / "include/dgtl";
     const fs::path my_docs = root / "My_Docs";
 
-    const std::vector<std::string> top_folders = {"analysis", "core", "graph", "ir", "isa", "jit", "pass", "pipeline"};
+    const std::vector<std::string> top_folders = {"analysis", "core", "graph", "ir", "isa", "", "pass", "pipeline"};
 
     std::size_t generated = 0;
     for (const auto& top : top_folders) {
@@ -127,14 +127,15 @@ int main(int argc, char** argv) {
 
         for (auto it = fs::recursive_directory_iterator(src_top), end = fs::recursive_directory_iterator(); it != end; ++it) {
             if (!it->is_regular_file()) continue;
-            if (it->path().extension() != ".hpp") continue;
+            const auto ext = it->path().extension();
+            if (ext != ".ixx") continue;
 
             const fs::path header = it->path();
             const fs::path rel = fs::relative(header, src_top);
             const fs::path out_path = my_docs / top / rel.parent_path() / (rel.filename().string() + ".md");
 
             const std::string content = read_all(header);
-            const auto includes = regex_lines(content, std::regex(R"(^\s*#include\s+[<"].+[>"])", std::regex::icase), 200);
+            const auto includes = regex_lines(content, std::regex(R"(^\s*(?:#include\s+[<"].+[>"]|(?:export\s+)?import\s+[^;]+;))", std::regex::icase), 200);
             const auto classes = regex_lines(content, std::regex(R"(^\s*class\s+[A-Za-z_][A-Za-z0-9_]*)", std::regex::icase), 120);
             const auto structs = regex_lines(content, std::regex(R"(^\s*struct\s+[A-Za-z_][A-Za-z0-9_]*)", std::regex::icase), 120);
             const auto funcs = regex_lines(content, std::regex(R"(^\s*(?:\[\[nodiscard\]\]\s*)?(?:inline\s+)?(?:static\s+)?(?:virtual\s+)?[A-Za-z_][A-Za-z0-9_:<>,\s*&]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*(?:const)?\s*(?:noexcept)?\s*(?:override)?\s*(?:=\s*0)?\s*[{;]$)", std::regex::icase), 300);

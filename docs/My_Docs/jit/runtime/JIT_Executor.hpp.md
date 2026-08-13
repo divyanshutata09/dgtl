@@ -9,9 +9,9 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-# JIT_Executor.hpp
+# _Executor.hpp
 
-Source Header: include/dgtl/jit/runtime/JIT_Executor.hpp
+Source Header: include/dgtl//runtime/_Executor.hpp
 Last Synced: 2026-04-14 19:46:41
 
 ## Vision
@@ -65,7 +65,7 @@ D --> T[Error Path or Trap]
 
 ## Class and Struct Catalog
 ### Classes
-- class alignas(64) DGTLJitExecutor {
+- class alignas(64) DGTLExecutor {
 ### Structs
 - struct TraceMeta {
 
@@ -73,8 +73,8 @@ D --> T[Error Path or Trap]
 - none detected
 
 ## Function Catalog
-- JitFunction load_and_prepare(std::span<const uint8_t> binary, const dgtl::ir::IRStream& source_ir) {
-- std::lock_guard<std::mutex> lock(jit_mtx);
+- Function load_and_prepare(std::span<const uint8_t> binary, const dgtl::ir::IRStream& source_ir) {
+- std::lock_guard<std::mutex> lock(_mtx);
 - dgtl::ir::IRStream get_ir_from_address(uint64_t address) {
 - dgtl::analysis::RuntimeFeedback collect_feedback(uintptr_t function_id) {
 - void sync_caches(void* ptr, size_t size) noexcept {

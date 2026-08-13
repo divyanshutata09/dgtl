@@ -42,9 +42,11 @@ bool emit_x64(const dgtl::ir::IRStream& stream,
 		*out_fallback_ops = 0;
 	}
 	dgtl::isa::X64StrikeEmitter emitter;
-	emitter.process_stream(stream, out_bytes);
+	if (!emitter.process_stream(stream, out_bytes)) {
+		return false;
+	}
 	if (out_fallback_ops != nullptr) {
-		*out_fallback_ops = emitter.fallback_hits();
+		*out_fallback_ops = 0;
 	}
 	if (out_bytes.empty()) {
 		return false;
@@ -138,7 +140,7 @@ bool emit_elfobj(const dgtl::ir::IRStream& stream,
 				 std::vector<uint8_t>& out_bytes,
 				 std::string& out_text) {
 	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_elf_relocatable(out_bytes, stream, "DGTL_kernel_entry")) {
+	if (!linker.build_elf_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -152,7 +154,7 @@ bool emit_staticlib(const dgtl::ir::IRStream& stream,
 					std::vector<uint8_t>& out_bytes,
 					std::string& out_text) {
 	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_static_archive(out_bytes, stream, "DGTL_kernel.o")) {
+	if (!linker.build_static_archive_binary(stream, out_bytes, "DGTL_kernel.o")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -166,7 +168,7 @@ bool emit_coffobj(const dgtl::ir::IRStream& stream,
 				  std::vector<uint8_t>& out_bytes,
 				  std::string& out_text) {
 	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_coff_relocatable(out_bytes, stream, "DGTL_kernel_entry")) {
+	if (!linker.build_coff_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -180,7 +182,7 @@ bool emit_cofflib(const dgtl::ir::IRStream& stream,
 				  std::vector<uint8_t>& out_bytes,
 				  std::string& out_text) {
 	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_coff_archive(out_bytes, stream, "DGTL_kernel.obj", "DGTL_kernel_entry")) {
+	if (!linker.build_coff_archive_binary(stream, out_bytes, "DGTL_kernel.obj", "DGTL_kernel_entry")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);

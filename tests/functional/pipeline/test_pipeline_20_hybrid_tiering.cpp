@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/jit/runtime/JIT_Executor.hpp"
+#include "dgtl//runtime/_Executor.hpp"
 #include "dgtl/isa/emitter/NASM_Emitter.hpp"
 
 #include <iostream>
@@ -17,12 +17,12 @@
 #include <cassert>
 #include <cstring>
 
-void run_test_pipeline_20_hybrid_tiering() {
+void run_test_pipeline_20__tiering() {
     using namespace dgtl::ir;
-    using namespace dgtl::jit::runtime;
+    using namespace dgtl::runtime;
 
-    DGTLJitExecutor jit(1); 
-    dgtl::isa::DGTLNasmEmitter aot;
+    DGTLExecutor (1); 
+    dgtl::isa::DGTLNasmEmitter ;
 
     // 1. Create stream with capacity 1024, starting count 0
     IRStream stream(nullptr, 1024); 
@@ -37,31 +37,31 @@ void run_test_pipeline_20_hybrid_tiering() {
     // Node 2: RET -> Return value from VR2 (rcx)
     stream.push_node(OpCode::RET, 0, 0, 2, 0, 0, 0);
 
-    std::cout << "[DEBUG] Stream Count before JIT: " << stream.size() << std::endl;
+    std::cout << "[DEBUG] Stream Count before : " << stream.size() << std::endl;
 
-    // 3. JIT Mapping (Simulating a captured trace)
+    // 3.  Mapping (Simulating a captured trace)
     std::vector<uint8_t> machine_code = { 
         0x48, 0xC7, 0xC0, 0x39, 0x05, 0x00, 0x00, 0x48, 0x01, 0xD8, 0xC3 
     };
 
     // load_and_prepare calls our fixed clone() internally
-    auto func = jit.load_and_prepare(machine_code, stream);
+    auto func = .load_and_prepare(machine_code, stream);
     
-    std::cout << "[DEBUG] JIT Function Pointer: " << (void*)func << std::endl;
+    std::cout << "[DEBUG]  Function Pointer: " << (void*)func << std::endl;
 
     if (!func) {
-        std::cout << "[DEBUG] JIT failed to return a valid function pointer!" << std::endl;
+        std::cout << "[DEBUG]  failed to return a valid function pointer!" << std::endl;
         return;
     }
 
     // --- PIPELINE PROCEEDS ---
-    auto retrieved_ir = jit.get_ir_from_address(reinterpret_cast<uintptr_t>(func));
+    auto retrieved_ir = .get_ir_from_address(reinterpret_cast<uintptr_t>(func));
     
     // Diagnostic: Check if opcodes survived the Unified View Reconstruction
     bool data_loss = false;
     for(size_t i = 0; i < retrieved_ir.size(); ++i) {
         if (retrieved_ir.get_node(i).opcode == OpCode::NOP) {
-            std::cerr << "[CRITICAL] Node " << i << " lost its OpCode during JIT mapping!" << std::endl;
+            std::cerr << "[CRITICAL] Node " << i << " lost its OpCode during  mapping!" << std::endl;
             data_loss = true;
         }
     }
@@ -75,17 +75,17 @@ void run_test_pipeline_20_hybrid_tiering() {
 
     dgtl::core::SymbolTable symbols;
     
-    // Final AOT Bake
-    aot.emit(retrieved_ir, symbols);
+    // Final  Bake
+    .emit(retrieved_ir, symbols);
     
-    std::string output = aot.get_output();
+    std::string output = .get_output();
     
     if (output.empty()) {
         std::cerr << "[FAIL] Emitter produced empty output despite valid IR nodes!" << std::endl;
         return;
     }
 
-    std::cout << "\n--- BAKED HYBRID ASM ---\n" << output << "------------------------\n";
+    std::cout << "\n--- BAKED  ASM ---\n" << output << "------------------------\n";
     
     // Final Validation
     assert(retrieved_ir.size() == 3);
@@ -95,7 +95,7 @@ void run_test_pipeline_20_hybrid_tiering() {
         return;
     }
     
-    std::cout << "[TEST optED] JIT-to-AOT Bridge Verified." << std::endl;
+    std::cout << "[TEST optED] -to- Bridge Verified." << std::endl;
 
     return;
 }

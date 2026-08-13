@@ -11,11 +11,11 @@
 
 # MultiArch_Orchestrator.hpp
 
-Source Header: include/dgtl/jit/orchestrator/MultiArch_Orchestrator.hpp
+Source Header: include/dgtl//orchestrator/MultiArch_Orchestrator.hpp
 Last Synced: 2026-04-20
 
 ## Vision
-Multi-target AOT compilation dispatch hub. Routes binary output requests to the correct backend emitter based on file extension or target specification. Supports 9 output formats.
+Multi-target  compilation dispatch hub. Routes binary output requests to the correct backend emitter based on file extension or target specification. Supports 9 output formats.
 
 ## Why This File Exists
 - Route `.wasm` to DGTLWasmEncoder, `.o` to ELF relocatable, `.a` to GNU ar archive, `.obj` to COFF relocatable, `.lib` to COFF archive, `.macho` to MachOEmitter.

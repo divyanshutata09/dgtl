@@ -1,4 +1,4 @@
-# 🎯 MYZON Language: Complete JIT/AOT/HYBRID Execution Strategy
+# 🎯 MYZON Language: Complete // Execution Strategy
 
 **Author**: Divyanshu Tata / TataG Systems  
 **Date**: May 4, 2026  
@@ -11,9 +11,9 @@
 
 MYZON uses a **three-tier compilation strategy** to achieve maximum performance:
 
-- **AOT** (Ahead-Of-Time): Static structure, safety checks, deterministic layout → 100% compiled before runtime
-- **JIT** (Just-In-Time): Hot paths, dynamic behavior, specialization → Compiled at runtime when needed
-- **HYBRID**: Baseline + optimization → AOT compile once, then JIT optimize frequently-executed code
+- **** (Ahead-Of-Time): Static structure, safety checks, deterministic layout → 100% compiled before runtime
+- **** (Just-In-Time): Hot paths, dynamic behavior, specialization → Compiled at runtime when needed
+- ****: Baseline + optimization →  compile once, then  optimize frequently-executed code
 
 This document maps all 88 MYZON grammar rules to their optimal execution strategy with rationale.
 
@@ -24,11 +24,11 @@ This document maps all 88 MYZON grammar rules to their optimal execution strateg
 ## Overview
 Top-level program structure must be deterministic and verifiable. All imports, platform bindings, and global structure are known at compile time.
 
-### Rule 1: `program` → **AOT**
+### Rule 1: `program` → ****
 ```myzon
 program = { top_stmt } ;
 ```
-**Why AOT?**
+**Why ?**
 - Program structure is static and known before execution
 - Import verification and dependency resolution happens once
 - Version checking and module linking is deterministic
@@ -43,11 +43,11 @@ program = { top_stmt } ;
 
 ---
 
-### Rule 2: `top_stmt` → **AOT**
+### Rule 2: `top_stmt` → ****
 ```myzon
 top_stmt = [ doc_string ], { attribute }, ( core_stmt | library_stmt ) ;
 ```
-**Why AOT?**
+**Why ?**
 - Attributes are metadata for static analysis
 - Documentation is pre-processing directive
 - Core/library selection is compile-time decision
@@ -61,13 +61,13 @@ top_stmt = [ doc_string ], { attribute }, ( core_stmt | library_stmt ) ;
 
 ---
 
-### Rule 3: `core_stmt` → **AOT**
+### Rule 3: `core_stmt` → ****
 ```myzon
 core_stmt = global_binding | import_stmt | use_stmt | from_use_stmt 
           | platform_stmt | routine | entity_def | trait_def 
           | enum_def | partition_stmt | comptime_block ;
 ```
-**Why AOT?**
+**Why ?**
 - All structural decisions (routines, entities, traits) are static
 - Platform bindings determined before runtime
 - Global state layout is fixed
@@ -81,25 +81,25 @@ core_stmt = global_binding | import_stmt | use_stmt | from_use_stmt
 
 ---
 
-### Rule 4: `global_binding` → **HYBRID**
+### Rule 4: `global_binding` → ****
 ```myzon
 global_binding = [ kw_ownership ], ( "let" | "const" ), 
                  identifier, [ ":", type_spec ], 
                  [ "=", expression ], ";" ;
 ```
-**Why HYBRID?**
-- Declaration is AOT (layout known)
-- Initialization expression may be JIT (runtime constant folding opportunity)
+**Why ?**
+- Declaration is  (layout known)
+- Initialization expression may be  (runtime constant folding opportunity)
 - Value may be specializable at link time
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Allocate static storage location
 2. Verify type specification
 3. Check ownership constraints
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Evaluate initialization expression (if not comptime)
 2. Apply constant folding if possible
@@ -110,7 +110,7 @@ global_binding = [ kw_ownership ], ( "let" | "const" ),
 
 ---
 
-### Rules 5–5b: Import/Use/From-Use Statements → **AOT**
+### Rules 5–5b: Import/Use/From-Use Statements → ****
 ```myzon
 import_stmt = "import", ( string | identifier ), 
               [ "as", identifier ], [ "version", string ], 
@@ -123,7 +123,7 @@ from_use_stmt = "from", ( string | identifier ),
                 "use", "<", identifiers, ">", 
                 "verify", hex_addr, ";" ;
 ```
-**Why AOT?**
+**Why ?**
 - Module resolution is deterministic
 - Version verification happens before execution
 - Hash verification (`hex_addr`) is compile-time check
@@ -141,15 +141,15 @@ from_use_stmt = "from", ( string | identifier ),
 
 ---
 
-### Rule 6: `platform_stmt` → **AOT**
+### Rule 6: `platform_stmt` → ****
 ```myzon
 platform_stmt = "platform", identifier, "{", 
                 { identifier, ":", expression, ";" }, 
                 [ "check", expression, ";" ], "}" ;
 ```
-**Why AOT?**
+**Why ?**
 - Platform capabilities are known at compile time
-- Feature detection can happen during AOT compilation
+- Feature detection can happen during  compilation
 - Target architecture is fixed
 
 **Implementation**:
@@ -171,8 +171,8 @@ platform_stmt = "platform", identifier, "{",
 ## Overview
 All lexical elements are compile-time constructs. No runtime interpretation needed.
 
-### Rules 7–10: Digit & Number Components → **AOT**
-**Why AOT?** Lexical elements are deterministic patterns. No runtime evaluation.
+### Rules 7–10: Digit & Number Components → ****
+**Why ?** Lexical elements are deterministic patterns. No runtime evaluation.
 
 **Implementation**:
 ```
@@ -183,7 +183,7 @@ All lexical elements are compile-time constructs. No runtime interpretation need
 
 ---
 
-### Rule 11–11e: Number Literals → **AOT**
+### Rule 11–11e: Number Literals → ****
 ```myzon
 bin_literal  = "0b", bin_digit, { bin_digit | "_" }, [ number_suffix ] ;
 oct_literal  = "0o", oct_digit, { oct_digit | "_" }, [ number_suffix ] ;
@@ -191,7 +191,7 @@ hex_literal  = "0x", hex_digit, { hex_digit | "_" }, [ number_suffix ] ;
 dec_literal  = digit, { digit | "_" }, [ ".", ... ], [ exp_part ], [ number_suffix ] ;
 hex_float    = "0x", hex_digit, { hex_digit | "_" }, [ ".", ... ], hex_exp_part, [ number_suffix ] ;
 ```
-**Why AOT?**
+**Why ?**
 - Literals are constants
 - Type inference is static
 - No runtime conversion needed
@@ -208,7 +208,7 @@ hex_float    = "0x", hex_digit, { hex_digit | "_" }, [ ".", ... ], hex_exp_part,
 
 ---
 
-### Rules 12–13d: Strings & Characters → **AOT**
+### Rules 12–13d: Strings & Characters → ****
 ```myzon
 escape_seq = "\\" , ( '"' | "'" | '\\' | "n" | "r" | "t" | "0" 
            | ( "u", "{", hex_digit, { hex_digit }, "}" ) ) ;
@@ -217,7 +217,7 @@ char_literal = "'", char_char, "'" ;
 string = '"', { string_char }, '"' ;
 raw_string = "r", { "#" }, '"', { %x00-10FFFF }, '"', { "#" } ;
 ```
-**Why AOT?**
+**Why ?**
 - String encoding (UTF-8) is static
 - Escape sequences are compile-time interpreted
 - Raw strings avoid interpretation overhead
@@ -240,8 +240,8 @@ raw_string = "r", { "#" }, '"', { %x00-10FFFF }, '"', { "#" } ;
 
 ---
 
-### Rules 14–14c: Comments → **AOT** (stripped during lexing)
-**Why AOT?**
+### Rules 14–14c: Comments → **** (stripped during lexing)
+**Why ?**
 - Comments are metadata
 - Stripped immediately during lexical analysis
 - Not part of IR
@@ -257,24 +257,24 @@ raw_string = "r", { "#" }, '"', { %x00-10FFFF }, '"', { "#" } ;
 
 ---
 
-### Rule 15: Literals → **AOT**
+### Rule 15: Literals → ****
 ```myzon
 literal = number | string | raw_string | char_literal 
         | "true" | "false" | "null" ;
 ```
-**Why AOT?** All literal types are constants → Compile-time evaluation.
+**Why ?** All literal types are constants → Compile-time evaluation.
 
 ---
 
 # 🔷 SECTION III: Reserved Vocabulary (Rules 16–17)
 
-### Rule 16: `kw_ownership` → **AOT**
+### Rule 16: `kw_ownership` → ****
 ```myzon
 kw_ownership = "owned" | "shared" | "&" | "const" | "atomic" 
              | "isolated" | "mut" | "auto" | "volatile" | "linear" 
              | "managed" | "opaque" | "sealed" | "cap" ;
 ```
-**Why AOT?**
+**Why ?**
 - Ownership is a compile-time memory model
 - Determines layout, threading model, and optimizations
 - Checked during type checking
@@ -298,18 +298,18 @@ kw_ownership = "owned" | "shared" | "&" | "const" | "atomic"
 
 ---
 
-### Rule 17: `kw_concur` → **HYBRID**
+### Rule 17: `kw_concur` → ****
 ```myzon
 kw_concur = "spawn" | "async" | "fiber" | "elastic" | "thread" 
           | "sync" | "await" | "join" | "lock" | "release" 
           | "fence" | "recv" | "send" | "barrier" ;
 ```
-**Why HYBRID?**
-- AOT: Structure and synchronization points are known
-- JIT: Actual threading/scheduling happens at runtime
+**Why ?**
+- : Structure and synchronization points are known
+- : Actual threading/scheduling happens at runtime
 - Runtime: Workload patterns determine thread pool sizing
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse concurrency keyword
 2. Validate usage context (e.g., spawn only in fn body)
@@ -317,7 +317,7 @@ kw_concur = "spawn" | "async" | "fiber" | "elastic" | "thread"
 4. Emit baseline code with runtime hooks
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Monitor actual thread contention
 2. Adjust thread pool size
@@ -325,7 +325,7 @@ kw_concur = "spawn" | "async" | "fiber" | "elastic" | "thread"
 4. Profile memory ordering (fence optimization)
 ```
 
-**Output**: AOT IR + JIT tuning metadata
+**Output**:  IR +  tuning metadata
 
 ---
 
@@ -334,14 +334,14 @@ kw_concur = "spawn" | "async" | "fiber" | "elastic" | "thread"
 ## Overview
 Types are static, but type specialization can happen at runtime (generics, ADT matching).
 
-### Rule 18: `primitive` → **AOT**
+### Rule 18: `primitive` → ****
 ```myzon
 primitive = "f64" | "f32" | "f16" | "bf16" | "f8" 
           | "i64" | "i32" | "i4" | "u64" | "u8" | "u4" 
           | "bit" | "bool" | "complex64" | "void" | "any" 
           | "endpoint" | "auto" | "self" | "string" | "char" ;
 ```
-**Why AOT?**
+**Why ?**
 - Primitive types have fixed sizes and representations
 - Type checking is compile-time
 - ABI calling conventions determined by types
@@ -358,22 +358,22 @@ primitive = "f64" | "f32" | "f16" | "bf16" | "f8"
 
 ---
 
-### Rule 19: `dsa_type` (Data Structure Abstraction) → **JIT**
+### Rule 19: `dsa_type` (Data Structure Abstraction) → ****
 ```myzon
 dsa_type = "tensor" | "graph" | "tree" | "trie" | "node" | "edge" ;
 ```
-**Why JIT?**
+**Why ?**
 - DSA layout depends on usage patterns
 - Specialization based on actual data
 - Optimization opportunities at runtime
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Define generic DSA interface
 2. Emit specialization hooks
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Observe actual usage (size, access pattern, mutation)
 2. Specialize layout (e.g., compressed tensor vs. dense)
@@ -384,23 +384,23 @@ dsa_type = "tensor" | "graph" | "tree" | "trie" | "node" | "edge" ;
 
 ---
 
-### Rule 20: `collection_type` → **HYBRID**
+### Rule 20: `collection_type` → ****
 ```myzon
 collection_type = "array" | "list" | "map" | "set" | "chan" 
                 | "stream" | "queue" | "stack" | "heap" | "deque" ;
 ```
-**Why HYBRID?**
-- AOT: Collection interface is static
-- JIT: Backing store can be specialized (array vs. linked list, hash vs. tree)
+**Why ?**
+- : Collection interface is static
+- : Backing store can be specialized (array vs. linked list, hash vs. tree)
 - Runtime: Capacity hints allow optimal initial allocation
 
 **Implementation**:
 ```
-AOT:
+:
   1. Define collection interface (push, pop, get, set)
   2. Emit vtable for polymorphic dispatch
 
-JIT:
+:
   1. Monitor access patterns
   2. Specialize to array if sequential, map if random access
   3. Tune capacity growth factor based on pressure
@@ -410,13 +410,13 @@ JIT:
 
 ---
 
-### Rule 21: `type_spec` → **AOT**
+### Rule 21: `type_spec` → ****
 ```myzon
 type_spec = ( primitive | dsa_type | collection_type | identifier ), 
             [ "<", type_spec, { ",", type_spec }, ">" ], 
             { "[", [ expression ], "]" }, [ "?" ] ;
 ```
-**Why AOT?**
+**Why ?**
 - Base type checking is static
 - Generic specialization happens at compile time or link time
 - Array dimensions are static (or constrained)
@@ -427,7 +427,7 @@ type_spec = ( primitive | dsa_type | collection_type | identifier ),
 2. Extract generic parameters: type_spec recursively
 3. Parse array bounds:
    - If empty []: Dynamic array
-   - If expression: Array of size (may need JIT evaluation if non-constant)
+   - If expression: Array of size (may need  evaluation if non-constant)
 4. Handle optional "?" (nullable type)
 5. Resolve user-defined identifier against symbol table
 ```
@@ -436,11 +436,11 @@ type_spec = ( primitive | dsa_type | collection_type | identifier ),
 
 ---
 
-### Rule 22: `attribute` → **AOT**
+### Rule 22: `attribute` → ****
 ```myzon
 attribute = "@", identifier, [ "(", [ map_entries ], ")" ] ;
 ```
-**Why AOT?**
+**Why ?**
 - Attributes are metadata directives
 - Processed during compilation
 - Control code generation, inlining, etc.
@@ -451,7 +451,7 @@ attribute = "@", identifier, [ "(", [ map_entries ], ")" ] ;
 2. Common attributes:
    - @inline: Force function inlining
    - @noinline: Prevent inlining
-   - @hot: Mark hot function (JIT optimization target)
+   - @hot: Mark hot function ( optimization target)
    - @cold: Mark cold function (reduce code size)
    - @target("avx512"): Require specific ISA
    - @check: Assertion/verification (comptime)
@@ -466,43 +466,43 @@ attribute = "@", identifier, [ "(", [ map_entries ], ")" ] ;
 # 🔷 SECTION V: Expression Engine (Rules 23–34)
 
 ## Overview
-Expressions are **HYBRID** with specialized cases.
+Expressions are **** with specialized cases.
 
-### Rule 23: `expression` → **HYBRID**
+### Rule 23: `expression` → ****
 ```myzon
 expression = pipeline ;
 ```
-**Why HYBRID?**
-- Simple expressions compile at AOT
-- Complex expressions may be JIT-optimized
+**Why ?**
+- Simple expressions compile at 
+- Complex expressions may be -optimized
 - Runtime evaluation when needed
 
 **Implementation**:
 ```
 1. Parse as pipeline (delegate to rule 24)
-2. Apply constant folding at AOT if fully resolvable
-3. JIT: Profile and optimize hot expressions
+2. Apply constant folding at  if fully resolvable
+3. : Profile and optimize hot expressions
 ```
 
 ---
 
-### Rule 24: `pipeline` → **JIT**
+### Rule 24: `pipeline` → ****
 ```myzon
 pipeline = logic_or, { "|>", logic_or } ;
 ```
-**Why JIT?**
+**Why ?**
 - Pipelines represent dataflow chains
 - Fusion opportunity (combine multiple operations)
 - Specialization based on actual data types
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse pipe operators
 2. Generate straightforward code
 3. Insert fusion barriers (markers for optimization)
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Detect pipeline patterns
 2. Fuse adjacent stages into single kernel
@@ -514,11 +514,11 @@ pipeline = logic_or, { "|>", logic_or } ;
 ```myzon
 data |> filter(x => x > 5) |> map(x => x * 2) |> sum
 ```
-**JIT Fusion**: Combine filter+map+sum into single loop → ~3x speedup
+** Fusion**: Combine filter+map+sum into single loop → ~3x speedup
 
 ---
 
-### Rules 25–33: Arithmetic & Logical Operators → **HYBRID**
+### Rules 25–33: Arithmetic & Logical Operators → ****
 ```myzon
 logic_or       = logic_and, { "||", logic_and } ;
 logic_and      = equality, { "&&", equality } ;
@@ -535,14 +535,14 @@ postfix        = primary, { ("." (identifier | number))
                           | "?" | "!" } ;
 ```
 
-**Why HYBRID?**
-- AOT: Generate correct baseline code
-- JIT: Specialize for actual operand types
+**Why ?**
+- : Generate correct baseline code
+- : Specialize for actual operand types
 - Optimization: Combine operators in hot loops
 
 **Implementation**:
 ```
-AOT:
+:
   1. Parse operator precedence correctly
   2. Generate straightforward IR:
      - logic_or/and → conditional branches or bitwise
@@ -552,7 +552,7 @@ AOT:
      - unary operators → single-operand instructions
      - postfix → member access, call, indexing
 
-JIT:
+:
   1. Profile operator combinations
   2. Specialize for types: int fast path vs. float vs. pointer
   3. SIMD vectorization for arithmetic chains
@@ -563,27 +563,27 @@ JIT:
 
 ---
 
-### Rule 34: `primary` → **HYBRID**
+### Rule 34: `primary` → ****
 ```myzon
 primary = literal | ("(" expression ")") | query_lib | lambda 
         | collection_lit | dsa_lit | identifier ;
 ```
-**Why HYBRID?**
-- Literals → AOT (compile-time constants)
-- Parenthesized expressions → HYBRID (recursion)
-- Query/lambda/DSA/collections → JIT (dynamic behavior)
-- Identifier → AOT (symbol lookup)
+**Why ?**
+- Literals →  (compile-time constants)
+- Parenthesized expressions →  (recursion)
+- Query/lambda/DSA/collections →  (dynamic behavior)
+- Identifier →  (symbol lookup)
 
 **Implementation**:
 ```
-AOT:
+:
   1. Literals: Inline as constants
   2. Identifiers: Resolve from symbol table
   3. Parentheses: Recurse to expression handler
 
-JIT:
+:
   1. Query: Build and optimize query plan
-  2. Lambda: JIT-compile captures and body
+  2. Lambda: -compile captures and body
   3. Collections/DSA: Specialize based on usage
 ```
 
@@ -591,17 +591,17 @@ JIT:
 
 # 🔷 SECTION VI: Data Structure Literals (Rules 35–41)
 
-### Rule 35: `lambda` → **JIT**
+### Rule 35: `lambda` → ****
 ```myzon
 lambda = ( ("|" [ params ] "|") | identifier ), "=>", 
          (expression | block) ;
 ```
-**Why JIT?**
+**Why ?**
 - Closures capture runtime values
 - Body execution depends on actual arguments
 - Specialization based on call sites
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse lambda signature
 2. Identify captured variables
@@ -609,7 +609,7 @@ lambda = ( ("|" [ params ] "|") | identifier ), "=>",
 4. Emit thunk for closure creation
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Analyze call sites and argument types
 2. Specialize lambda for each context
@@ -621,21 +621,21 @@ lambda = ( ("|" [ params ] "|") | identifier ), "=>",
 
 ---
 
-### Rule 36: `collection_lit` → **HYBRID**
+### Rule 36: `collection_lit` → ****
 ```myzon
 collection_lit = ("[" [ args ] "]") | ("{" [ map_entries] "}")  ;
 ```
-**Why HYBRID?**
-- AOT: Structure is known
-- JIT: Specialization based on element types and sizes
+**Why ?**
+- : Structure is known
+- : Specialization based on element types and sizes
 
 **Implementation**:
 ```
-AOT:
+:
   1. Allocate collection storage
   2. Initialize from literal values
 
-JIT:
+:
   1. If all elements same type: Use monomorphic storage
   2. If mixed types: Use polymorphic storage (slower)
   3. Optimize for size: Small buffer optimization vs. heap
@@ -643,23 +643,23 @@ JIT:
 
 ---
 
-### Rule 37: `dsa_lit` → **JIT**
+### Rule 37: `dsa_lit` → ****
 ```myzon
 dsa_lit = ( ("graph" | "tree" | "trie"), "{", { edge_definition }, "}" )
         | ( ("tensor" | "array" | "list"), "[", [ args ], "]" ) ;
 ```
-**Why JIT?**
+**Why ?**
 - DSA construction depends on data
 - Specialization for actual usage pattern
 - Runtime layout optimization
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse DSA type
 2. Generate generic constructor
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Monitor DSA operations (insert, search, traverse)
 2. Adapt layout: compressed, sparse, dense based on patterns
@@ -668,7 +668,7 @@ dsa_lit = ( ("graph" | "tree" | "trie"), "{", { edge_definition }, "}" )
 
 ---
 
-### Rules 38–41: Collections/Maps/Args → **HYBRID**
+### Rules 38–41: Collections/Maps/Args → ****
 ```myzon
 edge_definition = expression, ("->" | "<->" | "=>"), expression, 
                   [ ":", expression ], ";" ;
@@ -676,17 +676,17 @@ map_entries = map_entry, { ",", map_entry } ;
 map_entry = (literal | identifier), ":", expression ;
 args = expression, { ",", expression } ;
 ```
-**Why HYBRID?**
+**Why ?**
 - Structure known (static)
 - Evaluation of expressions is dynamic
 
 **Implementation**:
 ```
-AOT:
+:
   1. Parse structure
   2. Generate code to evaluate each expression
 
-JIT:
+:
   1. Cache results if expressions are pure
   2. Parallelize independent expressions if beneficial
 ```
@@ -696,9 +696,9 @@ JIT:
 # 🔷 SECTION VII: Procedural Execution (Rules 42–59)
 
 ## Overview
-Statements are **HYBRID** with control flow being specializable.
+Statements are **** with control flow being specializable.
 
-### Rules 42–44: Scope & Block & Statement → **HYBRID**
+### Rules 42–44: Scope & Block & Statement → ****
 ```myzon
 scope = { statement, [ ";" ] } ;
 block = "{", scope, "}" ;
@@ -707,17 +707,17 @@ statement = binding | flow | loop | concurrent_op | yield_stmt
           | assignment_stmt | expr_stmt | verify_block ;
 ```
 
-**Why HYBRID?**
-- AOT: Baseline execution correct
-- JIT: Optimize statement sequences in hot blocks
+**Why ?**
+- : Baseline execution correct
+- : Optimize statement sequences in hot blocks
 
 **Implementation**:
 ```
-AOT:
+:
   1. Generate code for each statement sequentially
   2. No dead code elimination yet
 
-JIT:
+:
   1. Remove unreachable code
   2. Combine adjacent statements if beneficial
   3. Specialize control flow (inline branches)
@@ -725,7 +725,7 @@ JIT:
 
 ---
 
-### Rules 45–48: Assignment → **HYBRID**
+### Rules 45–48: Assignment → ****
 ```myzon
 assignment_stmt = l_value, assign_op, expression ;
 expr_stmt = expression ;
@@ -736,18 +736,18 @@ l_value = (identifier | ("[" identifiers "]")
           { ("." (identifier | number)) | "[" expression "]" } ;
 ```
 
-**Why HYBRID?**
-- AOT: Correct semantics (lifetime, ownership)
-- JIT: Eliminate bounds checking, optimize memory access
+**Why ?**
+- : Correct semantics (lifetime, ownership)
+- : Eliminate bounds checking, optimize memory access
 
 **Implementation**:
 ```
-AOT:
+:
   1. Resolve l_value to storage location
   2. Type-check r_value expression
   3. Emit basic store instruction
 
-JIT:
+:
   1. For repeated indexed access: Bound check elimination
   2. For local variables: Stack-promote escaping analysis
   3. For assignments in loops: Vectorization if applicable
@@ -755,12 +755,12 @@ JIT:
 
 ---
 
-### Rule 49: `assign_op` → **AOT**
+### Rule 49: `assign_op` → ****
 ```myzon
 assign_op = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" 
           | "^=" | "<<=" | ">>=" | "@=" | "|>=" | "??=" ;
 ```
-**Why AOT?**
+**Why ?**
 - Operator semantics are fixed
 - Desugaring happens at compile time
 
@@ -774,7 +774,7 @@ assign_op = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|="
 
 ---
 
-### Rules 50–55: Control Flow → **HYBRID**
+### Rules 50–55: Control Flow → ****
 ```myzon
 flow = if_stmt | switch_stmt | match_stmt | select_stmt ;
 if_stmt = "if", expression, [ (":high" | ":low") ], block, 
@@ -789,11 +789,11 @@ match_arm = (literal | collection_lit | identifier | "_"),
 select_stmt = "select", "{", { concurrent_op, ":", scope }, "}" ;
 ```
 
-**Why HYBRID?**
-- AOT: Generate correct branches
-- JIT: Specialize based on branch frequency
+**Why ?**
+- : Generate correct branches
+- : Specialize based on branch frequency
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. if/elif/else:
    - Generate comparison
@@ -810,7 +810,7 @@ select_stmt = "select", "{", { concurrent_op, ":", scope }, "}" ;
    - Emit communication primitives
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Profile actual branch frequencies
 2. Reorder branches: hot path first
@@ -820,7 +820,7 @@ select_stmt = "select", "{", { concurrent_op, ":", scope }, "}" ;
 
 ---
 
-### Rules 56–59: Loops → **HYBRID**
+### Rules 56–59: Loops → ****
 ```myzon
 loop = for_loop | while_loop | do_while ;
 for_loop = "for", ( ("(" [ binding ] ";" [ expression ] ";" 
@@ -831,11 +831,11 @@ while_loop = "while", expression, block ;
 do_while = "do", block, [ "while", expression ] ;
 ```
 
-**Why HYBRID?**
-- AOT: Generate correct loop structure
-- JIT: Extensive optimization opportunities (vectorization, unrolling)
+**Why ?**
+- : Generate correct loop structure
+- : Extensive optimization opportunities (vectorization, unrolling)
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. for-loop (C-style):
    - binding: Initialize loop variable
@@ -850,7 +850,7 @@ do_while = "do", block, [ "while", expression ] ;
 3. while/do-while: Standard loop code generation
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Loop unrolling: Replicate loop body N times
 2. Vectorization: Pack multiple iterations into SIMD operations
@@ -861,30 +861,30 @@ do_while = "do", block, [ "while", expression ] ;
 7. Parallelization: Emit thread spawning if iterations independent
 ```
 
-**Output**: Optimized loop with JIT specialization
+**Output**: Optimized loop with  specialization
 
 ---
 
 # 🔷 SECTION VIII: System Hooks (Rules 60–65)
 
-### Rule 60: `concurrent_op` → **JIT**
+### Rule 60: `concurrent_op` → ****
 ```myzon
 concurrent_op = kw_concur, identifier, [ "<", type_spec, ">" ], 
                 "(", [ args ] ")", [ "timeout", number ] ;
 ```
-**Why JIT?**
+**Why ?**
 - Threading/async decisions depend on workload
 - Timeout values may be tuned at runtime
 - Thread pool sizing is dynamic
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse concurrency keyword and function
 2. Generate baseline threading code
 3. Insert runtime hooks for thread creation
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Monitor task scheduling
 2. Tune thread pool size based on actual parallelism
@@ -894,26 +894,26 @@ concurrent_op = kw_concur, identifier, [ "<", type_spec, ">" ],
 
 ---
 
-### Rule 61: `yield_stmt` → **HYBRID**
+### Rule 61: `yield_stmt` → ****
 ```myzon
 yield_stmt = "yield" | ("return", [ expression ]) 
            | "break" | "continue" 
            | ("panic", [ expression ]) ;
 ```
 
-**Why HYBRID?**
-- AOT: Correct control flow (return, break, etc.)
-- JIT: Optimize return values, panic handling
+**Why ?**
+- : Correct control flow (return, break, etc.)
+- : Optimize return values, panic handling
 
 **Implementation**:
 ```
-AOT:
+:
   1. yield: In generators, emit yield marker
   2. return: Emit stack unwinding + return instruction
   3. break/continue: Emit branch to loop exit/top
   4. panic: Emit exception/handler dispatch
 
-JIT:
+:
   1. Specialize return based on actual value types
   2. Optimize panic paths (reduce instrumentation on hot paths)
   3. Elide exception handling if provably unnecessary
@@ -921,18 +921,18 @@ JIT:
 
 ---
 
-### Rule 62: `try_block` → **HYBRID**
+### Rule 62: `try_block` → ****
 ```myzon
 try_block = "try", block, { "catch", [ identifier, ":", type_spec ], 
             block }, [ "retry", number ], 
             [ "finally", block ] ;
 ```
 
-**Why HYBRID?**
-- AOT: Emit exception unwinding tables
-- JIT: Optimize catching (rare case optimization)
+**Why ?**
+- : Emit exception unwinding tables
+- : Optimize catching (rare case optimization)
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Generate try block code
 2. Build exception dispatch table (which catch handles which type)
@@ -941,7 +941,7 @@ try_block = "try", block, { "catch", [ identifier, ":", type_spec ],
 5. Emit retry logic with counter
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. If exceptions are rare: Optimize normal path, penalize exception path
 2. If exceptions common: Optimize exception dispatch
@@ -950,25 +950,25 @@ try_block = "try", block, { "catch", [ identifier, ":", type_spec ],
 
 ---
 
-### Rule 63: `sys_op` → **JIT**
+### Rule 63: `sys_op` → ****
 ```myzon
-sys_op = ("print" | "print!"), "(", [ args ] ")" ;
+sys_op = ("print" | "println"), "(", [ args ] ")" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Print is I/O, which benefits from buffering optimization
 - Format string specialization at runtime
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
-1. Parse print/print! (print! = unbuffered)
+1. Parse print/println (println = unbuffered)
 2. Generate code to evaluate arguments
 3. Emit print syscall/function
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
-1. For print!: Unbuffered I/O
+1. For println: Unbuffered I/O
 2. For print: Buffer outputs, flush periodically
 3. Specialize for common format strings
 4. Vectorize if printing arrays
@@ -976,23 +976,23 @@ sys_op = ("print" | "print!"), "(", [ args ] ")" ;
 
 ---
 
-### Rule 64: `shell_stmt` → **JIT**
+### Rule 64: `shell_stmt` → ****
 ```myzon
 shell_stmt = "$", (string | identifier | ("{" expression "}")) ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Shell execution is dynamic
 - Command may depend on runtime values
 - Process spawning is expensive → should be optimized
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse shell statement
 2. Generate process spawn code
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Cache command results if deterministic
 2. Parallelize independent shell commands
@@ -1001,25 +1001,25 @@ shell_stmt = "$", (string | identifier | ("{" expression "}")) ;
 
 ---
 
-### Rule 65: `asm_block` → **JIT**
+### Rule 65: `asm_block` → ****
 ```myzon
 asm_block = "asm", "isolated", identifier, "{", 
             { %x00-7A | %x7C | %x7E-10FFFF }, "}" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Inline assembly is platform-specific
 - Optimization depends on CPU features
 - Isolation requirement enforced at runtime
 
 **Implementation**:
 ```
-AOT:
+:
   1. Parse inline assembly (identifier = dialect, e.g., "x86_64")
   2. Perform basic validation
   3. Mark as "isolated" (no optimizer can touch this block)
 
-JIT:
+:
   1. At link time: Specialize for target CPU
   2. Apply CPU-specific optimizations (e.g., AVX-512 vs. AVX2)
   3. Verify isolation constraints
@@ -1029,7 +1029,7 @@ JIT:
 
 # 🔷 SECTION IX: Structural Core (Rules 66–74)
 
-### Rule 66: `routine` → **HYBRID**
+### Rule 66: `routine` → ****
 ```myzon
 routine = { attribute }, "fn", [ "width", "<", number, ">" ], 
           identifier, [ "<", identifiers, ">" ], 
@@ -1038,11 +1038,11 @@ routine = { attribute }, "fn", [ "width", "<", number, ">" ],
           (block | ";") ;
 ```
 
-**Why HYBRID?**
-- AOT: Function signature, type checking, ABI binding
-- JIT: Function specialization, inlining, optimizations
+**Why ?**
+- : Function signature, type checking, ABI binding
+- : Function specialization, inlining, optimizations
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse function signature
 2. Type-check parameters and return type
@@ -1052,7 +1052,7 @@ routine = { attribute }, "fn", [ "width", "<", number, ">" ],
 6. Generate function prologue/epilogue (stack frame setup)
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Profile actual call sites
 2. Specialize generics for observed types
@@ -1063,13 +1063,13 @@ routine = { attribute }, "fn", [ "width", "<", number, ">" ],
 
 **Special Case: `width<N>`**
 - SIMD vector width hint: Process N elements in parallel
-- JIT: Specialize for actual SIMD capabilities
+- : Specialize for actual SIMD capabilities
 
-**Output**: Callable function with JIT specialization hooks
+**Output**: Callable function with  specialization hooks
 
 ---
 
-### Rules 67–68: Parameters → **AOT**
+### Rules 67–68: Parameters → ****
 ```myzon
 params = (param, { ",", param }, [ ",", "...", identifier, ":", type_spec ])
        | ("...", identifier, ":", type_spec) ;
@@ -1077,7 +1077,7 @@ param = [ kw_ownership ], identifier, [ ":", type_spec ],
         [ "=", expression ] ;
 ```
 
-**Why AOT?**
+**Why ?**
 - Parameter passing convention is compile-time
 - Type checking is static
 
@@ -1091,7 +1091,7 @@ param = [ kw_ownership ], identifier, [ ":", type_spec ],
 
 ---
 
-### Rule 69: `entity_def` → **AOT**
+### Rule 69: `entity_def` → ****
 ```myzon
 entity_def = ("struct" | "class" | "actor"), identifier, 
              [ "<", identifiers, ">" ], [ ":", identifier ], 
@@ -1099,7 +1099,7 @@ entity_def = ("struct" | "class" | "actor"), identifier,
                   | verify_block }, "}" ;
 ```
 
-**Why AOT?**
+**Why ?**
 - Struct layout is compile-time (alignment, offset)
 - Class hierarchy is static
 - Actor behavior is deterministic
@@ -1118,14 +1118,14 @@ entity_def = ("struct" | "class" | "actor"), identifier,
 
 ---
 
-### Rule 70: `field_decl` → **AOT**
+### Rule 70: `field_decl` → ****
 ```myzon
 field_decl = [ kw_ownership ], identifier, [ ":", type_spec ], 
              [ "align", number ], [ "at", hex_addr ], 
              [ "=", expression ], ";" ;
 ```
 
-**Why AOT?**
+**Why ?**
 - Memory layout is compile-time
 - Alignment and address calculation is deterministic
 
@@ -1140,7 +1140,7 @@ field_decl = [ kw_ownership ], identifier, [ ":", type_spec ],
 
 ---
 
-### Rules 71–73: Trait/Enum Definitions → **AOT**
+### Rules 71–73: Trait/Enum Definitions → ****
 ```myzon
 trait_def = "trait", identifier, [ "<", identifiers, ">" ], 
             "{", { routine | ("check", expression, ";") 
@@ -1150,7 +1150,7 @@ enum_def = "enum", identifier, "{",
 enum_val = identifier, [ "(", type_spec, ")" ], [ "=", number ] ;
 ```
 
-**Why AOT?**
+**Why ?**
 - Traits define compile-time interfaces
 - Enum layout is static
 
@@ -1168,26 +1168,26 @@ enum:
 
 ---
 
-### Rule 74: `partition_stmt` → **JIT**
+### Rule 74: `partition_stmt` → ****
 ```myzon
 partition_stmt = "partition", "sealed", identifier, 
                  [ "elastic" ], "|", number, 
                  ( "kb" | "mb" | "gb" | "unlimited" ), "|", block ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Memory partition sizing is runtime decision
 - "elastic" indicates dynamic adjustment
 - Actual memory pressure determines partition size
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse partition name and size hint
 2. Parse "elastic" flag
 3. Compile block code
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Allocate initial partition at declared size
 2. Monitor pressure (if elastic):
@@ -1201,23 +1201,23 @@ partition_stmt = "partition", "sealed", identifier,
 
 # 🔷 SECTION X: Meta-Programming & Proof (Rules 75–76)
 
-### Rule 75: `comptime_block` → **HYBRID**
+### Rule 75: `comptime_block` → ****
 ```myzon
 comptime_block = "comptime", block ;
 ```
 
-**Why HYBRID?**
-- AOT: Execute at compile time
-- JIT: Specialize comptime results based on runtime values
+**Why ?**
+- : Execute at compile time
+- : Specialize comptime results based on runtime values
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Execute block at compile time (using comptime interpreter)
 2. Capture results (constants, generated code, metadata)
 3. Embed results in compiled binary
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. If comptime depends on generic type parameters:
    2. Re-execute comptime for each specialization
@@ -1225,12 +1225,12 @@ comptime_block = "comptime", block ;
 
 ---
 
-### Rule 76: `verify_block` → **AOT**
+### Rule 76: `verify_block` → ****
 ```myzon
 verify_block = "verify", "{", { expression, [ ";" ] }, "}" ;
 ```
 
-**Why AOT?**
+**Why ?**
 - Verification is a compile-time assertion
 - Enables exhaustive proof checking
 
@@ -1248,13 +1248,13 @@ verify_block = "verify", "{", { expression, [ ";" ] }, "}" ;
 
 # 🔷 SECTION XI: Libraries & Enclaves (Rules 77–88)
 
-### Rule 77: `library_stmt` → **JIT**
+### Rule 77: `library_stmt` → ****
 ```myzon
 library_stmt = model_lib | service_lib | component_lib 
              | layout_lib | foreign_bind ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Libraries contain DSLs requiring runtime interpretation
 - Specialization based on data/configuration
 
@@ -1262,7 +1262,7 @@ library_stmt = model_lib | service_lib | component_lib
 
 ---
 
-### Rule 78: `query_lib` → **JIT**
+### Rule 78: `query_lib` → ****
 ```myzon
 query_lib = "from", (identifier | ("(" expression ")")), 
             { ("where" | "order" | "group" | "limit" | "join"), 
@@ -1270,17 +1270,17 @@ query_lib = "from", (identifier | ("(" expression ")")),
             [ "select", args ] ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Query execution requires runtime optimization
 - Query planning is dynamic
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse query structure (from → where → group → order → select)
 2. Generate AST for query plan
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Analyze actual data statistics
 2. Build optimized query execution plan:
@@ -1292,26 +1292,26 @@ query_lib = "from", (identifier | ("(" expression ")")),
 
 ---
 
-### Rule 79: `model_lib` → **JIT**
+### Rule 79: `model_lib` → ****
 ```myzon
 model_lib = "model", "isolated", identifier, "{", 
             { ("layer", identifier, ":", identifier, 
                "(", [ args ] ")") | routine }, "}" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - ML models require runtime specialization
 - Layer execution order may be optimized
 - Forward pass specializes based on input shapes
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse model layers
 2. Build computation graph
 3. Generate baseline forward pass
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Observe input tensor shapes
 2. Specialize layer kernels for actual shapes
@@ -1321,24 +1321,24 @@ model_lib = "model", "isolated", identifier, "{",
 
 ---
 
-### Rule 80: `service_lib` → **JIT**
+### Rule 80: `service_lib` → ****
 ```myzon
 service_lib = "service", identifier, "{", 
               { gateway_lib | routine | policy_lib }, "}" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Services are runtime entities
 - Scheduling, routing, load balancing are dynamic
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse service definition
 2. Generate baseline RPC dispatcher
 3. Build routing table skeleton
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Monitor request patterns
 2. Specialize routing for hot paths
@@ -1348,23 +1348,23 @@ service_lib = "service", identifier, "{",
 
 ---
 
-### Rule 81: `gateway_lib` → **JIT**
+### Rule 81: `gateway_lib` → ****
 ```myzon
 gateway_lib = "gateway", identifier, "on", (number | string), 
               "secure", "{", { routine }, "}" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Gateway ports, security levels are runtime
 - Connection handling is dynamic
 
 **Implementation**:
 ```
-AOT:
+:
   1. Parse gateway definition
   2. Generate secure transport setup
 
-JIT:
+:
   1. Bind to port (may be dynamic, e.g., 0 = any available)
   2. Establish TLS/DTLS if "secure"
   3. Accept connections and dispatch to routines
@@ -1372,24 +1372,24 @@ JIT:
 
 ---
 
-### Rule 82: `policy_lib` → **HYBRID**
+### Rule 82: `policy_lib` → ****
 ```myzon
 policy_lib = "policy", identifier, "{", 
              [ identifier, ":", expression, 
                { ",", identifier, ":", expression } ], "}" ;
 ```
 
-**Why HYBRID?**
-- AOT: Policy structure is static
-- JIT: Policy evaluation depends on runtime conditions
+**Why ?**
+- : Policy structure is static
+- : Policy evaluation depends on runtime conditions
 
 **Implementation**:
 ```
-AOT:
+:
   1. Parse policy key-value pairs
   2. Type-check expressions
 
-JIT:
+:
   1. Evaluate policy expressions at runtime
   2. Cache results if deterministic
   3. Adapt based on actual system state
@@ -1397,24 +1397,24 @@ JIT:
 
 ---
 
-### Rule 83: `component_lib` → **JIT**
+### Rule 83: `component_lib` → ****
 ```myzon
 component_lib = "component", identifier, "{", 
                 [ ui_element, { ",", ui_element } ], "}" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - UI component rendering is runtime
 - Specialization based on display size, capabilities
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse component definition
 2. Build component tree
 3. Generate render function
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. At runtime: Render components for actual display
 2. Specialize for screen size, DPI
@@ -1424,20 +1424,20 @@ component_lib = "component", identifier, "{",
 
 ---
 
-### Rules 84–85: UI Elements → **JIT**
+### Rules 84–85: UI Elements → ****
 ```myzon
 ui_element = identifier, [ "(", [ map_entries ] ")" ], 
              [ "[", [ ui_child_item, { ",", ui_child_item } ], "]" ] ;
 ui_child_item = ui_element | ("{" expression "}") ;
 ```
 
-**Why JIT?**
+**Why ?**
 - UI rendering is runtime-dependent
 - Specialization based on actual display and data
 
 ---
 
-### Rule 86: `layout_lib` → **JIT**
+### Rule 86: `layout_lib` → ****
 ```myzon
 layout_lib = "layout", identifier, [ "<", identifier, ">" ], 
              "|", { field_decl }, "|", "{", 
@@ -1448,17 +1448,17 @@ layout_lib = "layout", identifier, [ "<", identifier, ">" ],
              [ "kernel", "{", { routine }, "}" ], "}" ;
 ```
 
-**Why JIT?**
+**Why ?**
 - Memory layout optimization is data-dependent
 - Specialization for tensor shapes and dtypes
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse layout fields and tensor mappings
 2. Generate default memory layout
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Observe actual tensor usage patterns
 2. Specialize layout for observed shapes
@@ -1468,7 +1468,7 @@ layout_lib = "layout", identifier, [ "<", identifier, ">" ],
 
 ---
 
-### Rule 87: `foreign_bind` → **HYBRID**
+### Rule 87: `foreign_bind` → ****
 ```myzon
 foreign_bind = "foreign", identifier, "maps", identifier, string, 
                "verify", hex_addr, 
@@ -1476,11 +1476,11 @@ foreign_bind = "foreign", identifier, "maps", identifier, string,
                "endbind" ;
 ```
 
-**Why HYBRID?**
-- AOT: Load FFI module, verify hash
-- JIT: Specialize wrapper for calling convention
+**Why ?**
+- : Load FFI module, verify hash
+- : Specialize wrapper for calling convention
 
-**Implementation (AOT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Parse foreign library binding
 2. Load library (identifier = library name)
@@ -1489,7 +1489,7 @@ foreign_bind = "foreign", identifier, "maps", identifier, string,
 5. Generate FFI wrapper function
 ```
 
-**Implementation (JIT Phase)**:
+**Implementation ( Phase)**:
 ```
 1. Profile FFI call patterns
 2. Specialize wrapper for actual call types
@@ -1499,13 +1499,13 @@ foreign_bind = "foreign", identifier, "maps", identifier, string,
 
 ---
 
-### Rule 88: `sym_op` → **AOT**
+### Rule 88: `sym_op` → ****
 ```myzon
 sym_op = "!" | "#" | "$" | "%" | "^" | "&" | "*" | "+" | "-" 
        | "=" | "/" | ">" | "<" | "|" | "~" | "@" ;
 ```
 
-**Why AOT?**
+**Why ?**
 - Symbol mapping is deterministic
 - Used for C/C++ name mangling
 
@@ -1523,15 +1523,15 @@ sym_op = "!" | "#" | "$" | "%" | "^" | "&" | "*" | "+" | "-"
 
 | Range | Category | Count | Strategy | Rationale |
 |-------|----------|-------|----------|-----------|
-| 1–6 | Root & Top-Level | 6 | **AOT** | Static program structure |
-| 7–15 | Lexical Core | 9 | **AOT** | Compile-time constants |
-| 16–17 | Keywords | 2 | **AOT/HYBRID** | Ownership (AOT), Concurrency (HYBRID) |
-| 18–22 | Types | 5 | **AOT/JIT/HYBRID** | Base (AOT), DSA (JIT), Collections (HYBRID) |
-| 23–34 | Expressions | 12 | **HYBRID** | Baseline + JIT optimization |
-| 35–41 | Data Structures | 7 | **JIT/HYBRID** | Dynamic specialization |
-| 42–65 | Procedural | 24 | **HYBRID** | Baseline + Hot-path optimization |
-| 66–76 | Structural | 11 | **HYBRID/AOT** | Functions (HYBRID), Types (AOT) |
-| 77–88 | Libraries/DSLs | 12 | **JIT/HYBRID** | Runtime interpretation + specialization |
+| 1–6 | Root & Top-Level | 6 | **** | Static program structure |
+| 7–15 | Lexical Core | 9 | **** | Compile-time constants |
+| 16–17 | Keywords | 2 | **/** | Ownership (), Concurrency () |
+| 18–22 | Types | 5 | **//** | Base (), DSA (), Collections () |
+| 23–34 | Expressions | 12 | **** | Baseline +  optimization |
+| 35–41 | Data Structures | 7 | **/** | Dynamic specialization |
+| 42–65 | Procedural | 24 | **** | Baseline + Hot-path optimization |
+| 66–76 | Structural | 11 | **/** | Functions (), Types () |
+| 77–88 | Libraries/DSLs | 12 | **/** | Runtime interpretation + specialization |
 | **TOTAL** | | **88** | | |
 
 ---
@@ -1540,22 +1540,22 @@ sym_op = "!" | "#" | "$" | "%" | "^" | "&" | "*" | "+" | "-"
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ COMPILATION PHASE (AOT)                                 │
+│ COMPILATION PHASE ()                                 │
 │ ├─ Parse + Type Check (Rules 1, 3, 7–22, 49, 67–73)  │
 │ ├─ Symbol Resolution (Rules 5–6)                       │
 │ ├─ Code Generation (Rules 42–59, 66, 69–71)           │
-│ └─ Emit Baseline Binary + JIT Hooks                     │
+│ └─ Emit Baseline Binary +  Hooks                     │
 └─────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────┐
 │ RUNTIME PHASE (Baseline Execution)                      │
-│ ├─ Execute AOT code paths                              │
+│ ├─ Execute  code paths                              │
 │ ├─ Collect profiling data                              │
 │ └─ Identify hot spots                                  │
 └─────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────┐
-│ OPTIMIZATION PHASE (JIT)                                │
+│ OPTIMIZATION PHASE ()                                │
 │ ├─ Specialize hot functions (Rule 66)                  │
 │ ├─ Vectorize loops (Rules 56–59)                       │
 │ ├─ Inline functions (Rule 66)                          │
@@ -1576,7 +1576,7 @@ sym_op = "!" | "#" | "$" | "%" | "^" | "&" | "*" | "+" | "-"
 
 ## Recommended Implementation Priority
 
-### Phase 1: Foundation (AOT)
+### Phase 1: Foundation ()
 1. Lexer + Parser (Rules 7–15, 8–22)
 2. Type Checker (Rules 18–22, 49)
 3. Basic Codegen (Rules 42–59, 66)
@@ -1586,10 +1586,10 @@ sym_op = "!" | "#" | "$" | "%" | "^" | "&" | "*" | "+" | "-"
 2. Functions & Entities (Rules 66–73)
 3. Memory Management (Rules 4, 47, 70)
 
-### Phase 3: Runtime + JIT
+### Phase 3: Runtime + 
 1. Virtual Machine (Rules 42–65)
 2. Profiler + Hot Spot Detection
-3. JIT Compiler (Specialize rules 24, 35, 56–59, 78–86)
+3.  Compiler (Specialize rules 24, 35, 56–59, 78–86)
 
 ### Phase 4: Advanced
 1. Query Optimizer (Rule 78)
@@ -1600,10 +1600,10 @@ sym_op = "!" | "#" | "$" | "%" | "^" | "&" | "*" | "+" | "-"
 
 ## Key Design Principles
 
-✅ **Fast Startup**: All AOT rules → Baseline binary without JIT latency  
-✅ **Peak Performance**: JIT specializes hot rules 24–35, 56–59, 78–86  
-✅ **Safety**: AOT verification (Rule 76) + Runtime checks where needed  
-✅ **Adaptivity**: Hybrid rules (23, 35–41, 42–65, 66, 82, 87) optimize based on actual behavior  
+✅ **Fast Startup**: All  rules → Baseline binary without  latency  
+✅ **Peak Performance**:  specializes hot rules 24–35, 56–59, 78–86  
+✅ **Safety**:  verification (Rule 76) + Runtime checks where needed  
+✅ **Adaptivity**:  rules (23, 35–41, 42–65, 66, 82, 87) optimize based on actual behavior  
 
 ---
 

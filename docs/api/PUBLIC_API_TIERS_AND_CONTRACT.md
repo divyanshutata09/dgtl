@@ -115,7 +115,7 @@ API:
 Driver flags:
 - --frontend-payload <path>
 - --backend <arm64|x64|nasm|wasm|elfobj|staticlib|coffobj|cofflib|macho>
-- --jit-execute (x64 only, requires DGTL_STRIKE_EXECUTE=1)
+- ---execute (x64 only, requires DGTL_STRIKE_EXECUTE=1)
 - --emit-output <path>
 
 Contract requirements:

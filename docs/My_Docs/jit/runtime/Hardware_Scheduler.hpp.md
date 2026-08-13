@@ -11,7 +11,7 @@
 
 # Hardware_Scheduler.hpp
 
-Source Header: include/dgtl/jit/runtime/Hardware_Scheduler.hpp
+Source Header: include/dgtl//runtime/Hardware_Scheduler.hpp
 Last Synced: 2026-04-14 19:46:41
 
 ## Vision

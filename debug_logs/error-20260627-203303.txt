@@ -1,0 +1,175 @@
+DGTL Forensic Debugger
+Root: D:\TataG\dgtl
+
+Compiler fingerprint: dc31817bc6da3b7b
+Command fingerprint: 13341560c770e028
+Declaration cache: 265 hits, 0 misses, 0 rescanned files
+Likely failing command: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"
+[1] Module Graph
+  Modules discovered: 132
+  Cycles detected:    0
+
+[2] Error Clusters
+  Logs scanned: 30
+  Clusters: 379
+  - (x144) ##: error: template argument # is invalid
+      command: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe" (144 hits)
+       :: 25: error: template argument 1 is invalid
+       :: 25: error: template argument 2 is invalid
+       :: 52: error: template argument 1 is invalid
+       :: 52: error: template argument 2 is invalid
+  - (x130) ##: error: 'dgtl' has not been declared
+      command: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe" (130 hits)
+       :: 19: error: 'dgtl' has not been declared
+       :: 18: error: 'dgtl' has not been declared
+       :: 18: error: 'dgtl' has not been declared
+       :: 18: error: 'dgtl' has not been declared
+  - (x88) error: 'dgtl' has not been declared
+       :: error: 'dgtl' has not been declared
+       :: error: 'dgtl' has not been declared
+       :: error: 'dgtl' has not been declared
+       :: error: 'dgtl' has not been declared
+  - (x76) 'dgtl' has not been declared
+       :: 'dgtl' has not been declared
+       :: 'dgtl' has not been declared
+       :: 'dgtl' has not been declared
+       :: 'dgtl' has not been declared
+  - (x60) #: error: 'TaskScheduler' has not been declared
+      command: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe" (60 hits)
+       :: 6: error: 'TaskScheduler' has not been declared
+       :: 6: error: 'TaskScheduler' has not been declared
+       :: 6: error: 'TaskScheduler' has not been declared
+       :: 6: error: 'TaskScheduler' has not been declared
+  - (x52) #: error: 'dgtl' has not been declared
+      command: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe" (52 hits)
+       :: 5: error: 'dgtl' has not been declared
+       :: 9: error: 'dgtl' has not been declared
+       :: 9: error: 'dgtl' has not been declared
+       :: 9: error: 'dgtl' has not been declared
+  - (x44) error: 'TaskScheduler' has not been declared
+       :: error: 'TaskScheduler' has not been declared
+       :: error: 'TaskScheduler' has not been declared
+       :: error: 'TaskScheduler' has not been declared
+       :: error: 'TaskScheduler' has not been declared
+  - (x44) error: template argument # is invalid
+       :: error: template argument 1 is invalid
+       :: error: template argument 2 is invalid
+       :: error: template argument 1 is invalid
+       :: error: template argument 2 is invalid
+
+[2a] Failing Command Context
+  - ##: error: template argument # is invalid
+      compile step: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"
+      evidence hits: 144
+  - ##: error: 'dgtl' has not been declared
+      compile step: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"
+      evidence hits: 130
+  - #: error: 'TaskScheduler' has not been declared
+      compile step: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"
+      evidence hits: 60
+  - #: error: 'dgtl' has not been declared
+      compile step: g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"
+      evidence hits: 52
+
+[3] Cache & Cycle Hints
+  No cache-specific hints emitted.
+
+[4] Symbol Collision Radar
+  Dynamic suspect symbols: 147
+  Suspect symbols: 83
+  - uint32_t appears at 878 sites
+      build/DGTL_SDK/include/dgtl.h:142 :: DGTL_API uint32_t dgtl_emit_string_const_utf8(dgtl_stream_t* s, const char* utf8_literal);
+      build/DGTL_SDK/include/dgtl.h:150 :: DGTL_API void     dgtl_emit_return(dgtl_stream_t* s, uint32_t value_slot);
+      build/DGTL_SDK/include/dgtl/utils/hashing/Hashing.ixx:69 :: [[nodiscard]] static constexpr std::uint32_t read_u32(const void* ptr) noexcept {
+  - IRStream appears at 514 sites
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:90 :: void analyze_stream(const ir::IRStream& stream) {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:198 :: [[nodiscard]] float predict_alias_probability(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) noexcept {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:232 :: [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
+  - uint8_t appears at 357 sites
+      build/DGTL_SDK/include/dgtl/utils/container/Flat_Map.ixx:34 :: enum class State : std::uint8_t { Empty, Filled, Tombstone };
+      build/DGTL_SDK/include/dgtl/utils/hashing/Hashing.ixx:65 :: using data_block = std::array<std::uint8_t, 8>;
+      build/DGTL_SDK/include/dgtl/utils/hashing/Hashing.ixx:70 :: using data_block = std::array<std::uint8_t, 4>;
+  - dgtl::ir appears at 329 sites
+      include/dgtl/analysis/AI_Cost_Model.ixx:83 :: [[nodiscard]] float predict_cost_flat(size_t stream_size, const dgtl::ir::IRNode* raw_nodes) const noexcept {
+      include/dgtl/analysis/AI_Cost_Model.ixx:102 :: [[nodiscard]] float predict_node_cost(const dgtl::ir::IRNode& node) const noexcept {
+      include/dgtl/analysis/AI_Cost_Model.ixx:108 :: const bool is_gather = (node.opcode == dgtl::ir::OpCode::GATHER_16 || node.opcode == dgtl::ir::OpCode::GATHER_F32_512);
+  - uint64_t appears at 262 sites
+      build/DGTL_SDK/include/dgtl.h:115 :: DGTL_API uint64_t          dgtl_stream_logic_hash(const dgtl_stream_t* stream);
+      build/DGTL_SDK/include/dgtl.h:225 :: DGTL_API void dgtl_join_task(uint64_t task_handle);
+      build/DGTL_SDK/include/dgtl/utils/hashing/Hashing.ixx:38 :: [[nodiscard]] static constexpr std::uint64_t rotl64(std::uint64_t x, int r) noexcept {
+  - Region appears at 83 sites
+      include/dgtl/analysis/AI_Cost_Model.ixx:93 :: [[nodiscard]] float predict_region_cost(const dgtl::graph::Region& region) const noexcept {
+      include/dgtl/analysis/Polyhedral_Scop_Unified.ixx:92 :: [[nodiscard]] ScopMetadata analyze_region(const dgtl::graph::Region& region) const;
+      include/dgtl/analysis/Polyhedral_Scop_Unified.ixx:95 :: const std::vector<std::unique_ptr<dgtl::graph::Region>>& regions) const;
+  - Task appears at 67 sites
+      include/dgtl/api/Runtime.ixx:27 :: using TaskScheduler = dgtl::runtime::TaskScheduler;
+      include/dgtl/api/Runtime.ixx:28 :: using TaskEntryFn = dgtl::runtime::TaskEntryFn;
+      include/dgtl/jit/Async_Dopt_Tiered.ixx:208 :: struct SpeculationTask {
+  - uint16_t appears at 41 sites
+      include/dgtl/api/IRBuilder.ixx:718 :: const uint16_t automatic_flags = ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE;
+      include/dgtl/api/IRBuilder.ixx:782 :: const uint16_t call_flags =
+      include/dgtl/api/IRBuilder.ixx:817 :: const uint16_t call_flags =
+
+[5] Ownership Arbitration
+  Recommendations: 74
+  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:6164 (score 110)
+      why: inside DGTL workspace, generated-definition ownership path, importable generated IR interface, inline or constexpr definition
+      6162: }();
+      6163: 
+      6164: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
+      6165:     const size_t index = static_cast<size_t>(opcode);
+      6166:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+  - Region -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:2749 (score 90)
+      why: inside DGTL workspace, generated-definition ownership path, importable generated IR interface
+      2747: };
+      2748: 
+      2749: struct RegionBeginOp {
+      2750:     // --- Metadata ---
+      2751:     static constexpr std::string_view kName = "RegionBegin";
+  - observe_shape -> src/pass/ml/MLoptimization.cpp:674 (score 40)
+      why: inside DGTL workspace, implementation file
+      672: }
+      673: 
+      674: void TensorSpecializer::observe_shape(
+      675:     uint32_t op_id,
+      676:     const TensorShape& shape,
+  - QueryCardinalityEstimator -> src/pass/query/Query_Optimizer_Unified.cpp:325 (score 40)
+      why: inside DGTL workspace, implementation file
+      323:  * @brief Update model with runtime feedback
+      324:  */
+      325: void QueryCardinalityEstimator::update_with_feedback(
+      326:     QueryOperation& op,
+      327:     uint64_t actual_rows,
+  - cache_specialization -> src/pass/ml/MLoptimization.cpp:789 (score 40)
+      why: inside DGTL workspace, implementation file
+      787: }
+      788: 
+      789: void TensorSpecializer::cache_specialization(
+      790:     uint32_t op_id,
+      791:     const TensorShape& shape,
+  - emit_optimized_model -> src/pass/ml/MLoptimization.cpp:468 (score 40)
+      why: inside DGTL workspace, implementation file
+      466: }
+      467: 
+      468: void MLOptimizer::emit_optimized_model(ir::IRStream& stream) noexcept {
+      469:     // Emit optimized model back to IR
+      470:     // Include fusion, specialization, and dispatch info
+  - worker_states_ -> src/runtime/TaskScheduler.cpp:338 (score 40)
+      why: inside DGTL workspace, implementation file
+      336:     stats.replay_tasks_executed = replay_tasks_executed_.load(std::memory_order_relaxed);
+      337:     
+      338:     for (const auto& worker : worker_states_) {
+      339:         stats.total_tasks_executed += worker->tasks_executed;
+      340:     }
+  - apply_join_ordering -> src/pass/query/Query_Optimizer_Unified.cpp:635 (score 40)
+      why: inside DGTL workspace, implementation file
+      633:  * @brief Apply new join ordering to query plan
+      634:  */
+      635: void JoinOrderOptimizer::apply_join_ordering(
+      636:     QueryPlan& plan [[maybe_unused]],
+      637:     const std::vector<JoinPair>& new_ordering [[maybe_unused]]
+
+[6] Staff-Level Triage
+  Primary structural risk: no import SCCs detected in scanned units.
+  Primary execution risk: fix the highest-frequency error cluster first because downstream diagnostics are likely derivative noise.
+  Regression: Previous run: identical fingerprint to previous snapshot.

@@ -13,6 +13,9 @@ Set-StrictMode -Version Latest
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $cppOrchestratorExe = Join-Path $root 'build\tools\dgtl.exe'
 $cppOrchestratorSource = Join-Path $root 'tools\cpp\dgtl_main.cpp'
+$debugLogsDir = Join-Path $root 'debug_logs'
+$sessionLogDir = Join-Path $debugLogsDir 'sessions'
+$debuggerSource = Join-Path $root 'tools\cpp\dgtl_debugger_main.cpp'
 
 $needsRebuild = -not (Test-Path $cppOrchestratorExe)
 if (-not $needsRebuild) {
@@ -37,6 +40,85 @@ if ($needsRebuild) {
     Write-Host "[dgtl] Wrote $cppOrchestratorExe"
 }
 
-# Forward all arguments to the C++ orchestrator
-& $cppOrchestratorExe @Args
-exit $LASTEXITCODE
+New-Item -ItemType Directory -Force -Path $debugLogsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $sessionLogDir | Out-Null
+
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$lastSessionLog = Join-Path $sessionLogDir 'last-session.log'
+$lastNonDebugLog = Join-Path $sessionLogDir 'last-nondebug-session.log'
+$timestampedLog = Join-Path $sessionLogDir ("dgtl-session-{0}.log" -f $timestamp)
+$commandText = if ($Args.Count -gt 0) { "dgtl " + ($Args -join ' ') } else { 'dgtl' }
+$isDebugCommand = $commandText -match '^dgtl\s+debug(\s|$)'
+
+Set-Content -Path (Join-Path $sessionLogDir 'last-command.txt') -Value $commandText -Encoding UTF8
+
+# Forward all arguments to the C++ orchestrator while teeing output into canonical debugger logs
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+Push-Location $root
+try {
+    & $cppOrchestratorExe @Args 2>&1 | Tee-Object -FilePath $lastSessionLog | Tee-Object -FilePath $timestampedLog
+    $exitCode = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+$ErrorActionPreference = $previousErrorActionPreference
+
+Set-Content -Path (Join-Path $sessionLogDir 'last-exit-code.txt') -Value ([string]$exitCode) -Encoding UTF8
+if (-not $isDebugCommand) {
+    Copy-Item -Path $lastSessionLog -Destination $lastNonDebugLog -Force
+    Set-Content -Path (Join-Path $sessionLogDir 'last-nondebug-command.txt') -Value $commandText -Encoding UTF8
+    Set-Content -Path (Join-Path $sessionLogDir 'last-nondebug-exit-code.txt') -Value ([string]$exitCode) -Encoding UTF8
+}
+
+if (-not $isDebugCommand -and $exitCode -ne 0) {
+    $debuggerExe = Join-Path $root 'build\tools\dgtl-debugger.exe'
+    $buildLogDir = Join-Path $root 'build\logs'
+    $compilerLog = Join-Path $buildLogDir 'last-compiler-invocations.log'
+    $preservedCompilerLog = Join-Path $sessionLogDir 'last-compiler-invocations.failure.log'
+    $debugTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $latestMd = Join-Path $debugLogsDir 'latest-error.md'
+    $latestTxt = Join-Path $debugLogsDir 'latest-error.txt'
+    $latestJson = Join-Path $debugLogsDir 'latest-error.json'
+    $tsMd = Join-Path $debugLogsDir ("error-{0}.md" -f $debugTimestamp)
+    $tsTxt = Join-Path $debugLogsDir ("error-{0}.txt" -f $debugTimestamp)
+    $tsJson = Join-Path $debugLogsDir ("error-{0}.json" -f $debugTimestamp)
+    $debuggerNeedsBuild = -not (Test-Path $debuggerExe)
+
+    if (Test-Path $compilerLog) {
+        Copy-Item -Path $compilerLog -Destination $preservedCompilerLog -Force
+    }
+
+    if (-not $debuggerNeedsBuild) {
+        $debuggerExeTime = (Get-Item $debuggerExe).LastWriteTimeUtc
+        $debuggerSrcTime = (Get-Item $debuggerSource).LastWriteTimeUtc
+        if ($debuggerSrcTime -gt $debuggerExeTime) {
+            $debuggerNeedsBuild = $true
+        }
+    }
+
+    if ($debuggerNeedsBuild) {
+        Push-Location $root
+        try {
+            & $cppOrchestratorExe debug --summary-only --relative-paths | Out-Null
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    if (Test-Path $preservedCompilerLog) {
+        Copy-Item -Path $preservedCompilerLog -Destination $compilerLog -Force
+    }
+
+    if (Test-Path $debuggerExe) {
+        & $debuggerExe --relative-paths --export $latestMd | Out-Null
+        & $debuggerExe --relative-paths --export $latestTxt | Out-Null
+        & $debuggerExe --relative-paths --json --export $latestJson | Out-Null
+        Copy-Item -Path $latestMd -Destination $tsMd -Force
+        Copy-Item -Path $latestTxt -Destination $tsTxt -Force
+        Copy-Item -Path $latestJson -Destination $tsJson -Force
+    }
+}
+exit $exitCode

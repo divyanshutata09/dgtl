@@ -31,7 +31,7 @@ void run_test_pipeline_20_the_gauntlet() {
         stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 100, 10, 11, 0, 0);
         stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 101, 10, 11, 0, 0);
         stream.push_node(dgtl::ir::OpCode::GATHER_16,
-                         static_cast<uint16_t>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::HintFlags::RequiresVecPort),
+                         static_cast<uint16_t>(dgtl::ir::Flags::IS_SIMD_BURST),
                          102,
                          20,
                          21,

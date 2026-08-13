@@ -71,7 +71,7 @@ The `.o` and `libdgtl.a` files visible in `build/` were created by **GCC / the h
 | WebAssembly module | `.wasm` | `DGTLWasmEncoder` / `DGTLUniversalLinker` | ✅ Functional (minimal but valid) |
 | ELF64 **executable** | *(no extension)* | `DGTLLinker::emit_elf64()` | ✅ Functional but **ET_EXEC only**, not ET_REL |
 | Mach-O **object file** | `.o` | `MachOEmitter` | ⚠️ **Stub** — header populated, machine code is 8-byte NOP+RET placeholder |
-| JIT in-memory | *(memory only)* | `DGTLJitExecutor` / `StrikeOrchestrator` | ✅ Functional — W^X protected, I-Cache synced |
+|  in-memory | *(memory only)* | `DGTLExecutor` / `StrikeOrchestrator` | ✅ Functional — W^X protected, I-Cache synced |
 
 ---
 
@@ -131,19 +131,19 @@ The `MachOEmitter` always emits 8 bytes regardless of the IR stream content. The
 | `build/dgtl_main.exe` | GCC linked DGTL | ❌ No |
 | `build/dgtl_release.exe` | GCC linked DGTL | ❌ No |
 
-DGTL's pipeline produces: `.s` text, `.bin` raw bytes, `.asm` text, `.wasm` binary, ELF executables (not `.o`), and JIT-in-memory. That is the complete list.
+DGTL's pipeline produces: `.s` text, `.bin` raw bytes, `.asm` text, `.wasm` binary, ELF executables (not `.o`), and -in-memory. That is the complete list.
 
 ---
 
 ## 5. Is the Current System Better for DGTL's Use Case?
 
-**Honest answer: for JIT/HFT/AI inference, yes. For AOT linking into external codebases, no.**
+**Honest answer: for /HFT/AI inference, yes. For  linking into external codebases, no.**
 
 ### Where the current system is genuinely superior:
 
-- **JIT path (`DGTLJitExecutor` / `StrikeOrchestrator`):** In-memory compilation with W^X protection, I-Cache flush, and closed-loop AI cost feedback. This is the right architecture for sub-microsecond HFT kernels. There is no object file roundtrip, no linker overhead, no symbol resolution delay. This is intentional and correct.
+- ** path (`DGTLExecutor` / `StrikeOrchestrator`):** In-memory compilation with W^X protection, I-Cache flush, and closed-loop AI cost feedback. This is the right architecture for sub-microsecond HFT kernels. There is no object file roundtrip, no linker overhead, no symbol resolution delay. This is intentional and correct.
 
-- **`DGTLLinker` design comment:** The header explicitly states *"without .obj overhead"* — the design decision is deliberate. For the execution model DGTL targets (self-contained JIT strikes), avoiding object file semantics is a performance win, not a gap.
+- **`DGTLLinker` design comment:** The header explicitly states *"without .obj overhead"* — the design decision is deliberate. For the execution model DGTL targets (self-contained  strikes), avoiding object file semantics is a performance win, not a gap.
 
 - **WASM emission** is self-contained by nature. No `.o` needed.
 
@@ -151,11 +151,11 @@ DGTL's pipeline produces: `.s` text, `.bin` raw bytes, `.asm` text, `.wasm` bina
 
 ### Where `.o` / `.lib` emission would be necessary:
 
-- **AOT compilation to linkable objects:** If a user wants to compile a DGTL IR kernel and link it into an existing C++ project with `g++` or `link.exe`, they cannot do so today. There is no `.o` to link against.
+- ** compilation to linkable objects:** If a user wants to compile a DGTL IR kernel and link it into an existing C++ project with `g++` or `link.exe`, they cannot do so today. There is no `.o` to link against.
 
 - **Shared library distribution:** Distributing a DGTL-compiled kernel as `.so` / `.dll` / `.a` / `.lib` for consumption by external code is not possible without an intermediate relocatable object format.
 
-- **OS kernel / embedded targets:** These environments reject JIT (W^X constraints, no `mmap` with PROT_EXEC). They require static `.o` output that a native linker can process.
+- **OS kernel / embedded targets:** These environments reject  (W^X constraints, no `mmap` with PROT_EXEC). They require static `.o` output that a native linker can process.
 
 - **x64 `.bin` output:** The raw machine bytes emitted by `X64StrikeEmitter` are correct at the instruction level but are not wrapped in any container format. `objcopy` could wrap them, but DGTL does not do this itself.
 
@@ -209,7 +209,7 @@ This works today with no DGTL changes. It is not "DGTL emitting `.o`" but it ach
 | **`.a` GNU archive** | ✅ Implemented | GNU `ar` format wrapping ELF `.o` |
 | **`.lib` COFF archive** | ✅ Implemented | First linker member + COFF `.obj` member, MSVC link.exe compatible |
 | **Mach-O ARM64 `.o`** | ✅ Implemented | Full LC_SEGMENT_64 + LC_SYMTAB + real ARM64 binary code |
-| JIT in-memory | ✅ Working | Correct for HFT/AI; no file output |
+|  in-memory | ✅ Working | Correct for HFT/AI; no file output |
 
 ---
 

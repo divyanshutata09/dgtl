@@ -48,7 +48,7 @@ For commercial licensing or evaluation access, contact: **licensing@dgtl.tech**
   - **Error Handling (1)**: **Enhanced Error Recovery** with graceful degradation
   - **Orchestration (2)**: **Distributed GPU Scheduling**, Pass Composer
   - **Memory (1)**: Redundant Store Fusion
-- **JIT Execution Runtime**: W^X-protected code execution via `StrikeOrchestrator` with closed-loop AI cost feedback
+- ** Execution Runtime**: W^X-protected code execution via `StrikeOrchestrator` with closed-loop AI cost feedback
 - **Graph-Based Analysis**: Execution graphs, dependency tracking, region-level optimization, polyhedral regions
 
 ## Performance-First Lowering
@@ -86,13 +86,13 @@ Backend feature parity is fully established across all 9 targets including:
 - **Gather/Scatter operations**: Native implementation on all backends (x64, ARM64, ARM32, RISC-V, WASM, CUDA, ROCm, NASM, FPGA)
 - **Hardware-native FMA**: Complete support across all backends (or via pattern-recognition synthesis for WASM)
 - **Native object/library emission**: ELF, COFF, Mach-O formats
-- **JIT execution**: Production-grade W^X protection and I-cache synchronization
+- ** execution**: Production-grade W^X protection and I-cache synchronization
 
 Gate verification completed:
 
 1. ✅ Gather/Scatter and FMA parity verified across all 9 backends
 2. ✅ Object/library output verified: `elfobj`, `staticlib`, `coffobj`, `cofflib`, `macho`
-3. ✅ JIT execution validated with `DGTL_STRIKE_EXECUTE=1` on x64
+3. ✅  execution validated with `DGTL_STRIKE_EXECUTE=1` on x64
 4. ✅ Cross-backend feature matrix: **18/18 features (100% coverage, ZERO crossmarks)**
 5. ✅ Production-grade error handling and diagnostics
 6. ✅ Distributed GPU scheduling for multi-GPU workloads
@@ -140,7 +140,7 @@ What is included in v1.0.2:
   * FPGA Verilog: Dataflow blocks, DSP-based FMA
 - Multi-target lowering evidence across all 9 backends with verified feature parity
 - Native object/library emission: ELF .o, GNU .a, COFF .obj, COFF .lib, Mach-O ARM64
-- JIT execution via \`--jit-execute\` (x64, W^X-protected, closed-loop AI feedback)
+-  execution via \`---execute\` (x64, W^X-protected, closed-loop AI feedback)
 - 26 production optimization passes across 11 compiler stages (Transform, SIMD, Analysis, Speculative, Tuning, Error Handling, Orchestration, Memory)
 - Production-grade error recovery, distributed GPU scheduling, PGO-driven tuning
 - Backend proof logs under \`benchmarks/logs/\`
@@ -152,7 +152,7 @@ Sample runs:
 \`./build/dgtl_release.exe --backend arm32 --simd-gather\`
 \`./build/dgtl_release.exe --backend wasm --simd-fma\`
 \`./build/dgtl_release.exe --backend coffobj --emit-output kernel.obj\`
-\`./build/dgtl_release.exe --backend x64 --jit-execute\`
+\`./build/dgtl_release.exe --backend x64 ---execute\`
 
 Licensing and evaluation:
 - Notice: \`LICENSE\`
@@ -213,14 +213,14 @@ Emit native object files and libraries:
 .\build\dgtl_release.exe --backend macho --emit-output kernel.macho
 ```
 
-JIT-compile and execute x64 machine code in-process (requires `DGTL_STRIKE_EXECUTE=1` env gate):
+-compile and execute x64 machine code in-process (requires `DGTL_STRIKE_EXECUTE=1` env gate):
 
 ```powershell
 $env:DGTL_STRIKE_EXECUTE="1"
-.\build\dgtl_release.exe --backend x64 --jit-execute
+.\build\dgtl_release.exe --backend x64 ---execute
 ```
 
-`--jit-execute` invokes the full `StrikeOrchestrator` pipeline: emit â†’ W^X inject â†’ execute â†’ closed-loop AI cost feedback. Only valid with `--backend x64`.
+`---execute` invokes the full `StrikeOrchestrator` pipeline: emit â†’ W^X inject â†’ execute â†’ closed-loop AI cost feedback. Only valid with `--backend x64`.
 
 Polyhedral control flags are available in both drivers:
 
@@ -737,7 +737,7 @@ Graph Scheduling (Region-level, multi-backend aware)
   â†“
 ISA Emission (ARM64 / x86-64 / WASM / NASM)
   â†“                          â†“
-Object/Library Emission      JIT Execution (--jit-execute)
+Object/Library Emission       Execution (---execute)
 (ELF .o / .a / COFF .obj    (StrikeOrchestrator: W^X inject
  / .lib / Mach-O)             + execute + AI cost feedback)
 ```
@@ -792,9 +792,9 @@ Object/Library Emission      JIT Execution (--jit-execute)
 - `Linker_Backend.hpp`: ELF64 relocatable, GNU `ar` archive, COFF `.obj`, and COFF `.lib` emission
 - `Stack_Spiller.hpp`: Spill code generation
 
-### JIT Runtime (`include/dgtl/jit/`)
-- `JIT_Executor.hpp`: W^X memory protection, cross-platform I-Cache sync
-- `Strike_Orchestrator.hpp`: Full compileâ†’injectâ†’executeâ†’feedback pipeline (`--jit-execute`)
+###  Runtime (`include/dgtl//`)
+- `_Executor.hpp`: W^X memory protection, cross-platform I-Cache sync
+- `Strike_Orchestrator.hpp`: Full compileâ†’injectâ†’executeâ†’feedback pipeline (`---execute`)
 - `Strike_Runner.hpp`: Low-level VirtualAlloc/mmap executable memory injection
 - `MultiArch_Orchestrator.hpp`: Multi-target dispatch (ARM64, x64, NASM, WASM, ELF, COFF, Mach-O)
 - `Hardware_Scheduler.hpp`: Hardware-aware execution scheduling
@@ -839,7 +839,7 @@ DGTL/
 â”‚   â”œâ”€â”€ graph/              # Execution graphs, regions, dependency tracking
 â”‚   â”œâ”€â”€ pipeline/           # Pass manager, analysis manager
 â”‚   â”œâ”€â”€ isa/                # Code generation (emitters, register allocation)
-â”‚   â”œâ”€â”€ jit/                # JIT runtime, orchestration, execution
+â”‚   â”œâ”€â”€ /                #  runtime, orchestration, execution
 â”‚   â””â”€â”€ all.hpp             # Umbrella header (single-include convenience)
 â”‚
 â”œâ”€â”€ src/                    # Source implementations
@@ -884,7 +884,7 @@ DGTL/
 â”‚   â”‚   â”œâ”€â”€ analysis/       # Cost models, liveness, dataflow
 â”‚   â”‚   â”œâ”€â”€ pass/           # Pass designs, transformation rules
 â”‚   â”‚   â”œâ”€â”€ isa/            # Emitter specs, register allocation
-â”‚   â”‚   â””â”€â”€ jit/            # JIT design, orchestration
+â”‚   â”‚   â””â”€â”€ /            #  design, orchestration
 â”‚
 â”œâ”€â”€ dgtl.ps1                # Main command runner
 â”œâ”€â”€ dgtl.cmd                # Windows shim for the command runner

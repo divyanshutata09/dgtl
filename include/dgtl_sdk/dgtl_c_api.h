@@ -1,44 +1,102 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
  * Repository: github.com/TataG-Systems/DGTL
+ * Component:   Public SDK Boundary C-API Lane
+ * Purpose:     Stable Client ABI Ingestion Layer for High-Performance Languages
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-/*
- * dgtl_c_api.h — Extended C ABI for Advanced SDK Users
- *
- * Provides lower-level access to DGTL internals:
- * - Custom IR node emission
- * - Fine-grained optimization control
- * - Performance profiling
- * - Memory introspection
- * - Direct backend emission
- */
-
 #ifndef DGTL_C_API_H
 #define DGTL_C_API_H
 
-#include "dgtl.h"
-#include "dgtl_core.h"
-
-#include <cstdio>
+#include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* ─── SYSTEM ANCHORS & SYMBOL EXPORT CONTROLS ─── */
+#ifndef DGTL_API
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    #ifdef DGTL_DLL
+        #ifdef DGTL_EXPORTS
+            #define DGTL_API __declspec(dllexport)
+        #else
+            #define DGTL_API __declspec(dllimport)
+        #endif
+    #else
+        #define DGTL_API
+    #endif
+    #define DGTL_CALL __cdecl
+#else
+    #if __GNUC__ >= 4
+        #define DGTL_API __attribute__((visibility("default")))
+    #else
+        #define DGTL_API
+    #endif
+    #define DGTL_CALL
+#endif
+#endif
+
+#ifndef DGTL_CALL
+#define DGTL_CALL
+#endif
+
+/* ─── STRICT OPAQUE HANDLES (Defends Boundary Isolation) ─── */
+typedef struct dgtl_context  dgtl_context_t;
+typedef struct dgtl_stream   dgtl_stream_t;
+typedef struct dgtl_session  dgtl_session_t;
+
+typedef uint16_t dgtl_op_t;
+typedef uint32_t dgtl_value_t;
+
+/* ---------- OpCode Enum Flags ---------- */
+#ifndef DGTL_FLAG_NONE
+#define DGTL_FLAG_NONE           0x00u
+#define DGTL_FLAG_IS_CONST       0x01u
+#define DGTL_FLAG_IS_SPEC_CONST  0x02u
+#endif
+
+#ifndef DGTL_SDK_H
+/* --- Core Target Runtime Enums (dgtl_core.h Mirror) --- */
+typedef enum dgtl_target {
+    DGTL_TARGET_ARM64      = 0,
+    DGTL_TARGET_X64        = 1,
+    DGTL_TARGET_NASM       = 2,
+    DGTL_TARGET_WASM       = 3,
+    DGTL_TARGET_ELF_OBJ    = 4,
+    DGTL_TARGET_STATIC_LIB = 5,
+    DGTL_TARGET_COFF_OBJ   = 6,
+    DGTL_TARGET_COFF_LIB   = 7,
+    DGTL_TARGET_MACHO      = 8,
+    DGTL_TARGET_COUNT      = 9
+} dgtl_target_t;
+
+/* --- Status Response Primitive Payload --- */
+typedef struct dgtl_status {
+    int  ok;           /* 1 = success, 0 = failure */
+    int  error_code;
+    char message[256];
+} dgtl_status_t;
+
+typedef struct dgtl_strike_result {
+    int      ok;
+    size_t   code_size;
+    uint64_t logic_hash;
+    char     message[256];
+} dgtl_strike_result_t;
+#endif
+
 /* ========================================================================
- * ADVANCED STREAM INTROSPECTION
+ * ADVANCED STREAM INTROSPECTION & CONTROL FLOW MATRIX
  * ======================================================================== */
 
-/**
- * @brief Get performance metrics for a compiled stream.
- */
 typedef struct dgtl_perf_metrics {
     uint64_t total_compilation_time_us;
     uint64_t optimization_time_us;
@@ -48,237 +106,138 @@ typedef struct dgtl_perf_metrics {
     uint64_t estimated_cycle_count;
 } dgtl_perf_metrics_t;
 
-DGTL_API int dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgtl_perf_metrics_t* out);
-
-/**
- * @brief CFG edge kinds exposed through the stable C ABI.
- */
 typedef enum dgtl_cfg_edge_kind {
-    DGTL_CFG_EDGE_FALLTHROUGH = 0,
-    DGTL_CFG_EDGE_UNCONDITIONAL = 1,
-    DGTL_CFG_EDGE_CONDITIONAL_TRUE = 2,
+    DGTL_CFG_EDGE_FALLTHROUGH      = 0,
+    DGTL_CFG_EDGE_UNCONDITIONAL    = 1,
+    DGTL_CFG_EDGE_CONDITIONAL_TRUE  = 2,
     DGTL_CFG_EDGE_CONDITIONAL_FALSE = 3
 } dgtl_cfg_edge_kind_t;
 
-/**
- * @brief One basic block descriptor from the stream CFG.
- */
 typedef struct dgtl_cfg_block {
     uint32_t id;
     size_t begin;
     size_t end;
     uint32_t primary_label;
-    int is_entry;
+    int32_t is_entry;
 } dgtl_cfg_block_t;
 
-/**
- * @brief One control-flow edge descriptor from the stream CFG.
- */
 typedef struct dgtl_cfg_edge {
     uint32_t from;
     uint32_t to;
     dgtl_cfg_edge_kind_t kind;
 } dgtl_cfg_edge_t;
 
-/**
- * @brief Number of CFG basic blocks currently in the stream.
- */
-DGTL_API size_t dgtl_stream_cfg_block_count(const dgtl_stream_t* s);
+DGTL_API int32_t DGTL_CALL dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgtl_perf_metrics_t* out);
+DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_block_count(const dgtl_stream_t* s);
+DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_edge_count(const dgtl_stream_t* s);
 
-/**
- * @brief Number of CFG edges currently in the stream.
- */
-DGTL_API size_t dgtl_stream_cfg_edge_count(const dgtl_stream_t* s);
+DGTL_API int32_t DGTL_CALL dgtl_stream_cfg_get_block(const dgtl_stream_t* s, size_t index, dgtl_cfg_block_t* out);
+DGTL_API int32_t DGTL_CALL dgtl_stream_cfg_get_edge(const dgtl_stream_t* s, size_t index, dgtl_cfg_edge_t* out);
 
-/**
- * @brief Fetch a basic block descriptor by index.
- * @return 1 on success, 0 on invalid arguments or out-of-range index.
- */
-DGTL_API int dgtl_stream_cfg_get_block(const dgtl_stream_t* s,
-                                       size_t index,
-                                       dgtl_cfg_block_t* out);
+DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_get_successors(const dgtl_stream_t* s, uint32_t block_id, uint32_t* out_ids, size_t out_cap);
+DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s, uint32_t block_id, uint32_t* out_ids, size_t out_cap);
 
-/**
- * @brief Fetch a CFG edge descriptor by index.
- * @return 1 on success, 0 on invalid arguments or out-of-range index.
- */
-DGTL_API int dgtl_stream_cfg_get_edge(const dgtl_stream_t* s,
-                                      size_t index,
-                                      dgtl_cfg_edge_t* out);
-
-/**
- * @brief Copy successor block IDs into caller buffer.
- * @return Total successor count (may exceed out_cap if truncated).
- */
-DGTL_API size_t dgtl_stream_cfg_get_successors(const dgtl_stream_t* s,
-                                               uint32_t block_id,
-                                               uint32_t* out_ids,
-                                               size_t out_cap);
-
-/**
- * @brief Copy predecessor block IDs into caller buffer.
- * @return Total predecessor count (may exceed out_cap if truncated).
- */
-DGTL_API size_t dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s,
-                                                 uint32_t block_id,
-                                                 uint32_t* out_ids,
-                                                 size_t out_cap);
-
-/**
- * @brief Verify stream integrity (validates all node hashes and dependencies).
- */
-DGTL_API int dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* error_buffer, size_t error_len);
-
-/**
- * @brief Clear all dead nodes from stream (post-optimization cleanup).
- */
-DGTL_API dgtl_status_t dgtl_stream_compact(dgtl_stream_t* s);
+DGTL_API int32_t       DGTL_CALL dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* error_buffer, size_t error_len);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_compact(dgtl_stream_t* s);
 
 /* ========================================================================
- * ADVANCED IR EMISSION
+ * CACHE-ALIGNED STREAM LOWERING ARCHITECTURE (HIGH-VELOCITY SYSTEM TUNNEL)
  * ======================================================================== */
 
-/**
- * @brief Emit a float FMA constant.
- */
-DGTL_API uint32_t dgtl_emit_const_f32(dgtl_stream_t* s, float value);
+DGTL_API uint32_t DGTL_CALL dgtl_intern_string_handle_utf8(const char* utf8_data, size_t len);
+DGTL_API void     DGTL_CALL dgtl_emit_constant_str(dgtl_stream_t* s, dgtl_value_t dest_reg, const char* value, size_t length);
 
-/**
- * @brief Emit a float FMA constant (64-bit).
- */
-DGTL_API uint32_t dgtl_emit_const_f64(dgtl_stream_t* s, double value);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_f32(dgtl_stream_t* s, float value);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_f64(dgtl_stream_t* s, double value);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_binary(dgtl_stream_t* s, const void* data, size_t len);
 
-/**
- * @brief Emit a raw binary constant (opaque data).
- */
-DGTL_API uint32_t dgtl_emit_const_binary(dgtl_stream_t* s, 
-                                          const void* data, size_t len);
+/* Explicit 64-bit Floating-Point Binary Operations */
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fadd_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fsub_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fmul_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fdiv_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
 
-/**
- * @brief Emit a phi node for SSA form.
- */
-DGTL_API uint32_t dgtl_emit_phi(dgtl_stream_t* s,
-                                 uint32_t* incoming_slots,
-                                 size_t incoming_count);
+/* AI/ML & Spatial Math Emission Hooks */
+DGTL_API uint32_t DGTL_CALL dgtl_emit_matmul_bf16(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_sdpa_f16(dgtl_stream_t* s, uint32_t q, uint32_t k, uint32_t v);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_softmax_fast(dgtl_stream_t* s, uint32_t input);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_layer_norm(dgtl_stream_t* s, uint32_t input, uint32_t gamma, uint32_t beta);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fast_inv_sqrt(dgtl_stream_t* s, uint32_t input);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec3_cross(dgtl_stream_t* s, uint32_t a, uint32_t b);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec4_dot(dgtl_stream_t* s, uint32_t a, uint32_t b);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_mat4_mul(dgtl_stream_t* s, uint32_t a, uint32_t b);
 
-/**
- * @brief Emit a label (target for branches).
- */
-DGTL_API uint32_t dgtl_emit_label(dgtl_stream_t* s, const char* label_name);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_phi(dgtl_stream_t* s, uint32_t* incoming_slots, size_t incoming_count);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_label(dgtl_stream_t* s, const char* label_name);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_label_slot(dgtl_stream_t* s, uint32_t label_slot);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_function_label_slot(dgtl_stream_t* s, uint32_t function_slot);
+#ifndef DGTL_SDK_H
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_bind_callee_slot(dgtl_stream_t* s, uint32_t slot, const char* name);
+#endif
 
-/**
- * @brief Emit a conditional jump.
- */
-DGTL_API void dgtl_emit_branch_cond(dgtl_stream_t* s,
-                                     uint32_t condition,
-                                     uint32_t target_label);
+/* --- High-Velocity Scalar Ingestion Hook bypassing internal string evaluations --- */
+#ifndef DGTL_SDK_H
+DGTL_API uint32_t DGTL_CALL dgtl_emit_op_with_result(dgtl_stream_t* s, uint32_t dest_reg, uint16_t opcode, uint32_t lhs, uint32_t rhs, uint64_t immediate, uint32_t flags);
+#endif
 
-/**
- * @brief Emit an unconditional jump.
- */
-DGTL_API void dgtl_emit_branch(dgtl_stream_t* s, uint32_t target_label);
+DGTL_API void     DGTL_CALL dgtl_emit_branch_cond(dgtl_stream_t* s, uint32_t condition, uint32_t target_label);
+DGTL_API void     DGTL_CALL dgtl_emit_branch(dgtl_stream_t* s, uint32_t target_label);
+
+/* --- Sovereign Rule 82: Predictive branch hint stream tunnel --- */
+DGTL_API void     DGTL_CALL dgtl_emit_branch_predictive(dgtl_stream_t* s, dgtl_value_t condition_reg, uint32_t true_label_id, uint32_t false_label_id, uint8_t runtime_weight);
+
+/* --- Sovereign Rule 132: Bare-metal execution boundary routing hook --- */
+DGTL_API void     DGTL_CALL dgtl_emit_hardware_affinity(dgtl_stream_t* s, dgtl_value_t mask_register_id);
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call_with_result(dgtl_stream_t* s, uint32_t result_slot, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call(dgtl_stream_t* s, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call_variadic_with_result(dgtl_stream_t* s, uint32_t result_slot, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call_variadic(dgtl_stream_t* s, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
 
 /* ========================================================================
- * ADVANCED OPTIMIZATION CONTROL
+ * ADVANCED OPTIMIZATION AND SESSION TIMINGS
  * ======================================================================== */
 
-/**
- * @brief Run a specific pass by name.
- */
-DGTL_API dgtl_status_t dgtl_run_pass_by_name(dgtl_stream_t* s, const char* pass_name);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_run_pass_by_name(dgtl_stream_t* s, const char* pass_name);
+DGTL_API int32_t       DGTL_CALL dgtl_has_pass(const char* pass_name);
+DGTL_API const char** DGTL_CALL dgtl_list_passes(size_t* out_count);
 
-/**
- * @brief Query whether a pass is registered.
- */
-DGTL_API int dgtl_has_pass(const char* pass_name);
-
-/**
- * @brief List all registered optimization passes.
- */
-DGTL_API const char** dgtl_list_passes(size_t* out_count);
-
-/**
- * @brief Enable/disable optimization for a stream.
- */
-DGTL_API dgtl_status_t dgtl_set_optimization_enabled(dgtl_stream_t* s, int enabled);
-
-/**
- * @brief Get current optimization level (0-3, where 3 is maximum).
- */
-DGTL_API int dgtl_get_optimization_level(const dgtl_stream_t* s);
-
-/**
- * @brief Set optimization level (0-3).
- */
-DGTL_API dgtl_status_t dgtl_set_optimization_level(dgtl_stream_t* s, int level);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_set_optimization_enabled(dgtl_stream_t* s, int32_t enabled);
+DGTL_API int32_t       DGTL_CALL dgtl_get_optimization_level(const dgtl_stream_t* s);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_set_optimization_level(dgtl_stream_t* s, int32_t level);
 
 /* ========================================================================
- * BACKEND EMISSION CONTROL
+ * LINKER BACKEND EMISSION CONTROL
  * ======================================================================== */
 
-/**
- * @brief Emit with custom backend options.
- */
 typedef struct dgtl_emit_options {
-    int inline_threshold;          /* Number of nodes to inline */
-    int unroll_factor;             /* Loop unroll factor */
-    int enable_cache_optimization; /* Enable cache-aware optimizations */
-    int enable_branch_prediction;  /* Enable CPU branch hint injection */
-    int vectorize_threshold;       /* Minimum vector ops before vectorizing */
-    int reserved[11];              /* Reserved for future expansion */
+    int32_t inline_threshold;
+    int32_t unroll_factor;
+    int32_t enable_cache_optimization;
+    int32_t enable_branch_prediction;
+    int32_t vectorize_threshold;
+    int32_t reserved[11];
 } dgtl_emit_options_t;
 
-DGTL_API dgtl_strike_result_t dgtl_strike_stream_with_options(
-    dgtl_stream_t* s,
-    dgtl_target_t target,
-    const dgtl_emit_options_t* options);
-
-/**
- * @brief Get default emit options for a target.
- */
-DGTL_API dgtl_emit_options_t dgtl_emit_options_default(dgtl_target_t target);
-
-/**
- * @brief Get estimated code size before actual emission (for planning).
- */
-DGTL_API size_t dgtl_estimate_code_size(const dgtl_stream_t* s, dgtl_target_t target);
+DGTL_API dgtl_strike_result_t DGTL_CALL dgtl_strike_stream_with_options(dgtl_stream_t* s, dgtl_target_t target, const dgtl_emit_options_t* options);
+DGTL_API dgtl_emit_options_t  DGTL_CALL dgtl_emit_options_default(dgtl_target_t target);
+DGTL_API size_t                DGTL_CALL dgtl_estimate_code_size(const dgtl_stream_t* s, dgtl_target_t target);
 
 /* ========================================================================
- * MEMORY MANAGEMENT
+ * INTERSIDE DATA TRACKING & MEMORY OPERATIONS
  * ======================================================================== */
 
-/**
- * @brief Query memory usage of a stream.
- */
-DGTL_API size_t dgtl_stream_memory_usage(const dgtl_stream_t* s);
-
-/**
- * @brief Query memory usage of a context.
- */
-DGTL_API size_t dgtl_context_memory_usage(const dgtl_context_t* ctx);
-
-/**
- * @brief Pre-allocate memory for N more nodes (avoid rehashes).
- */
-DGTL_API dgtl_status_t dgtl_stream_reserve(dgtl_stream_t* s, size_t additional_nodes);
-
-/**
- * @brief Shrink stream to fit current size (release unused memory).
- */
-DGTL_API dgtl_status_t dgtl_stream_shrink_to_fit(dgtl_stream_t* s);
+DGTL_API size_t        DGTL_CALL dgtl_stream_memory_usage(const dgtl_stream_t* s);
+DGTL_API size_t        DGTL_CALL dgtl_context_memory_usage(const dgtl_context_t* ctx);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_reserve(dgtl_stream_t* s, size_t additional_nodes);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_shrink_to_fit(dgtl_stream_t* s);
 
 /* ========================================================================
- * PROFILING & TRACING
+ * PROFILING, SPECOPT AND ANALYSIS RUNTIMES
  * ======================================================================== */
 
-/**
- * @brief Enable low-overhead execution tracing for a stream.
- */
-DGTL_API dgtl_status_t dgtl_stream_enable_tracing(dgtl_stream_t* s);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_enable_tracing(dgtl_stream_t* s);
 
-/**
- * @brief Disable tracing and return captured events.
- */
 typedef struct dgtl_trace_event {
     uint64_t timestamp_us;
     uint32_t pass_id;
@@ -286,94 +245,30 @@ typedef struct dgtl_trace_event {
     char     pass_name[64];
 } dgtl_trace_event_t;
 
-DGTL_API dgtl_trace_event_t* dgtl_stream_get_trace_events(const dgtl_stream_t* s,
-                                                           size_t* out_count);
-
-/**
- * @brief Estimate cycles for a stream using AI cost model.
- */
-DGTL_API uint64_t dgtl_stream_estimate_cycles(const dgtl_stream_t* s);
-
-/**
- * @brief Get heuristic optimization score (0-100).
- */
-DGTL_API int dgtl_stream_get_optimization_score(const dgtl_stream_t* s);
+DGTL_API dgtl_trace_event_t* DGTL_CALL dgtl_stream_get_trace_events(const dgtl_stream_t* s, size_t* out_count);
+DGTL_API uint64_t            DGTL_CALL dgtl_stream_estimate_cycles(const dgtl_stream_t* s);
+DGTL_API int32_t             DGTL_CALL dgtl_stream_get_optimization_score(const dgtl_stream_t* s);
 
 /* ========================================================================
- * SERIALIZATION EXTENSIONS
+ * BLOB SERIALIZATION INTERCHANGE PACKETS
  * ======================================================================== */
 
-/**
- * @brief Serialize stream to binary blob (format-independent).
- */
-DGTL_API dgtl_status_t dgtl_stream_serialize(const dgtl_stream_t* s,
-                                              void** out_blob,
-                                              size_t* out_size);
-
-/**
- * @brief Deserialize stream from binary blob.
- */
-DGTL_API dgtl_status_t dgtl_stream_deserialize(dgtl_stream_t* s,
-                                                const void* blob,
-                                                size_t blob_size);
-
-/**
- * @brief Free serialized blob (previously allocated by dgtl_stream_serialize).
- */
-DGTL_API void dgtl_free_serialized_blob(void* blob);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_serialize(const dgtl_stream_t* s, void** out_blob, size_t* out_size);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_deserialize(dgtl_stream_t* s, const void* blob, size_t blob_size);
+DGTL_API void           DGTL_CALL dgtl_free_serialized_blob(void* blob);
 
 /* ========================================================================
- * DIAGNOSTIC FUNCTIONS
+ * DIAGNOSTICS & SYSTEM LOGS HOOKS
  * ======================================================================== */
 
-/**
- * @brief Print stream to human-readable text (useful for debugging).
- */
-DGTL_API void dgtl_stream_dump_ir(const dgtl_stream_t* s, FILE* out);
+DGTL_API void        DGTL_CALL dgtl_stream_dump_ir(const dgtl_stream_t* s, void* custom_file_handle_opt);
+DGTL_API const char* DGTL_CALL dgtl_get_last_error(void);
+DGTL_API void        DGTL_CALL dgtl_clear_error(void);
+DGTL_API void        DGTL_CALL dgtl_set_verbose(int32_t enabled);
+DGTL_API const char* DGTL_CALL dgtl_get_build_config(void);
 
-/**
- * @brief Get detailed error information after failed operations.
- */
-DGTL_API const char* dgtl_get_last_error(void);
-
-/**
- * @brief Clear error state.
- */
-DGTL_API void dgtl_clear_error(void);
-
-/**
- * @brief Enable/disable verbose logging to stderr.
- */
-DGTL_API void dgtl_set_verbose(int enabled);
-
-/**
- * @brief Get DGTL build configuration string.
- */
-DGTL_API const char* dgtl_get_build_config(void);
-
-/**
- * @brief Get number of linker fallback diagnostics captured by the last
- * linker-backed emission in this thread.
- *
- * Linker-backed targets:
- * - DGTL_TARGET_ELF_OBJ
- * - DGTL_TARGET_STATIC_LIB
- * - DGTL_TARGET_COFF_OBJ
- * - DGTL_TARGET_COFF_LIB
- */
-DGTL_API size_t dgtl_last_linker_fallback_count(void);
-
-/**
- * @brief Retrieve one linker fallback diagnostic message by index.
- *
- * @param index 0-based fallback diagnostic index
- * @param out_buffer Destination buffer for UTF-8 text (optional)
- * @param out_buffer_size Size of destination buffer in bytes
- * @return Required bytes including trailing NUL, or 0 if index is invalid
- */
-DGTL_API size_t dgtl_last_linker_fallback_message(size_t index,
-                                                  char* out_buffer,
-                                                  size_t out_buffer_size);
+DGTL_API size_t      DGTL_CALL dgtl_last_linker_fallback_count(void);
+DGTL_API size_t      DGTL_CALL dgtl_last_linker_fallback_message(size_t index, char* out_buffer, size_t out_buffer_size);
 
 #ifdef __cplusplus
 }

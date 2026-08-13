@@ -53,56 +53,16 @@ int main(int argc, char** argv) {
     fs::path repo = fs::current_path();
     if (argc > 1) repo = argv[1];
 
-    const std::string r2 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/pass/simd/SimdGatherScatter_Legal_Vector_Recognizer.hpp\"";
-    const std::string r3 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/isa/emitter/NASM_Emitter.hpp\"\n"
-        "#include \"dgtl/semantic/Symbol_Table.hpp\"";
-    const std::string r4 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/isa/emitter/NASM_Emitter.hpp\"\n"
-        "#include \"dgtl/pass/transform/Transform_Scalar_Core.hpp\"\n"
-        "#include \"dgtl/semantic/Symbol_Table.hpp\"";
-    const std::string r5 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/analysis/AI_Cost_Model.hpp\"";
-    const std::string r6 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/analysis/AI_Cost_Model.hpp\"\n"
-        "#include \"dgtl/analysis/Liveness_Memory_Dependency_Unified.hpp\"\n"
-        "#include \"dgtl/core/Verified_Formal.hpp\"";
-    const std::string r7 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/pass/transform/Transform_Scalar_Core.hpp\"";
-    const std::string r8 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/analysis/Liveness_Memory_Dependency_Unified.hpp\"\n"
-        "#include \"dgtl/isa/regalloc/ARM64_RegAlloc.hpp\"";
-    const std::string r9 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/analysis/AI_Cost_Model.hpp\"\n"
-        "#include \"dgtl/analysis/Liveness_Memory_Dependency_Unified.hpp\"\n"
-        "#include \"dgtl/core/Verified_Formal.hpp\"\n"
-        "#include \"dgtl/pass/transform/Transform_Scalar_Core.hpp\"";
-    const std::string r10 =
-        "#include \"dgtl/core/Arena.hpp\"\n"
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/isa/emitter/NASM_Emitter.hpp\"\n"
-        "#include \"dgtl/pipeline/Performance_Test_Probes.hpp\"\n"
-        "#include \"dgtl/semantic/Symbol_Table.hpp\"";
-    const std::string r11 =
-        "#include \"dgtl/ir/Global_IR.hpp\"\n"
-        "#include \"dgtl/isa/emitter/X64_Strike_Emitter.hpp\"";
+    const std::string r2 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r3 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r4 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r5 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r6 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r7 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r8 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r9 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r10 = "import dgtl.arena;\nimport dgtl.ir_stream;";
+    const std::string r11 = "import dgtl.ir_stream;";
 
     const std::vector<Rule> rules = {
         {"tests/functional/pipeline/test_pipeline_0.cpp", r3},

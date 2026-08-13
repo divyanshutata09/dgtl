@@ -42,7 +42,7 @@ struct Options {
 
 [[nodiscard]] bool has_allowed_extension(const fs::path& p) {
     static const std::unordered_set<std::string> kAllowed{
-        ".cpp", ".hpp", ".h", ".c", ".cc", ".hh", ".hxx", ".cxx", ".inl"};
+        ".cpp", ".ixx", ".h", ".c", ".cc", ".hh", ".hxx", ".cxx", ".inl"};
     const std::string ext = to_lower(p.extension().string());
     return kAllowed.contains(ext);
 }

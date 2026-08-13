@@ -8,7 +8,6 @@
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
-
 #include <cstdint>
 #include <cctype>
 #include <chrono>
@@ -23,47 +22,51 @@
 #include <string_view>
 #include <cstdlib>
 #include <vector>
-
-// ── Core / IR foundations ────────────────────────────────────────────────────
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/semantic/Symbol_Table.hpp"
-#include "dgtl/core/Target.hpp"
-#include "dgtl/core/Verified_Formal.hpp"
-#include "dgtl/ir/base/IR_Node.hpp"
-#include "dgtl/ir/base/IR_Stream.hpp"
-// ── IR evolution ─────────────────────────────────────────────────────────────
-#include "dgtl/ir/evolver/IR_Evolver_Mutation.hpp"
-// ── Analysis ─────────────────────────────────────────────────────────────────
-#include "dgtl/analysis/AI_Cost_Model.hpp"
-#include "dgtl/analysis/Liveness_Memory_Dependency_Unified.hpp"
-// ── Optimization passes ───────────────────────────────────────────────────────
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
-#include "dgtl/pass/transform/Transform_Control_Predication.hpp"
-#include "dgtl/pass/speculative/Speculate_Alias_DCE_Inliner_Temporal_Vector_Fusion.hpp"
-#include "dgtl/pass/simd/SimdGatherScatter_Legal_Vector_Recognizer.hpp"
-// ── Pipeline probes ───────────────────────────────────────────────────────────
-#include "dgtl/pipeline/Pipeline_Probes.hpp"
-// ── ISA register allocation ───────────────────────────────────────────────────
-#include "dgtl/isa/regalloc/ARM64_RegAlloc.hpp"
-// ── ISA emitters ──────────────────────────────────────────────────────────────
-#include "dgtl/isa/emitter/ARM64_Emitter.hpp"
-#include "dgtl/isa/lowering/X64_Machine_Form_Lowering.hpp"
-#include "dgtl/ir/gen/DGTL_Gen_Ops.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
-#include "dgtl/isa/emitter/Arm32neon_RiscV64_WasmGSFMA.hpp"
-#include "dgtl/isa/emitter/MachO_Emitter.hpp"
-#include "dgtl/isa/target/Wasm_Encoder.hpp"
-#include "dgtl/backend/linker/Linker_Backend.hpp"
-#include "dgtl/backend/driver/Backend_Driver_API.hpp"
-#include "dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp"
-// ── JIT / pipeline orchestration ─────────────────────────────────────────────
-#include "dgtl/jit/Hardware_Scheduler.hpp"
-#include "dgtl/jit/JIT_Orchestrator.hpp"
-#include "dgtl/pipeline/Pass_Manager.hpp"
-
 #include <thread>
 
+import dgtl.arena;
+import dgtl.ir_node;
+import dgtl.ir_enums;
+import dgtl.ir_core.stream;
+import dgtl.ir_core.io;
+import dgtl.ir_core.gen;
+import dgtl.ir_core.semantic;
+import dgtl.ir_core.evolution;
+import dgtl.ir_core.graph_region;
+import dgtl.target;
+import dgtl.ir_core.ai_cost_model;
+import dgtl.ir_core.verified_formal;
+import dgtl.ir_core.liveness_memory_dependency_unified;
+import dgtl.ir_core.pipeline_probes;
+import dgtl.ir_core.pass_manager_analysis;
+import dgtl.ir_core.pass_manager_orchestrator;
+import dgtl.ir_core.transform_scalar_core;
+import dgtl.ir_core.transform_control_predication;
+import dgtl.ir_core.speculate_alias_dce_inliner;
+import dgtl.ir_core.simd_gather_scatter;
+import dgtl.ir_core.jit_executor;
+import dgtl.ir_core.hardware_scheduler;
+import dgtl.task_scheduler;
+import dgtl.ir_core.arm64_emitter;
+import dgtl.ir_core.nasm_emitter;
+import dgtl.ir_core.wasm_encoder;
+import dgtl.ir_core.macho_emitter;
+import dgtl.ir_core.linker_backend;
+import dgtl.ir_core.backend_driver_api;
+import dgtl.ir_core.backend_driver_shared_utils;
+import dgtl.ir_core.x64_lowering;
+import dgtl.ir_core.arm64_regalloc;
+
 namespace {
+
+inline float estimate_stream_cost(dgtl::analysis::DGTLAICostModel& model,
+								  const dgtl::ir::IRStream& stream) {
+	float total = 0.0f;
+	for (size_t i = 0; i < stream.size(); ++i) {
+		total += model.predict_node_cost(stream.get_node_readonly(i));
+	}
+	return total;
+}
 
 #include "smoke_cli_and_options.inl"
 #include "smoke_ir_builders_and_profiles.inl"

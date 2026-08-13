@@ -17,7 +17,7 @@ void run_test_pipeline_12_ai_cost_rejection() {
     constexpr size_t kArenaMbPerThread = 2;
     constexpr size_t kReservedNodes = 64;
     constexpr dgtl::ir::Flags kGatherFlags =
-        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::HintFlags::RequiresVecPort);
+        static_cast<dgtl::ir::Flags>(dgtl::ir::Flags::IS_SIMD_BURST);
 
     std::cout << "--- [DGTL-TEST] 12_ai_cost_rejection ---\n";
 

@@ -163,8 +163,8 @@ Primary files (existing):
 
 - `src/apps/smoke_main.cpp`
 - `src/main.cpp`
-- `src/jit/orchestrator/MultiArch_Orchestrator.cpp`
-- `src/jit/orchestrator/Strike_Runner.cpp`
+- `src//orchestrator/MultiArch_Orchestrator.cpp`
+- `src//orchestrator/Strike_Runner.cpp`
 
 Likely new files:
 
@@ -292,7 +292,7 @@ Goal:
 
 Primary files (existing):
 
-- `src/jit/speculation/Async_Speculator.cpp`
+- `src//speculation/Async_Speculator.cpp`
 - `include/dgtl/analysis/profiling/Speculative_Value_Profiler.hpp`
 
 Acceptance criteria:

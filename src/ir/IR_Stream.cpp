@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -12,36 +12,32 @@
 /*
  * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
  * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
- * PILLAR 4: IR STREAM â€” FULL IMPLEMENTATION
+ * PILLAR 4: IR STREAM — FULL IMPLEMENTATION
  *
  * Merged from three translation units:
- *   IR_Stream_Core.cpp        â€” lifecycle, allocation, move semantics
- *   IR_Stream_Operations.cpp  â€” emit, access, sync/hash helpers
- *   IR_Stream_Optimizations.cpp â€” passes (DCE, GVN, speculative, PGO, ...)
+ * IR_Stream_Core.cpp        — lifecycle, allocation, move semantics
+ * IR_Stream_Operations.cpp  — emit, access, sync/hash helpers
+ * IR_Stream_Optimizations.cpp — passes (DCE, GVN, speculative, PGO, ...)
  *
  * STANDARDS: C++26 / UCRT64 (Zero-Overhead Primitive Mapping)
  */
 
-// ---------------------------------------------------------------------------
-// Includes
-// ---------------------------------------------------------------------------
-#include "dgtl/ir/base/IR_Node.hpp"
-#include "dgtl/ir/base/IR_Storage.hpp"
-#include "dgtl/ir/base/IR_Traits_Static.hpp"
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/utils/assert/Assertions.hpp"
-#include "dgtl/utils/container/Flat_Map.hpp"
-#include "dgtl/utils/hashing/Hashing.hpp"
+module;
 
+// ---------------------------------------------------------------------------
+// Includes - Isolated inside the global module fragment
+// ---------------------------------------------------------------------------
 #include <immintrin.h>   // __builtin_prefetch / AVX-512 guards
 #include <cstring>       // std::memset, std::memcpy
 #include <algorithm>     // std::min, std::max, std::swap, std::fill
 #include <atomic>        // std::atomic<bool> in parallel validation
+#include <mutex>         // std::lock_guard
 #include <thread>        // std::thread, hardware_concurrency
 #include <vector>        // vector<thread>, vector<pair<>>, vector<int32_t>
 #include <unordered_map> // g_backend_profiles, guard_regions, addr_accesses
 #include <iostream>      // std::cerr for fatal diagnostic paths
+#include <cassert>
+#include <cassert>
 
 #ifdef _WIN32
 #  include <malloc.h>    // _aligned_malloc / _aligned_free
@@ -49,10 +45,43 @@
 #  include <stdlib.h>    // posix_memalign / free
 #endif
 
+// Binds this translation unit to the primary module definition interface
+module dgtl.ir_core.stream;
+
+import dgtl.ir_node;
+import dgtl.ir_traits;
+import dgtl.arena;
+import dgtl.numa_runtime;
+import dgtl.assertions;
+import dgtl.flat_map;
+import dgtl.hashing;
+
+#ifndef DGTL_ASSERT_BOUNDS
+#define DGTL_ASSERT_BOUNDS(index, size) assert((index) < (size))
+#endif
+
+#ifndef DGTL_ASSERT_NOT_NULL
+#define DGTL_ASSERT_NOT_NULL(ptr) assert((ptr) != nullptr)
+#endif
+
 namespace dgtl::ir {
 
+namespace detail {
+inline void copy_atom_core_stream(IRAtom* dst_atoms,
+                                  IRCore* dst_cores,
+                                  const IRAtom* src_atoms,
+                                  const IRCore* src_cores,
+                                  size_t count) noexcept {
+    if (!dst_atoms || !dst_cores || !src_atoms || !src_cores || count == 0) {
+        return;
+    }
+    std::memcpy(dst_atoms, src_atoms, count * sizeof(IRAtom));
+    std::memcpy(dst_cores, src_cores, count * sizeof(IRCore));
+}
+} // namespace detail
+
 // ===========================================================================
-// FILE-LOCAL HELPERS (anonymous namespace â€” zero external linkage cost)
+// FILE-LOCAL HELPERS (anonymous namespace — zero external linkage cost)
 // ===========================================================================
 namespace {
 
@@ -62,22 +91,13 @@ namespace {
 // ---------------------------------------------------------------------------
 void* DGTL_aligned_alloc(size_t size, size_t alignment) noexcept {
     if (size == 0) size = alignment;
-#ifdef _WIN32
-    return _aligned_malloc(size, alignment);
-#else
-    void* ptr = nullptr;
-    if (::posix_memalign(&ptr, alignment, size) != 0) return nullptr;
-    return ptr;
-#endif
+    const uint32_t node = dgtl::runtime::numa::get_current_node();
+    return dgtl::runtime::numa::allocate_on_node(size, node, alignment);
 }
 
 void DGTL_aligned_free(void* ptr) noexcept {
     if (!ptr) return;
-#ifdef _WIN32
-    _aligned_free(ptr);
-#else
-    ::free(ptr);
-#endif
+    dgtl::runtime::numa::free_allocation(ptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -101,16 +121,16 @@ T* safe_allocate(dgtl::core::DGTL_Arena& arena, size_t count) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// SIMD-accelerated SoA â†’ joined-buffer sync
-// (IRAtom + IRCore) â†’ IRNode, with unrolled prefetch under AVX-512.
+// SIMD-accelerated SoA → joined-buffer sync
+// (IRAtom + IRCore) → IRNode, with unrolled prefetch under AVX-512.
 // ---------------------------------------------------------------------------
 constexpr size_t kJoinedSyncPrefetchDistance = 32u;
 constexpr size_t kJoinedSyncUnrollFactor     = 8u;
 
-void sync_joined_buffer_simd(IRNode*       __restrict dst,
-                              const IRAtom* __restrict atoms,
-                              const IRCore* __restrict cores,
-                              size_t count) noexcept
+void sync_joined_buffer_simd(IRNode* __restrict dst,
+                             const IRAtom* __restrict atoms,
+                             const IRCore* __restrict cores,
+                             size_t count) noexcept
 {
     size_t i = 0;
 
@@ -167,20 +187,56 @@ void sync_joined_buffer_simd(IRNode*       __restrict dst,
 // Commutativity predicate for GVN canonicalization.
 // Ensures (a + b) and (b + a) produce identical semantic hashes.
 // ---------------------------------------------------------------------------
-constexpr bool is_commutative_opcode(const OpCode op) noexcept {
+[[maybe_unused]] constexpr bool is_commutative_opcode(const OpCode op) noexcept {
     return op == OpCode::ADD_I32 || op == OpCode::MUL_I32 ||
            op == OpCode::AND_I32 || op == OpCode::OR_I32  ||
            op == OpCode::XOR_I32 ||
            op == OpCode::ADD_F32 || op == OpCode::MUL_F32;
 }
 
-constexpr bool is_cfg_terminator(const OpCode op) noexcept {
+[[maybe_unused]] constexpr bool is_cfg_terminator(const OpCode op) noexcept {
     if (op == OpCode::BRANCH || op == OpCode::BRANCH_COND ||
         op == OpCode::BRANCH_COMPARE_FUSED ||
+        op == OpCode::BRANCH_LIKELY || op == OpCode::BRANCH_UNLIKELY ||
+        op == OpCode::SWITCH_DISPATCH ||
+        op == OpCode::RESUME_CTX ||
         op == OpCode::RET || op == OpCode::RETURN) {
         return true;
     }
     return IRTraits::is_terminator(op);
+}
+
+// ---------------------------------------------------------------------------
+// Phase C: Semantic promotion from IRNode to IRCore
+// Encodes address-space and predicate contract into aux_flags during stream insertion.
+// This ensures all Phase C pointer/predicate invariants are enforced at the stream level.
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline uint32_t compute_phase_c_aux_flags(OpCode op, uint16_t flags, uint32_t op_c) noexcept {
+    // Address-space pointer ops: encode op_c (address-space id) into aux_flags
+    switch (op) {
+        case OpCode::ATOMIC_LOAD:
+        case OpCode::ATOMIC_STORE:
+        case OpCode::PTR_CAST:
+        case OpCode::PTR_DIFF: {
+            // op_c carries address-space id (0=generic, 1=global, 2=shared, 3=local, 4=constant)
+            // Map to AuxFlags bits; enforce that op_c must be valid (not INVALID_SLOT)
+            if (op_c != dgtl::ir::INVALID_SLOT) {
+                // Store address-space id in lower 8 bits of aux_flags
+                // Mark as valid address-space via PTR_ADDRSPACE_GENERIC (0x00000001 means "explicit address-space present")
+                return (AuxFlags::PTR_ADDRSPACE_GENERIC | ((op_c & 0x0F) << 4));
+            }
+            break;
+        }
+        case OpCode::BOOL_SELECT:
+            // Predicate ops: enforce IS_PREDICATED flag contract
+            if ((flags & Flags::IS_PREDICATED) != 0u) {
+                return AuxFlags::PREDICATE_CANONICAL;
+            }
+            break;
+        default:
+            break;
+    }
+    return 0u;
 }
 
 } // anonymous namespace
@@ -189,12 +245,12 @@ constexpr bool is_cfg_terminator(const OpCode op) noexcept {
 // TU-SCOPE STORAGE
 // ===========================================================================
 
-/// Thread-local arena for shadow buffers â€” prevents mutex contention across
+/// Thread-local arena for shadow buffers — prevents mutex contention across
 /// microservices that each operate on their own IR streams.
 dgtl::core::DGTL_Arena local_transaction_arena(1);
 
 // ===========================================================================
-// SECTION 1: LIFECYCLE â€” Constructors, Destructor, Move
+// SECTION 1: LIFECYCLE — Constructors, Destructor, Move
 // ===========================================================================
 
 IRStream::IRStream([[maybe_unused]] dgtl::core::DGTL_Arena& arena,
@@ -223,11 +279,11 @@ IRStream::IRStream([[maybe_unused]] dgtl::core::DGTL_Arena& arena,
     shadow_cores = static_cast<IRCore*>(DGTL_aligned_alloc(_capacity * sizeof(IRCore), 64u));
     joined_buffer = static_cast<IRNode*>(DGTL_aligned_alloc(_capacity * sizeof(IRNode), 64u));
 
-    if (atoms)        std::memset(atoms,        0, _capacity * sizeof(IRAtom));
+    if (atoms)        std::memset(static_cast<void*>(atoms),        0, _capacity * sizeof(IRAtom));
     if (cores)        std::fill  (cores,        cores        + _capacity, IRCore{});
-    if (shadow_atoms) std::memset(shadow_atoms, 0, _capacity * sizeof(IRAtom));
+    if (shadow_atoms) std::memset(static_cast<void*>(shadow_atoms), 0, _capacity * sizeof(IRAtom));
     if (shadow_cores) std::fill  (shadow_cores, shadow_cores + _capacity, IRCore{});
-    if (joined_buffer) std::memset(joined_buffer, 0, _capacity * sizeof(IRNode));
+    if (joined_buffer) std::memset(static_cast<void*>(joined_buffer), 0, _capacity * sizeof(IRNode));
 }
 
 /// Construct from an external joined buffer (ownership NOT taken for the
@@ -260,12 +316,12 @@ IRStream::IRStream(IRNode* external_buffer, size_t node_count)
         joined_buffer = static_cast<IRNode*>(DGTL_aligned_alloc(_capacity * sizeof(IRNode), 64u));
     }
 
-    if (atoms)        std::memset(atoms,        0, _capacity * sizeof(IRAtom));
+    if (atoms)        std::memset(static_cast<void*>(atoms),        0, _capacity * sizeof(IRAtom));
     if (cores)        std::fill  (cores,        cores        + _capacity, IRCore{});
-    if (shadow_atoms) std::memset(shadow_atoms, 0, _capacity * sizeof(IRAtom));
+    if (shadow_atoms) std::memset(static_cast<void*>(shadow_atoms), 0, _capacity * sizeof(IRAtom));
     if (shadow_cores) std::fill  (shadow_cores, shadow_cores + _capacity, IRCore{});
     if (!external_buffer && joined_buffer)
-        std::memset(joined_buffer, 0, _capacity * sizeof(IRNode));
+        std::memset(static_cast<void*>(joined_buffer), 0, _capacity * sizeof(IRNode));
 
     // Decompose provided joined nodes into SoA
     if (external_buffer && atoms && cores) {
@@ -497,18 +553,18 @@ void IRStream::rebuild_cfg_locked() const noexcept {
 
         if (op == OpCode::BRANCH) {
             const uint32_t target_label = c_ptr[term_idx].op_a;
-            const auto it = cfg_label_to_block_cache.find(target_label);
-            if (it != cfg_label_to_block_cache.end()) {
-                add_edge(from, it->second, CFGEdgeKind::UnconditionalBranch);
+            const auto* it = cfg_label_to_block_cache.find(target_label);
+            if (it) {
+                add_edge(from, *it, CFGEdgeKind::UnconditionalBranch);
             }
             continue;
         }
 
         if (op == OpCode::BRANCH_COND || op == OpCode::BRANCH_COMPARE_FUSED) {
             const uint32_t target_label = c_ptr[term_idx].op_a;
-            const auto it = cfg_label_to_block_cache.find(target_label);
-            if (it != cfg_label_to_block_cache.end()) {
-                add_edge(from, it->second, CFGEdgeKind::ConditionalTrue);
+            const auto* it = cfg_label_to_block_cache.find(target_label);
+            if (it) {
+                add_edge(from, *it, CFGEdgeKind::ConditionalTrue);
             }
             if (next != INVALID_SLOT) {
                 add_edge(from, next, CFGEdgeKind::ConditionalFalse);
@@ -602,7 +658,7 @@ void IRStream::begin_transaction() noexcept {
     joined_valid = false;
     invalidate_cfg_cache_locked();
     if (in_transaction.exchange(true, std::memory_order_acq_rel)) {
-        // Already in a transaction â€” just re-sync shadow_count.
+        // Already in a transaction — just re-sync shadow_count.
         shadow_count = std::min(count, _capacity);
         return;
     }
@@ -665,7 +721,7 @@ void IRStream::prune_shadow_buffer() noexcept {
     if (shadow_atoms && shadow_cores) [[likely]] {
         const size_t tail = _capacity - count;
         if (tail > 0) {
-            std::memset(shadow_atoms + count, 0, tail * sizeof(IRAtom));
+            std::memset(static_cast<void*>(shadow_atoms + count), 0, tail * sizeof(IRAtom));
             std::fill  (shadow_cores + count, shadow_cores + count + tail, IRCore{});
         }
     }
@@ -718,19 +774,25 @@ void IRStream::push_node(const IRAtom& atom, const IRCore& core) noexcept {
     const uint64_t sync_hash = (core.intent_hash == 0)
         ? IRNode::calculate_hash(atom.opcode, core.result_id, core.op_a, core.op_b, core.op_c)
         : core.intent_hash;
+    
+    // Phase C: Apply semantic promotion to ensure aux_flags carries address-space/predicate info
+    uint32_t final_aux_flags = core.aux_flags;
+    if (final_aux_flags == 0u) {
+        final_aux_flags = compute_phase_c_aux_flags(atom.opcode, atom.flags, core.op_c);
+    }
 
     if (in_transaction.load(std::memory_order_acquire)) {
         if (shadow_count >= _capacity || !shadow_atoms || !shadow_cores) [[unlikely]] return;
         shadow_atoms[shadow_count] = atom;
         shadow_cores[shadow_count] = { core.result_id, core.op_a, core.op_b, core.op_c,
-                                       sync_hash, core.logic_flags, core.aux_flags, core.debug_id, core.epoch };
+                                        sync_hash, core.logic_flags, final_aux_flags, core.debug_id, core.epoch };
         ++shadow_count;
         invalidate_cfg_cache_locked();
     } else {
         if (count >= _capacity || !atoms || !cores) [[unlikely]] return;
         atoms[count] = atom;
         cores[count] = { core.result_id, core.op_a, core.op_b, core.op_c,
-                         sync_hash, core.logic_flags, core.aux_flags, core.debug_id, core.epoch };
+                         sync_hash, core.logic_flags, final_aux_flags, core.debug_id, core.epoch };
         ++count;
         shadow_count = count;
         joined_valid = false;
@@ -750,17 +812,20 @@ void IRStream::push_node(OpCode op,
     const uint64_t sync_hash = (h == 0)
         ? IRNode::calculate_hash(op, res, a, b, c)
         : h;
+    
+    // Phase C: Compute semantic aux_flags from op code and operands
+    const uint32_t phase_c_aux_flags = compute_phase_c_aux_flags(op, fl, c);
 
     if (in_transaction.load(std::memory_order_acquire)) {
         if (shadow_count >= _capacity || !shadow_atoms || !shadow_cores) [[unlikely]] return;
         shadow_atoms[shadow_count] = { op, fl };
-        shadow_cores[shadow_count] = { res, a, b, c, sync_hash, 0u, 0u, 0u, 0u }; // logic_flags=0: caller must set via set_node if needed
+        shadow_cores[shadow_count] = { res, a, b, c, sync_hash, 0u, phase_c_aux_flags, 0u, 0u };
         ++shadow_count;
         invalidate_cfg_cache_locked();
     } else {
         if (count >= _capacity || !atoms || !cores) [[unlikely]] return;
         atoms[count] = { op, fl };
-        cores[count] = { res, a, b, c, sync_hash, 0u, 0u, 0u, 0u };
+        cores[count] = { res, a, b, c, sync_hash, 0u, phase_c_aux_flags, 0u, 0u };
         ++count;
         shadow_count = count;
         joined_valid = false;
@@ -774,13 +839,16 @@ void IRStream::push_back(const IRNode& node) noexcept {
         ? IRNode::calculate_hash(node.opcode, node.result_id,
                                  node.op_a, node.op_b, node.op_c)
         : node.intent_hash;
+    
+    // Phase C: Compute semantic aux_flags for pointer/predicate ops
+    const uint32_t phase_c_aux_flags = compute_phase_c_aux_flags(node.opcode, node.flags, node.op_c);
 
     if (in_transaction.load(std::memory_order_acquire)) {
         const uint32_t idx = reserve_shadow_slot();
         if (idx == INVALID_SLOT || !shadow_atoms || !shadow_cores) return;
         shadow_atoms[idx] = { node.opcode, node.flags };
         shadow_cores[idx] = { node.result_id, node.op_a, node.op_b, node.op_c,
-                      final_hash, node.logic_flags, 0u, 0u, 0u };
+                      final_hash, node.logic_flags, phase_c_aux_flags, 0u, 0u };
         invalidate_cfg_cache_locked();
     } else {
         if (count >= _capacity || !atoms || !cores) [[unlikely]] {
@@ -791,7 +859,7 @@ void IRStream::push_back(const IRNode& node) noexcept {
         atoms[count].opcode = node.opcode;
         atoms[count].flags  = node.flags;
         cores[count] = { node.result_id, node.op_a, node.op_b, node.op_c,
-                 final_hash, node.logic_flags, 0u, 0u, 0u };
+                 final_hash, node.logic_flags, phase_c_aux_flags, 0u, 0u };
         ++count;
         shadow_count = count;
         joined_valid = false;
@@ -845,7 +913,7 @@ IRNode IRStream::get_node(size_t idx) const noexcept {
 const IRNode& IRStream::get_node_readonly(size_t idx) const noexcept {
     // fallback_node is non-mutable in the source header; use thread_local storage
     // so this const method can legally return a stable reference.
-    // (The build SDK version marks it mutable â€” either path is ABI-identical.)
+    // (The build SDK version marks it mutable — either path is ABI-identical.)
     thread_local IRNode tl_fallback{};
     tl_fallback = get_node(idx);
     return tl_fallback;
@@ -877,10 +945,13 @@ void IRStream::set_node(size_t idx, const IRNode& node) noexcept {
         ? IRNode::calculate_hash(node.opcode, node.result_id,
                                  node.op_a, node.op_b, node.op_c)
         : node.intent_hash;
+    
+    // Phase C: Compute semantic aux_flags for the new node
+    const uint32_t phase_c_aux_flags = compute_phase_c_aux_flags(node.opcode, node.flags, node.op_c);
 
     atom_ptr[idx] = { node.opcode, node.flags };
     core_ptr[idx] = { node.result_id, node.op_a, node.op_b, node.op_c,
-                      final_hash, node.logic_flags, 0u, 0u, 0u };
+                      final_hash, node.logic_flags, phase_c_aux_flags, 0u, 0u };
 
     if (joined_buffer && idx < _capacity) {
         joined_buffer[idx]             = node;
@@ -908,11 +979,11 @@ void IRStream::set_call_overflow_args(size_t node_idx, std::span<const uint32_t>
 
 std::vector<uint32_t> IRStream::get_call_overflow_args(size_t node_idx) const {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    const auto it = call_overflow_args_.find(node_idx);
-    if (it == call_overflow_args_.end()) {
+    const auto* it = call_overflow_args_.find(node_idx);
+    if (!it) {
         return {};
     }
-    return it->second;
+    return *it;
 }
 
 void IRStream::clear_call_overflow_args(size_t node_idx) {
@@ -931,16 +1002,133 @@ void IRStream::set_call_abi_layout_words(size_t node_idx, std::span<const uint32
 
 std::vector<uint32_t> IRStream::get_call_abi_layout_words(size_t node_idx) const {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    const auto it = call_abi_layout_words_.find(node_idx);
-    if (it == call_abi_layout_words_.end()) {
+    const auto* it = call_abi_layout_words_.find(node_idx);
+    if (!it) {
         return {};
     }
-    return it->second;
+    return *it;
 }
 
 void IRStream::clear_call_abi_layout_words(size_t node_idx) {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     call_abi_layout_words_.erase(node_idx);
+}
+
+// ============================================================================
+// Phase D: Variadic & Multi-Result Sidecar Accessors
+// ============================================================================
+
+void IRStream::set_operand_overflow(size_t node_idx, std::span<const uint32_t> overflow_operands) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    if (overflow_operands.empty()) {
+        operand_overflow_.erase(node_idx);
+        joined_valid = false;
+        return;
+    }
+    operand_overflow_[node_idx] = std::vector<uint32_t>(overflow_operands.begin(), overflow_operands.end());
+    joined_valid = false;
+}
+
+std::vector<uint32_t> IRStream::get_operand_overflow(size_t node_idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    const auto* it = operand_overflow_.find(node_idx);
+    if (!it) {
+        return {};
+    }
+    return *it;
+}
+
+void IRStream::clear_operand_overflow(size_t node_idx) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    operand_overflow_.erase(node_idx);
+    joined_valid = false;
+}
+
+void IRStream::set_result_ids(size_t node_idx, std::span<const uint32_t> result_ids) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    if (result_ids.empty()) {
+        result_ids_.erase(node_idx);
+        joined_valid = false;
+        return;
+    }
+    result_ids_[node_idx] = std::vector<uint32_t>(result_ids.begin(), result_ids.end());
+    joined_valid = false;
+}
+
+std::vector<uint32_t> IRStream::get_result_ids(size_t node_idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    const auto* it = result_ids_.find(node_idx);
+    if (!it) {
+        return {};
+    }
+    return *it;
+}
+
+void IRStream::clear_result_ids(size_t node_idx) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    result_ids_.erase(node_idx);
+    joined_valid = false;
+}
+
+void IRStream::set_result_type(uint32_t result_id, uint32_t type_handle) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    if (result_id == 0u || result_id == INVALID_SLOT || type_handle == 0u) {
+        result_types_.erase(result_id);
+        return;
+    }
+    if (!is_valid_type_handle(type_handle)) {
+        return;
+    }
+    result_types_[result_id] = type_handle;
+}
+
+void IRStream::set_result_type(uint32_t result_id, TypeCode type_code) noexcept {
+    set_result_type(result_id, static_cast<uint32_t>(type_code));
+}
+
+uint32_t IRStream::get_result_type(uint32_t result_id) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    const auto* it = result_types_.find(result_id);
+    if (!it) {
+        return 0u;  // Unknown type
+    }
+    return *it;
+}
+
+TypeCode IRStream::get_result_type_code(uint32_t result_id) const noexcept {
+    const uint32_t type_handle = get_result_type(result_id);
+    if (!is_valid_type_handle(type_handle)) {
+        return TypeCode::VOID_T;
+    }
+    return static_cast<TypeCode>(type_handle);
+}
+
+void IRStream::clear_result_type(uint32_t result_id) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    result_types_.erase(result_id);
+}
+
+void IRStream::set_node_effects(size_t node_idx, uint32_t effect_set) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    if (effect_set == 0u) {
+        node_effects_.erase(node_idx);
+        return;
+    }
+    node_effects_[node_idx] = effect_set;
+}
+
+uint32_t IRStream::get_node_effects(size_t node_idx) const noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    const auto* it = node_effects_.find(node_idx);
+    if (!it) {
+        return 0u;  // No tracked effects
+    }
+    return *it;
+}
+
+void IRStream::clear_node_effects(size_t node_idx) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    node_effects_.erase(node_idx);
 }
 
 const IRCore& IRStream::get_core_readonly(size_t idx) const noexcept {
@@ -1087,23 +1275,34 @@ uint64_t IRStream::generate_logic_hash() const noexcept {
 // SECTION 7: BACKEND PROFILING
 // ===========================================================================
 
-/// Thread-local backend profile cache keyed by stream_id.
-static thread_local std::unordered_map<uint32_t, dgtl::ir::BackendProfile>
-    g_backend_profiles;
+/// Process-wide backend profile cache keyed by stream_id.
+/// Phase E requires cross-thread stability; thread-local state fragments tiering data.
+static std::unordered_map<uint32_t, dgtl::ir::BackendProfile> g_backend_profiles;
+static std::mutex g_backend_profiles_mutex;
 
-BackendProfile& IRStream::get_backend_profile(uint32_t stream_id) noexcept {
-    // operator[] default-constructs on first access â€” no manual find/insert.
-    return g_backend_profiles[stream_id];
+BackendProfile IRStream::get_backend_profile(uint32_t stream_id) const noexcept {
+    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
+    if (const auto it = g_backend_profiles.find(stream_id); it != g_backend_profiles.end()) {
+        return it->second;
+    }
+    return BackendProfile{};
+}
+
+void IRStream::set_backend_target(uint32_t stream_id,
+                                  BackendProfile::TargetISA target) noexcept {
+    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
+    g_backend_profiles[stream_id].target = target;
 }
 
 void IRStream::record_function_call(uint32_t function_id) noexcept {
-    get_backend_profile(function_id).calls_count++;
+    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
+    g_backend_profiles[function_id].calls_count++;
 }
 
 void IRStream::record_block_hotness(uint32_t block_id) noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
     // Mark block as hot for PGO analysis.
-    // Guard with an explicit bounds check â€” raw array access is not an exception.
+    // Guard with an explicit bounds check — raw array access is not an exception.
     if (!atoms || block_id >= static_cast<uint32_t>(size())) return;
     DGTL_ASSERT_BOUNDS(block_id, size());
     atoms[block_id].flags |= Flags::IS_OPTIMIZED;
@@ -1111,9 +1310,10 @@ void IRStream::record_block_hotness(uint32_t block_id) noexcept {
 
 void IRStream::update_backend_stats(uint32_t stream_id,
                                     uint64_t compilation_time_us) noexcept {
-    auto& profile = get_backend_profile(stream_id);
+    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
+    auto& profile = g_backend_profiles[stream_id];
 
-    // Exponential moving average (Î± = 0.3) for compilation latency.
+    // Exponential moving average (α = 0.3) for compilation latency.
     if (profile.avg_compilation_latency_us == 0.0f) {
         profile.avg_compilation_latency_us = static_cast<float>(compilation_time_us);
     } else {
@@ -1139,15 +1339,43 @@ void IRStream::update_backend_stats(uint32_t stream_id,
 }
 
 void IRStream::record_cache_access(uint32_t stream_id, bool hit) noexcept {
-    auto& profile = get_backend_profile(stream_id);
+    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
+    auto& profile = g_backend_profiles[stream_id];
     if (hit) ++profile.cache_hits;
     else     ++profile.cache_misses;
 }
 
+void IRStream::ingest_runtime_feedback(uint32_t stream_id,
+                                       double actual_latency,
+                                       double cache_miss_rate,
+                                       double branch_mispredict_rate,
+                                       uint64_t execution_count) noexcept {
+    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
+    auto& profile = g_backend_profiles[stream_id];
+
+    if (execution_count == 0) {
+        return;
+    }
+
+    const double miss_rate = std::clamp(cache_miss_rate, 0.0, 1.0);
+    const uint64_t samples = execution_count;
+    const uint64_t misses = static_cast<uint64_t>(miss_rate * static_cast<double>(samples));
+    const uint64_t hits = samples - misses;
+
+    profile.cache_misses += static_cast<uint32_t>(std::min<uint64_t>(misses, UINT32_MAX));
+    profile.cache_hits += static_cast<uint32_t>(std::min<uint64_t>(hits, UINT32_MAX));
+    profile.calls_count += samples;
+    profile.execution_time_us += static_cast<uint64_t>(std::max(0.0, actual_latency));
+
+    if (branch_mispredict_rate > 0.20) {
+        profile.speculation.deopt_triggers++;
+    }
+}
+
 BackendProfile::CompilationTier
-IRStream::compute_adaptive_tier(uint32_t function_id) noexcept {
-    auto& profile = get_backend_profile(function_id);
+IRStream::compute_adaptive_tier(uint32_t function_id, const dgtl::core::TargetDescription* target_desc) noexcept {
     using Tier = BackendProfile::CompilationTier;
+    const BackendProfile profile = get_backend_profile(function_id);
 
     const uint32_t complexity = estimate_complexity_score();
     const uint64_t total_accesses = profile.cache_hits + profile.cache_misses;
@@ -1155,10 +1383,25 @@ IRStream::compute_adaptive_tier(uint32_t function_id) noexcept {
         ? static_cast<float>(profile.cache_hits) / static_cast<float>(total_accesses)
         : 0.0f;
 
-    if (complexity < 50u && cache_hit_rate > 0.8f && profile.calls_count < 100u)
+    // Use target metrics for thresholds
+    float avg_latency = 1.0f;
+    float avg_throughput = 1.0f;
+    (void)target_desc;
+
+    // Calibrate thresholds based on target metrics
+    uint32_t jit_complexity_threshold = static_cast<uint32_t>(40.0f * avg_throughput + 10.0f * avg_latency);
+    uint32_t aot_complexity_threshold = static_cast<uint32_t>(120.0f * avg_throughput + 20.0f * avg_latency);
+    uint64_t hot_call_threshold = static_cast<uint64_t>(80.0f * avg_throughput + 8.0f * avg_latency);
+    float poor_cache_threshold = 0.5f + 0.1f * (avg_latency / (avg_throughput + 1.0f));
+
+    if (profile.avg_compilation_latency_us > 8000.0f * avg_latency) {
+        return Tier::AOT_INTENSIVE;
+    }
+
+    if (complexity < jit_complexity_threshold && cache_hit_rate > 0.8f && profile.calls_count < hot_call_threshold)
         return Tier::JIT_FAST;
 
-    if (complexity > 200u || cache_hit_rate < 0.5f)
+    if (complexity > aot_complexity_threshold || cache_hit_rate < poor_cache_threshold)
         return Tier::AOT_INTENSIVE;
 
     return Tier::ADAPTIVE_HYBRID;
@@ -1193,7 +1436,7 @@ void IRStream::perform_speculative_optimization() noexcept {
         }
 
         // Bias likely back-edges for speculation fusion.
-        if (atom.opcode == OpCode::BRANCH_COND && (atom.flags & HintFlags::BranchLikely)) {
+        if (atom.opcode == OpCode::BRANCH_COND && (core.logic_flags & HintFlags::BranchLikely)) {
             atom.flags |= Flags::IS_FUSED;
         }
     }
@@ -1256,19 +1499,19 @@ void IRStream::optimize_branch_prediction() noexcept {
     if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
 
     for (size_t i = 0; i < shadow_count; ++i) {
-        IRAtom& atom = shadow_atoms[i];
+        const IRAtom& atom = shadow_atoms[i];
         if (atom.opcode != OpCode::BRANCH_COND) continue;
 
         const int32_t offset = static_cast<int32_t>(shadow_cores[i].op_a)
                              - static_cast<int32_t>(i);
         if (offset < 0) {
-            // Backward branch â†’ likely loop back-edge.
-            atom.flags |=  HintFlags::BranchLikely;
-            atom.flags &= ~HintFlags::BranchUnlikely;
+            // Backward branch → likely loop back-edge.
+            shadow_cores[i].logic_flags |= HintFlags::BranchLikely;
+            shadow_cores[i].logic_flags &= ~HintFlags::BranchUnlikely;
         } else if (offset > 100) {
-            // Far forward branch â†’ likely cold error path.
-            atom.flags |=  HintFlags::BranchUnlikely;
-            atom.flags &= ~HintFlags::BranchLikely;
+            // Far forward branch → likely cold error path.
+            shadow_cores[i].logic_flags |= HintFlags::BranchUnlikely;
+            shadow_cores[i].logic_flags &= ~HintFlags::BranchLikely;
         }
     }
 
@@ -1318,10 +1561,9 @@ void IRStream::perform_profile_guided_optimization(
     if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
 
     for (size_t i = 0; i < shadow_count; ++i) {
-        IRAtom& atom = shadow_atoms[i];
         const float hotness = profile_data.compute_hotness_score(i);
         if (hotness > 0.7f) {
-            atom.flags |= Flags::IS_LOOP_INVARIANT; // hot-path marker
+            shadow_atoms[i].flags |= Flags::IS_LOOP_INVARIANT; // hot-path marker
         }
     }
 
@@ -1337,13 +1579,14 @@ void IRStream::optimize_memory_access_patterns() noexcept {
     begin_transaction();
     if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
 
-    // Group LOAD/STORE instructions by address register.
+    // Group load/store instructions by address register.
     dgtl::utils::FastFlatMap<uint32_t, std::vector<size_t>, 4096> addr_accesses_fast;
     dgtl::utils::FastFlatMap<uint32_t, std::vector<size_t>, 65536> addr_accesses_overflow;
     for (size_t i = 0; i < shadow_count; ++i) {
         const IRAtom& atom = shadow_atoms[i];
         const IRCore& core = shadow_cores[i];
-        if ((atom.opcode == OpCode::LOAD || atom.opcode == OpCode::STORE)
+        if ((atom.opcode == OpCode::LOAD || atom.opcode == OpCode::ATOMIC_LOAD ||
+             atom.opcode == OpCode::STORE || atom.opcode == OpCode::ATOMIC_STORE)
                 && core.op_a != INVALID_SLOT) {
             if (std::vector<size_t>* bucket = addr_accesses_fast.find(core.op_a)) {
                 bucket->push_back(i);
@@ -1582,10 +1825,10 @@ void IRStream::analyze_simd_opportunities() noexcept {
             (op >= OpCode::ADD_I64 && op <= OpCode::DIV_I64)) {
             if (!(fl & Flags::IS_VOLATILE)) ++vectorizable_count;
         }
-        if ((op == OpCode::LOAD || op == OpCode::GATHER_F32_512 ||
+        if ((op == OpCode::LOAD || op == OpCode::ATOMIC_LOAD || op == OpCode::GATHER_F32_512 ||
              op == OpCode::VEC_LOAD) && (fl & Flags::IS_VECTOR_LANE))
             ++gather_patterns;
-        if ((op == OpCode::STORE || op == OpCode::VEC_STORE) &&
+        if ((op == OpCode::STORE || op == OpCode::ATOMIC_STORE || op == OpCode::VEC_STORE) &&
             (fl & Flags::IS_VECTOR_LANE))
             ++scatter_patterns;
     }
@@ -1894,11 +2137,12 @@ std::vector<uint32_t> IRStream::compute_immediate_dominators(uint32_t entry_bloc
             if (b == root) continue;
 
             uint32_t new_idom = INVALID_SLOT;
-            for (const uint32_t p : cfg_pred_cache[b]) {
-                if (p < n && idom[p] != INVALID_SLOT) {
-                    new_idom = p;
-                    break;
-                }
+            const auto& preds = cfg_pred_cache[b];
+            auto it = std::find_if(preds.begin(), preds.end(), [n, &idom](uint32_t p) noexcept {
+                return p < n && idom[p] != INVALID_SLOT;
+            });
+            if (it != preds.end()) {
+                new_idom = *it;
             }
             if (new_idom == INVALID_SLOT) continue;
 
@@ -2002,7 +2246,7 @@ uint32_t IRStream::get_max_id() const noexcept {
 
 void IRStream::evolve_node(IRNode* node) {
     if (!node) return;
-    // a + a  â†’  a << 1  (strength reduction pattern)
+    // a + a  →  a << 1  (strength reduction pattern)
     if (node->opcode == OpCode::ADD_I32 && node->op_a == node->op_b) {
         node->opcode = OpCode::SHL_I32;
         node->op_b   = 1u;

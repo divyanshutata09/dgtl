@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -632,7 +632,7 @@ SummaryStats summarize(std::array<double, N> values, std::size_t count = N) {
 }
 
 template <std::size_t N>
-DriftReport summarize_drift(const std::array<double, N>& medians, std::size_t count = N) {
+[[maybe_unused]] DriftReport summarize_drift(const std::array<double, N>& medians, std::size_t count = N) {
     DriftReport report;
     if (count == 0) {
         return report;
@@ -1069,7 +1069,7 @@ DGTL_HOT_SECTION DGTL_AVX512_TARGET KernelResult simd_kernel_avx512(BenchmarkSta
     return make_result(static_cast<long long>(sum), local_checksum);
 }
 
-DGTL_HOT_SECTION DGTL_AVX2_TARGET KernelResult simd_kernel_avx2(BenchmarkState& state) {
+[[maybe_unused]] DGTL_HOT_SECTION DGTL_AVX2_TARGET KernelResult simd_kernel_avx2(BenchmarkState& state) {
     constexpr float kMulBias = 37.0f;
     constexpr float kAltBias = 19.0f;
 

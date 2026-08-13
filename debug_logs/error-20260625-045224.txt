@@ -1,0 +1,76 @@
+DGTL Forensic Debugger
+Root: D:\TataG\DGTL
+
+Last command: dgtl prepare-api --api public
+Last exit code: 1
+Command fingerprint: 48f466ce488a80d4
+Declaration cache: 253 hits, 0 misses, 0 rescanned files
+Last session log: build/logs/last-nondebug-session.log
+
+[1] Module Graph
+  Modules discovered: 132
+  Cycles detected:    0
+
+[2] Error Clusters
+  Logs scanned: 1
+  Clusters: 0
+
+[2a] Failing Command Context
+  No error clusters available for command attribution.
+
+[3] Cache & Cycle Hints
+  No cache-specific hints emitted.
+
+[4] Symbol Collision Radar
+  Dynamic suspect symbols: 5
+  Suspect symbols: 4
+  - IRStream appears at 511 sites
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:90 :: void analyze_stream(const ir::IRStream& stream) {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:198 :: [[nodiscard]] float predict_alias_probability(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) noexcept {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:232 :: [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
+  - find_generated_op_def appears at 24 sites
+      include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:217 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
+      include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:249 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
+      include/dgtl/ir/base/IR_SSA.ixx:1377 :: const auto* def = dgtl::ir::gen::find_generated_op_def(node.opcode);
+  - TargetMachine appears at 24 sites
+      include/dgtl/core/Target.ixx:379 :: class alignas(64) TargetMachine {
+      include/dgtl/core/Target.ixx:503 :: using TargetMachine  = dgtl::core::TargetMachine;
+      include/dgtl/graph/IR_GraphEdgeClusterRegion.ixx:370 :: void schedule(const dgtl::core::TargetMachine& target);
+  - RuntimeFeedback appears at 2 sites
+      include/dgtl/analysis/AI_Cost_Model.ixx:45 :: struct RuntimeFeedback {
+      include/dgtl/analysis/AI_Cost_Model.ixx:118 :: void update_with_feedback(const dgtl::ir::IRNode& node, const RuntimeFeedback& feedback) {
+
+[5] Ownership Arbitration
+  Recommendations: 4
+  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:6164 (score 110)
+      why: inside DGTL workspace, generated-definition ownership path, importable generated IR interface, inline or constexpr definition
+      6162: }();
+      6163: 
+      6164: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
+      6165:     const size_t index = static_cast<size_t>(opcode);
+      6166:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+  - IRStream -> include/dgtl/backend/driver/Backend_Driver_API.ixx:283 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      281: }
+      282: 
+      283: inline bool emit_arm64_direct(const dgtl::ir::IRStream& stream,
+      284:                               const dgtl::semantic::SymbolTable& symbols,
+      285:                               std::string& out_text) {
+  - TargetMachine -> include/dgtl/isa/lowering/Instruction_Selector.ixx:449 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      447: }
+      448: 
+      449: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
+      450:     if (rule.require_fma && !target.get_caps().has_fma) {
+      451:         return false;
+  - RuntimeFeedback -> include/dgtl/analysis/AI_Cost_Model.ixx:45 (score 20)
+      why: inside DGTL workspace
+      43: 
+      44: // 🚀 PRODUCTION RESOLUTION: True, fully-defined exported struct attaches layout to this module unit.
+      45: struct RuntimeFeedback {
+      46:     double actual_latency = 0.0;
+      47:     double cache_miss_rate = 0.0;
+
+[6] Staff-Level Triage
+  Primary structural risk: no import SCCs detected in scanned units.
+  Regression: Previous run: identical fingerprint to previous snapshot.

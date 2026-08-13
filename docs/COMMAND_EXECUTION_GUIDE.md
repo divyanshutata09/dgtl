@@ -70,7 +70,7 @@ src/
   ├── analysis/**/*.cpp
   ├── graph/**/*.cpp
   ├── ir/**/*.cpp
-  ├── jit/**/*.cpp
+  ├── /**/*.cpp
   ├── pass/**/*.cpp
   ├── pipeline/**/*.cpp
   ├── runtime/**/*.cpp

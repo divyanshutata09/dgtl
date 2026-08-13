@@ -349,7 +349,7 @@ Tier 3 (Leadership):
 
 - Frontend hot paths: tokenization, Pratt dispatch, symbol lookup, type solver hotspots.
 - Mid-end: MIR canonicalization, effect-aware simplification.
-- DGTL backend: pass scheduling, vectorization/polyhedral opportunities, emission quality, JIT profile feedback.
+- DGTL backend: pass scheduling, vectorization/polyhedral opportunities, emission quality,  profile feedback.
 - Runtime: allocator strategy, task scheduler overhead, channel contention mitigation.
 
 ## 12. Testing and Verification Strategy

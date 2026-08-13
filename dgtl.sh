@@ -29,6 +29,7 @@ SRC_DIR="$ROOT/src"
 BUILD_DIR="$ROOT/build"
 INCLUDE_DIR="$ROOT/include"
 BENCHMARKS_LOG_DIR="$ROOT/benchmarks/logs"
+GCM_CACHE_DIR="$ROOT/gcm.cache"
 
 # SDK & Tools Paths
 SDK_DIR="$BUILD_DIR/DGTL_SDK"
@@ -72,18 +73,21 @@ Pick by intent:
 Categories (recommended):
 
 1) SDK & Infrastructure
-  dgtl build-sdk                          -> build/DGTL_SDK/ (For Myzon Linking)
-  dgtl gen                                -> Generates DGTL_Gen_Ops.hpp
+  dgtl build-sdk                                  -> build/DGTL_SDK/ (For Myzon Linking)
+                     ships dgtl.h, dgtl_core.h, dgtl_c_api.h,
+                       dgtl_simd.h, dgtl_capabilities.h, dgtl_session.h
+    dgtl api-status --api <internal|public|both>   -> verifies DGTL API lane readiness
+  dgtl gen                                        -> Generates DGTL_Gen_Ops.hpp
 
 2) Build binaries
-  dgtl build-release                      -> build/dgtl_release
-  dgtl build-smoke                        -> build/dgtl_main
-  dgtl build-strict                       -> build/dgtl_main_strict
+  dgtl build-release                              -> build/dgtl_release
+  dgtl build-smoke                                -> build/dgtl_main
+  dgtl build-strict                               -> build/dgtl_main_strict
 
 3) Validate correctness
-  dgtl run-all                            # full conformance
+  dgtl run-all                                    # full conformance
   dgtl run-backend <arm64|x64|nasm|wasm>  # quick backend check
-  dgtl test [full]                        # aggregate source-backed tests
+  dgtl test [full]                                # aggregate source-backed tests
 
 4) Benchmark performance
   dgtl bench-backend <backend> [profile|iterations] [pressure-vars]
@@ -130,6 +134,15 @@ find_g_plusplus() {
   return 1
 }
 
+clear_zombie_locks() {
+  if [[ "$OS" == "Windows" ]]; then
+    taskkill /F /IM g++.exe /T 2>/dev/null || true
+    taskkill /F /IM cc1plus.exe /T 2>/dev/null || true
+  else
+    pkill -9 -f cc1plus 2>/dev/null || true
+  fi
+}
+
 get_source_files() {
   local entry_point="$1"
   local exclude_paths=("${@:2}")
@@ -161,7 +174,7 @@ get_source_files() {
 }
 
 # ============================================================================
-# NEW ARCHITECTURE: DSL GEN & SDK BUILDER
+# RUN GENERATOR DSL
 # ============================================================================
 
 run_gen() {
@@ -170,19 +183,184 @@ run_gen() {
 
   mkdir -p "$(dirname "$GEN_TOOL_EXE")"
   
-  # 1. Build the generator if needed
   if [[ ! -f "$GEN_TOOL_EXE" || "$GEN_TOOL_SRC" -nt "$GEN_TOOL_EXE" ]]; then
       echo "[dgtl] Compiling dgtl-gen tool..."
       "$g_plusplus" -std=c++26 -O2 "$GEN_TOOL_SRC" -o "$GEN_TOOL_EXE"
   fi
 
-  # 2. Run the generator
   echo "[dgtl] Generating IR Ops from DSL..."
   "$GEN_TOOL_EXE" --root "$ROOT"
 }
 
+# ============================================================================
+# DETERMINISTIC TOPOLOGICAL MODULE COMPILATION PHASE (GCC Bug Mitigation)
+# ============================================================================
+
+compile_all_dgtl_modules() {
+  local g_plusplus
+  g_plusplus=$(find_g_plusplus)
+  
+  local OBJ_DIR="$BUILD_DIR/obj/modules"
+  mkdir -p "$OBJ_DIR"
+
+  export CXXFLAGS="-std=c++26 -fmodules-ts"
+  export CFLAGS="-std=c++26 -fmodules-ts"
+
+  local cflags=("-std=c++26" "-fmodules-ts" "-O2" "-pipe" "-I$INCLUDE_DIR")
+
+  # Macro partitioned structure avoids metadata collision in Global_IR
+  local module_files=(
+    # --- Tier 1: dgtl.ir_core Leaf Partitions ---
+    "ir/base/IR_Forward.ixx"
+    "ir/base/IR_Stream.ixx"
+    "ir/base/IR_SSA.ixx"
+    "ir/base/IR_PrintSerialDumper.ixx"
+    "ir/debug/debug_Metadata.ixx"
+    "core/ABI.ixx"
+    "core/ControlFlow.ixx"
+    "semantic/Symbol_Table.ixx"
+    "graph/IR_GraphEdgeClusterRegion.ixx"
+    "core/Function.ixx"
+    "ir/base/IR_Verifier.ixx"
+    "ir/evolver/IR_Evolver_Mutation.ixx"
+    "ir/rewrite/Pattern_Rewriter.ixx"
+    "core/Verified_Formal.ixx"
+    "formal/Formal_Verification_SMT.ixx"
+    "analysis/Analysis_Interface.ixx"
+    "analysis/AI_Cost_Model.ixx"
+    "analysis/Polyhedral_Scop_Unified.ixx"
+    "pass/analysis/Escape_Analysis.ixx"
+    "analysis/Speculative_Value_Profiler.ixx"
+    "analysis/Liveness_Memory_Dependency_Unified.ixx"
+    "ir/interop/IR_Analysis_Bridge.ixx"
+    
+    # [NEW SUB-MODULE AGGREGATOR 1] Build Core macro interface unit
+    "ir/ir_core_module.ixx"
+
+    # --- Tier 2: dgtl.ir_core Leaf Partitions ---
+    "pipeline/Pass_Manager_Config.ixx"
+    "pipeline/Pass_Manager_Analysis.ixx"
+    "pipeline/Pass_Manager_Orchestrator.ixx"
+    "pipeline/Pass_Manager.ixx"
+    "pipeline/GPU_Scheduling.ixx"
+    "pipeline/Performance_Probes.ixx"
+    "pipeline/Pipeline_Probes.ixx"
+    "pass/simd/SimdGScatter_LegalVecRecognizer.ixx"
+    "pass/speculative/SpecAliasDCE_InlineVecFusion.ixx"
+    "pass/transform/Transform_Control_Predication.ixx"
+    "pass/transform/Transform_Inlining.ixx"
+    "pass/transform/Transform_Poly_Loop.ixx"
+    "pass/transform/Transform_Scalar_Core.ixx"
+    "pass/ml/MLoptimization.ixx"
+    "pass/query/Query_Optimizer_Unified.ixx"
+    "pass/tuning/Tuning_Optimize.ixx"
+    "pass/error_handling/Enhanced_Error_Recovery.ixx"
+    
+    # [NEW SUB-MODULE AGGREGATOR 2] Build Passes macro interface unit
+    "ir/ir_passes_module.ixx"
+
+    # --- Tier 3: dgtl.ir_core Leaf Partitions ---
+    "ir/gen/DGTL_Gen_Ops.ixx"
+    "backend/lowering/ABI_Lowering.ixx"
+    "backend/lowering/Stack_Spiller.ixx"
+    "isa/target/Wasm_Encoder.ixx"
+    "isa/target/Wasm_Target.ixx"
+    "isa/emitter/NASM_Emitter.ixx"
+    "isa/emitter/MachO_Emitter.ixx"
+    "isa/emitter/ARM32NEON_Emitter.ixx"
+    "isa/emitter/ARM64_Emitter.ixx"
+    "isa/emitter/RiscV64_Emitter.ixx"
+    "isa/emitter/WasmSIMD_FMA_Emitter.ixx"
+    "isa/lowering/Backend_Runtime_Contract.ixx"
+    "isa/lowering/Instruction_Selector.ixx"
+    "isa/lowering/Legalizer.ixx"
+    "isa/lowering/Runtime_Legalization_Policy.ixx"
+    "isa/lowering/X64_Machine_Form_Lowering.ixx"
+    "isa/lowering/gen/X64_ISel_Generated.ixx"
+    "isa/lowering/gen/X64_ISel_Rules_Generated.ixx"
+    "isa/regalloc/X64_Reg_Map.ixx"
+    "isa/regalloc/Strike_Live_Manager.ixx"
+    "isa/regalloc/X64_GraphColoring_RegAlloc.ixx"
+    "isa/regalloc/ARM64_RegAlloc.ixx"
+    "ir/runtime/TLS_Flush_Merge.ixx"
+    "backend/driver/Backend_Driver_Shared_Utils.ixx"
+    "backend/driver/Backend_Driver_API.ixx"
+    "jit/Async_Dopt_Tiered.ixx"
+    "jit/Hardware_Scheduler.ixx"
+    "jit/JIT_Executor.ixx"
+    "jit/JIT_Orchestrator.ixx"
+    "execution/cache/Code_Cache.ixx"
+    "execution/dispatcher/Execution_Dispatcher.ixx"
+    "execution/format/Binary_Loader_object.ixx"
+    "backend/linker/Linker_Backend.ixx"
+    "api/Backend_Driver_Shared_Utils.ixx"
+    "api/Backend_Driver_API.ixx"
+    "api/ABI.ixx"
+    "api/ABI_Lowering.ixx"
+    "api/ExecutionEngine.ixx"
+    "api/Runtime.ixx"
+    "api/IRBuilder.ixx"
+    "api/JITSession.ixx"
+    "api/AOTSession.ixx"
+    "api/HybridSession.ixx"
+    "api/Api_all.ixx"
+    
+    # [NEW SUB-MODULE AGGREGATOR 3] Build Backend macro interface unit
+    "ir/ir_backend_module.ixx"
+
+    # --- Standalone Primitives & Aggregators ---
+    "core/VirtualMemory.ixx"
+    "core/MemoryCapability.ixx"
+    "core/MemoryManager.ixx"
+    "core/Arena.ixx"
+    "utils/assert/Assertions.ixx"
+    "utils/bit/Bit_Pack.ixx"
+    "api/Config.ixx"
+    "ir/base/IR_Enums.ixx"
+    "core/Compiler_Context.ixx"
+    "utils/hashing/Hashing.ixx"
+    "utils/container/Flat_Map.ixx"
+    "runtime/dgtl_bulletins.ixx"
+    "ir/base/IR_Node.ixx"
+    "core/NUMA.ixx"
+    "runtime/NUMA_Runtime.ixx"
+    "ir/base/IR_Traits_Static.ixx"
+    "core/Target.ixx"
+    "ir/interfaces/Op_Traits.ixx"
+    "runtime/TaskScheduler.ixx"
+    "runtime/Runtime_Intrinsics.ixx"
+    "runtime/Runtime_Context.ixx"
+    "utils/memory/Memory_Guard.ixx"
+    "testing/FileCheck.ixx"
+    "utils/automata/LUT_FSM_Matcher.ixx"
+    
+    # --- Final Aggregation Interfaces ---
+    "ir/Global_IR.ixx"
+    "dgtl_all.ixx"
+  )
+
+  for file in "${module_files[@]}"; do
+    local src="$INCLUDE_DIR/dgtl/$file"
+    [[ "$file" == "dgtl_all.ixx" ]] && src="$INCLUDE_DIR/$file"
+    
+    # Compute clear name variants mapping cleanly into object cache structures
+    local stem="${file//\//_}"
+    stem="${stem%.ixx}"
+    local obj="$OBJ_DIR/${stem}.o"
+
+    if [[ ! -f "$obj" || "$src" -nt "$obj" ]]; then
+      echo "[build] Compiling module: include/dgtl/$file..."
+      "$g_plusplus" "${cflags[@]}" -c "$src" -o "$obj" || {
+        echo "[dgtl] ERROR: Failed to compile module partition $file" >&2
+        return 1
+      }
+    fi
+  done
+}
+
 build_sdk() {
-  run_gen # Always generate ops first
+  run_gen 
+  compile_all_dgtl_modules 
 
   echo "[dgtl] Building DGTL Static Library (SDK)..."
   mkdir -p "$SDK_DIR/lib/x64"
@@ -193,7 +371,7 @@ build_sdk() {
   local g_plusplus
   g_plusplus=$(find_g_plusplus)
 
-  local cflags=("-std=c++26" "-O3" "-march=native" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
+  local cflags=("-std=c++26" "-fmodules-ts" "-O3" "-march=native" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
   local sources=$(find "$SRC_DIR" -name "*.cpp" ! -path "*/apps/*" ! -name "main.cpp" ! -path "*/tools/*")
 
   local objects=()
@@ -208,14 +386,29 @@ build_sdk() {
       objects+=("$obj")
   done
 
+  for mod_obj in "$BUILD_DIR"/obj/modules/*.o; do
+    [[ -e "$mod_obj" ]] && objects+=("$mod_obj")
+  done
+
   echo "[dgtl] Archiving to $SDK_LIB"
   ar rcs "$SDK_LIB" "${objects[@]}"
 
   echo "[dgtl] Packaging Public Headers..."
-  cp -r "$INCLUDE_DIR/dgtl" "$SDK_DIR/include/"
-  
-  # RUTHLESS PURGE: Remove private/frontend logic from SDK
-  rm -rf "$SDK_DIR/include/dgtl/frontend"
+  mkdir -p "$SDK_DIR/include/dgtl_sdk"
+  for sdk_header in dgtl.h dgtl_core.h dgtl_c_api.h dgtl_simd.h dgtl_capabilities.h dgtl_session.h; do
+    if [[ -f "$INCLUDE_DIR/dgtl_sdk/$sdk_header" ]]; then
+      cp "$INCLUDE_DIR/dgtl_sdk/$sdk_header" "$SDK_DIR/include/dgtl_sdk/$sdk_header"
+    else
+      echo "[dgtl] ERROR: Missing public SDK header: $INCLUDE_DIR/dgtl_sdk/$sdk_header" >&2
+      return 1
+    fi
+  done
+
+  # Programmatically clean up legacy non-namespaced root headers and internal subdirectories
+  rm -rf "$SDK_DIR/include/dgtl"
+  for sdk_header in dgtl.h dgtl_core.h dgtl_c_api.h dgtl_simd.h dgtl_capabilities.h dgtl_session.h; do
+    rm -f "$SDK_DIR/include/$sdk_header"
+  done
   
   echo "[dgtl] SDK successfully built at $SDK_DIR"
 }
@@ -231,7 +424,8 @@ build_dgtl_binary() {
   shift 3
   local exclude_paths=("$@")
   
-  run_gen # Enforce auto-generation before any binary build
+  run_gen 
+  compile_all_dgtl_modules 
 
   mkdir -p "$(dirname "$output_path")"
   
@@ -240,7 +434,7 @@ build_dgtl_binary() {
   
   echo "[dgtl] Using compiler: $g_plusplus"
   
-  local cflags=("-std=c++26" "-O2" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
+  local cflags=("-std=c++26" "-fmodules-ts" "-O2" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
   if [[ "$strict" == "true" ]]; then
     cflags+=("-Wpedantic" "-Werror")
   fi
@@ -253,6 +447,10 @@ build_dgtl_binary() {
   local source_array=()
   while IFS= read -r src; do source_array+=("$src"); done <<< "$sources"
   
+  for mod_obj in "$BUILD_DIR"/obj/modules/*.o; do
+    [[ -e "$mod_obj" ]] && source_array+=("$mod_obj")
+  done
+
   "$g_plusplus" "${cflags[@]}" "${source_array[@]}" -o "$output_path" || {
     echo "[dgtl] ERROR: Compilation failed for $output_path" >&2
     return 1
@@ -281,7 +479,7 @@ ensure_dgtl_binary() {
     local src_time
     src_time=$(stat -c%Y "$src" 2>/dev/null || stat -f%m "$src" 2>/dev/null)
     if [[ $src_time -gt $exe_time ]]; then needs_rebuild=true; break; fi
-  done < <(find "$SRC_DIR" -name "*.hpp" -o -name "*.h" -o -name "*.cpp")
+  done < <(find "$SRC_DIR" -name "*.hpp" -o -name "*.h" -o -name "*.cpp" -o -name "*.ixx")
   
   if [[ "$needs_rebuild" == "true" ]]; then
     echo "[dgtl] Source changed - rebuilding $(basename "$output_path")"
@@ -332,7 +530,7 @@ invoke_brun() {
 
   local g_plusplus
   g_plusplus=$(find_g_plusplus) || return 1
-  local cflags=("-std=c++26" "-O3" "-march=native" "-I$INCLUDE_DIR")
+  local cflags=("-std=c++26" "-fmodules-ts" "-O3" "-march=native" "-I$INCLUDE_DIR")
 
   for src in "${default_sources[@]}"; do
     if [[ ! -f "$ROOT/$src" ]]; then echo "[dgtl] ERROR: Missing benchmark $ROOT/$src" >&2; return 1; fi
@@ -347,7 +545,13 @@ invoke_brun() {
 
     if [[ $needs_compile == true ]]; then
       echo "[dgtl] Compiling $(basename "$src")"
-      "$g_plusplus" "${cflags[@]}" "$ROOT/$src" -o "$output_path" || return 1
+      
+      local bench_link_vector=("$ROOT/$src")
+      for mod_obj in "$BUILD_DIR"/obj/modules/*.o; do
+        [[ -e "$mod_obj" ]] && bench_link_vector+=("$mod_obj")
+      done
+
+      "$g_plusplus" "${cflags[@]}" "${bench_link_vector[@]}" -o "$output_path" || return 1
     else
       echo "[dgtl] Reusing up-to-date $(basename "$output_path")"
     fi
@@ -359,10 +563,12 @@ invoke_brun() {
 
 clean_dgtl_artifacts() {
   echo "[dgtl] Cleaning artifacts"
+  clear_zombie_locks
+  
   local paths=("$BUILD_DIR/dgtl_release" "$BUILD_DIR/dgtl_main" "$BUILD_DIR/dgtl_main_strict" "$BUILD_DIR/dgtl_tests")
   for path in "${paths[@]}"; do rm -f "$path"; done
   
-  local dirs=("$BUILD_DIR/sdk_obj" "$BUILD_DIR/DGTL_SDK" "$BUILD_DIR/obj" "$BUILD_DIR/obj_sdk")
+  local dirs=("$BUILD_DIR/sdk_obj" "$BUILD_DIR/DGTL_SDK" "$BUILD_DIR/obj" "$BUILD_DIR/obj_sdk" "$GCM_CACHE_DIR")
   for dir in "${dirs[@]}"; do rm -rf "$dir"; done
   echo "[dgtl] Removed build outputs"
 }
@@ -374,7 +580,6 @@ clean_dgtl_artifacts() {
 command="${1:-help}"
 shift || true
 
-# Handle command aliases
 case "$command" in
   build-release) command="build" ;;
   build-smoke)   command="smoke-build" ;;
@@ -450,4 +655,4 @@ case "$command" in
     show_usage
     exit 1
     ;;
-esac
+case

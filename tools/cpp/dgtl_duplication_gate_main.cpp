@@ -58,7 +58,7 @@ struct Options {
 
 [[nodiscard]] bool is_source_ext(const fs::path& p) {
     static const std::unordered_set<std::string> exts = {
-        ".cpp", ".hpp", ".h", ".hh", ".hxx", ".c", ".cc", ".cxx", ".inl", ".ps1", ".cpp"};
+        ".cpp", ".hpp", ".ixx", ".h", ".hh", ".hxx", ".c", ".cc", ".cxx", ".inl", ".ps1"};
     return exts.contains(to_lower(p.extension().string()));
 }
 
@@ -148,18 +148,18 @@ int main(int argc, char** argv) {
         {"src/apps/smoke_cli_and_options.inl", "parse_backend_driver_target\\(", "smoke backend parsing must route through driver API parser", true},
         {"src/main.cpp", "backend_str\\s*==\\s*\"", "main must not reintroduce local backend alias table", false},
         {"src/apps/smoke_cli_and_options.inl", "backend_str\\s*==\\s*\"", "smoke must not reintroduce local backend alias table", false},
-        {"src/main.cpp", "Myzon_Intrinsics\\.hpp|dgtl::integration::myzon::", "main must not directly couple to Myzon intrinsics APIs", false},
-        {"src/sdk/dgtl_sdk_impl.cpp", "Myzon_Intrinsics\\.hpp|dgtl::integration::myzon::", "sdk payload path must not directly couple to Myzon intrinsics APIs", false},
+        {"src/main.cpp", "Myzon_Intrinsics\\.(hpp|ixx)|dgtl::integration::myzon::", "main must not directly couple to legacy frontend intrinsics APIs", false},
+        {"src/sdk/dgtl_sdk_impl.cpp", "Myzon_Intrinsics\\.(hpp|ixx)|dgtl::integration::myzon::", "sdk payload path must not directly couple to legacy frontend intrinsics APIs", false},
 
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "parse_polyhedral_mode\\(", "shared utils must own polyhedral mode parser implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "parse_polyhedral_parallel_policy\\(", "shared utils must own polyhedral parallel parser implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "bytes_to_hex\\(", "shared utils must own bytes-to-hex implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "write_text_file\\(", "shared utils must own text-file writer implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "write_binary_file\\(", "shared utils must own binary-file writer implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "emit_arm32_text\\(", "shared utils must own ARM32 helper implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "emit_riscv64_text\\(", "shared utils must own RISC-V helper implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "emit_cuda_text\\(", "shared utils must own CUDA helper implementation", true},
-        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.hpp", "emit_rocm_text\\(", "shared utils must own ROCm helper implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "parse_polyhedral_mode\\(", "shared utils must own polyhedral mode parser implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "parse_polyhedral_parallel_policy\\(", "shared utils must own polyhedral parallel parser implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "bytes_to_hex\\(", "shared utils must own bytes-to-hex implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "write_text_file\\(", "shared utils must own text-file writer implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "write_binary_file\\(", "shared utils must own binary-file writer implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "emit_arm32_text\\(", "shared utils must own ARM32 helper implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "emit_riscv64_text\\(", "shared utils must own RISC-V helper implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "emit_cuda_text\\(", "shared utils must own CUDA helper implementation", true},
+        {"include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx", "emit_rocm_text\\(", "shared utils must own ROCm helper implementation", true},
 
         {"src/main.cpp", "driver::shared::parse_polyhedral_mode\\(", "main must consume shared polyhedral mode parser", true},
         {"src/main.cpp", "driver::shared::parse_polyhedral_parallel_policy\\(", "main must consume shared polyhedral parallel parser", true},

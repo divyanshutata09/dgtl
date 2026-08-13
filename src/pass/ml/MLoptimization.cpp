@@ -1,20 +1,29 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
  * Repository: github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/pipeline/Pass_Manager.hpp"
-#include "dgtl/pass/ml/MLoptimization.hpp"
-#include "dgtl/ir/gen/DGTL_Gen_Ops.hpp"
+module;
+
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <cmath>
+#include <string>
+#include <utility>
+#include <vector>
+#include <cstdint>
+#include <memory>
+
+// 🚀 FIXED: Bind to the concrete ML optimization module implementation unit.
+module dgtl.ir_core.ml_optimization;
+import dgtl.numa_runtime;
 
 namespace dgtl {
 namespace pass {
@@ -37,7 +46,8 @@ void MLBackendDispatcher::execute(
 
     // Scan for tensor operations and select backends
     for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
+        // 🚀 FIXED: Use read-only view contract to comply with transactional stream boundaries
+        const auto node = stream.get_node_readonly(i);
         // Check if this is a tensor operation that needs backend selection
         if (is_tensor_operation(node.opcode)) {
             // Backend selection happens implicitly during lowering
@@ -236,7 +246,8 @@ MLBackendDispatcher::get_dispatch_decisions(
 
     // Scan IR stream for tensor operations and select backends
     for (size_t i = 0; i < stream.size(); ++i) {
-        auto node = stream.get_node(i);
+        // 🚀 FIXED: Transition to transactional view contract
+        auto node = stream.get_node_readonly(i);
         // Check if this is a tensor operation
         if (is_tensor_operation(node.opcode)) {
             TensorOpMetadata op_meta;
@@ -330,6 +341,7 @@ void MLOptimizer::set_backend_dispatch_strategy(
 
 bool MLOptimizer::optimize_model(ir::IRStream& stream) noexcept {
     pending_invalidation_mask = 0u;
+    const uint32_t numa_nodes = dgtl::runtime::numa::get_num_nodes();
 
     // Initialize sub-passes
     if (!tensor_fusion) {
@@ -352,6 +364,12 @@ bool MLOptimizer::optimize_model(ir::IRStream& stream) noexcept {
         if (cost_model) {
             backend_dispatcher->set_cost_model(cost_model);
         }
+    }
+
+    if (numa_nodes > 1u && backend_dispatcher) {
+        // Multi-socket systems benefit from profile-aware dispatch decisions
+        // so tensor-heavy partitions stay topology-local during execution.
+        backend_dispatcher->set_dispatch_strategy(MLBackendDispatcher::DispatchStrategy::PROFILE_DRIVEN);
     }
 
     try {
@@ -413,7 +431,7 @@ void MLOptimizer::extract_model_structure(ir::IRStream& stream) noexcept {
     // Parse model structure from IR
     // Identify layers, tensors, operations
     for (size_t i = 0; i < stream.size(); ++i) {
-        auto node = stream.get_node(i);
+        auto node = stream.get_node_readonly(i);
         // Check if this is a tensor operation that defines model layers
         if (node.opcode >= ir::OpCode::TENSOR_RESHAPE && node.opcode <= ir::OpCode::TENSOR_SOFTMAX) {
             // Tensor operation found - part of model structure
@@ -425,7 +443,7 @@ void MLOptimizer::analyze_layer_properties(const ir::IRStream& stream) noexcept 
     // Analyze layer characteristics
     // Tensor shapes, data types, computation patterns
     for (size_t i = 0; i < stream.size(); ++i) {
-        auto node = stream.get_node(i);
+        auto node = stream.get_node_readonly(i);
         // Analyze each tensor operation for optimization opportunities
         if (node.opcode >= ir::OpCode::TENSOR_RESHAPE && node.opcode <= ir::OpCode::TENSOR_SOFTMAX) {
             // Compute layer statistics
@@ -438,13 +456,16 @@ void MLOptimizer::validate_model(const ir::IRStream& stream) noexcept {
     // Check numerical equivalence with original
     uint32_t tensor_op_count = 0;
     for (size_t i = 0; i < stream.size(); ++i) {
-        auto node = stream.get_node(i);
+        auto node = stream.get_node_readonly(i);
         if (node.opcode >= ir::OpCode::TENSOR_RESHAPE && node.opcode <= ir::OpCode::TENSOR_SOFTMAX) {
             tensor_op_count++;
         }
     }
     // Model is valid if it has tensor operations
     results.success = tensor_op_count > 0;
+    if (!results.success) {
+        results.error_message = "No tensor operations detected for model validation";
+    }
 }
 
 void MLOptimizer::emit_optimized_model(ir::IRStream& stream) noexcept {
@@ -452,7 +473,7 @@ void MLOptimizer::emit_optimized_model(ir::IRStream& stream) noexcept {
     // Include fusion, specialization, and dispatch info
     uint32_t ops_optimized = 0;
     for (size_t i = 0; i < stream.size(); ++i) {
-        auto node = stream.get_node(i);
+        auto node = stream.get_node_readonly(i);
         if (node.opcode >= ir::OpCode::TENSOR_RESHAPE && node.opcode <= ir::OpCode::TENSOR_SOFTMAX) {
             // Mark operation as optimized
             ops_optimized++;
@@ -516,13 +537,6 @@ void TensorFusion::execute(ir::IRStream& stream) {
         tombstone.refresh_intent_hash();
         stream.set_node(second_idx, tombstone);
 
-        const bool replaced = true;
-        const bool erased = true;
-        if (!replaced || !erased) {
-            ++stats.fusion_failures;
-            continue;
-        }
-
         ++stats.sequences_fused;
         stats.total_memory_saved += seq.memory_saved_by_fusion;
         cumulative_speedup += seq.estimated_speedup;
@@ -552,14 +566,16 @@ std::vector<TensorFusion::FusibleSequence> TensorFusion::detect_fusible_sequence
     
     // Scan stream for patterns of tensor operations that can be fused
     for (size_t i = 0; i < stream.size() - 1; ++i) {
-        auto curr_op = stream.get_node(i).opcode;
-        auto next_op = stream.get_node(i + 1).opcode;
+        auto curr_op = stream.get_node_readonly(i).opcode;
+        auto next_op = stream.get_node_readonly(i + 1).opcode;
         
         // Check if consecutive operations can be fused
         if ((curr_op >= ir::OpCode::TENSOR_RESHAPE && curr_op <= ir::OpCode::TENSOR_SOFTMAX) &&
             (next_op >= ir::OpCode::TENSOR_RESHAPE && next_op <= ir::OpCode::TENSOR_SOFTMAX)) {
             // Potentially fusible tensor operations found
             FusibleSequence seq;
+            seq.operations.push_back(curr_op);
+            seq.operations.push_back(next_op);
             seq.operation_ids.push_back(static_cast<uint32_t>(i));
             seq.operation_ids.push_back(static_cast<uint32_t>(i + 1));
             seq.total_intermediate_memory = 1024 * 1024;  // Estimated
@@ -670,14 +686,15 @@ void TensorSpecializer::observe_shape(
     }
 
     // Check if shape already observed
-    for (auto& obs : it->second) {
-        if (obs.shape == shape) {
-            obs.occurrence_count++;
-            obs.total_cycles += cycles;
-            obs.cycles_per_element = static_cast<double>(obs.total_cycles) / 
-                                     obs.shape.total_size();
-            return;
-        }
+    auto obs_it = std::find_if(it->second.begin(), it->second.end(), [&shape](const auto& obs) noexcept {
+        return obs.shape == shape;
+    });
+    if (obs_it != it->second.end()) {
+        obs_it->occurrence_count++;
+        obs_it->total_cycles += cycles;
+        obs_it->cycles_per_element = static_cast<double>(obs_it->total_cycles) / 
+                                     obs_it->shape.total_size();
+        return;
     }
 
     // New shape observation
@@ -831,7 +848,7 @@ double TensorSpecializer::estimate_specialization_speedup(
 
     // Higher frequency = more potential benefit from specialization
     double frequency_factor = std::log(observation.occurrence_count) / 
-                             std::log(1000);  // Log scale
+                              std::log(1000);  // Log scale
     
     double base_speedup = 1.05 + (frequency_factor * 0.15);  // 5-20% speedup
     return std::min(base_speedup, 1.25);  // Cap at 25%

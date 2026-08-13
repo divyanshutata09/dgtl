@@ -24,7 +24,7 @@
 - Added black-box technical documentation for public technical review.
 - Enforced source header compliance in validation workflows.
 - **v1.2**: Native object and library emission — ELF `.o`, GNU `.a`, COFF `.obj`, COFF `.lib`, Mach-O ARM64.
-- **v1.2**: JIT execution via `--jit-execute` through `StrikeOrchestrator` with closed-loop AI cost feedback.
+- **v1.2**:  execution via `---execute` through `StrikeOrchestrator` with closed-loop AI cost feedback.
 - **v1.2**: 9 backend targets in production driver (arm64, x64, nasm, wasm, elfobj, staticlib, coffobj, cofflib, macho).
 
 ## Backend Evidence (IRMode=int)
@@ -50,9 +50,9 @@ Per-backend evidence:
 | COFF Library | `cofflib` | `.lib` | `!<arch>` + first linker member + COFF member | ✅ |
 | Mach-O ARM64 | `macho` | `.macho` | `CF FA ED FE` (MH_MAGIC_64, LC_SEGMENT_64 + LC_SYMTAB) | ✅ |
 
-## JIT Execution Evidence
+##  Execution Evidence
 
-- `--jit-execute` with `--backend x64` fires `StrikeOrchestrator::fire_strike()`
+- `---execute` with `--backend x64` fires `StrikeOrchestrator::fire_strike()`
 - Verified: `Strike OK status=0x0 executed_instructions=17 code_size=17`
 - Requires `DGTL_STRIKE_EXECUTE=1` environment gate for W^X execution permission
 

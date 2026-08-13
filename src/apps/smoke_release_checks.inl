@@ -14,9 +14,9 @@ SmokeCheck run_folding_check(dgtl::core::DGTL_Arena& arena, dgtl::analysis::DGTL
 		return {"constant-fold", false, "failed to build release IR"};
 	}
 
-	const float cost_before = cost_model.predict_cost(stream);
+	const float cost_before = estimate_stream_cost(cost_model, stream);
 	run_core_optimizations(stream);
-	const float cost_after = cost_model.predict_cost(stream);
+	const float cost_after = estimate_stream_cost(cost_model, stream);
 	const auto folded = find_node_by_result(stream, 4);
 	const auto ret = stream.size() > 0 ? stream.get_node(stream.size() - 1) : dgtl::ir::IRNode{};
 
@@ -82,7 +82,8 @@ SmokeCheck run_ai_cost_check() {
 
 	dgtl::ir::IRNode simd{};
 	simd.opcode = dgtl::ir::OpCode::VEC_ADD_F32_512;
-	simd.flags = dgtl::ir::Flags::IS_SIMD_BURST | dgtl::ir::Flags::REQUIRES_VEC_PORT;
+	simd.flags = dgtl::ir::Flags::IS_SIMD_BURST;
+	simd.logic_flags = dgtl::ir::HintFlags::RequiresVecPort;
 	simd.result_id = 4;
 	simd.op_a = 5;
 	simd.op_b = 6;
@@ -133,7 +134,7 @@ SmokeCheck run_pressure_check(dgtl::core::DGTL_Arena& arena) {
 	size_t spill_candidates = 0;
 	const auto* atoms = stream.raw_atoms();
 	for (size_t i = 0; i < stream.size(); ++i) {
-		if (atoms[i].flags & dgtl::ir::Flags::IS_SPILL_CANDIDATE) {
+		if (atoms[i].flags & dgtl::ir::HintFlags::IsSpillCandidate) {
 			++spill_candidates;
 		}
 	}
@@ -145,7 +146,7 @@ SmokeCheck run_pressure_check(dgtl::core::DGTL_Arena& arena) {
 }
 
 SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
-								 dgtl::semantic::SymbolTable& symbols,
+								 const dgtl::semantic::SymbolTable& symbols,
 								 BackendKind backend) {
 	dgtl::ir::IRStream a(arena, 64);
 	dgtl::ir::IRStream b(arena, 64);

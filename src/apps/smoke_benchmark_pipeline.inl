@@ -87,18 +87,73 @@ bool emit_backend(BackendKind backend,
     return false;
 }
 
+[[nodiscard]] dgtl::ir::BackendProfile::TargetISA backend_profile_target(BackendKind backend) noexcept {
+    using TargetISA = dgtl::ir::BackendProfile::TargetISA;
+    switch (backend) {
+        case BackendKind::arm64:
+        case BackendKind::macho:
+            return TargetISA::ARM64_SVE;
+        case BackendKind::arm32:
+            return TargetISA::ARM32_NEON;
+        case BackendKind::riscv64:
+            return TargetISA::RISCV64_RV64GC;
+        case BackendKind::wasm:
+            return TargetISA::WASM;
+        case BackendKind::cuda:
+            return TargetISA::CUDA_PTX;
+        case BackendKind::rocm:
+            return TargetISA::ROCM_LLVMIR;
+        case BackendKind::x64:
+            return TargetISA::X64_AVX512;
+        case BackendKind::nasm:
+        case BackendKind::elfobj:
+        case BackendKind::staticlib:
+        case BackendKind::coffobj:
+        case BackendKind::cofflib:
+        default:
+            return TargetISA::NASM_X64;
+    }
+}
+
+inline dgtl::core::TargetMachine target_machine_for_backend(BackendKind backend) {
+    switch (backend) {
+        case BackendKind::arm64:
+        case BackendKind::arm32:
+        case BackendKind::macho:
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::AARCH64_SVE);
+        case BackendKind::wasm:
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::WASM_SIMD);
+        case BackendKind::x64:
+        case BackendKind::nasm:
+        case BackendKind::riscv64:
+        case BackendKind::cuda:
+        case BackendKind::rocm:
+        case BackendKind::elfobj:
+        case BackendKind::staticlib:
+        case BackendKind::coffobj:
+        case BackendKind::cofflib:
+        default: {
+#if defined(__AVX512F__)
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::X86_64_AVX512);
+#else
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::X86_64_AVX2);
+#endif
+        }
+    }
+}
+
 /**
  * @brief Executes a single end-to-end pipeline pass with Titan-Stable hardware pinning.
  */
 TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
-                                         dgtl::semantic::SymbolTable& symbols,
+                                         const dgtl::semantic::SymbolTable& symbols,
                                          BackendKind backend,
                                          bool verbose_asm,
                                          BenchmarkProfile profile,
                                          uint32_t pressure_vars,
                                          bool arm64_binary_stream) {
     
-    // TITAN-STABLE: Lock thread to prevent context-switching and frequency scaling jitter
+    // TITAN-STABLE: Lock thread to prevent context-switching and frequency scaling ter
     [[maybe_unused]] const auto quiet_core_policy = dgtl::jit::DGTLHardwareScheduler::apply_quiet_core_policy(2);
 
     TimedEmissionResult timed{};
@@ -110,17 +165,20 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     if (!build_ir_for_profile(stream, profile, pressure_vars)) {
         return timed;
     }
+    stream.set_backend_target(0, backend_profile_target(backend));
 
     timed.hot_swap_mode = profile_name(profile);
     timed.nodes_built = stream.size();
+    stream.record_function_call(0);
 
     // Initialize the Titan-Stable Optimization Stack
     dgtl::analysis::DGTLAICostModel ai_model;
     dgtl::pipeline::PassDecisionEngine pde;
-    dgtl::jit::DGTLHardwareScheduler scheduler(ai_model);
+    const auto target_machine = target_machine_for_backend(backend);
+    dgtl::jit::DGTLHardwareScheduler scheduler(ai_model, target_machine);
     dgtl::pipeline::DGTLAnalysisManager am;
 
-    timed.ai_predicted_cost_pre = ai_model.predict_cost(stream);
+    timed.ai_predicted_cost_pre = estimate_stream_cost(ai_model, stream);
     const auto optimize_start = std::chrono::high_resolution_clock::now();
 
     // 1. Profile-Specific Pass (Gated by Decision Engine)
@@ -137,6 +195,34 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     } else if (profile == BenchmarkProfile::predication) {
         dgtl::pass::transform::DGTLMaskedPredicationLowering predication_pass;
         predication_pass.execute(stream);
+    } else if (profile == BenchmarkProfile::replay) {
+        dgtl::runtime::TaskScheduler replay_scheduler(1);
+        replay_scheduler.set_scheduling_mode(dgtl::runtime::SchedulingMode::DeterministicReplay);
+
+        struct ReplayTaskCtx {
+            uint64_t* slots;
+            size_t slot;
+        };
+
+        auto replay_task = [](void* raw) noexcept {
+            auto* ctx = static_cast<ReplayTaskCtx*>(raw);
+            ctx->slots[ctx->slot] = static_cast<uint64_t>(ctx->slot + 1u) * 17u;
+            delete ctx;
+        };
+
+        uint64_t replay_slots[4] = {0, 0, 0, 0};
+        std::vector<uintptr_t> replay_handles;
+        replay_handles.reserve(4);
+        for (size_t slot = 0; slot < 4; ++slot) {
+            replay_handles.push_back(replay_scheduler.spawn(replay_task, new ReplayTaskCtx{replay_slots, slot}));
+        }
+        for (uintptr_t handle : replay_handles) {
+            replay_scheduler.join(handle);
+        }
+
+        timed.deterministic_replay = true;
+        timed.replay_events = replay_scheduler.get_replay_log().size();
+        timed.hot_swap_mode = "deterministic-replay";
     }
 
     // 2. Hot-Swap Logic for ARM64 high-pressure kernels
@@ -155,7 +241,7 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     }
 
     // 3. PILLAR 2: Transactional Shadow-Writing (Hardware Port Scheduling)
-    // This eliminates the 2.5ms jitter in HFT Branching/SIMD kernels
+    // This eliminates the 2.5ms ter in HFT Branching/SIMD kernels
     scheduler.schedule(stream);
 
     timed.nodes_after_profile = stream.size();
@@ -164,9 +250,24 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     run_core_optimizations(stream);
     
     timed.nodes_after_core_opt = stream.size();
-    timed.ai_predicted_cost_post = ai_model.predict_cost(stream);
+    timed.ai_predicted_cost_post = estimate_stream_cost(ai_model, stream);
 
     const auto optimize_end = std::chrono::high_resolution_clock::now();
+    const uint64_t optimize_time_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(optimize_end - optimize_start).count());
+    stream.update_backend_stats(0, optimize_time_us);
+    stream.record_cache_access(0, timed.ai_predicted_cost_post <= timed.ai_predicted_cost_pre);
+    switch (stream.compute_adaptive_tier(0)) {
+        case dgtl::ir::BackendProfile::CompilationTier::JIT_FAST:
+            timed.adaptive_tier = "-fast";
+            break;
+        case dgtl::ir::BackendProfile::CompilationTier::AOT_INTENSIVE:
+            timed.adaptive_tier = "-intensive";
+            break;
+        case dgtl::ir::BackendProfile::CompilationTier::ADAPTIVE_HYBRID:
+        default:
+            timed.adaptive_tier = "adaptive-";
+            break;
+    }
 
     // 5. Backend Emission
     timed.ok = emit_backend(backend,
@@ -230,6 +331,9 @@ BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
         result.nodes_built = timed.nodes_built;
         result.nodes_after_profile = timed.nodes_after_profile;
         result.nodes_after_core_opt = timed.nodes_after_core_opt;
+        result.deterministic_replay = timed.deterministic_replay;
+        result.replay_events = timed.replay_events;
+        result.adaptive_tier = timed.adaptive_tier;
         if (timed.hot_swap_applied) {
             ++result.hot_swap_count;
             result.hot_swap_last_mode = timed.hot_swap_mode;
@@ -250,7 +354,7 @@ BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
         result.dump_text = last_emission.emitted_text;
     }
 
-    // JIT Execution Path (Strike Runner integration)
+    //  Execution Path (Strike Runner integration)
     if (backend == BackendKind::x64 && profile == BenchmarkProfile::fold &&
         !last_emission.emitted_bytes.empty()) {
         
@@ -291,12 +395,15 @@ BackendBenchmark run_backend_benchmark(dgtl::core::DGTL_Arena& arena,
         << " opt_us=" << result.optimize_us
         << " emit_us=" << result.emit_us
         << " total_us=" << result.total_us
+        << " tier=" << result.adaptive_tier
         << " output_size=" << result.output_size
         << " fallback_ops=" << result.fallback_ops
         << " nodes=" << result.nodes_built
         << "->" << result.nodes_after_profile
         << "->" << result.nodes_after_core_opt
-        << " hot_swaps=" << result.hot_swap_count;
+        << " hot_swaps=" << result.hot_swap_count
+        << " replay=" << (result.deterministic_replay ? "on" : "off")
+        << " replay_events=" << result.replay_events;
     
     if (!result.hot_swap_last_mode.empty()) {
         oss << " hot_swap_mode=" << result.hot_swap_last_mode;

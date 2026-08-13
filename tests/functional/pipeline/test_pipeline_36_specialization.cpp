@@ -18,7 +18,7 @@ void run_test_pipeline_36_specialization() {
     constexpr size_t kReservedNodes = 1024;
     constexpr uint64_t kGuardTag = 0xBEEFULL;
 
-    std::cout << "--- [DGTL-TEST] 36_jit_specialization ---\n";
+    std::cout << "--- [DGTL-TEST] 36__specialization ---\n";
 
     // Keep this test deterministic: 1 thread, explicit per-thread MB size.
     dgtl::core::DGTL_Arena arena(1, kArenaMbPerThread);
@@ -29,7 +29,7 @@ void run_test_pipeline_36_specialization() {
     // Push a guard node that models specialization/deoptimization gate metadata.
     stream.push_node(
         dgtl::ir::OpCode::GUARD_VALUE, 
-        dgtl::ir::HintFlags::RequiresDepassTarget, 
+        dgtl::ir::Flags::NONE, 
         0, 0, 0, 0, kGuardTag
     );
     
@@ -38,7 +38,7 @@ void run_test_pipeline_36_specialization() {
     if (stream.size() == 1) {
         const auto node = stream.get_node(0);
         if (node.opcode == dgtl::ir::OpCode::GUARD_VALUE &&
-            (node.flags & dgtl::ir::HintFlags::RequiresDepassTarget) &&
+            (node.logic_flags & dgtl::ir::HintFlags::RequiresDepassTarget) &&
             node.intent_hash == kGuardTag) {
             std::cout << "SUCCESS\n";
             return;

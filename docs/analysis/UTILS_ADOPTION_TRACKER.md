@@ -32,7 +32,7 @@ Migrate low-level DGTL codepaths to mandatory utility primitives for robustness,
   - Removed all remaining `unordered_map` / `unordered_set` usage from verifier implementation paths.
   - Reworked overflow handling to FlatMap-only tiers to satisfy strict `Flat_Map.hpp`-only map requirement.
 - [x] `src/main.cpp`
-  - Migrated bounded helper-address JIT cache from `std::unordered_map` to `FastFlatMap<...,1024>`.
+  - Migrated bounded helper-address  cache from `std::unordered_map` to `FastFlatMap<...,1024>`.
   - Added explicit capacity-failure handling for deterministic failure behavior under pathological payloads.
   - Migrated helper-function call-slot map to `FastFlatMap<...,2048>` and retained linker-only materialization map where API requires `std::unordered_map`.
   - Added entry-function global call-slot bounded facade (`FastFlatMap<...,2048>`) while preserving linker-required `std::unordered_map`.

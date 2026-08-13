@@ -24,6 +24,10 @@ namespace {
     return text.find(token) != std::string_view::npos;
 }
 
+[[nodiscard]] bool file_omits(std::string_view text, std::string_view token) {
+    return text.find(token) == std::string_view::npos;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -33,7 +37,9 @@ int main(int argc, char** argv) {
     }
     root = fs::weakly_canonical(root);
 
-    const fs::path gen_header = root / "include/dgtl/ir/gen/DGTL_Gen_Ops.hpp";
+    const fs::path gen_header = root / "include/dgtl/ir/gen/DGTL_Gen_Ops.ixx";
+    const fs::path ir_ssa = root / "include/dgtl/ir/base/IR_SSA.ixx";
+    const fs::path pattern_rewriter = root / "include/dgtl/ir/rewrite/Pattern_Rewriter.ixx";
     if (!fs::exists(gen_header)) {
         std::cerr << "Missing generated header: " << gen_header.string() << "\n";
         return 1;
@@ -63,7 +69,8 @@ int main(int argc, char** argv) {
         "kNumInterfaces",
         "kNumAttributes",
         "kNumDialects",
-        "kNumTypes"
+        "kNumTypes",
+        "validate_generated_op_defs"
     };
 
     bool ok = true;
@@ -77,7 +84,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "\n[3] Artifact Counts\n";
-    const std::regex builder_re(R"(struct\s+\w+Op\s*\{)");
+    const std::regex builder_re(R"(struct\s+\w+Op(?:\s*:\s*[^{]+)?\s*\{)");
     const auto begin = std::sregex_iterator(content.begin(), content.end(), builder_re);
     const auto end = std::sregex_iterator();
     const auto count = static_cast<std::size_t>(std::distance(begin, end));
@@ -96,6 +103,8 @@ int main(int argc, char** argv) {
     bool saw_add_i32 = false;
     bool saw_load = false;
     bool saw_branch = false;
+    bool saw_string_const = false;
+    bool saw_string_concat = false;
 
     for (auto it = std::sregex_iterator(content.begin(), content.end(), op_re); it != std::sregex_iterator(); ++it) {
         const std::string op_name = (*it)[1].str();
@@ -123,6 +132,12 @@ int main(int argc, char** argv) {
                 ok = false;
             }
         }
+        if (op_name == "StringConst") {
+            saw_string_const = true;
+        }
+        if (op_name == "StringConcat") {
+            saw_string_concat = true;
+        }
     }
 
     if (!saw_add_i32) {
@@ -135,6 +150,65 @@ int main(int argc, char** argv) {
     }
     if (!saw_branch) {
         std::cout << "    [FAIL] Could not find Branch metadata entry\n";
+        ok = false;
+    }
+
+    if (!saw_string_const) {
+        std::cout << "    [FAIL] Could not find StringConst metadata entry\n";
+        ok = false;
+    }
+    if (!saw_string_concat) {
+        std::cout << "    [FAIL] Could not find StringConcat metadata entry\n";
+        ok = false;
+    }
+
+    std::cout << "\n[5] Dialect propagation checks\n";
+    const std::vector<std::string> required_dialect_checks = {
+        "{\"Load\", dgtl::ir::OpCode::LOAD, \"core\"",
+        "{\"StringConst\", dgtl::ir::OpCode::STRING_CONST, \"core\"",
+        "{\"GpuLaunch\", dgtl::ir::OpCode::GPU_LAUNCH, \"gpu\"",
+        "{\"GatherF32x512\", dgtl::ir::OpCode::GATHER_F32_512, \"simd\""
+    };
+    for (const auto& check : required_dialect_checks) {
+        if (contains(content, check)) {
+            std::cout << "    [OK] " << check << "\n";
+        } else {
+            std::cout << "    [FAIL] Missing dialect marker: " << check << "\n";
+            ok = false;
+        }
+    }
+
+    std::cout << "\n[6] Ownership surface checks\n";
+    const std::string ssa_content = read_all(ir_ssa);
+    const std::string rewriter_content = read_all(pattern_rewriter);
+    const std::string shadow_lookup_decl = "[[nodiscard]] const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept;";
+    const std::string shadow_verify_decl = "[[nodiscard]] bool verify_generated_node(const dgtl::ir::IRNode& node) noexcept;";
+    const std::string ownership_marker = "Sole owning export surface for generated op metadata lookup helpers.";
+
+    if (contains(content, ownership_marker)) {
+        std::cout << "    [OK] Generated ownership marker present\n";
+    } else {
+        std::cout << "    [FAIL] Generated ownership marker missing\n";
+        ok = false;
+    }
+    if (file_omits(content, "import dgtl.op_traits;")) {
+        std::cout << "    [OK] Generated module avoids unused dgtl.op_traits dependency\n";
+    } else {
+        std::cout << "    [FAIL] Generated module still imports unused dgtl.op_traits\n";
+        ok = false;
+    }
+    if (contains(ssa_content, "import dgtl.ir_core.gen;") && file_omits(ssa_content, shadow_lookup_decl)) {
+        std::cout << "    [OK] IR_SSA imports generated lookup ownership cleanly\n";
+    } else {
+        std::cout << "    [FAIL] IR_SSA still shadows generated lookup ownership\n";
+        ok = false;
+    }
+    if (contains(rewriter_content, "import dgtl.ir_core.gen;") &&
+        file_omits(rewriter_content, shadow_lookup_decl) &&
+        file_omits(rewriter_content, shadow_verify_decl)) {
+        std::cout << "    [OK] Pattern_Rewriter imports generated lookup ownership cleanly\n";
+    } else {
+        std::cout << "    [FAIL] Pattern_Rewriter still shadows generated lookup APIs\n";
         ok = false;
     }
 

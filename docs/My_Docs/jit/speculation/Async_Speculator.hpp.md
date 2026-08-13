@@ -11,7 +11,7 @@
 
 # Async_Speculator.hpp
 
-Source Header: include/dgtl/jit/speculation/Async_Speculator.hpp
+Source Header: include/dgtl//speculation/Async_Speculator.hpp
 Last Synced: 2026-04-14 19:46:41
 
 ## Vision
@@ -56,7 +56,7 @@ B --> X[Guard and Early Exit]
 - #include <condition_variable>
 - #include <unordered_map>
 - #include "dgtl/ir/base/Global_IR.hpp"
-- #include "dgtl/jit/runtime/JIT_Executor.hpp"
+- #include "dgtl//runtime/_Executor.hpp"
 
 ## Class and Struct Catalog
 ### Classes
@@ -72,7 +72,7 @@ B --> X[Guard and Early Exit]
 - std::lock_guard<std::mutex> lock(m_registry_mtx);
 - void speculate_branch(const ir::IRStream& stream, uint32_t target_node_idx) {
 - std::lock_guard<std::mutex> lock(m_queue_mtx);
-- dgtl::exec::JitFunction get_speculative_target(uint32_t node_idx) {
+- dgtl::exec::Function get_speculative_target(uint32_t node_idx) {
 - std::vector<SpeculativeVersion> generate_versions(ir::IRNode* node);
 - void worker_loop() {
 - std::unique_lock<std::mutex> lock(m_queue_mtx);

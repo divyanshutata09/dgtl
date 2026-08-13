@@ -11,7 +11,7 @@
 
 # Tiered_Controller.hpp
 
-Source Header: include/dgtl/jit/runtime/Tiered_Controller.hpp
+Source Header: include/dgtl//runtime/Tiered_Controller.hpp
 Last Synced: 2026-04-14 19:46:41
 
 ## Vision
@@ -44,9 +44,9 @@ B --> X[Guard and Early Exit]
 ## Include Dependencies
 - #include <filesystem>
 - #include <fstream>
-- #include "JIT_Executor.hpp"
+- #include "_Executor.hpp"
 - #include "dgtl/isa/emitter/NASM_Emitter.hpp"
-- #include "dgtl/jit/speculation/Async_Speculator.hpp"
+- #include "dgtl//speculation/Async_Speculator.hpp"
 
 ## Class and Struct Catalog
 ### Classes
@@ -56,7 +56,7 @@ B --> X[Guard and Early Exit]
 - none detected
 
 ## Function Catalog
-- void profile_and_check(dgtl::isa::JitFunction func_ptr, const core::DGTLSymbolTable& symbols) {
+- void profile_and_check(dgtl::isa::Function func_ptr, const core::DGTLSymbolTable& symbols) {
 - void select_best_version(std::vector<SpeculativeVersion>& versions) {
 - void bake_to_disk(uintptr_t addr, const core::DGTLSymbolTable& symbols) {
 - std::ofstream file(filename);

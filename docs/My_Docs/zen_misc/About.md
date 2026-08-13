@@ -45,7 +45,7 @@ Read [](file:///d%3A/TataG/DGTL/include/dgtl/pipeline)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa)
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit)
+Read [](file:///d%3A/TataG/DGTL/include/dgtl/)
 
 Read [](file:///d%3A/TataG/DGTL/tests/functional/test_pipeline_0.cpp#1-1), lines 1 to 80
 
@@ -73,7 +73,7 @@ Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit/JIT_Executor.hpp#1-1), lines 1 
 
 Created memory file [](file:///c%3A/Users/bltat/AppData/Roaming/Code/User/workspaceStorage/1eae2f9664ffa54e1a8dd790a16d48c9/GitHub.copilot-chat/memory-tool/memories/repo/dgtl_project_analysis.md)
 
-DGTL is a high-performance, retargetable compiler infrastructure optimized for AI, HFT, and cloud applications. It uses a bit-packed intermediate representation (BIR 2.1) with advanced optimizations, JIT execution, and multi-target code generation (ARM64, x86-64, WebAssembly).
+DGTL is a high-performance, retargetable compiler infrastructure optimized for AI, HFT, and cloud applications. It uses a bit-packed intermediate representation (BIR 2.1) with advanced optimizations,  execution, and multi-target code generation (ARM64, x86-64, WebAssembly).
 
 **Key Components:**
 - **Core**: Memory arenas, symbol tables, debug metadata
@@ -81,7 +81,7 @@ DGTL is a high-performance, retargetable compiler infrastructure optimized for A
 - **Analysis**: AI cost modeling, liveness analysis, memory dependency elimination
 - **optes**: GVN, DCE, SIMD legalization, speculative optimizations
 - **ISA**: Multi-target emitters (ARM64, x86-64, NASM, Mach-O, WASM)
-- **JIT**: Zero-latency execution with W^X protection
+- ****: Zero-latency execution with W^X protection
 - **Pipeline**: Orchestrates analyses and optes
 - **Tests**: 25+ functional tests covering optimizations, edge cases, and latency benchmarks
 
@@ -97,17 +97,17 @@ Read [](file:///d%3A/TataG/DGTL/include/dgtl/ir)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/ir/detail)
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit/Async_Speculator.hpp#1-1), lines 1 to 50
+Read [](file:///d%3A/TataG/DGTL/include/dgtl//Async_Speculator.hpp#1-1), lines 1 to 50
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit/Async_Speculator.hpp#51-51), lines 51 to 150
+Read [](file:///d%3A/TataG/DGTL/include/dgtl//Async_Speculator.hpp#51-51), lines 51 to 150
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit/Async_Speculator.hpp#151-151), lines 151 to 195
+Read [](file:///d%3A/TataG/DGTL/include/dgtl//Async_Speculator.hpp#151-151), lines 151 to 195
 
 Created [](file:///d%3A/TataG/DGTL/docs/Async_Speculator.hpp.md)
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit/Binary_Orchestrator_Final.hpp#1-1), lines 1 to 50
+Read [](file:///d%3A/TataG/DGTL/include/dgtl//Binary_Orchestrator_Final.hpp#1-1), lines 1 to 50
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit/Binary_Orchestrator_Final.hpp#51-51), lines 51 to 134
+Read [](file:///d%3A/TataG/DGTL/include/dgtl//Binary_Orchestrator_Final.hpp#51-51), lines 51 to 134
 
 Created [](file:///d%3A/TataG/DGTL/docs/Binary_Orchestrator_Final.hpp.md)
 
@@ -189,7 +189,7 @@ Read [](file:///d%3A/TataG/DGTL/include/dgtl/ir/detail)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa)
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit)
+Read [](file:///d%3A/TataG/DGTL/include/dgtl/)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/opt)
 
@@ -281,7 +281,7 @@ Read [](file:///d%3A/TataG/DGTL/include/dgtl/ir)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/isa)
 
-Read [](file:///d%3A/TataG/DGTL/include/dgtl/jit)
+Read [](file:///d%3A/TataG/DGTL/include/dgtl/)
 
 Read [](file:///d%3A/TataG/DGTL/include/dgtl/pipeline)
 
@@ -333,11 +333,11 @@ Perfect! I have successfully completed the comprehensive documentation for all .
 - X64_Reg_Map.hpp
 - X64_Strike_Emitter.hpp
 
-**jit/ (7 files):**
+**/ (7 files):**
 - Async_Speculator.hpp
 - Binary_Orchestrator_Final.hpp
 - Hardware_Scheduler.hpp
-- JIT_Executor.hpp
+- _Executor.hpp
 - MultiArch_Orchestrator.hpp
 - Strike_Orchestrator.hpp
 - Tiered_Controller.hpp

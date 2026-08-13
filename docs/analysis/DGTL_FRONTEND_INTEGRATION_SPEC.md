@@ -32,7 +32,7 @@ DGTL owns:
 - optimization
 - IR validation
 - target emission
-- JIT and binary orchestration
+-  and binary orchestration
 
 ## New Boundary APIs
 

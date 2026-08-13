@@ -121,15 +121,19 @@ int main(int argc, char** argv) {
 
     std::vector<std::string> failures;
 
-    // RULESET RETAINED EXACTLY AS REQUESTED
     const std::vector<std::string> required_files = {
         "docs/api/PUBLIC_API_TIERS_AND_CONTRACT.md",
         "docs/api/PUBLIC_API_RELEASE_POLICY.md",
         "docs/api/FRONTEND_CONFORMANCE_KIT.md",
-        "include/dgtl/api/Api_all.hpp",
-        "include/dgtl/backend/driver/Backend_Driver_API.hpp",
-        "include/dgtl/api/Runtime.hpp",
-        "include/dgtl/runtime/TaskScheduler.hpp",
+        "include/dgtl/api/Api_all.ixx",
+        "include/dgtl_sdk/dgtl.h",
+        "include/dgtl_sdk/dgtl_c_api.h",
+        "include/dgtl_sdk/dgtl_core.h",
+        "include/dgtl_sdk/dgtl_capabilities.h",
+        "include/dgtl_sdk/dgtl_session.h",
+        "include/dgtl/backend/driver/Backend_Driver_API.ixx",
+        "include/dgtl/api/Runtime.ixx",
+        "include/dgtl/runtime/TaskScheduler.ixx",
         "tests/functional/frontend/t07_frontend_pipeline_lowerer.cpp"
     };
 
@@ -141,21 +145,25 @@ int main(int argc, char** argv) {
 
     // RULESET RETAINED EXACTLY AS REQUESTED
     const std::vector<Rule> rules = {
-        {"include/dgtl/dgtl_all.hpp", "dgtl/api/Api_all\\.hpp", "top-level umbrella must include public API umbrella", true},
-        {"include/dgtl/api/Api_all.hpp", "dgtl/api/FrontendHelper\\.hpp", "public API umbrella must not expose removed frontend helper wrapper", false},
-        {"include/dgtl/api/Api_all.hpp", "dgtl/api/Frontend_Payload\\.hpp", "public API umbrella must not expose removed frontend payload wrapper", false},
-        {"include/dgtl/api/Api_all.hpp", "dgtl/api/Runtime\\.hpp", "public API umbrella must expose runtime scheduler API", true},
-        {"include/dgtl/api/Runtime.hpp", "dgtl/runtime/TaskScheduler\\.hpp", "runtime API header must include TaskScheduler implementation header", true},
+        {"include/dgtl/dgtl_all.ixx", "dgtl.ir_stream", "top-level umbrella must include public API umbrella", true},
+        {"include/dgtl/api/Api_all.ixx", "dgtl/api/FrontendHelper\\.(hpp|ixx)", "public API umbrella must not expose removed frontend helper wrapper", false},
+        {"include/dgtl/api/Api_all.ixx", "dgtl/api/Frontend_Payload\\.(hpp|ixx)", "public API umbrella must not expose removed frontend payload wrapper", false},
+        {"include/dgtl/api/Api_all.ixx", "(:api_runtime|dgtl\\.internal\\.api_runtime)", "public API umbrella must expose runtime scheduler API", true},
+        {"include/dgtl/api/Runtime.ixx", "dgtl.task_scheduler", "runtime API header must include TaskScheduler implementation header", true},
+        
+        {"include/dgtl/jit/JIT_Orchestrator.ixx", "dgtl/runtime/Runtime_Intrinsics\\.ixx", " orchestrator must depend on runtime intrinsic facade", true},
+        {"include/dgtl/jit/JIT_Orchestrator.ixx", "Myzon_Bulletins\\.ixx", " orchestrator must not include legacy runtime bulletins directly", false},
+        {"include/dgtl/core/ABI.ixx", "__myzon_", "core ABI contract must not hardcode legacy intrinsic symbols", false},
 
-        {"include/dgtl/jit/JIT_Orchestrator.hpp", "dgtl/runtime/Runtime_Intrinsics\\.hpp", "JIT orchestrator must depend on runtime intrinsic facade", true},
-
-        {"include/dgtl/jit/JIT_Orchestrator.hpp", "Myzon_Bulletins\\.hpp", "JIT orchestrator must not include myzon bulletins directly", false},
-        {"include/dgtl/core/ABI.hpp", "__myzon_", "core ABI contract must not hardcode myzon intrinsic symbols", false},
-
-        {"include/dgtl/backend/driver/Backend_Driver_API.hpp", "frontend_payload_path", "backend driver must not carry frontend payload path anymore", false},
-        {"include/dgtl/backend/driver/Backend_Driver_API.hpp", "emit_ir_stream\\(", "IRStream backend emission helper must exist", true},
+        {"include/dgtl/backend/driver/Backend_Driver_API.ixx", "frontend_payload_path", "backend driver must not carry frontend payload path anymore", false},
+        {"include/dgtl/backend/driver/Backend_Driver_API.ixx", "emit_ir_stream\\(", "IRStream backend emission helper must exist", true},
         {"src/main.cpp", "--frontend-payload", "DGTL driver must not accept frontend payload CLI option anymore", false},
         {"src/main.cpp", "build_ir_from_frontend_payload\\(", "DGTL driver must not load IR from frontend payload anymore", false},
+
+        {"include/dgtl_sdk/dgtl.h", "dgtl_capabilities\\.h", "public SDK umbrella must expose capability contract header", true},
+        {"include/dgtl_sdk/dgtl.h", "dgtl_session\\.h", "public SDK umbrella must expose session contract header", true},
+        {"tools/cpp/dgtl_main.cpp", "api-status", "main orchestrator must expose api-status command", true},
+        {"tools/cpp/dgtl_orchestrator_main.cpp", "api-status", "secondary orchestrator must expose api-status command", true},
 
         {"tests/test_suite_main.cpp", "run_test_t07_frontend_pipeline_lowerer", "aggregate suite must include frontend pipeline lowerer test", true}
     };

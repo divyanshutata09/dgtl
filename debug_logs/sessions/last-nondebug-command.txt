@@ -1,0 +1,1 @@
+﻿dgtl api-status --api public

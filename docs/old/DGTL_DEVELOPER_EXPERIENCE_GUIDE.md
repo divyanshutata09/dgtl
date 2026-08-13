@@ -20,7 +20,7 @@
 7. [Optimization Pipeline](#7-optimization-pipeline)
 8. [Backend Emission & Multi-Targeting](#8-backend-emission--multi-targeting)
 9. [SIMD & HFT Stride Alignment](#9-simd--hft-stride-alignment)
-10. [Advanced Integration: Custom Dialects & JIT](#10-advanced-integration-custom-dialects--jit)
+10. [Advanced Integration: Custom Dialects & ](#10-advanced-integration-custom-dialects--)
 11. [All Compiler & SDK Flags](#11-all-compiler--sdk-flags)
 12. [Error Codes & Troubleshooting](#12-error-codes--troubleshooting)
 13. [Frontend Conformance Kit](#13-frontend-conformance-kit)
@@ -129,7 +129,7 @@ DGTL_SDK/
 
 | Mode | Description | Latency | Use Case |
 |------|-------------|---------|----------|
-| **In-Process (Static Link)** | Link `dgtl.lib` directly into your compiler binary | ~0 IPC overhead | HFT, JIT, tight integration |
+| **In-Process (Static Link)** | Link `dgtl.lib` directly into your compiler binary | ~0 IPC overhead | HFT, , tight integration |
 | **Out-of-Process (CLI)** | Write `.dgtl.payload` file, invoke `dgtl_release.exe` | Process spawn cost | Loose coupling, web pipelines, CI |
 
 ---
@@ -140,7 +140,7 @@ DGTL_SDK/
 
 ```
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│   IR Layer   │───▶│  Graph Layer │───▶│  Pass Layer  │───▶│ Backend/JIT  │
+│   IR Layer   │───▶│  Graph Layer │───▶│  Pass Layer  │───▶│ Backend/  │
 │              │    │              │    │              │    │              │
 │ Bit-packed   │    │ Execution    │    │ GVN, DCE,    │    │ x64, ARM64,  │
 │ atoms+cores  │    │ graph with   │    │ SIMD, FMA    │    │ WASM, NASM,  │
@@ -1492,7 +1492,7 @@ dgtl_context_destroy(ctx);
 
 ---
 
-## 10. Advanced Integration: Custom Dialects & JIT
+## 10. Advanced Integration: Custom Dialects & 
 
 ### 10.1 Custom Node Opcodes
 
@@ -1514,9 +1514,9 @@ uint32_t grad_add = dgtl_emit_op(stream, DGTL_OP_FADD,
 
 **Important:** Custom flags in bits 8-15 (upper byte of uint16_t) are reserved for frontend use. DGTL's optimizer respects but does not interpret them.
 
-### 10.2 JIT Execution
+### 10.2  Execution
 
-JIT is available on **x64 only** and requires an environment gate:
+ is available on **x64 only** and requires an environment gate:
 
 ```c
 // Set environment variable before running:
@@ -1530,7 +1530,7 @@ dgtl_strike_result_t res = dgtl_strike_stream(s, DGTL_TARGET_X64);
 //   4. Function pointer called
 ```
 
-The JIT flow uses `StrikeOrchestrator::fire_strike()`:
+The  flow uses `StrikeOrchestrator::fire_strike()`:
 
 ```
 fire_strike()
@@ -1576,7 +1576,7 @@ The runtime AI cost model selects the best variant via feedback.
 | `--no-print` | *(none)* | Suppress stdout |
 | `--quiet` | *(none)* | Suppress stderr |
 | `--dump` | *(none)* | Dump IR and `TR_HASH` backend stream |
-| `--jit-execute` | *(none)* | JIT compile + execute (x64 only) |
+| `---execute` | *(none)* |  compile + execute (x64 only) |
 | `--polyhedral-mode` | `off`, `safe`, `aggressive` | Polyhedral parallelization |
 | `--polyhedral-tile` | `<integer>` | Tile size for polyhedral tiling |
 | `--polyhedral-parallel` | `auto`, `off`, `on` | Parallelization control |
@@ -1591,7 +1591,7 @@ The runtime AI cost model selects the best variant via feedback.
 | `DGTL_SHARED_BUILD` | Building DGTL as a shared library (DLL) |
 | `DGTL_SHARED_IMPORT` | Consuming DGTL as a shared library |
 | *(neither defined)* | Static library mode (default, recommended) |
-| `DGTL_STRIKE_EXECUTE=1` | Environment variable: enable JIT execution gate |
+| `DGTL_STRIKE_EXECUTE=1` | Environment variable: enable  execution gate |
 
 ### 11.3 Compiler Flags for Building Against DGTL
 
@@ -1645,7 +1645,7 @@ The runtime AI cost model selects the best variant via feedback.
 | `E_HASH_MISMATCH` | Logic hash mismatch | Nondeterministic IR construction | Ensure deterministic emission order |
 | `E_PAYLOAD_VERSION` | Payload version error | Incompatible `.dgtl.payload` format | Regenerate payload with matching SDK version |
 | `E_BACKEND_FAIL` | Backend emission failed | Target-specific codegen error | Check IR validity, try `--dump` flag |
-| `E_STRIKE_FAIL` | Strike failed | JIT injection or execution error | Check `DGTL_STRIKE_EXECUTE` env var |
+| `E_STRIKE_FAIL` | Strike failed |  injection or execution error | Check `DGTL_STRIKE_EXECUTE` env var |
 
 ### Your Language's Diagnostic Codes (MYZON Reference)
 
@@ -1755,7 +1755,7 @@ Before shipping your language with DGTL:
 ### Backend
 - [ ] Are you targeting the correct architecture for your deployment?
 - [ ] Have you verified LogicHash parity across all backends?
-- [ ] For JIT: is `DGTL_STRIKE_EXECUTE=1` set in the environment?
+- [ ] For : is `DGTL_STRIKE_EXECUTE=1` set in the environment?
 
 ### IR Quality
 - [ ] Are your value IDs monotonically increasing with no gaps?
@@ -1861,7 +1861,7 @@ dgtl_target_extension(DGTL_TARGET_MACHO)       → ".macho"
 
 | Variable | Effect |
 |----------|--------|
-| `DGTL_STRIKE_EXECUTE=1` | Enable JIT execution (required for `--jit-execute`) |
+| `DGTL_STRIKE_EXECUTE=1` | Enable  execution (required for `---execute`) |
 | `DGTL_ARENA_SIZE=<bytes>` | Override per-thread arena size (default: 64 MB) |
 | `DGTL_THREAD_SLOTS=<n>` | Override TLS slot count (default: 64, range: 1–64) |
 

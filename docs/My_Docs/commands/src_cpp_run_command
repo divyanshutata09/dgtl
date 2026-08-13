@@ -8,7 +8,7 @@ PS D:\TataG\DGTL> g++ -std=c++26 -O3 -I./include -I./src `
 >>     .\src\ir\*.cpp `
 >>     .\src\graph\*.cpp `
 >>     .\src\ir\evolution\*.cpp `
->>     .\src\jit\speculation\*.cpp `
+>>     .\src\\speculation\*.cpp `
 >>     -o .\build\full_pipeline_test.exe
 PS D:\TataG\DGTL> .\build\full_pipeline_test.exe
 [TEST] Starting Latency Reordering Analysis...

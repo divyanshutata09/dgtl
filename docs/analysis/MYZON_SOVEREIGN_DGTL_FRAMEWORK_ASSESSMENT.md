@@ -158,7 +158,7 @@ Your grammar includes:
 
 This is not just syntax. It implies a runtime model, scheduling rules, memory semantics, cancellation behavior, and codegen conventions.
 
-DGTL has JIT/runtime/performance infrastructure, but not a clear high-level language concurrency contract that maps these constructs in a stable way. If you want those keywords to be real language features rather than syntax that lowers to opaque calls, DGTL needs runtime-facing abstractions here.
+DGTL has /runtime/performance infrastructure, but not a clear high-level language concurrency contract that maps these constructs in a stable way. If you want those keywords to be real language features rather than syntax that lowers to opaque calls, DGTL needs runtime-facing abstractions here.
 
 ### 5. Verification and policy constructs need a semantic carrier
 

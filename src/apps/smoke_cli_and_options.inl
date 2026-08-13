@@ -52,6 +52,7 @@ enum class BenchmarkProfile : uint8_t {
     simd,
     pressure,
     predication,
+    replay,
 };
 
 enum class PolyhedralMode : uint8_t {
@@ -116,6 +117,9 @@ struct TimedEmissionResult {
     size_t nodes_built = 0;
     size_t nodes_after_profile = 0;
     size_t nodes_after_core_opt = 0;
+    bool deterministic_replay = false;
+    size_t replay_events = 0;
+    std::string adaptive_tier;
     EmissionResult emission;
 };
 
@@ -132,6 +136,9 @@ struct BackendBenchmark {
     size_t nodes_after_profile = 0;
     size_t nodes_after_core_opt = 0;
     size_t hot_swap_count = 0;
+    bool deterministic_replay = false;
+    size_t replay_events = 0;
+    std::string adaptive_tier;
     std::string hot_swap_last_mode;
     std::string detail;
     std::string dump_text;
@@ -167,7 +174,7 @@ bool emit_backend(BackendKind backend,
                   EmissionResult& result);
 
 TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
-                                         dgtl::semantic::SymbolTable& symbols,
+                                         const dgtl::semantic::SymbolTable& symbols,
                                          BackendKind backend,
                                          bool verbose_asm,
                                          BenchmarkProfile profile = BenchmarkProfile::fold,
@@ -198,7 +205,7 @@ void print_usage(const char* argv0) {
         << "  --no-evolution         Skip IREvolver mutate step\n"
         << "  --benchmark            Print benchmark breakdown for selected backend\n"
         << "  --benchmark-iterations <n>  Benchmark iteration count\n"
-        << "  --benchmark-profile <p> IR workload profile: fold|fusion|simd|pressure|predication\n"
+        << "  --benchmark-profile <p> IR workload profile: fold|fusion|simd|pressure|predication|replay\n"
         << "  --pressure-vars <n>    Variable count for pressure profile (default: 25)\n"
         << "  --benchmark-dump       Print benchmark-emitted artifact (hex or text)\n"
         << "  --arm64-binary-stream  Benchmark ARM64 as serialized binary stream (opt-in)\n"
@@ -343,8 +350,10 @@ ParseStatus parse_args(int argc, char** argv, AppOptions& opts) {
                 opts.benchmark_profile = BenchmarkProfile::pressure;
             } else if (p == "predication") {
                 opts.benchmark_profile = BenchmarkProfile::predication;
+            } else if (p == "replay") {
+                opts.benchmark_profile = BenchmarkProfile::replay;
             } else {
-                std::cerr << "Unknown benchmark profile: " << p << " (expected fold|fusion|simd|pressure|predication)\n";
+                std::cerr << "Unknown benchmark profile: " << p << " (expected fold|fusion|simd|pressure|predication|replay)\n";
                 return ParseStatus::error;
             }
             continue;

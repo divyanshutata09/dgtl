@@ -45,8 +45,8 @@ This document describes the observable DGTL compilation pipeline for proprietary
 - `cofflib`: COFF archive (`.lib`) with first linker member (big-endian symbol index) and embedded COFF member. Compatible with MSVC `link.exe`.
 - `macho`: Mach-O 64-bit ARM64 object file with `LC_SEGMENT_64` + `LC_SYMTAB` load commands and real ARM64 binary instruction encoding.
 
-### JIT Execution Backend
-- `--jit-execute` (x64 only): Invokes `StrikeOrchestrator::fire_strike()` for in-process compile → inject → execute with closed-loop AI cost model feedback via `DGTLJitExecutor::collect_feedback()`.
+###  Execution Backend
+- `---execute` (x64 only): Invokes `StrikeOrchestrator::fire_strike()` for in-process compile → inject → execute with closed-loop AI cost model feedback via `DGTLExecutor::collect_feedback()`.
 
 ## Polyhedral Position
 
@@ -83,7 +83,7 @@ flowchart TD
     H5 --> I
     H6 --> I
     H7 --> I
-    H2 --> J[JIT Execute via StrikeOrchestrator]
+    H2 --> J[ Execute via StrikeOrchestrator]
     J --> K[Closed-Loop AI Cost Feedback]
 ```
 

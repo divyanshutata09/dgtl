@@ -26,6 +26,7 @@ void run_test_t09_runtime_mt_arena_isolation();
 void run_test_t10_optimizer_strike_throughput();
 void run_test_t11_pipeline_production_benchmark();
 void run_test_t12_ir_cfg();
+void run_test_t13_sdk_session_capabilities();
 
 namespace {
 
@@ -47,7 +48,7 @@ void run_named_test(const char* name, void (*fn)()) {
 
 int main(int /*argc*/, char** /*argv*/) {
     try {
-        std::cout << "[DGTL] ====== DGTL Aggregate Test Suite (12 tests) ======\n";
+        std::cout << "[DGTL] ====== DGTL Aggregate Test Suite (13 tests) ======\n";
 
         run_named_test("t01.ir_stream_correctness",   &run_test_t01_ir_stream_correctness);
         run_named_test("t02.ir_transaction_rollback",  &run_test_t02_ir_transaction_rollback);
@@ -61,8 +62,9 @@ int main(int /*argc*/, char** /*argv*/) {
         run_named_test("t10.optimizer_strike",         &run_test_t10_optimizer_strike_throughput);
         run_named_test("t11.pipeline_production",      &run_test_t11_pipeline_production_benchmark);
         run_named_test("t12.ir_cfg",                   &run_test_t12_ir_cfg);
+        run_named_test("t13.sdk_session_capabilities", &run_test_t13_sdk_session_capabilities);
 
-        std::cout << "[DGTL] ====== All 12 tests PASSED ======\n";
+        std::cout << "[DGTL] ====== All 13 tests PASSED ======\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[DGTL] ====== Suite FAILED: " << ex.what() << " ======\n";

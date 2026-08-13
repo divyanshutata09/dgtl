@@ -184,7 +184,7 @@ For complex passes, explicit registration is used. For simple ones, stream metho
 
 - **Embedded passes** live as IRStream methods → Always available, zero registration overhead
 - **Complex passes** are explicit classes → Called directly or managed by DGTLoptManager
-- **Hybrid execution** uses both → Simple passes inline, complex passes managed
+- ** execution** uses both → Simple passes inline, complex passes managed
 
 This is a sophisticated **two-tier architecture**, not a bug!
 
