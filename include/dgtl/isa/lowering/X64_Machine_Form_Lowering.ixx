@@ -80,9 +80,21 @@ public:
         EncoderFunc mul_i64;
         EncoderFunc div_i64;
         EncoderFunc mod_i64;
+        EncoderFunc and_i64;
+        EncoderFunc or_i64;
+        EncoderFunc xor_i64;
+        EncoderFunc shl_i64;
+        EncoderFunc shr_i64;
 
         EncoderFunc add_f32;
+        EncoderFunc sub_f32;
         EncoderFunc mul_f32;
+        EncoderFunc div_f32;
+
+        EncoderFunc add_f64;
+        EncoderFunc sub_f64;
+        EncoderFunc mul_f64;
+        EncoderFunc div_f64;
 
         EncoderFunc cmp_i32;
 
@@ -129,7 +141,7 @@ public:
             case generated::X64IntegerBinary32Kind::None:
             default:
                 callbacks_.fail_emission("Unhandled MachineForm::IntegerBinary32 opcode",
-                                        static_cast<uint32_t>(selected.semantic_opcode));
+                                         static_cast<uint32_t>(selected.semantic_opcode));
                 return;
         }
     }
@@ -151,10 +163,25 @@ public:
             case generated::X64IntegerBinary64Kind::Mod:
                 callbacks_.mod_i64(selected.node, out);
                 return;
+            case generated::X64IntegerBinary64Kind::And:
+                if (callbacks_.and_i64) callbacks_.and_i64(selected.node, out);
+                return;
+            case generated::X64IntegerBinary64Kind::Or:
+                if (callbacks_.or_i64) callbacks_.or_i64(selected.node, out);
+                return;
+            case generated::X64IntegerBinary64Kind::Xor:
+                if (callbacks_.xor_i64) callbacks_.xor_i64(selected.node, out);
+                return;
+            case generated::X64IntegerBinary64Kind::Shl:
+                if (callbacks_.shl_i64) callbacks_.shl_i64(selected.node, out);
+                return;
+            case generated::X64IntegerBinary64Kind::Shr:
+                if (callbacks_.shr_i64) callbacks_.shr_i64(selected.node, out);
+                return;
             case generated::X64IntegerBinary64Kind::None:
             default:
                 callbacks_.fail_emission("Unhandled MachineForm::IntegerBinary64 opcode",
-                                        static_cast<uint32_t>(selected.semantic_opcode));
+                                         static_cast<uint32_t>(selected.semantic_opcode));
                 return;
         }
     }
@@ -164,13 +191,41 @@ public:
             case generated::X64FloatBinary32Kind::Add:
                 callbacks_.add_f32(selected.node, out);
                 return;
+            case generated::X64FloatBinary32Kind::Sub:
+                if (callbacks_.sub_f32) callbacks_.sub_f32(selected.node, out);
+                return;
             case generated::X64FloatBinary32Kind::Mul:
                 callbacks_.mul_f32(selected.node, out);
+                return;
+            case generated::X64FloatBinary32Kind::Div:
+                if (callbacks_.div_f32) callbacks_.div_f32(selected.node, out);
                 return;
             case generated::X64FloatBinary32Kind::None:
             default:
                 callbacks_.fail_emission("Unhandled MachineForm::FloatBinary32 opcode",
-                                        static_cast<uint32_t>(selected.semantic_opcode));
+                                         static_cast<uint32_t>(selected.semantic_opcode));
+                return;
+        }
+    }
+
+    inline void lower_float_binary64(const SelectedInstruction& selected, ByteStream& out) {
+        switch (generated::float_binary64_kind(selected.semantic_opcode)) {
+            case generated::X64FloatBinary64Kind::Add:
+                if (callbacks_.add_f64) callbacks_.add_f64(selected.node, out);
+                return;
+            case generated::X64FloatBinary64Kind::Sub:
+                if (callbacks_.sub_f64) callbacks_.sub_f64(selected.node, out);
+                return;
+            case generated::X64FloatBinary64Kind::Mul:
+                if (callbacks_.mul_f64) callbacks_.mul_f64(selected.node, out);
+                return;
+            case generated::X64FloatBinary64Kind::Div:
+                if (callbacks_.div_f64) callbacks_.div_f64(selected.node, out);
+                return;
+            case generated::X64FloatBinary64Kind::None:
+            default:
+                callbacks_.fail_emission("Unhandled MachineForm::FloatBinary64 opcode",
+                                         static_cast<uint32_t>(selected.semantic_opcode));
                 return;
         }
     }
@@ -183,7 +238,7 @@ public:
             case generated::X64Compare32Kind::None:
             default:
                 callbacks_.fail_emission("Unhandled MachineForm::Compare32 opcode",
-                                        static_cast<uint32_t>(selected.semantic_opcode));
+                                         static_cast<uint32_t>(selected.semantic_opcode));
                 return;
         }
     }
@@ -199,7 +254,7 @@ public:
             case generated::X64VectorBinary512Kind::None:
             default:
                 callbacks_.fail_emission("Unhandled MachineForm::VectorBinary512 opcode",
-                                        static_cast<uint32_t>(selected.semantic_opcode));
+                                         static_cast<uint32_t>(selected.semantic_opcode));
                 return;
         }
     }
@@ -299,7 +354,11 @@ public:
 
             switch (selected.form) {
                 case lowering::MachineForm::Move:
-                    emit_move(selected, out);
+                    if (node.opcode == ir::OpCode::STORE) {
+                        emit_store_stack(selected, out, machine_stream);
+                    } else {
+                        emit_move(selected, out);
+                    }
                     break;
                 case lowering::MachineForm::LoadImmediate:
                     if (node.opcode == ir::OpCode::CONST && (node.flags & ir::Flags::IS_SPEC_CONST)) {
@@ -309,10 +368,10 @@ public:
                     }
                     break;
                 case lowering::MachineForm::LoadStack:
-                    emit_load_stack(selected, out);
+                    emit_load_stack(selected, out, machine_stream);
                     break;
                 case lowering::MachineForm::StoreStack:
-                    emit_store_stack(selected, out);
+                    emit_store_stack(selected, out, machine_stream);
                     break;
                 case lowering::MachineForm::IntegerBinary32:
                     emit_i32_binary(selected, out);
@@ -356,12 +415,49 @@ public:
                 case lowering::MachineForm::Syscall:
                     emit_syscall(selected, out);
                     break;
-                case lowering::MachineForm::Return:
+                case lowering::MachineForm::Return: {
+                    const uint32_t frame_size = compute_frame_size(machine_stream);
+                    // Move return value to RAX / XMM0 if present
+                    if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+                        const ir::TypeCode tc = machine_stream.get_result_type_code(node.op_a);
+                        if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
+                            emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_a));
+                        } else {
+                            emit_mov_reg_from_stack(out, static_cast<uint8_t>(exec::X64Reg::RAX), vreg_offset(node.op_a));
+                        }
+                    } else if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+                        emit_mov_reg_from_stack(out, static_cast<uint8_t>(exec::X64Reg::RAX), vreg_offset(node.result_id));
+                    }
+
+#if defined(_WIN32)
+                    emit_add_rsp(out, frame_size);
+                    out.push_back(0x41); out.push_back(0x5F); // pop r15
+                    out.push_back(0x41); out.push_back(0x5E); // pop r14
+                    out.push_back(0x41); out.push_back(0x5D); // pop r13
+                    out.push_back(0x41); out.push_back(0x5C); // pop r12
+                    out.push_back(0x5F); // pop rdi
+                    out.push_back(0x5E); // pop rsi
+                    out.push_back(0x5D); // pop rbp
+                    out.push_back(0x5B); // pop rbx
+#endif
                     out.push_back(0xC3);
                     break;
+                }
                 case lowering::MachineForm::NoOp:
                     if (node.opcode == ir::OpCode::LABEL &&
                         (node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE))) {
+#if defined(_WIN32)
+                        const uint32_t frame_size = compute_frame_size(machine_stream);
+                        out.push_back(0x53); // push rbx
+                        out.push_back(0x55); // push rbp
+                        out.push_back(0x56); // push rsi
+                        out.push_back(0x57); // push rdi
+                        out.push_back(0x41); out.push_back(0x54); // push r12
+                        out.push_back(0x41); out.push_back(0x55); // push r13
+                        out.push_back(0x41); out.push_back(0x56); // push r14
+                        out.push_back(0x41); out.push_back(0x57); // push r15
+                        emit_sub_rsp(out, frame_size);
+#endif
                         emit_function_prologue_params(node, out, machine_stream);
                     }
                     break;
@@ -373,12 +469,26 @@ public:
             }
         }
 
+        // --- BACKPATCH BRANCH JUMPS & CALLS ---
         for (const PendingBranchPatch& patch : branch_patches) {
             size_t target_node_index = machine_stream.size();
             const auto label_it = label_to_node_index.find(patch.target_label);
             if (label_it != label_to_node_index.end()) {
                 target_node_index = label_it->second;
             } else {
+                auto offset_it = label_offsets_.find(patch.target_label);
+                if (offset_it != label_offsets_.end()) {
+                    const int64_t target_offset = static_cast<int64_t>(offset_it->second);
+                    const int64_t instr_end = static_cast<int64_t>(patch.instruction_end_offset);
+                    const int32_t rel32 = static_cast<int32_t>(target_offset - instr_end);
+
+                    out[patch.displacement_offset + 0] = static_cast<uint8_t>((rel32 >> 0) & 0xFF);
+                    out[patch.displacement_offset + 1] = static_cast<uint8_t>((rel32 >> 8) & 0xFF);
+                    out[patch.displacement_offset + 2] = static_cast<uint8_t>((rel32 >> 16) & 0xFF);
+                    out[patch.displacement_offset + 3] = static_cast<uint8_t>((rel32 >> 24) & 0xFF);
+                    continue;
+                }
+
                 for (size_t k = 0; k < machine_stream.size(); ++k) {
                     const auto& knode = machine_stream.get_node(k);
                     if (knode.opcode == ir::OpCode::LABEL) {
@@ -493,6 +603,133 @@ private:
         out.push_back(static_cast<uint8_t>(0x38u | base_lo));
     }
 
+    static constexpr uint32_t MAX_FRAME_SLOTS = 256;
+    static constexpr uint32_t FIXED_FRAME_SIZE = 2088; // 8 mod 16, ensures (72 + 2088) % 16 == 0 for exact Win64 16-byte ABI alignment
+
+    static uint32_t compute_frame_size(const ir::IRStream& /*stream*/) noexcept {
+        return FIXED_FRAME_SIZE;
+    }
+
+    static int32_t vreg_offset(uint32_t vreg) noexcept {
+        return static_cast<int32_t>(40 + (vreg % MAX_FRAME_SLOTS) * 8);
+    }
+
+    static void emit_sub_rsp(std::vector<uint8_t>& out, uint32_t amount) {
+        if (amount == 0) return;
+        if (amount <= 127) {
+            out.push_back(0x48); out.push_back(0x83); out.push_back(0xEC);
+            out.push_back(static_cast<uint8_t>(amount & 0xFF));
+        } else {
+            out.push_back(0x48); out.push_back(0x81); out.push_back(0xEC);
+            out.push_back(static_cast<uint8_t>((amount >> 0) & 0xFF));
+            out.push_back(static_cast<uint8_t>((amount >> 8) & 0xFF));
+            out.push_back(static_cast<uint8_t>((amount >> 16) & 0xFF));
+            out.push_back(static_cast<uint8_t>((amount >> 24) & 0xFF));
+        }
+    }
+
+    static void emit_add_rsp(std::vector<uint8_t>& out, uint32_t amount) {
+        if (amount == 0) return;
+        if (amount <= 127) {
+            out.push_back(0x48); out.push_back(0x83); out.push_back(0xC4);
+            out.push_back(static_cast<uint8_t>(amount & 0xFF));
+        } else {
+            out.push_back(0x48); out.push_back(0x81); out.push_back(0xC4);
+            out.push_back(static_cast<uint8_t>((amount >> 0) & 0xFF));
+            out.push_back(static_cast<uint8_t>((amount >> 8) & 0xFF));
+            out.push_back(static_cast<uint8_t>((amount >> 16) & 0xFF));
+            out.push_back(static_cast<uint8_t>((amount >> 24) & 0xFF));
+        }
+    }
+
+    static void emit_mov_reg_from_stack(std::vector<uint8_t>& out, uint8_t reg, int32_t offset) {
+        out.push_back(exec::X64Encoding::rex(/*w=*/true,
+                                             /*r=*/requires_rex(reg),
+                                             /*x=*/false,
+                                             /*b=*/false));
+        out.push_back(0x8B); // MOV r64, [rsp + offset]
+        if (offset >= -128 && offset <= 127) {
+            out.push_back(static_cast<uint8_t>(0x44u | ((reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>(offset & 0xFF));
+        } else {
+            out.push_back(static_cast<uint8_t>(0x84u | ((reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>((offset >> 0) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 8) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 16) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 24) & 0xFF));
+        }
+    }
+
+    static void emit_mov_stack_from_reg(std::vector<uint8_t>& out, int32_t offset, uint8_t reg) {
+        out.push_back(exec::X64Encoding::rex(/*w=*/true,
+                                             /*r=*/requires_rex(reg),
+                                             /*x=*/false,
+                                             /*b=*/false));
+        out.push_back(0x89); // MOV [rsp + offset], r64
+        if (offset >= -128 && offset <= 127) {
+            out.push_back(static_cast<uint8_t>(0x44u | ((reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>(offset & 0xFF));
+        } else {
+            out.push_back(static_cast<uint8_t>(0x84u | ((reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>((offset >> 0) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 8) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 16) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 24) & 0xFF));
+        }
+    }
+
+    static void emit_movsd_xmm_from_stack(std::vector<uint8_t>& out, uint8_t xmm_reg, int32_t offset) {
+        out.push_back(0xF2);
+        if (requires_rex(xmm_reg)) {
+            out.push_back(exec::X64Encoding::rex(/*w=*/false,
+                                                 /*r=*/true,
+                                                 /*x=*/false,
+                                                 /*b=*/false));
+        }
+        out.push_back(0x0F);
+        out.push_back(0x10); // MOVSD xmm, [rsp + offset]
+        if (offset >= -128 && offset <= 127) {
+            out.push_back(static_cast<uint8_t>(0x44u | ((xmm_reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>(offset & 0xFF));
+        } else {
+            out.push_back(static_cast<uint8_t>(0x84u | ((xmm_reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>((offset >> 0) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 8) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 16) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 24) & 0xFF));
+        }
+    }
+
+    static void emit_movsd_stack_from_xmm(std::vector<uint8_t>& out, int32_t offset, uint8_t xmm_reg) {
+        out.push_back(0xF2);
+        if (requires_rex(xmm_reg)) {
+            out.push_back(exec::X64Encoding::rex(/*w=*/false,
+                                                 /*r=*/true,
+                                                 /*x=*/false,
+                                                 /*b=*/false));
+        }
+        out.push_back(0x0F);
+        out.push_back(0x11); // MOVSD [rsp + offset], xmm
+        if (offset >= -128 && offset <= 127) {
+            out.push_back(static_cast<uint8_t>(0x44u | ((xmm_reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>(offset & 0xFF));
+        } else {
+            out.push_back(static_cast<uint8_t>(0x84u | ((xmm_reg & 0x7u) << 3u)));
+            out.push_back(0x24u);
+            out.push_back(static_cast<uint8_t>((offset >> 0) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 8) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 16) & 0xFF));
+            out.push_back(static_cast<uint8_t>((offset >> 24) & 0xFF));
+        }
+    }
+
     static uint8_t map_reg(uint32_t vreg) noexcept {
         return static_cast<uint8_t>(exec::X64SinglePassRegisterMapper::map_gpr_branchless(vreg));
     }
@@ -524,6 +761,9 @@ private:
         out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/(dst >= 8u)));
         out.push_back(static_cast<uint8_t>(0xB8u + (dst & 0x7u)));
         append_u64(out, immediate_from_node(node));
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), dst);
+        }
     }
 
     static void emit_load_imm_f64(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
@@ -544,6 +784,11 @@ private:
         out.push_back(0x0F);
         out.push_back(0x6E); // MOVQ xmm, r/m64
         emit_modrm_reg_reg(out, xmm_dst, rax);
+
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), xmm_dst);
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), rax);
+        }
     }
 
     static void emit_movq_xmm_gpr(std::vector<uint8_t>& out, uint8_t xmm_dst, uint8_t gpr_src) {
@@ -585,7 +830,7 @@ private:
 
         for (int i = 0; i < 4; ++i) {
             const uint32_t param_slot = params[i];
-            if (param_slot == ir::INVALID_SLOT || param_slot == 0u || param_slot == node.result_id) {
+            if (param_slot == ir::INVALID_SLOT || param_slot == 0u) {
                 continue;
             }
 
@@ -596,24 +841,39 @@ private:
                 if (dst_xmm != src_xmm) {
                     emit_xmm_move_f64(out, dst_xmm, src_xmm);
                 }
+                emit_movsd_stack_from_xmm(out, vreg_offset(param_slot), src_xmm);
             } else {
                 const uint8_t dst_gpr = map_reg(param_slot);
                 const uint8_t src_gpr = gpr_params[i];
                 if (dst_gpr != src_gpr) {
                     emit_reg_move(out, dst_gpr, src_gpr);
                 }
+                emit_mov_stack_from_reg(out, vreg_offset(param_slot), src_gpr);
             }
         }
     }
 
     static void emit_move(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
         const ir::IRNode& node = selected.node;
-        const uint8_t src = map_reg(node.op_a);
-        const uint8_t dst = map_reg(node.result_id);
-
-        out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/(src >= 8u), /*x=*/false, /*b=*/(dst >= 8u)));
-        out.push_back(0x89); // MOV r/m64, r64
-        emit_modrm_reg_reg(out, src, dst);
+        uint32_t dst_vreg = node.result_id;
+        uint32_t src_vreg = node.op_a;
+        if (node.opcode == ir::OpCode::STORE) {
+            dst_vreg = node.op_a;
+            src_vreg = node.op_b;
+        } else if (dst_vreg == ir::INVALID_SLOT && node.op_a != ir::INVALID_SLOT && node.op_b != ir::INVALID_SLOT) {
+            dst_vreg = node.op_a;
+            src_vreg = node.op_b;
+        }
+        if (dst_vreg == ir::INVALID_SLOT || src_vreg == ir::INVALID_SLOT) {
+            return;
+        }
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t dst = map_reg(dst_vreg);
+        emit_mov_reg_from_stack(out, r10, vreg_offset(src_vreg));
+        if (dst != r10) {
+            emit_reg_move(out, dst, r10);
+        }
+        emit_mov_stack_from_reg(out, vreg_offset(dst_vreg), r10);
     }
 
     static constexpr bool requires_rex(uint8_t reg) noexcept {
@@ -621,7 +881,7 @@ private:
     }
 
     static uint8_t map_xmm_reg(uint32_t vreg) noexcept {
-        return static_cast<uint8_t>(exec::X64Encoding::map_DGTL_to_phys(vreg));
+        return exec::X64SinglePassRegisterMapper::map_xmm_branchless(vreg);
     }
 
     static uint8_t map_zmm_reg(uint32_t vreg) noexcept {
@@ -697,245 +957,263 @@ private:
         out.push_back(static_cast<uint8_t>((w ? 0x80u : 0u) | ((~vvvv & 0x0Fu) << 3) | (l ? 0x04u : 0u) | (pp & 0x03u)));
     }
 
-    static void emit_load_stack(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
+    static void emit_load_stack(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out, const ir::IRStream& stream) {
         const ir::IRNode& node = selected.node;
-        const uint8_t dst = map_reg(node.result_id);
-        const uint8_t base = map_reg(node.op_a);
-        out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                             /*r=*/requires_rex(dst),
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(base)));
-        out.push_back(0x8B); // MOV r64, [base]
-        const uint8_t base_lo = base & 0x7u;
-        if (base_lo == 0x4u) { // RSP / R12
-            out.push_back(static_cast<uint8_t>(0x44u | ((dst & 0x7u) << 3u)));
-            out.push_back(0x24u);
-            out.push_back(0x00u);
-        } else if (base_lo == 0x5u) { // RBP / R13
-            out.push_back(static_cast<uint8_t>(0x45u | ((dst & 0x7u) << 3u)));
-            out.push_back(0x00u);
-        } else {
-            out.push_back(static_cast<uint8_t>(((dst & 0x7u) << 3u) | base_lo));
+        const uint32_t src_vreg = node.op_a;
+        const uint32_t dst_vreg = node.result_id;
+
+        const ir::TypeCode tc = stream.get_result_type_code(src_vreg);
+        bool is_float = (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32);
+        if (!is_float && src_vreg < stream.size()) {
+            const auto& src_node = stream.get_node(src_vreg);
+            if (src_node.opcode == ir::OpCode::ADD_F64 || src_node.opcode == ir::OpCode::SUB_F64 ||
+                src_node.opcode == ir::OpCode::MUL_F64 || src_node.opcode == ir::OpCode::DIV_F64 ||
+                src_node.opcode == ir::OpCode::ADD_F32 || src_node.opcode == ir::OpCode::SUB_F32 ||
+                src_node.opcode == ir::OpCode::MUL_F32 || src_node.opcode == ir::OpCode::DIV_F32 ||
+                (src_node.opcode == ir::OpCode::CONST && (src_node.flags & ir::Flags::IS_SPEC_CONST))) {
+                is_float = true;
+            }
+        }
+
+        if (is_float || tc == ir::TypeCode::F64) {
+            const uint8_t dst = map_xmm_reg(dst_vreg);
+            if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
+                emit_movsd_xmm_from_stack(out, dst, vreg_offset(src_vreg));
+            }
+            if (dst_vreg != ir::INVALID_SLOT && dst_vreg != 0u) {
+                emit_movsd_stack_from_xmm(out, vreg_offset(dst_vreg), dst);
+            }
+            return;
+        }
+
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t dst = map_reg(dst_vreg);
+        if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(src_vreg));
+        }
+        if (dst != r10) {
+            emit_reg_move(out, dst, r10);
+        }
+        if (dst_vreg != ir::INVALID_SLOT && dst_vreg != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(dst_vreg), r10);
         }
     }
 
-    static void emit_store_stack(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
+    static void emit_store_stack(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out, const ir::IRStream& stream) {
         const ir::IRNode& node = selected.node;
-        uint32_t base_vreg = node.op_a;
+        uint32_t dest_vreg = node.op_a;
         uint32_t src_vreg = node.op_b;
-        if (base_vreg == ir::INVALID_SLOT && src_vreg != ir::INVALID_SLOT) {
-            base_vreg = node.op_b;
+        if (dest_vreg == ir::INVALID_SLOT && src_vreg != ir::INVALID_SLOT) {
+            dest_vreg = node.op_b;
             src_vreg = node.op_a;
         }
 
+        const ir::TypeCode tc = stream.get_result_type_code(src_vreg);
+        bool is_float = (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32);
+        if (!is_float && src_vreg < stream.size()) {
+            const auto& src_node = stream.get_node(src_vreg);
+            if (src_node.opcode == ir::OpCode::ADD_F64 || src_node.opcode == ir::OpCode::SUB_F64 ||
+                src_node.opcode == ir::OpCode::MUL_F64 || src_node.opcode == ir::OpCode::DIV_F64 ||
+                src_node.opcode == ir::OpCode::ADD_F32 || src_node.opcode == ir::OpCode::SUB_F32 ||
+                src_node.opcode == ir::OpCode::MUL_F32 || src_node.opcode == ir::OpCode::DIV_F32 ||
+                (src_node.opcode == ir::OpCode::CONST && (src_node.flags & ir::Flags::IS_SPEC_CONST))) {
+                is_float = true;
+            }
+        }
+
+        if (is_float || tc == ir::TypeCode::F64) {
+            const uint8_t xmm_src = map_xmm_reg(src_vreg);
+            if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
+                emit_movsd_xmm_from_stack(out, xmm_src, vreg_offset(src_vreg));
+            }
+            if (dest_vreg != ir::INVALID_SLOT && dest_vreg != 0u) {
+                emit_movsd_stack_from_xmm(out, vreg_offset(dest_vreg), xmm_src);
+            }
+            return;
+        }
+
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
         const uint8_t src = map_reg(src_vreg);
-        const uint8_t base = map_reg(base_vreg);
-        out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                             /*r=*/requires_rex(src),
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(base)));
-        out.push_back(0x89); // MOV [base], src
-        const uint8_t base_lo = base & 0x7u;
-        if (base_lo == 0x4u) {
-            out.push_back(static_cast<uint8_t>(0x44u | ((src & 0x7u) << 3u)));
-            out.push_back(0x24u);
-            out.push_back(0x00u);
-        } else if (base_lo == 0x5u) {
-            out.push_back(static_cast<uint8_t>(0x45u | ((src & 0x7u) << 3u)));
-            out.push_back(0x00u);
-        } else {
-            out.push_back(static_cast<uint8_t>(((src & 0x7u) << 3u) | base_lo));
+        if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(src_vreg));
+        }
+        if (src != r10) {
+            emit_reg_move(out, src, r10);
+        }
+        if (dest_vreg != ir::INVALID_SLOT && dest_vreg != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(dest_vreg), r10);
         }
     }
 
     static void emit_i32_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
         const ir::IRNode& node = selected.node;
         const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t src_a = map_reg(node.op_a);
-        const uint8_t src_b = map_reg(node.op_b);
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
         const uint8_t dst = map_reg(node.result_id);
 
-        if (dst != src_a) {
-            emit_reg_move32(out, dst, src_a);
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
         }
-
-        const bool rex_r = requires_rex(src_b);
-        const bool rex_b = requires_rex(dst);
-        out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/rex_r, /*x=*/false, /*b=*/rex_b));
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
+        }
 
         switch (original_opcode) {
             case ir::OpCode::ADD_I32:
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x01); // ADD r/m32, r32
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::SUB_I32:
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x29); // SUB r/m32, r32
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::MUL_I32:
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r10), /*x=*/false, /*b=*/requires_rex(r11)));
                 out.push_back(0x0F);
                 out.push_back(0xAF); // IMUL r32, r/m32
-                emit_modrm_reg_reg(out, dst, src_b);
+                emit_modrm_reg_reg(out, r10, r11);
                 break;
             case ir::OpCode::AND_I32:
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x21); // AND r/m32, r32
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::OR_I32:
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x09); // OR r/m32, r32
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::XOR_I32:
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x31); // XOR r/m32, r32
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::SHL_I32: {
                 const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                if (src_b != count_reg) {
-                    emit_reg_move32(out, count_reg, src_b);
-                }
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(dst)));
+                emit_reg_move32(out, count_reg, r11);
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0xD3); // SHL r/m32, CL
-                emit_modrm_reg_reg(out, 0x04, dst);
+                emit_modrm_reg_reg(out, 0x04, r10);
                 break;
             }
             case ir::OpCode::SHR_I32: {
                 const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                if (src_b != count_reg) {
-                    emit_reg_move32(out, count_reg, src_b);
-                }
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(dst)));
+                emit_reg_move32(out, count_reg, r11);
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0xD3); // SHR r/m32, CL
-                emit_modrm_reg_reg(out, 0x05, dst);
+                emit_modrm_reg_reg(out, 0x05, r10);
                 break;
             }
             case ir::OpCode::DIV_I32:
             case ir::OpCode::MOD_I32: {
                 const uint8_t eax = static_cast<uint8_t>(exec::X64Reg::RAX);
                 const uint8_t edx = static_cast<uint8_t>(exec::X64Reg::RDX);
-                const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-                uint8_t effective_divisor = src_b;
-                if (src_b == eax || src_b == edx) {
-                    emit_reg_move32(out, r10, src_b);
-                    effective_divisor = r10;
-                }
-                if (src_a != eax) {
-                    emit_reg_move32(out, eax, src_a);
-                }
+                emit_reg_move32(out, eax, r10);
                 out.push_back(0x99); // CDQ
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(effective_divisor)));
+                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r11)));
                 out.push_back(0xF7);
-                emit_modrm_reg_reg(out, 0x07, effective_divisor); // IDIV r/m32
+                emit_modrm_reg_reg(out, 0x07, r11); // IDIV r/m32
 
                 if (original_opcode == ir::OpCode::DIV_I32) {
-                    if (dst != eax) {
-                        emit_reg_move32(out, dst, eax);
-                    }
+                    emit_reg_move32(out, r10, eax);
                 } else {
-                    if (dst != edx) {
-                        emit_reg_move32(out, dst, edx);
-                    }
+                    emit_reg_move32(out, r10, edx);
                 }
                 break;
             }
             default:
                 out.push_back(0x90);
                 break;
+        }
+
+        if (dst != r10) {
+            emit_reg_move32(out, dst, r10);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
         }
     }
 
     static void emit_i64_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
         const ir::IRNode& node = selected.node;
         const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t src_a = map_reg(node.op_a);
-        const uint8_t src_b = map_reg(node.op_b);
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
         const uint8_t dst = map_reg(node.result_id);
 
-        if (dst != src_a) {
-            emit_reg_move(out, dst, src_a);
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
+        }
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
         }
 
-        const bool rex_r = requires_rex(src_b);
-        const bool rex_b = requires_rex(dst);
         switch (original_opcode) {
             case ir::OpCode::ADD_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/rex_r, /*x=*/false, /*b=*/rex_b));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x01); // ADD r/m64, r64
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::SUB_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/rex_r, /*x=*/false, /*b=*/rex_b));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x29); // SUB r/m64, r64
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::AND_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/rex_r, /*x=*/false, /*b=*/rex_b));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x21); // AND r/m64, r64
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::OR_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/rex_r, /*x=*/false, /*b=*/rex_b));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x09); // OR r/m64, r64
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::XOR_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/rex_r, /*x=*/false, /*b=*/rex_b));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0x31); // XOR r/m64, r64
-                emit_modrm_reg_reg(out, src_b, dst);
+                emit_modrm_reg_reg(out, r11, r10);
                 break;
             case ir::OpCode::SHL_I64: {
                 const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                if (src_b != count_reg) {
-                    emit_reg_move(out, count_reg, src_b);
-                }
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(dst)));
+                emit_reg_move(out, count_reg, r11);
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0xD3); // SHL r/m64, CL
-                emit_modrm_reg_reg(out, 0x04, dst);
+                emit_modrm_reg_reg(out, 0x04, r10);
                 break;
             }
             case ir::OpCode::SHR_I64: {
                 const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                if (src_b != count_reg) {
-                    emit_reg_move(out, count_reg, src_b);
-                }
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(dst)));
+                emit_reg_move(out, count_reg, r11);
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
                 out.push_back(0xD3); // SHR r/m64, CL
-                emit_modrm_reg_reg(out, 0x05, dst);
+                emit_modrm_reg_reg(out, 0x05, r10);
                 break;
             }
             case ir::OpCode::MUL_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(dst), /*x=*/false, /*b=*/rex_b));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r10), /*x=*/false, /*b=*/requires_rex(r11)));
                 out.push_back(0x0F);
                 out.push_back(0xAF); // IMUL r64, r/m64
-                emit_modrm_reg_reg(out, dst, src_b);
+                emit_modrm_reg_reg(out, r10, r11);
                 break;
             case ir::OpCode::DIV_I64:
             case ir::OpCode::MOD_I64: {
                 const uint8_t eax = static_cast<uint8_t>(exec::X64Reg::RAX);
                 const uint8_t edx = static_cast<uint8_t>(exec::X64Reg::RDX);
-                const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-                uint8_t effective_divisor = src_b;
-                if (src_b == eax || src_b == edx) {
-                    emit_reg_move(out, r10, src_b);
-                    effective_divisor = r10;
-                }
-                if (src_a != eax) {
-                    emit_reg_move(out, eax, src_a);
-                }
+                emit_reg_move(out, eax, r10);
                 out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/false));
                 out.push_back(0x99); // CQO
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(effective_divisor)));
+                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r11)));
                 out.push_back(0xF7);
-                emit_modrm_reg_reg(out, 0x07, effective_divisor); // IDIV r/m64
+                emit_modrm_reg_reg(out, 0x07, r11); // IDIV r/m64
 
                 if (original_opcode == ir::OpCode::DIV_I64) {
-                    if (dst != eax) {
-                        emit_reg_move(out, dst, eax);
-                    }
+                    emit_reg_move(out, r10, eax);
                 } else {
-                    if (dst != edx) {
-                        emit_reg_move(out, dst, edx);
-                    }
+                    emit_reg_move(out, r10, edx);
                 }
                 break;
             }
@@ -943,26 +1221,30 @@ private:
                 out.push_back(0x90);
                 break;
         }
+
+        if (dst != r10) {
+            emit_reg_move(out, dst, r10);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
+        }
     }
 
     static void emit_f32_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
         const ir::IRNode& node = selected.node;
         const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t src_a = map_xmm_reg(node.op_a);
-        const uint8_t src_b = map_xmm_reg(node.op_b);
+        const uint8_t xmm4 = 4;
+        const uint8_t xmm5 = 5;
         const uint8_t dst = map_xmm_reg(node.result_id);
 
-        if (dst != src_a) {
-            emit_xmm_move(out, dst, src_a);
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_movsd_xmm_from_stack(out, xmm4, vreg_offset(node.op_a));
+        }
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_movsd_xmm_from_stack(out, xmm5, vreg_offset(node.op_b));
         }
 
         out.push_back(0xF3); // Scalar FP32 prefix for ADDSS/SUBSS/MULSS/DIVSS
-        if (requires_rex(dst) || requires_rex(src_b)) {
-            out.push_back(exec::X64Encoding::rex(/*w=*/false,
-                                                 /*r=*/requires_rex(dst),
-                                                 /*x=*/false,
-                                                 /*b=*/requires_rex(src_b)));
-        }
         out.push_back(0x0F);
         switch (original_opcode) {
             case ir::OpCode::ADD_F32: out.push_back(0x58); break; // ADDSS
@@ -973,27 +1255,31 @@ private:
                 out.push_back(0x90);
                 return;
         }
-        emit_modrm_reg_reg(out, dst, src_b);
+        emit_modrm_reg_reg(out, xmm4, xmm5);
+
+        if (dst != xmm4) {
+            emit_xmm_move(out, dst, xmm4);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), xmm4);
+        }
     }
 
     static void emit_f64_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
         const ir::IRNode& node = selected.node;
         const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t src_a = map_xmm_reg(node.op_a);
-        const uint8_t src_b = map_xmm_reg(node.op_b);
+        const uint8_t xmm4 = 4;
+        const uint8_t xmm5 = 5;
         const uint8_t dst = map_xmm_reg(node.result_id);
 
-        if (dst != src_a) {
-            emit_xmm_move_f64(out, dst, src_a);
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_movsd_xmm_from_stack(out, xmm4, vreg_offset(node.op_a));
+        }
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_movsd_xmm_from_stack(out, xmm5, vreg_offset(node.op_b));
         }
 
         out.push_back(0xF2); // Scalar FP64 prefix
-        if (requires_rex(dst) || requires_rex(src_b)) {
-            out.push_back(exec::X64Encoding::rex(/*w=*/false,
-                                                 /*r=*/requires_rex(dst),
-                                                 /*x=*/false,
-                                                 /*b=*/requires_rex(src_b)));
-        }
         out.push_back(0x0F);
         switch (original_opcode) {
             case ir::OpCode::ADD_F64: out.push_back(0x58); break; // ADDSD
@@ -1004,7 +1290,14 @@ private:
                 out.push_back(0x90);
                 return;
         }
-        emit_modrm_reg_reg(out, dst, src_b);
+        emit_modrm_reg_reg(out, xmm4, xmm5);
+
+        if (dst != xmm4) {
+            emit_xmm_move_f64(out, dst, xmm4);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), xmm4);
+        }
     }
 
     static void emit_f32_fma(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
@@ -1033,16 +1326,23 @@ private:
     static void emit_cmp_i32(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
         const ir::IRNode& node = selected.node;
         const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t lhs = map_reg(node.op_a);
-        const uint8_t rhs = map_reg(node.op_b);
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
         const uint8_t dst = map_reg(node.result_id);
 
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
+        }
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
+        }
+
         out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                             /*r=*/requires_rex(rhs),
+                                             /*r=*/requires_rex(r11),
                                              /*x=*/false,
-                                             /*b=*/requires_rex(lhs)));
-        out.push_back(0x39); // CMP r/m64, r64
-        emit_modrm_reg_reg(out, rhs, lhs);
+                                             /*b=*/requires_rex(r10)));
+        out.push_back(0x39); // CMP r/m64, r64 (r10 vs r11)
+        emit_modrm_reg_reg(out, r11, r10);
 
         uint8_t cond = 0;
         switch (original_opcode) {
@@ -1060,18 +1360,25 @@ private:
         out.push_back(exec::X64Encoding::rex(/*w=*/false,
                                              /*r=*/false,
                                              /*x=*/false,
-                                             /*b=*/requires_rex(dst)));
+                                             /*b=*/requires_rex(r10)));
         out.push_back(0x0F);
         out.push_back(cond);
-        emit_modrm_reg_reg(out, 0x00, dst);
+        emit_modrm_reg_reg(out, 0x00, r10);
 
         out.push_back(exec::X64Encoding::rex(/*w=*/false,
-                                             /*r=*/requires_rex(dst),
+                                             /*r=*/requires_rex(r10),
                                              /*x=*/false,
-                                             /*b=*/requires_rex(dst)));
+                                             /*b=*/requires_rex(r10)));
         out.push_back(0x0F);
         out.push_back(0xB6); // MOVZX r32, r/m8
-        emit_modrm_reg_reg(out, dst, dst);
+        emit_modrm_reg_reg(out, r10, r10);
+
+        if (dst != r10) {
+            emit_reg_move(out, dst, r10);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
+        }
     }
 
     static void emit_vec_binary512(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
@@ -1128,10 +1435,13 @@ private:
                                  const std::unordered_map<uint32_t, size_t>& label_to_node_index) {
         const ir::IRNode& node = selected.node;
         const uint32_t cond_vreg = node.op_a;
-        const auto target_opt = pick_known_label(label_to_node_index, {node.op_b, node.result_id, node.op_a});
+        const auto target_opt = pick_known_label(label_to_node_index, {node.op_b, node.result_id});
         const uint32_t target_label = target_opt.value_or(node.op_b != ir::INVALID_SLOT && node.op_b != 0u ? node.op_b : node.result_id);
 
         const uint8_t cond = map_reg(cond_vreg);
+        if (cond_vreg != ir::INVALID_SLOT && cond_vreg != 0u) {
+            emit_mov_reg_from_stack(out, cond, vreg_offset(cond_vreg));
+        }
 
         out.push_back(exec::X64Encoding::rex(/*w=*/true,
                                              /*r=*/requires_rex(cond),
@@ -1162,6 +1472,13 @@ private:
         const uint8_t lhs = map_reg(lhs_vreg);
         const uint8_t rhs = map_reg(rhs_vreg);
 
+        if (lhs_vreg != ir::INVALID_SLOT && lhs_vreg != 0u) {
+            emit_mov_reg_from_stack(out, lhs, vreg_offset(lhs_vreg));
+        }
+        if (rhs_vreg != ir::INVALID_SLOT && rhs_vreg != 0u) {
+            emit_mov_reg_from_stack(out, rhs, vreg_offset(rhs_vreg));
+        }
+
         out.push_back(exec::X64Encoding::rex(/*w=*/false,
                                              /*r=*/requires_rex(rhs),
                                              /*x=*/false,
@@ -1179,29 +1496,9 @@ private:
         patches.push_back(PendingBranchPatch{disp_offset, out.size(), target_label});
     }
 
-    static void emit_syscall(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
-        const uint8_t rdi = static_cast<uint8_t>(exec::X64Reg::RDI);
-        const uint8_t rsi = static_cast<uint8_t>(exec::X64Reg::RSI);
-
-        const uint8_t sysnum = map_reg(node.op_a);
-        const uint8_t arg0 = map_reg(node.op_b);
-        const uint8_t arg1 = map_reg(node.op_c);
-
-        if (sysnum != rax) emit_reg_move(out, rax, sysnum);
-        if (arg0 != rdi) emit_reg_move(out, rdi, arg0);
-        if (arg1 != rsi) emit_reg_move(out, rsi, arg1);
-
+    static void emit_syscall(const lowering::SelectedInstruction&, std::vector<uint8_t>& out) {
         out.push_back(0x0F);
         out.push_back(0x05); // SYSCALL
-
-        if (node.result_id != ir::INVALID_SLOT) {
-            const uint8_t dst = map_reg(node.result_id);
-            if (dst != rax) {
-                emit_reg_move(out, dst, rax);
-            }
-        }
     }
 
     [[nodiscard]] uintptr_t resolve_runtime_function(std::string_view name) const noexcept {
@@ -1235,16 +1532,18 @@ private:
         out.push_back(0x48); out.push_back(0x83); out.push_back(0xC4); out.push_back(0x20); // add rsp, 32
 #endif
 
-        if (node.result_id != ir::INVALID_SLOT) {
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
             const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
             if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
                 const uint8_t dst_xmm = map_xmm_reg(node.result_id);
                 emit_movq_xmm_gpr(out, dst_xmm, static_cast<uint8_t>(exec::X64Reg::RAX));
+                emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), dst_xmm);
             } else {
                 const uint8_t dst = map_reg(node.result_id);
                 if (dst != static_cast<uint8_t>(exec::X64Reg::RAX)) {
                     emit_reg_move(out, dst, static_cast<uint8_t>(exec::X64Reg::RAX));
                 }
+                emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
             }
         }
     }
@@ -1265,301 +1564,6 @@ private:
             case ir::OpCode::SYNC_BARRIER:
                 out.push_back(0x0F); out.push_back(0xAE); out.push_back(0xF0); // MFENCE
                 return true;
-            case ir::OpCode::LEA: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t dst = map_reg(node.result_id);
-                const uint8_t base = map_reg(node.op_a);
-                const uint8_t index = map_reg(node.op_b);
-
-                uint8_t scale_bits = 0;
-                switch (node.op_c) {
-                    case 1u: scale_bits = 0; break;
-                    case 2u: scale_bits = 1; break;
-                    case 4u: scale_bits = 2; break;
-                    case 8u: scale_bits = 3; break;
-                    default:
-                        return false;
-                }
-
-                const uint8_t index_lo = static_cast<uint8_t>(index & 0x7u);
-                const uint8_t base_lo = static_cast<uint8_t>(base & 0x7u);
-                if (index_lo == 0x4u) {
-                    return false;
-                }
-
-                const bool needs_disp8_zero = (base_lo == 0x5u);
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(dst),
-                                                     /*x=*/requires_rex(index),
-                                                     /*b=*/requires_rex(base)));
-                out.push_back(0x8D); // LEA r64, m
-
-                const uint8_t mod = needs_disp8_zero ? 0x01u : 0x00u;
-                const uint8_t modrm = static_cast<uint8_t>((mod << 6u) | ((dst & 0x7u) << 3u) | 0x04u);
-                out.push_back(modrm);
-
-                const uint8_t sib = static_cast<uint8_t>((scale_bits << 6u) | ((index & 0x7u) << 3u) | (base & 0x7u));
-                out.push_back(sib);
-                if (needs_disp8_zero) {
-                    out.push_back(0x00u);
-                }
-                return true;
-            }
-            case ir::OpCode::GEP: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t dst = map_reg(node.result_id);
-                const uint8_t base = map_reg(node.op_a);
-                const uint8_t index = map_reg(node.op_b);
-                const uint8_t index_lo = static_cast<uint8_t>(index & 0x7u);
-                const uint8_t base_lo = static_cast<uint8_t>(base & 0x7u);
-                if (index_lo == 0x4u) {
-                    return false;
-                }
-
-                const bool needs_disp8_zero = (base_lo == 0x5u);
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(dst),
-                                                     /*x=*/requires_rex(index),
-                                                     /*b=*/requires_rex(base)));
-                out.push_back(0x8D); // LEA r64, [base + index]
-
-                const uint8_t mod = needs_disp8_zero ? 0x01u : 0x00u;
-                const uint8_t modrm = static_cast<uint8_t>((mod << 6u) | ((dst & 0x7u) << 3u) | 0x04u);
-                out.push_back(modrm);
-                out.push_back(static_cast<uint8_t>(((index & 0x7u) << 3u) | (base & 0x7u)));
-                if (needs_disp8_zero) {
-                    out.push_back(0x00u);
-                }
-                return true;
-            }
-            case ir::OpCode::PREFETCH:
-            case ir::OpCode::PREFETCH_T0:
-                if (node.op_a == ir::INVALID_SLOT) {
-                    return true;
-                }
-                emit_prefetch_t0_from_base(out, map_reg(node.op_a));
-                return true;
-            case ir::OpCode::CLFLUSH:
-                if (node.op_a == ir::INVALID_SLOT) {
-                    return true;
-                }
-                emit_clflush_from_base(out, map_reg(node.op_a));
-                return true;
-            case ir::OpCode::READ_TSC:
-                out.push_back(0x0F);
-                out.push_back(0x31); // RDTSC -> EDX:EAX
-                out.push_back(0x48); out.push_back(0xC1); out.push_back(0xE2); out.push_back(0x20); // shl rdx, 32
-                out.push_back(0x48); out.push_back(0x09); out.push_back(0xD0); // or rax, rdx
-                if (node.result_id != ir::INVALID_SLOT) {
-                    const uint8_t dst = map_reg(node.result_id);
-                    const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
-                    if (dst != rax) {
-                        emit_reg_move(out, dst, rax);
-                    }
-                }
-                return true;
-            case ir::OpCode::PTR_DIFF: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t src_a = map_reg(node.op_a);
-                const uint8_t src_b = map_reg(node.op_b);
-                const uint8_t dst = map_reg(node.result_id);
-
-                if (dst != src_a) {
-                    emit_reg_move(out, dst, src_a);
-                }
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(src_b),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(dst)));
-                out.push_back(0x29); // SUB r/m64, r64
-                emit_modrm_reg_reg(out, src_b, dst);
-                return true;
-            }
-            case ir::OpCode::BOOL_SELECT:
-            case ir::OpCode::SELECT: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t src_cond = map_reg(node.op_a);
-                const uint8_t src_true = map_reg(node.op_b);
-                const uint8_t src_false = map_reg(node.op_c);
-                const uint8_t dst = map_reg(node.result_id);
-
-                const bool use_true_initialized_plan = (dst == src_true && src_true != src_false);
-                if (use_true_initialized_plan) {
-                    if (dst != src_true) {
-                        emit_reg_move(out, dst, src_true);
-                    }
-                } else {
-                    if (dst != src_false) {
-                        emit_reg_move(out, dst, src_false);
-                    }
-                }
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(src_cond),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(src_cond)));
-                out.push_back(0x85);
-                emit_modrm_reg_reg(out, src_cond, src_cond);
-
-                if (use_true_initialized_plan) {
-                    out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                         /*r=*/requires_rex(dst),
-                                                         /*x=*/false,
-                                                         /*b=*/requires_rex(src_false)));
-                    out.push_back(0x0F);
-                    out.push_back(0x44); // CMOVE r64, r/m64
-                    emit_modrm_reg_reg(out, dst, src_false);
-                } else {
-                    out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                         /*r=*/requires_rex(dst),
-                                                         /*x=*/false,
-                                                         /*b=*/requires_rex(src_true)));
-                    out.push_back(0x0F);
-                    out.push_back(0x45); // CMOVNE r64, r/m64
-                    emit_modrm_reg_reg(out, dst, src_true);
-                }
-                return true;
-            }
-            case ir::OpCode::PHI_NODE: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t src_a = map_reg(node.op_a);
-                const uint8_t src_b = map_reg(node.op_b);
-                const uint8_t src_pick = map_reg(node.op_c);
-                const uint8_t dst = map_reg(node.result_id);
-
-                const bool use_b_initialized_plan = (dst == src_b && src_b != src_a);
-                if (use_b_initialized_plan) {
-                    if (dst != src_b) {
-                        emit_reg_move(out, dst, src_b);
-                    }
-                } else {
-                    if (dst != src_a) {
-                        emit_reg_move(out, dst, src_a);
-                    }
-                }
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(src_pick),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(src_pick)));
-                out.push_back(0x85); // TEST r/m64, r64
-                emit_modrm_reg_reg(out, src_pick, src_pick);
-
-                if (use_b_initialized_plan) {
-                    out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                         /*r=*/requires_rex(dst),
-                                                         /*x=*/false,
-                                                         /*b=*/requires_rex(src_a)));
-                    out.push_back(0x0F);
-                    out.push_back(0x44); // CMOVE r64, r/m64
-                    emit_modrm_reg_reg(out, dst, src_a);
-                } else {
-                    out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                         /*r=*/requires_rex(dst),
-                                                         /*x=*/false,
-                                                         /*b=*/requires_rex(src_b)));
-                    out.push_back(0x0F);
-                    out.push_back(0x45); // CMOVNE r64, r/m64
-                    emit_modrm_reg_reg(out, dst, src_b);
-                }
-                return true;
-            }
-            case ir::OpCode::GUARD_ALIAS: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t src_a = map_reg(node.op_a);
-                const uint8_t src_b = map_reg(node.op_b);
-                const uint8_t src_fail = map_reg(node.op_c);
-                const uint8_t dst = map_reg(node.result_id);
-
-                if (dst == src_fail && src_fail != src_a && src_fail != src_b) {
-                    return false;
-                }
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(src_b),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(src_a)));
-                out.push_back(0x39); // CMP r/m64, r64
-                emit_modrm_reg_reg(out, src_b, src_a);
-
-                emit_mov_imm32_signext(out, dst, 1u);
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(dst),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(src_fail)));
-                out.push_back(0x0F);
-                out.push_back(0x45); // CMOVNE r64, r/m64
-                emit_modrm_reg_reg(out, dst, src_fail);
-                return true;
-            }
-            case ir::OpCode::GUARD_VALUE: {
-                if (node.result_id == ir::INVALID_SLOT) {
-                    return true;
-                }
-
-                const uint8_t src_value = map_reg(node.op_a);
-                const uint8_t src_expected = map_reg(node.op_b);
-                const uint8_t src_fail = map_reg(node.op_c);
-                const uint8_t dst = map_reg(node.result_id);
-
-                if (dst == src_value) {
-                    out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                         /*r=*/requires_rex(src_expected),
-                                                         /*x=*/false,
-                                                         /*b=*/requires_rex(src_value)));
-                    out.push_back(0x39); // CMP r/m64, r64
-                    emit_modrm_reg_reg(out, src_expected, src_value);
-
-                    out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                         /*r=*/requires_rex(dst),
-                                                         /*x=*/false,
-                                                         /*b=*/requires_rex(src_fail)));
-                    out.push_back(0x0F);
-                    out.push_back(0x45); // CMOVNE r64, r/m64
-                    emit_modrm_reg_reg(out, dst, src_fail);
-                    return true;
-                }
-
-                if (dst != src_fail) {
-                    emit_reg_move(out, dst, src_fail);
-                }
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(src_expected),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(src_value)));
-                out.push_back(0x39); // CMP r/m64, r64
-                emit_modrm_reg_reg(out, src_expected, src_value);
-
-                out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                                     /*r=*/requires_rex(dst),
-                                                     /*x=*/false,
-                                                     /*b=*/requires_rex(src_value)));
-                out.push_back(0x0F);
-                out.push_back(0x44); // CMOVE r64, r/m64
-                emit_modrm_reg_reg(out, dst, src_value);
-                return true;
-            }
             default:
                 return false;
         }
@@ -1601,19 +1605,9 @@ private:
             const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
             const uint8_t r8 = static_cast<uint8_t>(exec::X64Reg::R8);
 
-            const uint8_t arg0 = map_reg(node.op_a);
-            const uint8_t arg1 = map_reg(node.op_b);
-            const uint8_t arg2 = map_reg(node.op_c);
-
-            if (arg0 != rcx) emit_reg_move(out, rcx, arg0);
-            if ((original_opcode == ir::OpCode::STRING_COMPARE ||
-                 original_opcode == ir::OpCode::STRING_CONCAT ||
-                 original_opcode == ir::OpCode::STRING_SUBSTRING) && arg1 != rdx) {
-                emit_reg_move(out, rdx, arg1);
-            }
-            if (original_opcode == ir::OpCode::STRING_SUBSTRING && arg2 != r8) {
-                emit_reg_move(out, r8, arg2);
-            }
+            if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_a));
+            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_b));
+            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_reg_from_stack(out, r8, vreg_offset(node.op_c));
 
             emit_call_address(target, node, out, stream);
             return;
@@ -1631,13 +1625,9 @@ private:
             const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
             const uint8_t r8 = static_cast<uint8_t>(exec::X64Reg::R8);
 
-            const uint8_t arg0 = map_reg(node.op_a);
-            const uint8_t arg1 = map_reg(node.op_b);
-            const uint8_t arg2 = map_reg(node.op_c);
-
-            if (arg0 != rcx) emit_reg_move(out, rcx, arg0);
-            if (arg1 != rdx) emit_reg_move(out, rdx, arg1);
-            if (arg2 != r8) emit_reg_move(out, r8, arg2);
+            if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_a));
+            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_b));
+            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_reg_from_stack(out, r8, vreg_offset(node.op_c));
 
             emit_call_address(target, node, out, stream);
             return;
@@ -1653,31 +1643,31 @@ private:
             const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
             const uint8_t r8  = static_cast<uint8_t>(exec::X64Reg::R8);
 
-            if (node.op_b != ir::INVALID_SLOT) {
+            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
                 const ir::TypeCode tc = stream.get_result_type_code(node.op_b);
                 if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movq_gpr_xmm(out, rcx, map_xmm_reg(node.op_b));
+                    emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
+                    emit_movq_gpr_xmm(out, rcx, 0);
                 } else {
-                    const uint8_t arg0 = map_reg(node.op_b);
-                    if (arg0 != rcx) emit_reg_move(out, rcx, arg0);
+                    emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_b));
                 }
             }
-            if (node.op_c != ir::INVALID_SLOT) {
+            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
                 const ir::TypeCode tc = stream.get_result_type_code(node.op_c);
                 if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movq_gpr_xmm(out, rdx, map_xmm_reg(node.op_c));
+                    emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
+                    emit_movq_gpr_xmm(out, rdx, 1);
                 } else {
-                    const uint8_t arg1 = map_reg(node.op_c);
-                    if (arg1 != rdx) emit_reg_move(out, rdx, arg1);
+                    emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_c));
                 }
             }
             if (node.logic_flags != 0 && node.logic_flags != ir::INVALID_SLOT) {
                 const ir::TypeCode tc = stream.get_result_type_code(node.logic_flags);
                 if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movq_gpr_xmm(out, r8, map_xmm_reg(node.logic_flags));
+                    emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
+                    emit_movq_gpr_xmm(out, r8, 2);
                 } else {
-                    const uint8_t arg2 = map_reg(node.logic_flags);
-                    if (arg2 != r8) emit_reg_move(out, r8, arg2);
+                    emit_mov_reg_from_stack(out, r8, vreg_offset(node.logic_flags));
                 }
             }
             out.push_back(0x48); out.push_back(0x83); out.push_back(0xEC); out.push_back(0x20); // sub rsp, 32
@@ -1692,15 +1682,17 @@ private:
 #if defined(_WIN32)
             out.push_back(0x48); out.push_back(0x83); out.push_back(0xC4); out.push_back(0x20); // add rsp, 32
 #endif
-            if (node.result_id != ir::INVALID_SLOT) {
+            if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
                 const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
                 if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
                     const uint8_t dst_xmm = map_xmm_reg(node.result_id);
                     emit_movq_xmm_gpr(out, dst_xmm, static_cast<uint8_t>(exec::X64Reg::RAX));
+                    emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), dst_xmm);
                 } else {
                     const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
                     const uint8_t dst = map_reg(node.result_id);
                     if (dst != rax) emit_reg_move(out, dst, rax);
+                    emit_mov_stack_from_reg(out, vreg_offset(node.result_id), rax);
                 }
             }
             patches.push_back(PendingBranchPatch{disp_offset, instr_end, target_label});
@@ -1731,35 +1723,58 @@ private:
              callee_name == "__myzon_f64_pow_bits" ||
              callee_name == "__myzon_i64_to_f64_bits"));
 
-        if (node.op_b != ir::INVALID_SLOT) {
-            const ir::TypeCode tc = stream.get_result_type_code(node.op_b);
-            if (is_gpr_float_helper && (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32)) {
-                emit_movq_gpr_xmm(out, rcx, map_xmm_reg(node.op_b));
+        auto is_float_slot = [&](uint32_t slot) -> bool {
+            if (slot == ir::INVALID_SLOT || slot == 0u) return false;
+            const ir::TypeCode tc = stream.get_result_type_code(slot);
+            if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) return true;
+            if (slot < stream.size()) {
+                const auto& src_node = stream.get_node(slot);
+                if (src_node.opcode == ir::OpCode::ADD_F64 || src_node.opcode == ir::OpCode::SUB_F64 ||
+                    src_node.opcode == ir::OpCode::MUL_F64 || src_node.opcode == ir::OpCode::DIV_F64 ||
+                    src_node.opcode == ir::OpCode::ADD_F32 || src_node.opcode == ir::OpCode::SUB_F32 ||
+                    src_node.opcode == ir::OpCode::MUL_F32 || src_node.opcode == ir::OpCode::DIV_F32 ||
+                    (src_node.opcode == ir::OpCode::CONST && (src_node.flags & ir::Flags::IS_SPEC_CONST))) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            if (is_gpr_float_helper && is_float_slot(node.op_b)) {
+                emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
+                emit_movq_gpr_xmm(out, rcx, 0);
+            } else if (is_float_slot(node.op_b)) {
+                emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
+                emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_b));
             } else {
-                const uint8_t arg0 = map_reg(node.op_b);
-                if (arg0 != rcx) emit_reg_move(out, rcx, arg0);
+                emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_b));
             }
         } else {
             out.push_back(0x48); out.push_back(0x31); out.push_back(0xC9); // xor rcx, rcx
         }
-        if (node.op_c != ir::INVALID_SLOT) {
-            const ir::TypeCode tc = stream.get_result_type_code(node.op_c);
-            if (is_gpr_float_helper && (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32)) {
-                emit_movq_gpr_xmm(out, rdx, map_xmm_reg(node.op_c));
+        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
+            if (is_gpr_float_helper && is_float_slot(node.op_c)) {
+                emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
+                emit_movq_gpr_xmm(out, rdx, 1);
+            } else if (is_float_slot(node.op_c)) {
+                emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
+                emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_c));
             } else {
-                const uint8_t arg1 = map_reg(node.op_c);
-                if (arg1 != rdx) emit_reg_move(out, rdx, arg1);
+                emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_c));
             }
         } else {
             out.push_back(0x48); out.push_back(0x31); out.push_back(0xD2); // xor rdx, rdx
         }
         if (node.logic_flags != 0 && node.logic_flags != ir::INVALID_SLOT) {
-            const ir::TypeCode tc = stream.get_result_type_code(node.logic_flags);
-            if (is_gpr_float_helper && (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32)) {
-                emit_movq_gpr_xmm(out, r8, map_xmm_reg(node.logic_flags));
+            if (is_gpr_float_helper && is_float_slot(node.logic_flags)) {
+                emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
+                emit_movq_gpr_xmm(out, r8, 2);
+            } else if (is_float_slot(node.logic_flags)) {
+                emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
+                emit_mov_reg_from_stack(out, r8, vreg_offset(node.logic_flags));
             } else {
-                const uint8_t arg2 = map_reg(node.logic_flags);
-                if (arg2 != r8) emit_reg_move(out, r8, arg2);
+                emit_mov_reg_from_stack(out, r8, vreg_offset(node.logic_flags));
             }
         } else {
             out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC0); // xor r8, r8

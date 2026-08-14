@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -53,7 +53,9 @@ public:
      * @param context The execution context
      */
     explicit AOTSession(Context& context) noexcept
-        : context_(context) {}
+        : context_(context) {
+        (void)pipeline_.initialize();
+    }
 
     ~AOTSession() override = default;
 

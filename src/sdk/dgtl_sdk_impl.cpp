@@ -366,7 +366,9 @@ static uint32_t push_ir_node(dgtl_stream_t* s,
     node.op_a       = op_a;
     node.op_b       = op_b;
     node.op_c       = op_c;
-    node.intent_hash = imm_as_hash;
+    node.intent_hash = (op == dgtl::ir::OpCode::CONST || imm_as_hash != 0)
+                     ? imm_as_hash
+                     : dgtl::ir::IRNode::calculate_hash(op, slot, op_a, op_b, op_c);
     switch (op) {
         case dgtl::ir::OpCode::ATOMIC_LOAD:
             node.logic_flags = dgtl::ir::ExtendedFlags::MEM_ACQUIRE;
@@ -393,7 +395,9 @@ static uint32_t push_ir_node(dgtl_stream_t* s,
             break;
     }
     s->function.stream().push_back(node);
-    if (const auto expected = dgtl::ir::interfaces::expected_result_type_code(op);
+    if ((op == dgtl::ir::OpCode::CONST || op == dgtl::ir::OpCode::LOAD) && (flags & dgtl::ir::Flags::IS_SPEC_CONST) != 0) {
+        s->function.stream().set_result_type(slot, dgtl::ir::TypeCode::F64);
+    } else if (const auto expected = dgtl::ir::interfaces::expected_result_type_code(op);
         expected.has_value() && *expected != dgtl::ir::TypeCode::VOID_T) {
         s->function.stream().set_result_type(slot, *expected);
     } else {
@@ -420,14 +424,20 @@ static uint32_t push_ir_node_explicit_slot(dgtl_stream_t* s,
     node.op_a = op_a;
     node.op_b = op_b;
     node.op_c = op_c;
-    node.intent_hash = (imm_as_hash != 0) ? imm_as_hash : dgtl::ir::IRNode::calculate_hash(op, result_slot, op_a, op_b, op_c);
+    node.intent_hash = (op == dgtl::ir::OpCode::CONST || imm_as_hash != 0)
+                     ? imm_as_hash
+                     : dgtl::ir::IRNode::calculate_hash(op, result_slot, op_a, op_b, op_c);
     node.logic_flags = logic_flags;
     s->function.stream().push_back(node);
-    if (const auto expected = dgtl::ir::interfaces::expected_result_type_code(op);
-        expected.has_value() && *expected != dgtl::ir::TypeCode::VOID_T) {
-        s->function.stream().set_result_type(result_slot, *expected);
-    } else {
-        s->function.stream().clear_result_type(result_slot);
+    if (result_slot != dgtl::ir::INVALID_SLOT && result_slot != 0u) {
+        if ((op == dgtl::ir::OpCode::CONST || op == dgtl::ir::OpCode::LOAD) && (flags & dgtl::ir::Flags::IS_SPEC_CONST) != 0) {
+            s->function.stream().set_result_type(result_slot, dgtl::ir::TypeCode::F64);
+        } else if (const auto expected = dgtl::ir::interfaces::expected_result_type_code(op);
+            expected.has_value() && *expected != dgtl::ir::TypeCode::VOID_T) {
+            s->function.stream().set_result_type(result_slot, *expected);
+        } else {
+            s->function.stream().clear_result_type(result_slot);
+        }
     }
     return result_slot;
 }
@@ -439,7 +449,7 @@ static uint32_t emit_call_like(dgtl_stream_t* s,
                                const uint32_t* args,
                                size_t arg_count) {
     if (!s || callee_slot == 0u) return 0;
-    const uint32_t rid = result_slot == 0u ? s->function.allocate_slot() : result_slot;
+    const uint32_t rid = (result_slot == 0u) ? dgtl::ir::INVALID_SLOT : result_slot;
     const uint32_t arg0 = arg_count > 0 ? args[0] : dgtl::ir::INVALID_SLOT;
     const uint32_t arg1 = arg_count > 1 ? args[1] : dgtl::ir::INVALID_SLOT;
     const uint32_t arg2 = arg_count > 2 ? args[2] : dgtl::ir::INVALID_SLOT;
@@ -456,7 +466,9 @@ static uint32_t emit_call_like(dgtl_stream_t* s,
     node.logic_flags = arg2;
     node.refresh_intent_hash();
     s->function.stream().push_back(node);
-    s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::I64);
+    if (rid != dgtl::ir::INVALID_SLOT && rid != 0u) {
+        s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::I64);
+    }
 
     if (arg_count > 3) {
         s->function.stream().set_call_overflow_args(
@@ -587,12 +599,12 @@ static bool sdk_opcode_to_internal(dgtl_opcode_t op, dgtl::ir::OpCode& out) noex
         case DGTL_OP_RET:              out = OC::RET;               return true;
         case DGTL_OP_JMP:              out = OC::GOTO;              return true;
         case DGTL_OP_BR_IF:            out = OC::BRANCH_COND;       return true;
-        case DGTL_OP_CMP_EQ:           out = OC::CMP_EQ_I32;        return true;
-        case DGTL_OP_CMP_NE:           out = OC::CMP_NE_I32;        return true;
-        case DGTL_OP_CMP_LT:           out = OC::CMP_LT_I32;        return true;
-        case DGTL_OP_CMP_LE:           out = OC::CMP_LE_I32;        return true;
-        case DGTL_OP_CMP_GT:           out = OC::CMP_GT_I32;        return true;
-        case DGTL_OP_CMP_GE:           out = OC::CMP_GE_I32;        return true;
+        case DGTL_OP_CMP_EQ: case 40:  out = OC::CMP_EQ_I32;        return true;
+        case DGTL_OP_CMP_NE: case 41:  out = OC::CMP_NE_I32;        return true;
+        case DGTL_OP_CMP_LT: case 42:  out = OC::CMP_LT_I32;        return true;
+        case DGTL_OP_CMP_LE: case 43:  out = OC::CMP_LE_I32;        return true;
+        case DGTL_OP_CMP_GT: case 44:  out = OC::CMP_GT_I32;        return true;
+        case DGTL_OP_CMP_GE: case 45:  out = OC::CMP_GE_I32;        return true;
         case DGTL_OP_FMA:              out = OC::FMA_F32;           return true;
         case DGTL_OP_FADD:             out = OC::ADD_F32;           return true;
         case DGTL_OP_FMUL:             out = OC::MUL_F32;           return true;
@@ -2530,10 +2542,10 @@ extern "C" DGTL_API dgtl_status_t dgtl_stream_serialize(const dgtl_stream_t* s,
                                                         size_t* out_size) {
     if (!s || !out_blob || !out_size) return make_err(1, "null argument");
     
-    /* Serialize stream to binary (simplified) */
+    /* Serialize stream to binary */
     const auto& stream = s->function.stream();
     
-    size_t blob_size = 16 + stream.size() * 32;  /* header + nodes */
+    size_t blob_size = 16 + stream.size() * sizeof(dgtl::ir::IRNode);  /* header + nodes */
     void* blob = std::malloc(blob_size);
     if (!blob) return make_err(2, "malloc failed");
     
@@ -2541,9 +2553,13 @@ extern "C" DGTL_API dgtl_status_t dgtl_stream_serialize(const dgtl_stream_t* s,
     uint32_t* header = static_cast<uint32_t*>(blob);
     header[0] = 0xDEADBEEFu;  /* Magic number */
     header[1] = static_cast<uint32_t>(stream.size());
+    header[2] = 0u;
+    header[3] = 0u;
     
-    /* Write node size info instead of raw data (stream doesn't expose data pointer) */
-    std::memset(static_cast<char*>(blob) + 16, 0, stream.size() * 32);
+    dgtl::ir::IRNode* out_nodes = reinterpret_cast<dgtl::ir::IRNode*>(static_cast<char*>(blob) + 16);
+    for (size_t i = 0; i < stream.size(); ++i) {
+        out_nodes[i] = stream.get_node(i);
+    }
     
     *out_blob = blob;
     *out_size = blob_size;

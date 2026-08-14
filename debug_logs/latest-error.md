@@ -1,31 +1,16 @@
-# DGTL Incident Report
+# DGTL Build Diagnostic Report
 
-- Root: D:\TataG\DGTL
-- Compiler fingerprint: `8c694196e68e4fc9`
-- Command fingerprint: `a61c867636796183`
-- Logs scanned: 154
-- Declaration cache: 252 hits, 0 misses, 0 rescanned files
-- Likely failing command: `g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"`
+- Status: **SUCCESS** (0 errors detected)
+- Root: D:\TataG\dgtl
+- Last command: `dgtl GEN-VALIDATE`
+- Last exit code: `0`
+- Compiler fingerprint: `cc06a44a6546513b`
+- Command fingerprint: `005a1c650ba5ebd8`
+- Logs scanned: 1
+- Declaration cache: 0 hits, 241 misses, 241 rescanned files
 
 ## Error Clusters
-- (x1006) 'dgtl' has not been declared
-- (x742) template argument # is invalid
-- (x580) error: 'dgtl' has not been declared
-- (x524) error: template argument # is invalid
-- (x314) 'TaskScheduler' has not been declared
-- (x144) ##: error: template argument # is invalid
-  Command: `g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"` (144 hits)
-- (x130) ##: error: 'dgtl' has not been declared
-  Command: `g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"` (130 hits)
-- (x119) - (x###) error: 'dgtl' has not been declared
-
-## Failing Command Context
-- `##: error: template argument # is invalid`
-  Compile step: `g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"`
-  Evidence hits: 144
-- `##: error: 'dgtl' has not been declared`
-  Compile step: `g++ -std=c++26 -O2 -pipe -I"D:\TataG\DGTL\include" "D:\TataG\DGTL\src\analysis\polyhedral\Scop_Detector.cpp" "D:\TataG\DGTL\src\graph\IR_GraphEdgeClusterRegion.cpp" "D:\TataG\DGTL\src\ir\IR_Stream.cpp" "D:\TataG\DGTL\src\jit\Async_Dopt_Tiered.cpp" "D:\TataG\DGTL\src\jit\JIT_Orchestrator.cpp" "D:\TataG\DGTL\src\pass\ml\MLoptimization.cpp" "D:\TataG\DGTL\src\pass\query\Query_Optimizer_Unified.cpp" "D:\TataG\DGTL\src\runtime\TaskScheduler.cpp" "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" "D:\TataG\DGTL\src\main.cpp" -o "D:\TataG\DGTL\build\dgtl_release.exe"`
-  Evidence hits: 130
+- No errors detected.
 
 ## Ownership Recommendations
 - Symbol `find_generated_op_def`
@@ -39,28 +24,6 @@
 8999:     const size_t index = static_cast<size_t>(opcode);
 9000:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
 ```
-- Symbol `Region`
-  Winner: include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:4044 (score 90)
-  Evidence:
-
-```cpp
-4042: };
-4043: 
-4044: struct RegionBeginOp : public OpWrapperBase<RegionBeginOp> {
-4045:     using OpWrapperBase<RegionBeginOp>::OpWrapperBase;
-4046:     static constexpr std::string_view kName = "RegionBegin";
-```
-- Symbol `observe_shape`
-  Winner: src/pass/ml/MLoptimization.cpp:672 (score 40)
-  Evidence:
-
-```cpp
-670: }
-671: 
-672: void TensorSpecializer::observe_shape(
-673:     uint32_t op_id,
-674:     const TensorShape& shape,
-```
 - Symbol `IRStream`
   Winner: include/dgtl/backend/driver/Backend_Driver_API.ixx:281 (score 40)
   Evidence:
@@ -72,47 +35,25 @@
 282:                               const dgtl::semantic::SymbolTable& symbols,
 283:                               std::string& out_text) {
 ```
-- Symbol `cache_specialization`
-  Winner: src/pass/ml/MLoptimization.cpp:788 (score 40)
+- Symbol `TargetMachine`
+  Winner: include/dgtl/isa/lowering/Instruction_Selector.ixx:462 (score 40)
   Evidence:
 
 ```cpp
-786: }
-787: 
-788: void TensorSpecializer::cache_specialization(
-789:     uint32_t op_id,
-790:     const TensorShape& shape,
+460: }
+461: 
+462: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
+463:     if (rule.require_fma && !target.get_caps().has_fma) {
+464:         return false;
 ```
-- Symbol `emit_optimized_model`
-  Winner: src/pass/ml/MLoptimization.cpp:471 (score 40)
+- Symbol `RuntimeFeedback`
+  Winner: include/dgtl/analysis/AI_Cost_Model.ixx:47 (score 20)
   Evidence:
 
 ```cpp
-469: }
-470: 
-471: void MLOptimizer::emit_optimized_model(ir::IRStream& stream) noexcept {
-472:     // Emit optimized model back to IR
-473:     // Include fusion, specialization, and dispatch info
-```
-- Symbol `input_id`
-  Winner: src/pass/query/Query_Optimizer_Unified.cpp:147 (score 40)
-  Evidence:
-
-```cpp
-145:         // Reduce in-degrees of dependent nodes
-146:         for (size_t i = 0; i < operations.size(); ++i) {
-147:             const bool depends = std::any_of(operations[i].input_ids.begin(), operations[i].input_ids.end(),
-148:                 [op_id](uint32_t input_id) noexcept {
-149:                     return input_id == op_id;
-```
-- Symbol `run_core_optimizations`
-  Winner: src/main.cpp:1122 (score 40)
-  Evidence:
-
-```cpp
-1120: }
-1121: 
-1122: void run_core_optimizations(dgtl::ir::IRStream& stream,
-1123:                             ReleaseIRMode mode,
-1124:                             const dgtl::core::TargetMachine& target) {
+45: 
+46: // PRODUCTION RESOLUTION: True, fully-defined exported struct attaches layout to this module unit.
+47: struct RuntimeFeedback {
+48:     double actual_latency = 0.0;
+49:     double cache_miss_rate = 0.0;
 ```

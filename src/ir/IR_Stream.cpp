@@ -561,7 +561,7 @@ void IRStream::rebuild_cfg_locked() const noexcept {
         }
 
         if (op == OpCode::BRANCH_COND || op == OpCode::BRANCH_COMPARE_FUSED) {
-            const uint32_t target_label = c_ptr[term_idx].op_a;
+            const uint32_t target_label = (op == OpCode::BRANCH_COND) ? c_ptr[term_idx].op_b : c_ptr[term_idx].op_a;
             const auto* it = cfg_label_to_block_cache.find(target_label);
             if (it) {
                 add_edge(from, *it, CFGEdgeKind::ConditionalTrue);
@@ -1460,7 +1460,7 @@ void IRStream::perform_loop_unrolling(uint8_t unroll_factor) noexcept {
         const uint32_t label_id = shadow_cores[i].result_id;
         for (size_t j = i + 1u; j < shadow_count; ++j) {
             if (shadow_atoms[j].opcode == OpCode::BRANCH_COND &&
-                shadow_cores[j].op_a   == label_id) {
+                (shadow_cores[j].op_b == label_id || shadow_cores[j].op_a == label_id)) {
                 loops.push_back({ i, j });
                 break;
             }
@@ -1502,8 +1502,8 @@ void IRStream::optimize_branch_prediction() noexcept {
         const IRAtom& atom = shadow_atoms[i];
         if (atom.opcode != OpCode::BRANCH_COND) continue;
 
-        const int32_t offset = static_cast<int32_t>(shadow_cores[i].op_a)
-                             - static_cast<int32_t>(i);
+        const int32_t target_slot = static_cast<int32_t>(shadow_cores[i].op_b);
+        const int32_t offset = target_slot - static_cast<int32_t>(i);
         if (offset < 0) {
             // Backward branch → likely loop back-edge.
             shadow_cores[i].logic_flags |= HintFlags::BranchLikely;

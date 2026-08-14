@@ -246,7 +246,7 @@ alignas(64) inline constexpr auto kMachineFormTable = []() constexpr {
     };
 
     set(ir::OpCode::NOP, MachineForm::NoOp);
-    set(ir::OpCode::LOAD, MachineForm::LoadStack);
+    set(ir::OpCode::LOAD, MachineForm::Move);
     set(ir::OpCode::STORE, MachineForm::StoreStack);
     set(ir::OpCode::REG_MOVE, MachineForm::Move);
     set(ir::OpCode::MOV, MachineForm::Move);

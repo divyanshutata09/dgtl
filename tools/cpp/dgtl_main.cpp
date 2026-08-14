@@ -656,6 +656,9 @@ int compile_all_modules() {
 // Binary building
 int build_binary(std::string_view binary_name, const fs::path& output, const fs::path& entry_point,
                  const std::vector<fs::path>& exclude_paths = {}, bool strict = false) {
+    if (compile_all_modules() != 0) {
+        return 1;
+    }
     ensure_directory(output.parent_path());
     const fs::path obj_dir = g_config.build_dir / "obj" / std::string(binary_name);
     ensure_directory(obj_dir);
@@ -798,14 +801,51 @@ void append_core_sources_for_test_build(std::string& cmd) {
 int build_test_suite_binary(const fs::path& output,
                             const fs::path& entry_point,
                             const std::vector<fs::path>& test_sources) {
+    if (compile_all_modules() != 0) {
+        return 1;
+    }
     ensure_directory(output.parent_path());
+    const fs::path obj_dir = g_config.build_dir / "obj" / "dgtl_tests";
+    ensure_directory(obj_dir);
+
+    const std::vector<fs::path> excluded_src = {
+        fs::absolute(g_config.src_dir / "main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "smoke_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal(),
+        fs::absolute(entry_point).lexically_normal()
+    };
+
+    std::vector<fs::path> cpp_sources;
+    std::error_code ec_dir;
+    for (const auto& entry : fs::recursive_directory_iterator(g_config.src_dir, ec_dir)) {
+        if (!fs::is_regular_file(entry.status()) || entry.path().extension() != ".cpp") continue;
+        const fs::path abs = fs::absolute(entry.path()).lexically_normal();
+        bool skip = false;
+        for (const auto& ex : excluded_src) {
+            if (abs == ex) { skip = true; break; }
+        }
+        if (!skip) cpp_sources.push_back(entry.path());
+    }
+    for (const auto& src : test_sources) {
+        cpp_sources.push_back(src);
+    }
+    std::sort(cpp_sources.begin(), cpp_sources.end());
+
+    std::vector<fs::path> common_objs;
+    int compiled_count = 0;
+    int ec = parallel_compile_objects(cpp_sources, obj_dir, common_objs, &compiled_count, false);
+    if (ec != 0) return ec;
+
+    const fs::path entry_obj = make_obj_path(obj_dir, entry_point);
+    ec = compile_object_if_needed(entry_point, entry_obj, false);
+    if (ec != 0) return ec;
 
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir);
-    append_core_sources_for_test_build(cmd);
-
-    for (const auto& src : test_sources) {
-        cmd += " " + quote_path(src);
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
+    for (const auto& obj : common_objs) {
+        cmd += " " + quote_path(obj);
     }
     std::error_code ec_mod;
     for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
@@ -813,10 +853,10 @@ int build_test_suite_binary(const fs::path& output,
             cmd += " " + quote_path(entry.path());
         }
     }
-    cmd += " " + quote_path(entry_point) + " -o " + quote_path(output);
+    cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
 
-    std::cout << "[build] Compiling dgtl_tests" << std::endl;
-    int ec = run_command(cmd);
+    std::cout << "[build] Linking dgtl_tests" << std::endl;
+    ec = run_command(cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << output.string() << std::endl;
     }
@@ -866,22 +906,59 @@ int ensure_test_suite_binary(const fs::path& output,
 }
 
 int build_standalone_test_binary(const fs::path& output, const fs::path& entry_point) {
+    if (compile_all_modules() != 0) {
+        return 1;
+    }
     ensure_directory(output.parent_path());
+    const fs::path obj_dir = g_config.build_dir / "obj" / "standalone_test";
+    ensure_directory(obj_dir);
+
+    const std::vector<fs::path> excluded_src = {
+        fs::absolute(g_config.src_dir / "main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "smoke_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal(),
+        fs::absolute(entry_point).lexically_normal()
+    };
+
+    std::vector<fs::path> cpp_sources;
+    std::error_code ec_dir;
+    for (const auto& entry : fs::recursive_directory_iterator(g_config.src_dir, ec_dir)) {
+        if (!fs::is_regular_file(entry.status()) || entry.path().extension() != ".cpp") continue;
+        const fs::path abs = fs::absolute(entry.path()).lexically_normal();
+        bool skip = false;
+        for (const auto& ex : excluded_src) {
+            if (abs == ex) { skip = true; break; }
+        }
+        if (!skip) cpp_sources.push_back(entry.path());
+    }
+    std::sort(cpp_sources.begin(), cpp_sources.end());
+
+    std::vector<fs::path> common_objs;
+    int compiled_count = 0;
+    int ec = parallel_compile_objects(cpp_sources, obj_dir, common_objs, &compiled_count, false);
+    if (ec != 0) return ec;
+
+    const fs::path entry_obj = make_obj_path(obj_dir, entry_point);
+    ec = compile_object_if_needed(entry_point, entry_obj, false);
+    if (ec != 0) return ec;
 
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir);
-    append_core_sources_for_test_build(cmd);
-
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
+    for (const auto& obj : common_objs) {
+        cmd += " " + quote_path(obj);
+    }
     std::error_code ec_mod;
     for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
         if (entry.is_regular_file() && entry.path().extension() == ".o") {
             cmd += " " + quote_path(entry.path());
         }
     }
-    cmd += " " + quote_path(entry_point) + " -o " + quote_path(output);
+    cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
 
-    std::cout << "[build] Compiling " << output.filename().string() << std::endl;
-    int ec = run_command(cmd);
+    std::cout << "[build] Linking " << output.filename().string() << std::endl;
+    ec = run_command(cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << output.string() << std::endl;
     }
@@ -993,6 +1070,9 @@ int build_tools_optimized(const fs::path& prod_main,
                           const fs::path& opt_exe,
                           const fs::path& llc_exe,
                           const fs::path& verify_exe) {
+    if (compile_all_modules() != 0) {
+        return 1;
+    }
     const fs::path obj_dir = g_config.build_dir / "obj" / "build-tools";
     ensure_directory(obj_dir);
 
@@ -1115,6 +1195,25 @@ int build_tools_optimized(const fs::path& prod_main,
     ec |= link_tool("dgtl-llc", llc_main, llc_exe);
     if (ec != 0) return ec;
     ec |= link_tool("dgtl-verify", verify_main, verify_exe);
+    if (ec != 0) return ec;
+
+    // Compile standalone DGTL developer tools
+    const fs::path rodata_source = g_config.tools_dir / "dgtl_rodata_maker_main.cpp";
+    const fs::path rodata_exe = g_config.build_dir / "tools" / "dgtl-rodata-maker.exe";
+    ensure_directory(rodata_exe.parent_path());
+    const std::string rodata_cmd = g_config.gpp_path + " -std=c++26 -O2 -pipe " + quote_path(rodata_source) + " -o " + quote_path(rodata_exe);
+    if (run_command(rodata_cmd) == 0) {
+        std::cout << "[build] Wrote " << rodata_exe.string() << std::endl;
+    }
+
+    const fs::path debugger_source = g_config.tools_dir / "dgtl_debugger_main.cpp";
+    const fs::path debugger_exe = g_config.build_dir / "tools" / "dgtl-debugger.exe";
+    ensure_directory(debugger_exe.parent_path());
+    const std::string debugger_cmd = g_config.gpp_path + " -std=c++26 -O2 -pipe " + quote_path(debugger_source) + " -o " + quote_path(debugger_exe);
+    if (run_command(debugger_cmd) == 0) {
+        std::cout << "[build] Wrote " << debugger_exe.string() << std::endl;
+    }
+
     return ec;
 }
 
@@ -2002,6 +2101,32 @@ int handle_help() {
     return 0;
 }
 
+void sync_diagnostic_artifacts(int exit_code) {
+    if (exit_code == 0) {
+        return;
+    }
+
+    const fs::path debug_logs = g_config.root / "debug_logs";
+    std::error_code ec;
+    fs::create_directories(debug_logs, ec);
+
+    const fs::path latest_md = debug_logs / "latest-error.md";
+    const fs::path latest_txt = debug_logs / "latest-error.txt";
+    const fs::path latest_json = debug_logs / "latest-error.json";
+
+    const fs::path debugger_exe = g_config.build_dir / "tools" / "dgtl-debugger.exe";
+
+    // Only invoke dgtl-debugger if it was already built by 'dgtl build-tools'
+    if (file_exists(debugger_exe)) {
+        const std::string exe_str = quote_path(debugger_exe);
+        const std::string root_str = quote_path(g_config.root);
+        int ec_md = run_command(exe_str + " --root " + root_str + " --relative-paths --export " + quote_path(latest_md), false);
+        int ec_txt = run_command(exe_str + " --root " + root_str + " --relative-paths --export " + quote_path(latest_txt), false);
+        int ec_json = run_command(exe_str + " --root " + root_str + " --relative-paths --json --export " + quote_path(latest_json), false);
+        (void)ec_md; (void)ec_txt; (void)ec_json;
+    }
+}
+
 // Main entry point
 int main(int argc, char** argv) {
     // Initialize config
@@ -2030,94 +2155,103 @@ int main(int argc, char** argv) {
         args.push_back(argv[i]);
     }
 
-    // Command routing
-    if (command == "help") return handle_help();
+    auto run_command_handler = [&]() -> int {
+        if (command == "help") return handle_help();
 
-    // Auto-compile C++20 modules for build and test commands
-    if (command == "build" || command == "build-release" || command == "build-tools" ||
-        command == "smoke-build" || command == "build-smoke" || command == "strict" ||
-        command == "build-strict" || command == "test" || command == "gen-build") {
-        int ec_mod = compile_all_modules();
-        if (ec_mod != 0) return ec_mod;
-    }
+        // Auto-compile C++20 modules for build and test commands
+        if (command == "build" || command == "build-release" || command == "build-tools" ||
+            command == "smoke-build" || command == "build-smoke" || command == "strict" ||
+            command == "build-strict" || command == "test" || command == "gen-build") {
+            int ec_mod = compile_all_modules();
+            if (ec_mod != 0) return ec_mod;
+        }
 
-    if (command == "build" || command == "build-release") return handle_build(args);
-    if (command == "build-tools") return handle_build_tools(args);
-    if (command == "smoke-build" || command == "build-smoke") return handle_smoke_build();
-    if (command == "strict" || command == "build-strict") return handle_strict();
-    if (command == "test") {
-        if (!args.empty()) {
-            std::cerr << "[test] Extra arguments are not supported. Use only: dgtl test" << std::endl;
-            return 1;
-        }
-        return handle_test();
-    }
-    if (command == "gen") return handle_gen(args);
-    if (command == "gen-validate") return handle_gen_validate(args);
-    if (command == "gen-build") return handle_gen_build();
-    if (command == "debug") return invoke_dgtl_debugger(args);
-    if (command == "header-check") return handle_header_check();
-    if (command == "cppcheck" || command == "static-analysis") return handle_cppcheck(args);
-    if (command == "clean" || command == "clean-all") return handle_clean();
-    if (command == "prepare-api") {
-        std::string mode_error;
-        const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
-        if (!parsed_mode.has_value()) {
-            std::cerr << "[prepare-api] " << mode_error << std::endl;
-            return 1;
-        }
-        if (!args.empty()) {
-            std::cerr << "[prepare-api] Unknown argument: " << args.front() << std::endl;
-            return 1;
-        }
-        return handle_prepare_api(*parsed_mode);
-    }
-    if (command == "api-status") {
-        std::string mode_error;
-        const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
-        if (!parsed_mode.has_value()) {
-            std::cerr << "[api-status] " << mode_error << std::endl;
-            return 1;
-        }
-        if (!args.empty()) {
-            std::cerr << "[api-status] Unknown argument: " << args.front() << std::endl;
-            return 1;
-        }
-        return handle_api_status(*parsed_mode);
-    }
-    if (command == "run" || command == "run-all") {
-        std::cout << "[run] Full conformance not implemented in orchestrator yet" << std::endl;
-        return 0;
-    }
-    if (command == "bench" || command == "bench-backend") {
-        std::cout << "[bench] Backend benchmarking not implemented in orchestrator yet" << std::endl;
-        return 0;
-    }
-    if (command == "brun") {
-        std::cout << "[brun] Performance suite not implemented in orchestrator yet" << std::endl;
-        return 0;
-    }
-    if (command == "package") {
-        bool verify_mode = false;
-        for (const auto& arg : args) {
-            if (arg == "--verify" || arg == "verify") {
-                verify_mode = true;
-            } else {
-                std::cerr << "[package] Unknown argument: " << arg
-                          << ". Supported: --verify" << std::endl;
+        if (command == "build" || command == "build-release") return handle_build(args);
+        if (command == "build-tools") return handle_build_tools(args);
+        if (command == "smoke-build" || command == "build-smoke") return handle_smoke_build();
+        if (command == "strict" || command == "build-strict") return handle_strict();
+        if (command == "test") {
+            if (!args.empty()) {
+                std::cerr << "[test] Extra arguments are not supported. Use only: dgtl test" << std::endl;
                 return 1;
             }
+            return handle_test();
         }
-        return handle_package(verify_mode);
-    }
-    if (command == "compile" || command == "compile-all") {
-        std::cout << "[compile] Backend compilation not implemented in orchestrator yet" << std::endl;
-        return 0;
+        if (command == "gen") return handle_gen(args);
+        if (command == "gen-validate") return handle_gen_validate(args);
+        if (command == "gen-build") return handle_gen_build();
+        if (command == "debug") return invoke_dgtl_debugger(args);
+        if (command == "header-check") return handle_header_check();
+        if (command == "cppcheck" || command == "static-analysis") return handle_cppcheck(args);
+        if (command == "clean" || command == "clean-all") return handle_clean();
+        if (command == "prepare-api") {
+            std::string mode_error;
+            const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
+            if (!parsed_mode.has_value()) {
+                std::cerr << "[prepare-api] " << mode_error << std::endl;
+                return 1;
+            }
+            if (!args.empty()) {
+                std::cerr << "[prepare-api] Unknown argument: " << args.front() << std::endl;
+                return 1;
+            }
+            return handle_prepare_api(*parsed_mode);
+        }
+        if (command == "api-status") {
+            std::string mode_error;
+            const auto parsed_mode = parse_api_mode(args, ApiMode::both, &mode_error);
+            if (!parsed_mode.has_value()) {
+                std::cerr << "[api-status] " << mode_error << std::endl;
+                return 1;
+            }
+            if (!args.empty()) {
+                std::cerr << "[api-status] Unknown argument: " << args.front() << std::endl;
+                return 1;
+            }
+            return handle_api_status(*parsed_mode);
+        }
+        if (command == "run" || command == "run-all") {
+            std::cout << "[run] Full conformance not implemented in orchestrator yet" << std::endl;
+            return 0;
+        }
+        if (command == "bench" || command == "bench-backend") {
+            std::cout << "[bench] Backend benchmarking not implemented in orchestrator yet" << std::endl;
+            return 0;
+        }
+        if (command == "brun") {
+            std::cout << "[brun] Performance suite not implemented in orchestrator yet" << std::endl;
+            return 0;
+        }
+        if (command == "package") {
+            bool verify_mode = false;
+            for (const auto& arg : args) {
+                if (arg == "--verify" || arg == "verify") {
+                    verify_mode = true;
+                } else {
+                    std::cerr << "[package] Unknown argument: " << arg
+                              << ". Supported: --verify" << std::endl;
+                    return 1;
+                }
+            }
+            return handle_package(verify_mode);
+        }
+        if (command == "compile" || command == "compile-all") {
+            std::cout << "[compile] Backend compilation not implemented in orchestrator yet" << std::endl;
+            return 0;
+        }
+
+        std::cerr << "Unknown command: " << command << std::endl;
+        handle_help();
+        return 1;
+    };
+
+    int exit_code = run_command_handler();
+
+    if (exit_code != 0 && command != "debug" && command != "help") {
+        sync_diagnostic_artifacts(exit_code);
     }
 
-    std::cerr << "Unknown command: " << command << std::endl;
-    handle_help();
-    return 1;
+    return exit_code;
 }
 
 std::optional<ApiMode> parse_api_mode(std::vector<std::string>& args,

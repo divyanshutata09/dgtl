@@ -1,4 +1,4 @@
-﻿# dgtl.ps1
+# dgtl.ps1
 # Thin wrapper that forwards all commands to the C++ orchestrator
 # This file is now just a compatibility shim; all functionality has been migrated to tools/cpp/dgtl_main.cpp
 
@@ -43,6 +43,10 @@ if ($needsRebuild) {
 New-Item -ItemType Directory -Force -Path $debugLogsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $sessionLogDir | Out-Null
 
+$latestMd = Join-Path $debugLogsDir 'latest-error.md'
+$latestTxt = Join-Path $debugLogsDir 'latest-error.txt'
+$latestJson = Join-Path $debugLogsDir 'latest-error.json'
+
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $lastSessionLog = Join-Path $sessionLogDir 'last-session.log'
 $lastNonDebugLog = Join-Path $sessionLogDir 'last-nondebug-session.log'
@@ -84,33 +88,6 @@ if (-not $isDebugCommand -and $exitCode -ne 0) {
     $tsMd = Join-Path $debugLogsDir ("error-{0}.md" -f $debugTimestamp)
     $tsTxt = Join-Path $debugLogsDir ("error-{0}.txt" -f $debugTimestamp)
     $tsJson = Join-Path $debugLogsDir ("error-{0}.json" -f $debugTimestamp)
-    $debuggerNeedsBuild = -not (Test-Path $debuggerExe)
-
-    if (Test-Path $compilerLog) {
-        Copy-Item -Path $compilerLog -Destination $preservedCompilerLog -Force
-    }
-
-    if (-not $debuggerNeedsBuild) {
-        $debuggerExeTime = (Get-Item $debuggerExe).LastWriteTimeUtc
-        $debuggerSrcTime = (Get-Item $debuggerSource).LastWriteTimeUtc
-        if ($debuggerSrcTime -gt $debuggerExeTime) {
-            $debuggerNeedsBuild = $true
-        }
-    }
-
-    if ($debuggerNeedsBuild) {
-        Push-Location $root
-        try {
-            & $cppOrchestratorExe debug --summary-only --relative-paths | Out-Null
-        }
-        finally {
-            Pop-Location
-        }
-    }
-
-    if (Test-Path $preservedCompilerLog) {
-        Copy-Item -Path $preservedCompilerLog -Destination $compilerLog -Force
-    }
 
     if (Test-Path $debuggerExe) {
         & $debuggerExe --relative-paths --export $latestMd | Out-Null

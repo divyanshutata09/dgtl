@@ -8,7 +8,7 @@ rule x64_vector_mul_add_fold: VecAddF32512(VecMulF32512($a,$b),$c) -> VEC_ADD_F3
 # Declarative X64 machine-form mappings (source of truth for generated X64 tables)
 form nop: opcode=NOP, machine_form=NoOp
 
-form load: opcode=LOAD, machine_form=LoadStack
+form load: opcode=LOAD, machine_form=Move
 form store: opcode=STORE, machine_form=StoreStack
 form reg_move: opcode=REG_MOVE, machine_form=Move
 form mov_alias: opcode=MOV, machine_form=Move

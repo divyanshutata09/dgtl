@@ -1,8 +1,8 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
  * Repository: github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
@@ -15,6 +15,8 @@ module;
 
 #include <array>
 #include <cstdint>
+#include <algorithm>
+
 export module dgtl.ir_core.x64_reg_map;
 import dgtl.ir_core;
 import dgtl.flat_map;
@@ -57,9 +59,9 @@ private:
         X64Reg::R8, X64Reg::R9, X64Reg::R10, X64Reg::R11,
     };
 
-    static constexpr std::array<X64Reg, 9> kAllocatableGprs = {
+    // Map virtual registers to callee-saved GPRs (preserved across runtime helper calls)
+    static constexpr std::array<X64Reg, 5> kAllocatableGprs = {
         X64Reg::RBX, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
-        X64Reg::R8,  X64Reg::R9,  X64Reg::R10, X64Reg::R11,
     };
 
 public:
@@ -81,6 +83,14 @@ public:
 
     [[nodiscard]] static constexpr X64Reg map_volatile_only(uint32_t virtual_id) noexcept {
         return kVolatileGprs[virtual_id % VolatileWindow];
+    }
+
+    static constexpr std::array<uint8_t, 10> kNonVolatileXmms = {
+        6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    };
+
+    [[nodiscard]] static constexpr uint8_t map_xmm_branchless(uint32_t virtual_id) noexcept {
+        return kNonVolatileXmms[virtual_id % kNonVolatileXmms.size()];
     }
 
     [[nodiscard]] static constexpr X64ZmmReg map_zmm_circular(uint32_t virtual_id) noexcept {
@@ -462,4 +472,3 @@ public:
 };
 
 } // namespace dgtl::exec
-

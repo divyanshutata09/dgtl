@@ -183,7 +183,7 @@ enum class ParseStatus {
 [[nodiscard]] bool should_skip_path(const fs::path& path) {
     for (const auto& part : path) {
         const std::string token = to_lower(part.string());
-        if (token == ".git" || token == ".vs" || token == "node_modules") {
+        if (token == ".git" || token == ".vs" || token == "node_modules" || token == "debug_logs" || token == ".dot_dgtl") {
             return true;
         }
     }
@@ -348,9 +348,12 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
     }
 
     const std::string stem = to_lower(path.stem().string());
+    if (stem.rfind("latest-error", 0) == 0 || stem.rfind("error-", 0) == 0) {
+        return false;
+    }
+
     return stem.find("log") != std::string::npos ||
            stem.find("debug") != std::string::npos ||
-           stem.find("error") != std::string::npos ||
            stem.find("build") != std::string::npos ||
            stem.find("replay") != std::string::npos;
 }
@@ -1056,9 +1059,13 @@ void finalize_cluster_command_contexts(Analysis& analysis) {
         cluster.likely_command_hits = best.second;
     }
 
-    if (!analysis.clusters.empty() && !analysis.clusters.front().likely_command.empty()) {
-        analysis.likely_failing_command = analysis.clusters.front().likely_command;
-    } else if (!analysis.compiler_commands.empty()) {
+    if (!analysis.clusters.empty()) {
+        if (!analysis.clusters.front().likely_command.empty()) {
+            analysis.likely_failing_command = analysis.clusters.front().likely_command;
+        } else if (!analysis.compiler_commands.empty()) {
+            analysis.likely_failing_command = analysis.compiler_commands.back();
+        }
+    } else if (!analysis.last_exit_code.empty() && analysis.last_exit_code != "0" && !analysis.compiler_commands.empty()) {
         analysis.likely_failing_command = analysis.compiler_commands.back();
     }
 }
@@ -1494,7 +1501,12 @@ void emit_json(const Analysis& analysis, const fs::path& root) {
 
 std::string build_markdown_report(const Analysis& analysis, const fs::path& root, const Options& opts) {
     std::ostringstream out;
-    out << "# DGTL Incident Report\n\n";
+    if (analysis.clusters.empty() && analysis.last_exit_code == "0") {
+        out << "# DGTL Build Diagnostic Report\n\n";
+        out << "- Status: **SUCCESS** (0 errors detected)\n";
+    } else {
+        out << "# DGTL Incident Report\n\n";
+    }
     out << "- Root: " << root.string() << "\n";
     if (!analysis.last_command.empty()) {
         out << "- Last command: `" << analysis.last_command << "`\n";
@@ -1516,10 +1528,14 @@ std::string build_markdown_report(const Analysis& analysis, const fs::path& root
         out << "- Likely failing command: `" << analysis.likely_failing_command << "`\n";
     }
     out << "\n## Error Clusters\n";
-    for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
-        out << "- (x" << analysis.clusters[i].count << ") " << analysis.clusters[i].signature << "\n";
-        if (!analysis.clusters[i].likely_command.empty()) {
-            out << "  Command: `" << analysis.clusters[i].likely_command << "` (" << analysis.clusters[i].likely_command_hits << " hits)\n";
+    if (analysis.clusters.empty()) {
+        out << "- No errors detected.\n";
+    } else {
+        for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
+            out << "- (x" << analysis.clusters[i].count << ") " << analysis.clusters[i].signature << "\n";
+            if (!analysis.clusters[i].likely_command.empty()) {
+                out << "  Command: `" << analysis.clusters[i].likely_command << "` (" << analysis.clusters[i].likely_command_hits << " hits)\n";
+            }
         }
     }
     if (!analysis.clusters.empty()) {
@@ -1583,7 +1599,7 @@ void write_export_report(const Analysis& analysis, const fs::path& root, const O
         fs::create_directories(export_path.parent_path(), ec);
     }
 
-    std::ofstream out(export_path, std::ios::binary);
+    std::ofstream out(export_path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) {
         std::cerr << "Failed to open export path: " << export_path.string() << "\n";
         return;
@@ -1763,26 +1779,59 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
     analysis.modules = discover_modules(root);
     find_module_cycles(analysis);
 
-    const fs::path nondebug_log = root / "build" / "logs" / "last-nondebug-session.log";
-    const fs::path session_log = root / "build" / "logs" / "last-session.log";
-    if (fs::exists(nondebug_log)) {
-        analysis.last_session_log = nondebug_log;
-    } else if (fs::exists(session_log)) {
-        analysis.last_session_log = session_log;
+    const std::vector<fs::path> candidate_session_logs = {
+        root / "debug_logs" / "sessions" / "last-nondebug-session.log",
+        root / "debug_logs" / "sessions" / "last-session.log",
+        root / "build" / "logs" / "last-nondebug-session.log",
+        root / "build" / "logs" / "last-session.log"
+    };
+    for (const auto& cand : candidate_session_logs) {
+        if (fs::exists(cand)) {
+            analysis.last_session_log = cand;
+            break;
+        }
     }
-    analysis.last_command = read_text_file(root / "build" / "logs" / "last-nondebug-command.txt");
-    if (analysis.last_command.empty()) {
-        analysis.last_command = read_text_file(root / "build" / "logs" / "last-command.txt");
+
+    const std::vector<fs::path> candidate_commands = {
+        root / "debug_logs" / "sessions" / "last-nondebug-command.txt",
+        root / "debug_logs" / "sessions" / "last-command.txt",
+        root / "build" / "logs" / "last-nondebug-command.txt",
+        root / "build" / "logs" / "last-command.txt"
+    };
+    for (const auto& cand : candidate_commands) {
+        if (fs::exists(cand)) {
+            analysis.last_command = read_text_file(cand);
+            if (!analysis.last_command.empty()) break;
+        }
     }
-    analysis.last_exit_code = read_text_file(root / "build" / "logs" / "last-nondebug-exit-code.txt");
-    if (analysis.last_exit_code.empty()) {
-        analysis.last_exit_code = read_text_file(root / "build" / "logs" / "last-exit-code.txt");
+
+    const std::vector<fs::path> candidate_exit_codes = {
+        root / "debug_logs" / "sessions" / "last-nondebug-exit-code.txt",
+        root / "debug_logs" / "sessions" / "last-exit-code.txt",
+        root / "build" / "logs" / "last-nondebug-exit-code.txt",
+        root / "build" / "logs" / "last-exit-code.txt"
+    };
+    for (const auto& cand : candidate_exit_codes) {
+        if (fs::exists(cand)) {
+            analysis.last_exit_code = read_text_file(cand);
+            if (!analysis.last_exit_code.empty()) break;
+        }
     }
-    const auto compiler_lines = read_lines(root / "build" / "logs" / "last-compiler-invocations.log");
-    for (const auto& line : compiler_lines) {
-        const std::string command = strip_compiler_record_prefix(line);
-        if (!command.empty()) {
-            analysis.compiler_commands.push_back(command);
+
+    const std::vector<fs::path> candidate_compiler_logs = {
+        root / "debug_logs" / "sessions" / "last-compiler-invocations.log",
+        root / "build" / "logs" / "last-compiler-invocations.log"
+    };
+    for (const auto& cand : candidate_compiler_logs) {
+        if (fs::exists(cand)) {
+            const auto compiler_lines = read_lines(cand);
+            for (const auto& line : compiler_lines) {
+                const std::string command = strip_compiler_record_prefix(line);
+                if (!command.empty()) {
+                    analysis.compiler_commands.push_back(command);
+                }
+            }
+            if (!analysis.compiler_commands.empty()) break;
         }
     }
 
@@ -1790,8 +1839,10 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
     if (logs.empty()) {
         if (!opts.all_logs && analysis.last_session_log) {
             logs.push_back(*analysis.last_session_log);
-        } else {
+        } else if (opts.all_logs) {
             logs = discover_log_files(root);
+        } else if (analysis.last_session_log) {
+            logs.push_back(*analysis.last_session_log);
         }
     }
 
@@ -1897,13 +1948,14 @@ int main(int argc, char** argv) {
             analysis.suspect_symbols.end());
     }
 
-    if (opts.json) {
-        emit_json(analysis, root);
-    } else {
-        emit_text(analysis, root, opts);
+    if (!opts.export_path.has_value()) {
+        if (opts.json) {
+            emit_json(analysis, root);
+        } else {
+            emit_text(analysis, root, opts);
+        }
     }
 
     write_export_report(analysis, root, opts);
-
     return 0;
 }

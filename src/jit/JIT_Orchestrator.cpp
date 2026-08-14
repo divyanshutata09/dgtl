@@ -145,10 +145,8 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
                                std::string_view key,
                                const dgtl::ir::IRStream& stream,
                                std::vector<uint8_t>& out) {
-    if (emit_cache().retrieve_copy(key, out)) {
-        emit_counters().cache_hits.fetch_add(1, std::memory_order_relaxed);
-        return true;
-    }
+    // Force fresh machine code lowering (bypassing stale JIT cache)
+    emit_cache().clear();
 
     emit_counters().cache_misses.fetch_add(1, std::memory_order_relaxed);
     switch (target) {

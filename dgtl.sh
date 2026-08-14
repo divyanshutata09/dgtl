@@ -442,17 +442,31 @@ build_dgtl_binary() {
   local sources
   sources=$(get_source_files "$entry_point" "${exclude_paths[@]}") || return 1
   
-  echo "[dgtl] Compiling $(basename "$output_path")"
-  
-  local source_array=()
-  while IFS= read -r src; do source_array+=("$src"); done <<< "$sources"
-  
-  for mod_obj in "$BUILD_DIR"/obj/modules/*.o; do
-    [[ -e "$mod_obj" ]] && source_array+=("$mod_obj")
+  local binary_stem
+  binary_stem=$(basename "$output_path" | sed 's/\.exe$//')
+  local OBJ_DIR="$BUILD_DIR/obj/$binary_stem"
+  mkdir -p "$OBJ_DIR"
+
+  local objects=()
+  for src in $sources; do
+    local rel_path="${src#$SRC_DIR/}"
+    local obj="$OBJ_DIR/${rel_path//\//_}.o"
+    if [[ ! -f "$obj" || "$src" -nt "$obj" ]]; then
+      "$g_plusplus" "${cflags[@]}" -c "$src" -o "$obj" || {
+        echo "[dgtl] ERROR: Failed to compile $rel_path" >&2
+        return 1
+      }
+    fi
+    objects+=("$obj")
   done
 
-  "$g_plusplus" "${cflags[@]}" "${source_array[@]}" -o "$output_path" || {
-    echo "[dgtl] ERROR: Compilation failed for $output_path" >&2
+  for mod_obj in "$BUILD_DIR"/obj/modules/*.o; do
+    [[ -e "$mod_obj" ]] && objects+=("$mod_obj")
+  done
+
+  echo "[dgtl] Linking $(basename "$output_path")"
+  "$g_plusplus" "${cflags[@]}" "${objects[@]}" -o "$output_path" || {
+    echo "[dgtl] ERROR: Linking failed for $output_path" >&2
     return 1
   }
   

@@ -504,6 +504,11 @@ class StrikeOrchestrator {
     std::vector<RelocationPatch> pending_patches;
 
 public:
+    void patch_jump(size_t jmp_op_offset, size_t target_offset) {
+        int32_t rel32 = static_cast<int32_t>(target_offset - (jmp_op_offset + 5));
+        std::memcpy(&machine_code_buffer[jmp_op_offset + 1], &rel32, sizeof(int32_t));
+    }
+
     [[nodiscard]] uintptr_t lookup_global_symbol(const std::string& name) const noexcept {
         auto it = global_symbol_table.find(name);
         return it != global_symbol_table.end() ? it->second : 0;

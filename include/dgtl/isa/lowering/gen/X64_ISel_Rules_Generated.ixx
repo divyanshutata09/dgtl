@@ -32,7 +32,7 @@ inline constexpr std::size_t kX64CoreFormDslCount = 170;
 
 inline constexpr std::array<std::string_view, 170> kX64CoreFormDslLines = {
     "form nop: opcode=NOP, machine_form=NoOp",
-    "form load: opcode=LOAD, machine_form=LoadStack",
+    "form load: opcode=LOAD, machine_form=Move",
     "form store: opcode=STORE, machine_form=StoreStack",
     "form reg_move: opcode=REG_MOVE, machine_form=Move",
     "form mov_alias: opcode=MOV, machine_form=Move",

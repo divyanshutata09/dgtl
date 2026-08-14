@@ -88,6 +88,10 @@ class StrikeLiveManager {
         case ir::OpCode::MUL_I32:
         case ir::OpCode::DIV_I32:
         case ir::OpCode::MOD_I32:
+        case ir::OpCode::ADD_I64:
+        case ir::OpCode::SUB_I64:
+        case ir::OpCode::MUL_I64:
+        case ir::OpCode::DIV_I64:
         case ir::OpCode::MOD_I64:
         case ir::OpCode::CMP_EQ_I32:
         case ir::OpCode::CMP_NE_I32:
@@ -100,8 +104,19 @@ class StrikeLiveManager {
         case ir::OpCode::XOR_I32:
         case ir::OpCode::SHL_I32:
         case ir::OpCode::SHR_I32:
+        case ir::OpCode::AND_I64:
+        case ir::OpCode::OR_I64:
+        case ir::OpCode::XOR_I64:
+        case ir::OpCode::SHL_I64:
+        case ir::OpCode::SHR_I64:
         case ir::OpCode::ADD_F32:
+        case ir::OpCode::SUB_F32:
         case ir::OpCode::MUL_F32:
+        case ir::OpCode::DIV_F32:
+        case ir::OpCode::ADD_F64:
+        case ir::OpCode::SUB_F64:
+        case ir::OpCode::MUL_F64:
+        case ir::OpCode::DIV_F64:
         case ir::OpCode::VEC_ADD_F32_512:
         case ir::OpCode::VEC_MUL_F32_512:
         case ir::OpCode::GATHER_F32_512:
@@ -169,20 +184,27 @@ public:
                     intervals_.resize(static_cast<size_t>(virtual_id) + 1);
                 }
                 auto& interval = intervals_[virtual_id];
-                interval.active = true;
-                if (interval.start_node == 0 && i > 0) {
+                if (!interval.active) {
+                    interval.active = true;
                     interval.start_node = i;
                 }
-                interval.end_node = i;
+                if (i > interval.end_node) {
+                    interval.end_node = i;
+                }
             };
 
             if (node.result_id != ir::INVALID_SLOT) {
                 if (node.result_id >= intervals_.size()) {
                     intervals_.resize(static_cast<size_t>(node.result_id) + 1);
                 }
-                intervals_[node.result_id].active = true;
-                intervals_[node.result_id].start_node = i;
-                intervals_[node.result_id].end_node = i;
+                auto& interval = intervals_[node.result_id];
+                if (!interval.active) {
+                    interval.active = true;
+                    interval.start_node = i;
+                }
+                if (i > interval.end_node) {
+                    interval.end_node = i;
+                }
             }
 
             const OperandUseMask uses = operand_uses(node.opcode);
