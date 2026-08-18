@@ -1634,7 +1634,7 @@ private:
         }
 
         const auto it = runtime_slots_.find(node.op_a);
-        if (it == runtime_slots_.end()) {
+        if (it == runtime_slots_.end() || it->second == 0) {
             const auto target_opt = pick_known_label(label_to_node_index, {node.op_a, node.result_id, node.op_b});
             const uint32_t target_label = target_opt.value_or(node.op_a);
 

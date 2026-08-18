@@ -1707,7 +1707,7 @@ protected:
                     uintptr_t target_addr = 0;
                     if (!slot_map.empty()) {
                         auto it = slot_map.find(static_cast<uint32_t>(node.op_a));
-                        if (it != slot_map.end()) {
+                        if (it != slot_map.end() && it->second != 0) {
                             target_addr = it->second;
                         }
                     }
