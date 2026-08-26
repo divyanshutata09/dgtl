@@ -1,8 +1,8 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
  * Repository: github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
@@ -71,7 +71,7 @@ struct ABICallLayout {
 /**
  * @class ABI_Lowering
  * @brief Converts high-level parameters to ABI-conformant register/stack layout.
- * * Implements the rigorous calling conventions for HFT/System-level targets,
+ * Implements the rigorous calling conventions for HFT/System-level targets,
  * handling shadow spaces, split register banks, and struct alignment.
  */
 class ABI_Lowering {

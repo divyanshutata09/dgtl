@@ -147,7 +147,6 @@ bool TaskScheduler::Task::is_complete() const noexcept {
 }
 
 void TaskScheduler::Task::wait_complete() noexcept {
-    // C++20 atomic wait: Blocks efficiently without a heavy std::mutex/cv per task
     uint8_t current_state = state.load(std::memory_order_acquire);
     while (current_state != static_cast<uint8_t>(TaskState::Complete)) {
         state.wait(current_state, std::memory_order_acquire);
@@ -323,7 +322,6 @@ void TaskScheduler::parallel_for(size_t start, size_t end, ParallelLoopFn fn, vo
         size_t iteration{0};
     };
     
-    // For small ranges, execute serially to avoid overhead
     if (end - start <= 128) {
         for (size_t i = start; i < end; ++i) {
             fn(ctx, i);
@@ -331,7 +329,6 @@ void TaskScheduler::parallel_for(size_t start, size_t end, ParallelLoopFn fn, vo
         return;
     }
     
-    // For large ranges, spawn tasks
     size_t num_tasks = std::min(end - start, static_cast<size_t>(worker_states_.size() * 4));
     num_tasks = (num_tasks > 0) ? num_tasks : 1;
     
@@ -490,7 +487,6 @@ void TaskScheduler::join(uint64_t task_handle) noexcept {
     Task* task = reinterpret_cast<Task*>(static_cast<uintptr_t>(task_handle));
     if (!task) return;
     
-    // If called from a worker thread, actively execute other tasks while waiting
     if (tls_worker_state) {
         while (!task->is_complete()) {
             Task* work = nullptr;
@@ -499,7 +495,8 @@ void TaskScheduler::join(uint64_t task_handle) noexcept {
                 work->execute();
                 tls_worker_state->tasks_executed++;
             } else {
-                std::this_thread::yield();
+                task->wait_complete();
+                break;
             }
         }
     } else {

@@ -35,12 +35,12 @@
 #include <unordered_map>
 #include <vector>
 #include <bit>
+#include <algorithm>
 
 import dgtl.target;
 import dgtl.config;
 import dgtl.compiler_context;
 import dgtl.numa_runtime;
-import dgtl.runtime_intrinsics;
 import dgtl.task_scheduler;
 import dgtl.hashing;
 import dgtl.bit_pack;
@@ -67,7 +67,7 @@ import dgtl.ir_core.binary_loader;
 import dgtl.internal.api_execution_engine;
 import dgtl.internal.api_aot_session;
 
-/*Global default runtime context for compatibility helpers */
+/* Global default runtime context for compatibility helpers */
 static std::atomic<dgtl_runtime_context_t*> g_default_runtime_ctx{nullptr};
 static std::mutex g_default_runtime_ctx_mutex;
 
@@ -124,7 +124,8 @@ struct dgtl_session {
                  const dgtl_session_config_t& cfg) noexcept
         : context(std::move(ctx)),
           engine(std::move(eng)),
-          config(cfg) {}
+          config(cfg),
+          code_cache(64ull * 1024ull * 1024ull) {}
 };
 
 /* Helpers */
@@ -297,7 +298,7 @@ static void sdk_apply_numa_locality() noexcept {
 
 /* ── MinGW/GCC modules workaround ──────────────────────────────────────────
  * The move constructor for pair<string, IRStream> and the vector containing it
- * are not emitted transitively from imported modules under MinGW GCC.  Force
+ * are not emitted transitively from imported modules under MinGW GCC. Force
  * their instantiation here so the linker can resolve references in
  * sdk_split_stream_by_callee_functions and its callers.
  * Mirrors the identical workaround in DGTLAdapter.cpp.
@@ -599,12 +600,12 @@ static bool sdk_opcode_to_internal(dgtl_opcode_t op, dgtl::ir::OpCode& out) noex
         case DGTL_OP_RET:              out = OC::RET;               return true;
         case DGTL_OP_JMP:              out = OC::GOTO;              return true;
         case DGTL_OP_BR_IF:            out = OC::BRANCH_COND;       return true;
-        case DGTL_OP_CMP_EQ: case 40:  out = OC::CMP_EQ_I32;        return true;
-        case DGTL_OP_CMP_NE: case 41:  out = OC::CMP_NE_I32;        return true;
-        case DGTL_OP_CMP_LT: case 42:  out = OC::CMP_LT_I32;        return true;
-        case DGTL_OP_CMP_LE: case 43:  out = OC::CMP_LE_I32;        return true;
-        case DGTL_OP_CMP_GT: case 44:  out = OC::CMP_GT_I32;        return true;
-        case DGTL_OP_CMP_GE: case 45:  out = OC::CMP_GE_I32;        return true;
+        case DGTL_OP_CMP_EQ:           out = OC::CMP_EQ_I32;        return true;
+        case DGTL_OP_CMP_NE:           out = OC::CMP_NE_I32;        return true;
+        case DGTL_OP_CMP_LT:           out = OC::CMP_LT_I32;        return true;
+        case DGTL_OP_CMP_LE:           out = OC::CMP_LE_I32;        return true;
+        case DGTL_OP_CMP_GT:           out = OC::CMP_GT_I32;        return true;
+        case DGTL_OP_CMP_GE:           out = OC::CMP_GE_I32;        return true;
         case DGTL_OP_FMA:              out = OC::FMA_F32;           return true;
         case DGTL_OP_FADD:             out = OC::ADD_F32;           return true;
         case DGTL_OP_FMUL:             out = OC::MUL_F32;           return true;
@@ -660,13 +661,12 @@ static bool internal_opcode_to_sdk(dgtl::ir::OpCode op, dgtl_opcode_t& out) noex
         case OC::SHR_I64:         out = DGTL_OP_SHR_I64;      return true;
         case OC::SELECT:          out = DGTL_OP_SELECT;       return true;
         case OC::GEP:             out = DGTL_OP_GEP;          return true;
-        case OC::PTR_TO_INT:      out = DGTL_OP_PTR_TO_INT;    return true;
-        case OC::INT_TO_PTR:      out = DGTL_OP_INT_TO_PTR;    return true;
+        case OC::PTR_TO_INT:      out = DGTL_OP_PTR_TO_INT;   return true;
+        case OC::INT_TO_PTR:      out = DGTL_OP_INT_TO_PTR;   return true;
         case OC::READ_TSC:        out = DGTL_OP_READ_TSC;     return true;
         case OC::BRANCH_LIKELY:   out = DGTL_OP_BR_LIKELY;    return true;
         case OC::BRANCH_UNLIKELY: out = DGTL_OP_BR_UNLIKELY;  return true;
-        case OC::PREFETCH_T0:
-        case OC::PREFETCH:        out = DGTL_OP_PREFETCH_T0;  return true;
+        case OC::PREFETCH_T0:     out = DGTL_OP_PREFETCH_T0;  return true;
         case OC::CLFLUSH:         out = DGTL_OP_CLFLUSH;      return true;
         case OC::LOAD:            out = DGTL_OP_LOAD;         return true;
         case OC::STORE:           out = DGTL_OP_STORE;        return true;
@@ -818,19 +818,6 @@ extern "C" DGTL_API dgtl_session_t* dgtl_session_create(const dgtl_session_confi
         return nullptr;
     }
 
-    // --- AUTOMATIC HOST SYMBOL REGISTRATION FOR DGTL INTRINSICS ---
-    // Register the standard print and string intrinsics so JIT Checkpoint J7 resolves them automatically!
-    engine->register_host_symbol("println_i64", reinterpret_cast<uint64_t>(&__dgtl_rt_println_i64));
-    engine->register_host_symbol("print_i64", reinterpret_cast<uint64_t>(&__dgtl_rt_print_i64));
-    engine->register_host_symbol("println_str", reinterpret_cast<uint64_t>(&__dgtl_rt_println_str));
-    engine->register_host_symbol("print_str", reinterpret_cast<uint64_t>(&__dgtl_rt_print_str));
-
-    // Also register prefixed variants
-    engine->register_host_symbol("__dgtl_rt_println_i64", reinterpret_cast<uint64_t>(&__dgtl_rt_println_i64));
-    engine->register_host_symbol("__dgtl_rt_print_i64", reinterpret_cast<uint64_t>(&__dgtl_rt_print_i64));
-    engine->register_host_symbol("__dgtl_rt_println_str", reinterpret_cast<uint64_t>(&__dgtl_rt_println_str));
-    engine->register_host_symbol("__dgtl_rt_print_str", reinterpret_cast<uint64_t>(&__dgtl_rt_print_str));
-
     return new (std::nothrow) dgtl_session(std::move(ctx), std::move(engine), cfg);
 }
 
@@ -839,8 +826,8 @@ extern "C" DGTL_API void dgtl_session_destroy(dgtl_session_t* session) {
 }
 
 extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol(dgtl_session_t* session,
-                                                                      const char* symbol_name,
-                                                                      uintptr_t address) {
+                                                                    const char* symbol_name,
+                                                                    uintptr_t address) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!symbol_name || symbol_name[0] == '\0') return make_err(2, "null symbol name");
     if (address == 0u) return make_err(3, "null symbol address");
@@ -849,8 +836,8 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol(dgtl_session
 }
 
 extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol_slot(dgtl_session_t* session,
-                                                                          uint32_t slot,
-                                                                          uintptr_t address) {
+                                                                        uint32_t slot,
+                                                                        uintptr_t address) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (slot == 0u) return make_err(2, "invalid slot");
     if (address == 0u) return make_err(3, "null symbol address");
@@ -1065,9 +1052,9 @@ extern "C" DGTL_API uint32_t dgtl_emit_string_concat(dgtl_stream_t* s, uint32_t 
 }
 
 extern "C" DGTL_API uint32_t dgtl_emit_string_substring(dgtl_stream_t* s,
-                                                          uint32_t string_slot,
-                                                          uint32_t start_slot,
-                                                          uint32_t length_slot) {
+                                                         uint32_t string_slot,
+                                                         uint32_t start_slot,
+                                                         uint32_t length_slot) {
     if (!s) return 0;
     return emit_builder_node(s, dgtl::ir::OpCode::STRING_SUBSTRING, string_slot, start_slot, length_slot);
 }
@@ -2021,8 +2008,8 @@ extern "C" DGTL_API int dgtl_stream_cfg_get_block(const dgtl_stream_t* s,
 }
 
 extern "C" DGTL_API int dgtl_stream_cfg_get_edge(const dgtl_stream_t* s,
-                                                  size_t index,
-                                                  dgtl_cfg_edge_t* out) {
+                                                 size_t index,
+                                                 dgtl_cfg_edge_t* out) {
     if (!s || !out) return 0;
 
     const auto& edges = s->function.stream().get_cfg_edges();
@@ -2320,9 +2307,9 @@ extern "C" DGTL_API uint32_t dgtl_emit_call_with_result(dgtl_stream_t* s,
 }
 
 extern "C" DGTL_API uint32_t dgtl_emit_call(dgtl_stream_t* s,
-                                             uint32_t callee_slot,
-                                             const uint32_t* args,
-                                             size_t arg_count) {
+                                               uint32_t callee_slot,
+                                               const uint32_t* args,
+                                               size_t arg_count) {
     return emit_call_like(s, dgtl::ir::OpCode::CALL, 0u, callee_slot, args, arg_count);
 }
 

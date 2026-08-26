@@ -17,7 +17,7 @@ module;
 #include <vector>
 #include <cstdint>
 #include <unordered_map>
-
+#include <algorithm>
 
 export module dgtl.ir_core.strike_live_manager;
 
@@ -66,23 +66,26 @@ class StrikeLiveManager {
 
     /**
      * @brief Determines which operands are read as virtual registers by a given opcode.
-     * CRITICAL: Do NOT flag operands that contain Immediate Values or Offsets.
+     * Prevents operands containing immediate literal values or label offsets from being treated as registers.
      */
     [[nodiscard]] static OperandUseMask operand_uses(ir::OpCode opcode) noexcept {
         switch (opcode) {
         // Reads exactly 1 virtual register (op_a)
         case ir::OpCode::REG_MOVE:
-        case ir::OpCode::LOAD:       // New wrapper model: LOAD reads source virtual in op_a
-        case ir::OpCode::STORE_V512: // op_a = src, op_c = immediate offset
+        case ir::OpCode::LOAD:
+        case ir::OpCode::VOLATILE_LOAD:
+        case ir::OpCode::STORE_V512:
         case ir::OpCode::RET:
         case ir::OpCode::BRANCH_COND:
+        case ir::OpCode::BRANCH_LIKELY:
+        case ir::OpCode::BRANCH_UNLIKELY:
+        case ir::OpCode::CLFLUSH:
+        case ir::OpCode::PREFETCH_T0:
             return {true, false, false};
 
-        // Store reads both source value and base/address register.
+        // Reads 2 virtual registers (op_a, op_b)
         case ir::OpCode::STORE:
-            return {true, true, false};
-
-        // Reads exactly 2 virtual registers (op_a, op_b)
+        case ir::OpCode::VOLATILE_STORE:
         case ir::OpCode::ADD_I32:
         case ir::OpCode::SUB_I32:
         case ir::OpCode::MUL_I32:
@@ -122,19 +125,24 @@ class StrikeLiveManager {
         case ir::OpCode::GATHER_F32_512:
         case ir::OpCode::GATHER_16:
         case ir::OpCode::BRANCH_COMPARE_FUSED:
-        case ir::OpCode::SELECT:
         case ir::OpCode::GEP:
+        case ir::OpCode::LEA:
         case ir::OpCode::PTR_DIFF:
+        case ir::OpCode::PTR_TO_INT:
+        case ir::OpCode::INT_TO_PTR:
+        case ir::OpCode::PTR_CAST:
             return {true, true, false};
 
         // Reads 3 virtual registers (op_a, op_b, op_c)
-        case ir::OpCode::CALL:       // âœ… FIXED: Safely preserves op_c for multi-arg hooks
+        case ir::OpCode::CALL:
         case ir::OpCode::CALL_VARIADIC:
         case ir::OpCode::FMA_F32:
+        case ir::OpCode::SELECT:
+        case ir::OpCode::BOOL_SELECT:
             return {true, true, true};
 
         // Reads 0 virtual registers
-        case ir::OpCode::LOAD_IMM:
+        case ir::OpCode::CONST:
         case ir::OpCode::IMMEDIATE:
         case ir::OpCode::STRING_CONST:
         case ir::OpCode::BRANCH:
@@ -146,7 +154,6 @@ class StrikeLiveManager {
             return {false, false, false};
 
         default:
-            // Most runtime-backed opcodes consume up to three SSA operands through call lowering.
             if (dgtl::isa::lowering::runtime_contract::has_runtime_symbol(opcode)) {
                 return {true, true, true};
             }
@@ -158,9 +165,9 @@ public:
     template <typename LabelMapType>
     void compute(const ir::IRStream& stream, const LabelMapType& label_map) {
         intervals_.clear();
-        intervals_.reserve(stream.size()); // Pre-allocate to prevent vector reallocations
+        intervals_.reserve(stream.size() * 2);
 
-        // Track only IDs produced by this stream so immediates/labels are never treated as virtual registers.
+        // Track only IDs produced by this stream so literals/labels are not treated as registers
         std::unordered_map<uint32_t, bool> produced_ids;
         produced_ids.reserve(stream.size());
         for (size_t i = 0; i < stream.size(); ++i) {
@@ -214,19 +221,32 @@ public:
         }
 
         // --- Backedge Resolution ---
-        // Extends live intervals across loops to protect loop-carried variables
+        // Extends live intervals across loop scopes to protect loop-carried induction variables
         for (size_t i = 0; i < stream.size(); ++i) {
             const auto& node = stream.get_node(i);
-            if (node.opcode == ir::OpCode::BRANCH_COND || node.opcode == ir::OpCode::GOTO) {
-                const uint32_t target_label =
-                    (node.opcode == ir::OpCode::BRANCH_COND) ? node.op_b : node.op_a;
+            if (node.opcode == ir::OpCode::BRANCH_COND || 
+                node.opcode == ir::OpCode::BRANCH_LIKELY ||
+                node.opcode == ir::OpCode::BRANCH_UNLIKELY ||
+                node.opcode == ir::OpCode::BRANCH_COMPARE_FUSED ||
+                node.opcode == ir::OpCode::GOTO) {
+
+                uint32_t target_label = ir::INVALID_SLOT;
+                if (node.opcode == ir::OpCode::BRANCH_COMPARE_FUSED) {
+                    target_label = node.op_c;
+                } else if (node.opcode == ir::OpCode::BRANCH_COND ||
+                           node.opcode == ir::OpCode::BRANCH_LIKELY ||
+                           node.opcode == ir::OpCode::BRANCH_UNLIKELY) {
+                    target_label = (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) ? node.op_b : node.result_id;
+                } else {
+                    target_label = (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) ? node.op_a : node.result_id;
+                }
 
                 size_t loop_start = 0;
                 if (!lookup_label_index(label_map, target_label, loop_start)) {
                     continue;
                 }
                 if (loop_start >= i) {
-                    continue; // Not a backedge (forward jump)
+                    continue; // Forward jump
                 }
 
                 const size_t loop_end = i;
@@ -254,4 +274,3 @@ public:
 };
 
 } // namespace dgtl::isa::regalloc
-

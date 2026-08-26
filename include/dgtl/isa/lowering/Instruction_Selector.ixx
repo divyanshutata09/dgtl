@@ -36,12 +36,9 @@ import dgtl.ir_core.runtime_policy;
 import dgtl.ir_core.isel_rules;
 import dgtl.ir_core.isel_gen;
 
-// FIXED: Explicitly import target descriptions to resolve ArchType and TargetMachine
+// Explicitly import target descriptions to resolve ArchType and TargetMachine
 import dgtl.target;
 import dgtl.ir_core;
-
-// FIXED: Removed conflicting manual forward declaration of DGTLAICostModel 
-// since it is already fully imported via dgtl.ir_core!
 
 /**
  * @brief Instruction Selector (ISel)
@@ -49,7 +46,7 @@ import dgtl.ir_core;
  * Implements tree-pattern matching and instruction selection using a DSL-driven
  * rule engine. Matches high-level target-independent IR patterns and lowers them
  * to optimal target-specific machine-level IR representations (MachineForm). Uses a cost/benefit
- * benefit heuristic to select the most efficient instruction forms (e.g. FMA fuses,
+ * heuristic to select the most efficient instruction forms (e.g. FMA fuses,
  * AVX vectorization lanes) based on target machine capabilities.
  */
 export namespace dgtl::isa::lowering {
@@ -128,8 +125,11 @@ namespace detail {
         {"select", ir::OpCode::SELECT},
         {"getelementptr", ir::OpCode::GEP},
         {"gep", ir::OpCode::GEP},
+        {"lea", ir::OpCode::LEA},
         {"ptrtoint", ir::OpCode::PTR_TO_INT},
         {"inttoptr", ir::OpCode::INT_TO_PTR},
+        {"ptrcast", ir::OpCode::PTR_CAST},
+        {"ptrdiff", ir::OpCode::PTR_DIFF},
         
         // Integer 32-bit
         {"addi32", ir::OpCode::ADD_I32},
@@ -247,8 +247,6 @@ namespace detail {
         {"ownershiptransfer", ir::OpCode::OWNERSHIP_TRANSFER},
         {"phimulti", ir::OpCode::PHI_MULTI},
         {"phinode", ir::OpCode::PHI_NODE},
-        {"ptrcast", ir::OpCode::PTR_CAST},
-        {"ptrdiff", ir::OpCode::PTR_DIFF},
         {"regionbegin", ir::OpCode::REGION_BEGIN},
         {"regionend", ir::OpCode::REGION_END},
         {"releasefence", ir::OpCode::RELEASE_FENCE},
@@ -538,6 +536,19 @@ struct MatchContext {
 } // namespace detail
 
 [[nodiscard]] inline MachineForm classify_machine_form_with_fallback(ir::OpCode opcode) noexcept {
+    switch (opcode) {
+        case ir::OpCode::SELECT:
+        case ir::OpCode::BOOL_SELECT:
+        case ir::OpCode::GEP:
+        case ir::OpCode::LEA:
+        case ir::OpCode::PTR_CAST:
+        case ir::OpCode::PTR_TO_INT:
+        case ir::OpCode::INT_TO_PTR:
+            return MachineForm::Move;
+        default:
+            break;
+    }
+
     MachineForm form = generated::classify_machine_form(opcode);
     if (form != MachineForm::Unhandled) [[likely]] {
         return form;
@@ -552,6 +563,8 @@ struct MatchContext {
             return MachineForm::NoOp;
         case ir::OpCode::BRANCH:
             return MachineForm::Goto;
+        case ir::OpCode::BRANCH_COMPARE_FUSED:
+            return MachineForm::BranchCompare;
         case ir::OpCode::CALL_VARIADIC:
             return MachineForm::Call;
         case ir::OpCode::STRING_LENGTH:
@@ -641,6 +654,16 @@ public:
                                                          size_t index,
                                                          const ir::IRNode& node,
                                                          const core::TargetMachine& target) const {
+        if (node.opcode != ir::OpCode::ADD_F32 && node.opcode != ir::OpCode::VEC_ADD_F32_512) {
+            SelectedInstruction selected{};
+            selected.node = node;
+            selected.semantic_opcode = node.opcode;
+            selected.rule_name = {};
+            selected.matched_rule = false;
+            selected.form = classify_machine_form_with_fallback(node.opcode);
+            return selected;
+        }
+
         const ISelReplacement replacement = select_node(stream, index, node, target);
         SelectedInstruction selected{};
         selected.node = replacement.matched ? replacement.node : node;

@@ -20,6 +20,9 @@ module;
 #include <string_view>
 
 #ifdef _WIN32
+#   ifndef WIN32_LEAN_AND_MEAN
+#       define WIN32_LEAN_AND_MEAN
+#   endif
 #   include <windows.h>
 #else
 #   include <unistd.h>
@@ -89,23 +92,31 @@ void register_string_handle(uint32_t handle, const char* data, uint32_t len) {
     register_dgtl_string(handle, data, len);
 }
 
+void unregister_string_handle(uint32_t handle) noexcept {
+    std::unique_lock<std::shared_mutex> lock(detail::string_registry_mutex());
+    (void)detail::string_registry().erase(handle);
+}
+
+[[nodiscard]] size_t get_registered_string_count() noexcept {
+    std::shared_lock<std::shared_mutex> lock(detail::string_registry_mutex());
+    return detail::string_registry().size();
+}
+
 } // namespace dgtl::runtime
 
 /* ─── C-LINKAGE EXPORTED RUNTIME BUILTINS & JIT SYMBOLS ─── */
 
-#if defined(__GNUC__) || defined(__clang__)
-#  define DGTL_WEAK __attribute__((weak))
-#else
-#  define DGTL_WEAK
-#endif
-
 extern "C" {
 
-DGTL_WEAK void __dgtl_rt_register_string(uint32_t handle, const char* data, uint32_t len) {
+void __dgtl_rt_register_string(uint32_t handle, const char* data, uint32_t len) noexcept {
     dgtl::runtime::register_dgtl_string(handle, data, len);
 }
 
-DGTL_WEAK const char* __builtin_detect_platform_name() {
+void __dgtl_rt_unregister_string(uint32_t handle) noexcept {
+    dgtl::runtime::unregister_string_handle(handle);
+}
+
+const char* __builtin_detect_platform_name() noexcept {
 #ifdef _WIN32
     return "windows";
 #elif defined(__linux__)
@@ -117,7 +128,7 @@ DGTL_WEAK const char* __builtin_detect_platform_name() {
 #endif
 }
 
-DGTL_WEAK const char* __builtin_detect_architecture() {
+const char* __builtin_detect_architecture() noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     return "x64";
 #elif defined(__i386__) || defined(_M_IX86)
@@ -131,17 +142,17 @@ DGTL_WEAK const char* __builtin_detect_architecture() {
 #endif
 }
 
-DGTL_WEAK int64_t __builtin_detect_word_size() {
+int64_t __builtin_detect_word_size() noexcept {
     return static_cast<int64_t>(sizeof(void*));
 }
 
-DGTL_WEAK int64_t __builtin_detect_endianness() {
+int64_t __builtin_detect_endianness() noexcept {
     const uint32_t test = 0x12345678;
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&test);
     return (bytes[0] == 0x78) ? 0 : 1; // 0 = Little Endian, 1 = Big Endian
 }
 
-DGTL_WEAK int64_t __builtin_get_page_size() {
+int64_t __builtin_get_page_size() noexcept {
 #ifdef _WIN32
     SYSTEM_INFO info;
     GetSystemInfo(&info);
@@ -151,7 +162,7 @@ DGTL_WEAK int64_t __builtin_get_page_size() {
 #endif
 }
 
-DGTL_WEAK int64_t __builtin_get_cpu_count() {
+int64_t __builtin_get_cpu_count() noexcept {
 #ifdef _WIN32
     SYSTEM_INFO info;
     GetSystemInfo(&info);
@@ -161,7 +172,7 @@ DGTL_WEAK int64_t __builtin_get_cpu_count() {
 #endif
 }
 
-DGTL_WEAK int64_t __builtin_get_total_memory() {
+int64_t __builtin_get_total_memory() noexcept {
 #ifdef _WIN32
     MEMORYSTATUSEX memory{};
     memory.dwLength = sizeof(memory);
@@ -172,7 +183,7 @@ DGTL_WEAK int64_t __builtin_get_total_memory() {
 #endif
 }
 
-DGTL_WEAK int64_t __builtin_detect_simd_width_bits() {
+int64_t __builtin_detect_simd_width_bits() noexcept {
 #if defined(__GNUC__) || defined(__clang__)
     if (__builtin_cpu_supports("avx512f")) return 512;
     if (__builtin_cpu_supports("avx2")) return 256;
@@ -197,11 +208,11 @@ DGTL_WEAK int64_t __builtin_detect_simd_width_bits() {
 #endif
 }
 
-DGTL_WEAK int64_t __builtin_detect_print_lane_bits() {
+int64_t __builtin_detect_print_lane_bits() noexcept {
     return __builtin_detect_simd_width_bits();
 }
 
-DGTL_WEAK int64_t __builtin_detect_u64_lane_count() {
+int64_t __builtin_detect_u64_lane_count() noexcept {
     return __builtin_detect_simd_width_bits() / 64;
 }
 

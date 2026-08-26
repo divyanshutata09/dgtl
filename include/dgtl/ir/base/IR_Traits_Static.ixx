@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -117,7 +117,7 @@ struct IRTraits {
 
     [[nodiscard]] static constexpr bool is_integer_op(OpCode op) noexcept {
         return (op >= OpCode::ADD_I32 && op <= OpCode::SHR_I32) ||
-               (op >= OpCode::ADD_I64 && op <= OpCode::DIV_I64) ||
+               (op >= OpCode::ADD_I64 && op <= OpCode::SHR_I64) ||
                op == OpCode::BIT_FIELD_INSERT ||
                op == OpCode::BIT_FIELD_EXTRACT;
     }
@@ -231,6 +231,7 @@ struct IRTraits {
             case OpCode::MUL_I32: case OpCode::MUL_I64:
             case OpCode::MUL_F32: case OpCode::MUL_F64:
             case OpCode::AND_I32: case OpCode::OR_I32: case OpCode::XOR_I32:
+            case OpCode::AND_I64: case OpCode::OR_I64: case OpCode::XOR_I64:
                 return true;
             default:
                 return false;
@@ -262,6 +263,8 @@ struct IRTraits {
             case OpCode::AND_I32: case OpCode::OR_I32:  case OpCode::XOR_I32: case OpCode::SHL_I32:
             case OpCode::SHR_I32: case OpCode::MOD_I32:
             case OpCode::ADD_I64: case OpCode::SUB_I64: case OpCode::MUL_I64: case OpCode::DIV_I64:
+            case OpCode::MOD_I64: case OpCode::AND_I64: case OpCode::OR_I64: case OpCode::XOR_I64:
+            case OpCode::SHL_I64: case OpCode::SHR_I64:
             case OpCode::BIT_FIELD_INSERT: case OpCode::BIT_FIELD_EXTRACT:
                 return true;
             default:

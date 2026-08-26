@@ -22,9 +22,18 @@ module;
 #include <stdexcept>
 #include <chrono>
 #include <mutex>
+#include <algorithm>
+#include <unordered_map>
 
 #if defined(_WIN32) || defined(_WIN64)
+#   ifndef WIN32_LEAN_AND_MEAN
+#       define WIN32_LEAN_AND_MEAN
+#   endif
+#   ifndef NOMINMAX
+#       define NOMINMAX
+#   endif
 #   include <windows.h>
+#   include <memoryapi.h>
 #else
 #   include <sys/mman.h>
 #   include <unistd.h>
@@ -52,6 +61,7 @@ namespace {
 struct EmitContext {
     const dgtl::ir::IRStream* stream = nullptr;
     std::vector<uint8_t>* out = nullptr;
+    const std::unordered_map<uint32_t, uintptr_t>* slot_map = nullptr;
 };
 
 struct EmitCounters {
@@ -115,6 +125,9 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
                 auto* ctx = static_cast<EmitContext*>(raw);
                 if (!ctx || !ctx->stream || !ctx->out) return -1;
                 dgtl::backend::linker::DGTLLinker linker;
+                if (ctx->slot_map) {
+                    return linker.build_raw_x64_machine_code(*ctx->stream, *ctx->out, *ctx->slot_map) ? 0 : -2;
+                }
                 return linker.build_raw_x64_machine_code(*ctx->stream, *ctx->out) ? 0 : -2;
             });
 
@@ -145,7 +158,6 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
                                std::string_view key,
                                const dgtl::ir::IRStream& stream,
                                std::vector<uint8_t>& out) {
-    // Force fresh machine code lowering (bypassing stale JIT cache)
     emit_cache().clear();
 
     emit_counters().cache_misses.fetch_add(1, std::memory_order_relaxed);
@@ -164,7 +176,7 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
             break;
     }
 
-    EmitContext ctx{&stream, &out};
+    EmitContext ctx{&stream, &out, nullptr};
     const int64_t rc = emit_dispatcher().dispatch(target, &ctx);
     if (rc != 0 || out.empty()) {
         emit_counters().dispatcher_failures.fetch_add(1, std::memory_order_relaxed);
@@ -175,21 +187,6 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
 }
 
 } // namespace
-
-// ============================================================================
-// STAGE J7 SYMBOL MAPPING: Bind Host C Intrinsics to JIT Session Symbols
-// ============================================================================
-
-// void map_core_symbols(auto& session) {
-//     session.map_symbol("__dgtl_rt_println_i64", reinterpret_cast<uint64_t>(&__dgtl_rt_println_i64));
-//     session.map_symbol("__dgtl_rt_print_i64", reinterpret_cast<uint64_t>(&__dgtl_rt_print_i64));
-//     session.map_symbol("__dgtl_rt_println_f64", reinterpret_cast<uint64_t>(&__dgtl_rt_println_f64));
-//     session.map_symbol("__dgtl_rt_print_f64", reinterpret_cast<uint64_t>(&__dgtl_rt_print_f64));
-//     session.map_symbol("__dgtl_rt_println_str", reinterpret_cast<uint64_t>(&__dgtl_rt_println_str));
-//     session.map_symbol("__dgtl_rt_print_str", reinterpret_cast<uint64_t>(&__dgtl_rt_print_str));
-//     session.map_symbol("__dgtl_rt_println_bool", reinterpret_cast<uint64_t>(&__dgtl_rt_println_bool));
-//     session.map_symbol("__dgtl_rt_print_bool", reinterpret_cast<uint64_t>(&__dgtl_rt_print_bool));
-// }
 
 [[maybe_unused]] EmitUtilizationMetrics get__emit_utilization_metrics() noexcept {
     const auto& c = emit_counters();
@@ -294,32 +291,6 @@ void DGTLOrchestrator::dispatch_to_wasm(std::string_view path, const dgtl::ir::I
 
 #if DGTL_STRIKE_RUNNER_USE_CPP_IMPL
 
-namespace detail {
-
-// COMMENTED OUT DUPLICATE BLOCK TO PREVENT REDEFINITION IN JIT_Executor.ixx
-// void prime_runner_simd_units() noexcept {
-//     dgtl::core::prime_preferred_simd_units(2048);
-// }
-
-// void stabilize_hardware_clock() noexcept {
-//     const char* env = std::getenv("DGTL_STABILIZE_CLOCK");
-//     if (!env || std::strcmp(env, "1") != 0) {
-//         return;
-//     }
-
-//     constexpr auto kStabilizationWindow = std::chrono::milliseconds(10);
-//     const auto deadline = std::chrono::steady_clock::now() + kStabilizationWindow;
-//     volatile std::uint64_t spin_sink = 0;
-
-//     while (std::chrono::steady_clock::now() < deadline) {
-//         spin_sink = (spin_sink * 1664525ull) + 1013904223ull;
-//     }
-
-//     (void)spin_sink;
-// }
-
-} // namespace detail
-
 void StrikeRunner::release_exec_region() noexcept {
     if (!exec_region_) {
         return;
@@ -363,13 +334,28 @@ StrikeRunner& StrikeRunner::operator=(StrikeRunner&& other) noexcept {
 
 size_t StrikeRunner::inject_code(dgtl::core::DGTL_Arena& arena, const std::vector<uint8_t>& machine_code) {
     (void)arena;
-    release_exec_region();
-
     if (machine_code.empty()) {
         return 0;
     }
 
-    const size_t alloc_size = (machine_code.size() + 63ULL) & ~63ULL;
+    const size_t required_size = (machine_code.size() + 63ULL) & ~63ULL;
+
+    // Fast-path: Reuse existing allocated executable region if large enough
+    if (exec_region_ != nullptr && exec_size_ >= required_size) {
+        std::memcpy(exec_region_, machine_code.data(), machine_code.size());
+#if defined(_WIN32) || defined(_WIN64)
+        FlushInstructionCache(GetCurrentProcess(), exec_region_, machine_code.size());
+#elif defined(__GNUC__) || defined(__clang__)
+        __builtin___clear_cache(reinterpret_cast<char*>(exec_region_), reinterpret_cast<char*>(exec_region_ + machine_code.size()));
+#endif
+        exec_addr_ = reinterpret_cast<uintptr_t>(exec_region_);
+        return machine_code.size();
+    }
+
+    release_exec_region();
+
+    // Allocate at least 64KB slab so subsequent JIT runs reuse the page without new VirtualAlloc
+    const size_t alloc_size = std::max<size_t>(required_size, 65536ULL);
 
     const uint32_t target_node = dgtl::runtime::numa::get_current_node();
     exec_region_ = static_cast<uint8_t*>(dgtl::runtime::numa::allocate_executable_on_node(alloc_size, target_node));
@@ -383,6 +369,13 @@ size_t StrikeRunner::inject_code(dgtl::core::DGTL_Arena& arena, const std::vecto
         release_exec_region();
         return 0;
     }
+
+    // Flush instruction cache across cores
+#if defined(_WIN32) || defined(_WIN64)
+    FlushInstructionCache(GetCurrentProcess(), exec_region_, alloc_size);
+#elif defined(__GNUC__) || defined(__clang__)
+    __builtin___clear_cache(reinterpret_cast<char*>(exec_region_), reinterpret_cast<char*>(exec_region_ + alloc_size));
+#endif
 
     exec_size_ = alloc_size;
     exec_addr_ = reinterpret_cast<uintptr_t>(exec_region_);
@@ -420,8 +413,8 @@ StrikeMetrics StrikeRunner::execute(dgtl::core::DGTL_Arena& arena, size_t inject
         return metrics;
     }
 
-    (void)fn(payload);
-    metrics.status_code = static_cast<uint32_t>(StrikeStatus::Ok);
+    const uint64_t result = fn(payload);
+    metrics.status_code = static_cast<uint32_t>(result);
     return metrics;
 }
 

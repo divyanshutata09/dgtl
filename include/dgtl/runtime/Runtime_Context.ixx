@@ -95,6 +95,9 @@ public:
             scheduler_.start();
             return true;
         }
+        if (state_.load(std::memory_order_acquire) == RuntimeState::Running) {
+            return true;
+        }
         return false;
     }
 

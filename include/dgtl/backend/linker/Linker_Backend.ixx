@@ -331,7 +331,7 @@ protected:
                 return 14;
             case MachineForm::LoadImmediate: {
                 const bool is_float_const = (node.opcode == ir::OpCode::CONST && ((node.flags & ir::Flags::IS_SPEC_CONST) != 0));
-                return is_float_const ? 23 : 17; // Corrected size estimation to avoid layout drift
+                return is_float_const ? 23 : 17;
             }
             case MachineForm::IntegerBinary32:
             case MachineForm::IntegerBinary64: {
@@ -1299,7 +1299,6 @@ public:
         return true;
     }
 
-protected:
     bool emit_machine_code(uint8_t* dest,
                            size_t dest_capacity,
                            const ir::IRStream& stream,
@@ -1330,13 +1329,15 @@ protected:
                 if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
                     label_map[node.result_id] = i;
                 }
-                if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-                    label_map[node.op_a] = i;
+                const bool is_func_header = (node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
+                if (!is_func_header) {
+                    if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+                        label_map[node.op_a] = i;
+                    }
+                    if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+                        label_map[node.op_b] = i;
+                    }
                 }
-                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-                    label_map[node.op_b] = i;
-                }
-                label_map[static_cast<uint32_t>(i)] = i;
                 continue;
             }
 

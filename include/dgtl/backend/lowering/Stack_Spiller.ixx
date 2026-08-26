@@ -34,7 +34,6 @@ import dgtl.ir_core;
 import dgtl.arena;
 import dgtl.ir_core.abi_lowering;
 
-
 using dgtl::ir::OpCode;
 
 export namespace dgtl::backend::lowering {
@@ -49,7 +48,7 @@ struct alignas(16) StackSlot {
     uint32_t size = 0;        // Size in bytes
     OpCode type_hint = OpCode::NOP;     // Type for alignment validation
     uint32_t version = 0;     // For shadowing detection
-    bool is_spill = false;        // Flagged if this is a register-allocator spill
+    bool is_spill = false;    // Flagged if this is a register-allocator spill
 };
 
 /**
@@ -64,7 +63,6 @@ public:
 
     explicit StackPiller(dgtl::core::DGTL_Arena& arena) 
         : m_arena(arena), m_current_frame_size(0) {
-        // Pre-reserve common stack nesting capacities to restrict allocation splitting anomalies
         m_scope_stack.reserve(16);
         m_scope_frame_checkpoints.reserve(16);
         
@@ -95,13 +93,11 @@ public:
      * @return The stack-relative offset.
      */
     int32_t allocate(std::string_view name, uint32_t bytes, OpCode type = OpCode::NOP) {
-        // [FIX]: Do not fail if name is empty. Only fail if bytes are 0.
-        // Empty names are crucial for anonymous compiler temporaries (like intermediate return values).
         if (bytes == 0) [[unlikely]] {
             return 0;
         }
 
-        // Maintain 16-byte alignment for hardware efficiency (AVX-512/NEON).
+        // Maintain 16-byte alignment for hardware efficiency (AVX-512/NEON/Win64 ABI)
         const uint32_t aligned_frame = align_up(m_current_frame_size, STACK_ALIGNMENT);
         if (aligned_frame < m_current_frame_size) [[unlikely]] {
             return 0;
@@ -119,8 +115,6 @@ public:
         int32_t offset = -static_cast<int32_t>(next_frame_size);
         m_current_frame_size = next_frame_size;
 
-        // [FIX]: If no name is provided, just return the raw reserved offset.
-        // This reserves the stack space for the temporary without mapping it.
         if (name.empty()) {
             return offset;
         }
@@ -147,9 +141,25 @@ public:
     }
 
     /**
+     * @brief Allocates a dedicated register-spill slot.
+     */
+    int32_t allocate_spill(uint32_t virtual_id, uint32_t bytes = 8) {
+        const int32_t offset = allocate("", bytes, OpCode::NOP);
+        const uint64_t spill_token = 0xFFFF000000000000ULL | static_cast<uint64_t>(virtual_id);
+        
+        StackSlot slot{
+            .offset = offset,
+            .size = bytes,
+            .type_hint = OpCode::NOP,
+            .version = 1,
+            .is_spill = true
+        };
+        m_scope_stack.back()[spill_token] = slot;
+        return offset;
+    }
+
+    /**
      * @brief Manually binds a symbol to a specific offset. 
-     * Useful for mapping incoming function arguments or specific ABI return slots 
-     * that do not follow standard local frame allocation.
      */
     void bind_explicit_slot(std::string_view name, int32_t offset, uint32_t bytes, OpCode type = OpCode::NOP) {
         if (name.empty()) [[unlikely]] return;
@@ -171,7 +181,6 @@ public:
     [[nodiscard]] std::optional<StackSlot> resolve(std::string_view name) const noexcept {
         uint64_t name_hash = hash_name(name);
 
-        // Search from innermost scope to global scope
         for (auto it = m_scope_stack.rbegin(); it != m_scope_stack.rend(); ++it) {
             if (auto found = it->find(name_hash); found != it->end()) {
                 return found->second;
@@ -212,7 +221,7 @@ private:
     uint32_t m_current_frame_size;
 
     /**
-     * @brief FNV-1a Hash for ultra-fast symbol lookup.
+     * @brief FNV-1a Hash for symbol lookup.
      */
     [[nodiscard]] static constexpr uint64_t hash_name(std::string_view name) noexcept {
         uint64_t hash = 0xcbf29ce484222325ULL;

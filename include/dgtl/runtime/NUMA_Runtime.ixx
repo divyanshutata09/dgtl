@@ -99,11 +99,17 @@ export namespace dgtl::runtime::numa {
 
     (void)pin_current_thread_to_node(node);
 
+    // Ensure alignment is at least sizeof(void*) and a power of 2
+    size_t actual_alignment = (alignment < sizeof(void*)) ? sizeof(void*) : alignment;
+    if ((actual_alignment & (actual_alignment - 1)) != 0) {
+        actual_alignment = 64u;
+    }
+
 #if defined(_WIN32)
-    return _aligned_malloc(size, alignment);
+    return _aligned_malloc(size, actual_alignment);
 #else
     void* ptr = nullptr;
-    if (posix_memalign(&ptr, alignment, size) != 0) {
+    if (posix_memalign(&ptr, actual_alignment, size) != 0) {
         return nullptr;
     }
     return ptr;
@@ -146,10 +152,76 @@ inline void free_executable_region(void* ptr, size_t size) noexcept {
     }
 #if defined(_WIN32)
     (void)size;
-    constexpr DWORD kMemRelease = 0x00008000u;
+    constexpr DWORD kMemRelease = 0x00008000u; // MEM_RELEASE
     VirtualFree(ptr, 0, kMemRelease);
 #else
     munmap(ptr, size);
+#endif
+}
+
+struct DualMappedRegion {
+    void* rw_ptr = nullptr;
+    void* rx_ptr = nullptr;
+    size_t size = 0;
+#if defined(_WIN32)
+    void* handle = nullptr;
+#else
+    int fd = -1;
+#endif
+};
+
+[[nodiscard]] inline DualMappedRegion allocate_dual_mapped(size_t size) noexcept {
+    DualMappedRegion region{};
+    if (size == 0) return region;
+
+    size = (size + 65535ULL) & ~65535ULL;
+    region.size = size;
+
+#if defined(_WIN32)
+    HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 
+                                        static_cast<DWORD>(size >> 32), static_cast<DWORD>(size & 0xFFFFFFFFULL), nullptr);
+    if (!mapping) {
+        region.rw_ptr = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        region.rx_ptr = region.rw_ptr;
+        return region;
+    }
+    region.handle = mapping;
+    region.rw_ptr = MapViewOfFile(mapping, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, size);
+    region.rx_ptr = MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_EXECUTE, 0, 0, size);
+    if (!region.rw_ptr || !region.rx_ptr) {
+        if (region.rw_ptr) UnmapViewOfFile(region.rw_ptr);
+        if (region.rx_ptr && region.rx_ptr != region.rw_ptr) UnmapViewOfFile(region.rx_ptr);
+        CloseHandle(mapping);
+        region.handle = nullptr;
+        region.rw_ptr = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        region.rx_ptr = region.rw_ptr;
+    }
+    return region;
+#else
+    region.rw_ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    region.rx_ptr = region.rw_ptr;
+    return region;
+#endif
+}
+
+inline void free_dual_mapped(DualMappedRegion& region) noexcept {
+#if defined(_WIN32)
+    if (region.handle) {
+        if (region.rw_ptr) UnmapViewOfFile(region.rw_ptr);
+        if (region.rx_ptr && region.rx_ptr != region.rw_ptr) UnmapViewOfFile(region.rx_ptr);
+        CloseHandle(reinterpret_cast<HANDLE>(region.handle));
+        region = {};
+        return;
+    }
+    if (region.rw_ptr) {
+        VirtualFree(region.rw_ptr, 0, 0x00008000u);
+        region = {};
+    }
+#else
+    if (region.rw_ptr && region.rw_ptr != MAP_FAILED) {
+        munmap(region.rw_ptr, region.size);
+        region = {};
+    }
 #endif
 }
 

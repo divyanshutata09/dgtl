@@ -11,5 +11,6 @@
 
 export module dgtl.internal.api_abi_lowering;
 
-// 🚀 FIXED: Re-export the ABI lowering abstractions straight from the consolidated passes layer
+// Re-export the ABI lowering abstractions straight from the consolidated passes layer
 export import dgtl.ir_core;
+export import dgtl.ir_core.abi_lowering;

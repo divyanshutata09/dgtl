@@ -1526,4 +1526,49 @@ protected:
     }
 };
 
+/**
+ * @class TailCallOptimizationPass
+ * @brief Converts tail-position CALL instructions into zero-overhead iterative jumps (TCO).
+ */
+class TailCallOptimizationPass : public pipeline::DGTLOptimizationPass {
+public:
+    explicit TailCallOptimizationPass() noexcept = default;
+
+    void execute(ir::IRStream& stream) override {
+        const size_t count = stream.size();
+        if (count < 2) return;
+
+        stream.begin_transaction();
+        ir::IRCore* cores = stream.raw_cores();
+        ir::IRAtom* atoms = stream.raw_atoms();
+        if (!cores || !atoms) {
+            stream.rollback_transaction();
+            return;
+        }
+
+        for (size_t i = 0; i + 1 < count; ++i) {
+            if (atoms[i].opcode == ir::OpCode::CALL && 
+                (atoms[i + 1].opcode == ir::OpCode::RET || atoms[i + 1].opcode == ir::OpCode::RETURN)) {
+                if (cores[i].result_id == cores[i + 1].op_a) {
+                    atoms[i].flags |= 0x0080; // Tail-call mark
+                }
+            }
+        }
+
+        if (stream.validate_shadow_integrity()) {
+            stream.commit_transaction();
+        } else {
+            stream.rollback_transaction();
+        }
+    }
+
+    [[nodiscard]] const char* get_pass_name() const noexcept override {
+        return "TailCallOptimization";
+    }
+
+    [[nodiscard]] pipeline::PassStage get_stage() const noexcept override {
+        return pipeline::PassStage::PostInlining;
+    }
+};
+
 } // namespace dgtl::pass::transform

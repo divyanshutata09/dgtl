@@ -46,6 +46,7 @@ module;
     #define PAGE_EXECUTE_READ 0x20
 #else
     #include <unistd.h>
+    #include <sys/mman.h>
 #endif
 
 #include <cstdlib>
@@ -146,8 +147,6 @@ public:
         (void)ai_model;
 
         // 1. Hot-to-Cold Partitioning
-        // Sorting by hotness ensures high-frequency code lives in the same TLB pages,
-        // reducing TLB misses and improving instruction cache locality.
         std::sort(segments.begin(), segments.end(), [](const auto& a, const auto& b) {
             return a.hotness_score > b.hotness_score;
         });
@@ -157,13 +156,10 @@ public:
             [](size_t sum, const auto& seg) noexcept {
                 return sum + seg.machine_code.size();
             });
-        // Reserve exact payload plus one cache line headroom for alignment padding.
         final_blob.reserve(total_bytes + CPU_CACHE_LINE);
 
         for (auto& seg : segments) {
-            // 2. Cache-Line Alignment (The "Zero-Straddle" Rule)
-            // If the segment is 'Hot', we force 64-byte alignment.
-            // This ensures the CPU decoder doesn't fetch across two cache lines for loop entries.
+            // 2. Cache-Line Alignment
             if (seg.hotness_score >= HOT_THRESHOLD) {
                 size_t current_pos = final_blob.size();
                 size_t padding = (CPU_CACHE_LINE - (current_pos % CPU_CACHE_LINE)) % CPU_CACHE_LINE;
@@ -177,7 +173,6 @@ public:
             seg.final_load_address = static_cast<uintptr_t>(final_blob.size());
 
             // 3. Global Branch Patching
-            // Refines jump offsets based on the finalized sorted order.
             patch_relative_jumps(seg);
 
             // 4. Final Insertion Strike
@@ -188,11 +183,6 @@ public:
     }
 
 private:
-    /**
-     * @brief High-Performance NOP injection (x86_64 Optimized).
-     * Uses Intel/AMD recommended multi-byte sequences to keep 
-     * decoder pipelines full without consuming execution ports.
-     */
     static void inject_optimized_nops(std::vector<uint8_t>& blob, size_t count) {
         static const uint8_t NOP9[] = {0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
         static const uint8_t NOP4[] = {0x0F, 0x1F, 0x40, 0x00};
@@ -205,7 +195,7 @@ private:
                 blob.insert(blob.end(), NOP4, NOP4 + 4);
                 count -= 4;
             } else {
-                blob.push_back(0x90); // 1-byte NOP
+                blob.push_back(0x90);
                 count--;
             }
         }
@@ -236,7 +226,6 @@ private:
 
 /**
  * @struct CompilationReport
- * @brief High-precision telemetry for the compilation strike.
  */
 struct CompilationReport {
     double total_ms = 0.0;
@@ -274,7 +263,6 @@ inline void map_core_symbols(auto& session) {
 
 /**
  * @class DGTLOrchestrator
- * @brief The final gatekeeper before hardware-native binary generation.
  */
 class DGTLOrchestrator {
     CompilationReport last_report;
@@ -395,7 +383,6 @@ private:
         #endif
     }
 
-    /* Dispatch methods - implemented in .cpp file */
     void dispatch_to_linker(std::string_view path, const dgtl::ir::IRStream& stream);
     void dispatch_to_relocatable(std::string_view path, const dgtl::ir::IRStream& stream);
     void dispatch_to_archive(std::string_view path, const dgtl::ir::IRStream& stream);
@@ -529,7 +516,6 @@ public:
         emitter.set_target_machine(target_machine);
         executor.set_target_machine(target_machine);
         register_bulletins();
-        start_tier2_worker();
     }
 
     ~StrikeOrchestrator() {
@@ -558,7 +544,6 @@ public:
      * @brief Register runtime intrinsic symbols into the linker and symbol table.
      */
     void register_bulletins() {
-        // Core DGTL intrinsics
         register_runtime_function("__dgtl_rt_string_length", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_length));
         register_runtime_function("__dgtl_rt_string_compare", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_compare));
         register_runtime_function("__dgtl_rt_string_concat", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_concat));
@@ -664,17 +649,27 @@ public:
         register_runtime_function("__dgtl_rt_print_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str));
         register_runtime_function("__dgtl_rt_println_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool));
         register_runtime_function("__dgtl_rt_print_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool));
+
+        // Friendly aliases
+        register_runtime_function("println_i64", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_i64));
+        register_runtime_function("print_i64", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_i64));
+        register_runtime_function("println_f64", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_f64));
+        register_runtime_function("print_f64", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_f64));
+        register_runtime_function("println_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_str));
+        register_runtime_function("print_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str));
+        register_runtime_function("println_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool));
+        register_runtime_function("print_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool));
     }
 
     /**
-     * @brief Relocation Linker (Module-Level Strike).
+     * @brief Relocation Linker (Module-Level Strike) with verified cross-module symbol resolution.
      */
     StrikeMetrics fire_module_strike(const std::vector<std::pair<std::string, dgtl::ir::IRStream>>& module_streams) {
         machine_code_buffer.clear();
         buffer_symbol_offsets.clear();
         pending_patches.clear();
 
-        // 1. LINEAR EMISSION PHASE
+        // 1. LINEAR EMISSION PHASE & SYMBOL GATHERING
         for (const auto& [name, stream] : module_streams) {
             if (stream.is_null() || stream.size() == 0) continue;
 
@@ -698,7 +693,7 @@ public:
             global_symbol_table[name] = module_base_address + offset;
         }
 
-        // 3. BACKPATCH PHASE
+        // 3. SECURE BACKPATCH PHASE
         for (const auto& patch : pending_patches) {
             auto it = global_symbol_table.find(patch.target_symbol);
             if (it == global_symbol_table.end()) {
@@ -711,7 +706,19 @@ public:
             uintptr_t patch_ptr = module_base_address + patch.buffer_offset;
 
             int32_t relative_offset = static_cast<int32_t>(target_address - instruction_end_addr);
+
+            // W^X Relocation Protection
+#if defined(_WIN32) || defined(_WIN64)
+            DWORD old_protect = 0;
+            VirtualProtect(reinterpret_cast<void*>(patch_ptr), sizeof(int32_t), PAGE_READWRITE, &old_protect);
             std::memcpy(reinterpret_cast<void*>(patch_ptr), &relative_offset, sizeof(int32_t));
+            VirtualProtect(reinterpret_cast<void*>(patch_ptr), sizeof(int32_t), old_protect, &old_protect);
+#else
+            uintptr_t page_addr = patch_ptr & ~0xFFFULL;
+            mprotect(reinterpret_cast<void*>(page_addr), 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
+            std::memcpy(reinterpret_cast<void*>(patch_ptr), &relative_offset, sizeof(int32_t));
+            mprotect(reinterpret_cast<void*>(page_addr), 4096, PROT_READ | PROT_EXEC);
+#endif
         }
 
         // 4. EXECUTION PHASE
@@ -808,6 +815,7 @@ public:
             std::lock_guard<std::mutex> lock(tiered_mtx_);
             tiered_functions_[id] = state;
             if (queue_tier2) {
+                ensure_tier2_worker_started();
                 tier2_streams_[id] = std::make_shared<dgtl::ir::IRStream>(stream.clone());
                 tier2_queue_.push(id);
             }
@@ -971,6 +979,14 @@ public:
     }
 
 private:
+    std::once_flag tier2_started_flag_{};
+
+    void ensure_tier2_worker_started() {
+        std::call_once(tier2_started_flag_, [this]() {
+            start_tier2_worker();
+        });
+    }
+
     void start_tier2_worker() {
         tier2_stop_.store(false, std::memory_order_release);
         tier2_worker_ = std::thread([this]() { tier2_worker_loop(); });
@@ -1135,7 +1151,6 @@ private:
     }
 
 public:
-
     [[nodiscard]] uintptr_t compile_to_address(dgtl::ir::IRStream& stream) {
         if (stream.is_null() || stream.size() == 0) [[unlikely]] return 0;
         

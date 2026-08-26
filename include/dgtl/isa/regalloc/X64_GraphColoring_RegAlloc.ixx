@@ -15,6 +15,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,17 +40,26 @@ public:
             return out;
         }
 
-        // Build label map for loop-aware liveness intervals.
+        // Build comprehensive label-to-node index mapping for loop analysis
         std::unordered_map<uint32_t, size_t> label_map;
         for (size_t i = 0; i < stream.size(); ++i) {
             const ir::IRNode node = stream.get_node_readonly(i);
-            if (node.opcode == ir::OpCode::LABEL && node.op_a != ir::INVALID_SLOT) {
-                label_map[node.op_a] = i;
+            if (node.opcode == ir::OpCode::LABEL) {
+                if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+                    label_map[node.result_id] = i;
+                }
+                if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+                    label_map[node.op_a] = i;
+                }
+                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+                    label_map[node.op_b] = i;
+                }
             }
         }
 
-        dgtl::analysis::LivenessAnalyzer live;
-        live.analyze_stream(stream);
+        // Compute rigorous live intervals with loop backedge resolution
+        StrikeLiveManager live;
+        live.compute(stream, label_map);
 
         constexpr std::array<dgtl::exec::X64Reg, 7> kPalette = {
             dgtl::exec::X64Reg::RAX,
@@ -61,8 +71,22 @@ public:
             dgtl::exec::X64Reg::R9
         };
 
-        // Track all virtual IDs that are produced by IR nodes so immediates/labels are not
-        // misclassified as register-valued uses during allocation.
+        // Identify all virtual registers that cross a CALL boundary
+        std::unordered_set<uint32_t> call_clobbered_vregs;
+        for (size_t i = 0; i < stream.size(); ++i) {
+            const ir::IRNode node = stream.get_node_readonly(i);
+            if (node.opcode == ir::OpCode::CALL ||
+                node.opcode == ir::OpCode::CALL_VARIADIC ||
+                node.opcode == ir::OpCode::SYSCALL) {
+                for (size_t v = 0; v < 65536; ++v) {
+                    if (!live.is_dead(static_cast<uint32_t>(v), i)) {
+                        call_clobbered_vregs.insert(static_cast<uint32_t>(v));
+                    }
+                }
+            }
+        }
+
+        // Track produced virtual IDs so immediates/labels are never treated as SSA registers
         std::unordered_map<uint32_t, bool> produced_ids;
         produced_ids.reserve(stream.size());
         for (size_t i = 0; i < stream.size(); ++i) {
@@ -86,7 +110,7 @@ public:
 
                 const bool still_live_owner = std::any_of(out.assigned_registers.begin(), out.assigned_registers.end(),
                     [&](const auto& kv) noexcept {
-                        return kv.second == kPalette[r] && live.is_live_at(kv.first, static_cast<uint32_t>(node_index));
+                        return kv.second == kPalette[r] && !live.is_dead(kv.first, node_index);
                     });
 
                 if (!still_live_owner) {
@@ -100,6 +124,12 @@ public:
                 return;
             }
             if (out.assigned_registers.find(vid) != out.assigned_registers.end()) {
+                return;
+            }
+
+            // Spill virtuals that are live across function calls to preserve ABI integrity
+            if (call_clobbered_vregs.find(vid) != call_clobbered_vregs.end()) {
+                out.spilled_virtuals.push_back(vid);
                 return;
             }
 
@@ -131,7 +161,14 @@ public:
                 continue;
             }
 
-            // Ensure operand values are assigned before definition point use.
+            if (node.opcode == ir::OpCode::BRANCH_COMPARE_FUSED) {
+                ensure_assignment(node.op_a, i);
+                ensure_assignment(node.op_b, i);
+                reclaim_dead_assignments(i);
+                continue;
+            }
+
+            // Ensure operand values are assigned before definition point use
             ensure_assignment(node.op_a, i);
             ensure_assignment(node.op_b, i);
             ensure_assignment(node.op_c, i);

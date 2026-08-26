@@ -12,7 +12,6 @@
 module;
 
 #include <cstdlib>
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -48,6 +47,17 @@ inline const char* resolve_string_arg(uint64_t raw) noexcept {
         return by_handle.data();
     }
     return reinterpret_cast<const char*>(raw);
+}
+
+inline std::atomic<uint32_t>& next_dynamic_string_handle() noexcept {
+    static std::atomic<uint32_t> h{0x80000000u};
+    return h;
+}
+
+inline uint64_t register_dynamic_string(const std::string& str) {
+    uint32_t handle = next_dynamic_string_handle().fetch_add(1, std::memory_order_relaxed);
+    dgtl::runtime::register_dgtl_string(handle, str.data(), static_cast<uint32_t>(str.size()));
+    return static_cast<uint64_t>(handle);
 }
 
 inline std::mutex& channel_mutex() {
@@ -393,10 +403,12 @@ inline uint64_t __dgtl_rt_string_concat(uint64_t a, uint64_t b, uint64_t = 0) no
     if (lhs == nullptr || rhs == nullptr) {
         return 0;
     }
-    thread_local std::string buffer;
-    buffer.assign(lhs);
-    buffer += rhs;
-    return reinterpret_cast<uint64_t>(buffer.c_str());
+    try {
+        std::string res = std::string(lhs) + std::string(rhs);
+        return dgtl::runtime::intrinsics_detail::register_dynamic_string(res);
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_string_substring(uint64_t s, uint64_t start, uint64_t len) noexcept {
@@ -410,9 +422,12 @@ inline uint64_t __dgtl_rt_string_substring(uint64_t s, uint64_t start, uint64_t 
         return 0;
     }
     const std::size_t n = std::min(static_cast<std::size_t>(len), src_len - begin);
-    thread_local std::string buffer;
-    buffer.assign(src + begin, n);
-    return reinterpret_cast<uint64_t>(buffer.c_str());
+    try {
+        std::string res = std::string(src + begin, n);
+        return dgtl::runtime::intrinsics_detail::register_dynamic_string(res);
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_bool_select(uint64_t cond, uint64_t on_true, uint64_t on_false) noexcept {
@@ -464,9 +479,13 @@ inline uint64_t __dgtl_rt_async_launch(uint64_t fn_ptr, uint64_t arg0, uint64_t 
     using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t);
     if (fn_ptr == 0u) return 0u;
     const Fn fn = reinterpret_cast<Fn>(fn_ptr);
-    std::thread([fn, arg0, arg1]() {
-        (void)fn(arg0, arg1, 0u);
-    }).detach();
+    try {
+        std::thread([fn, arg0, arg1]() {
+            (void)fn(arg0, arg1, 0u);
+        }).detach();
+    } catch (...) {
+        return 0u;
+    }
     return fn_ptr;
 }
 
@@ -594,15 +613,19 @@ inline uint64_t __dgtl_rt_gather_16(uint64_t base_ptr, uint64_t indices_ptr, uin
     if (base_ptr == 0u || indices_ptr == 0u || count == 0u) return 0u;
     const uint16_t* base = reinterpret_cast<const uint16_t*>(base_ptr);
     const uint32_t* idx = reinterpret_cast<const uint32_t*>(indices_ptr);
-    std::vector<double> gathered;
-    gathered.reserve(static_cast<std::size_t>(count));
-    for (uint64_t i = 0; i < count; ++i) {
-        gathered.push_back(static_cast<double>(base[idx[i]]));
+    try {
+        std::vector<double> gathered;
+        gathered.reserve(static_cast<std::size_t>(count));
+        for (uint64_t i = 0; i < count; ++i) {
+            gathered.push_back(static_cast<double>(base[idx[i]]));
+        }
+        std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
+        dgtl::runtime::intrinsics_detail::vector_store().emplace(handle, std::move(gathered));
+        return handle;
+    } catch (...) {
+        return 0u;
     }
-    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
-    dgtl::runtime::intrinsics_detail::vector_store().emplace(handle, std::move(gathered));
-    return handle;
 }
 
 inline uint64_t __dgtl_rt_gpu_launch(uint64_t kernel_ptr, uint64_t arg0, uint64_t arg1) noexcept {
@@ -613,21 +636,25 @@ inline uint64_t __dgtl_rt_gpu_launch(uint64_t kernel_ptr, uint64_t arg0, uint64_
 }
 
 inline uint64_t __dgtl_rt_graph_build(uint64_t node_count, uint64_t edges_ptr, uint64_t edge_count) noexcept {
-    dgtl::runtime::intrinsics_detail::Graph graph{};
-    graph.node_count = node_count;
+    try {
+        dgtl::runtime::intrinsics_detail::Graph graph{};
+        graph.node_count = node_count;
 
-    const uint64_t* edges = reinterpret_cast<const uint64_t*>(edges_ptr);
-    for (uint64_t i = 0; i < edge_count; ++i) {
-        const uint64_t packed = (edges != nullptr) ? edges[i] : 0u;
-        const uint64_t from = static_cast<uint32_t>(packed >> 32u);
-        const uint64_t to = static_cast<uint32_t>(packed & 0xFFFFFFFFu);
-        graph.adj[from].push_back(to);
+        const uint64_t* edges = reinterpret_cast<const uint64_t*>(edges_ptr);
+        for (uint64_t i = 0; i < edge_count; ++i) {
+            const uint64_t packed = (edges != nullptr) ? edges[i] : 0u;
+            const uint64_t from = static_cast<uint32_t>(packed >> 32u);
+            const uint64_t to = static_cast<uint32_t>(packed & 0xFFFFFFFFu);
+            graph.adj[from].push_back(to);
+        }
+
+        std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::graph_mutex());
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_graph_handle().fetch_add(1, std::memory_order_relaxed);
+        dgtl::runtime::intrinsics_detail::graph_store().emplace(handle, std::move(graph));
+        return handle;
+    } catch (...) {
+        return 0u;
     }
-
-    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::graph_mutex());
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_graph_handle().fetch_add(1, std::memory_order_relaxed);
-    dgtl::runtime::intrinsics_detail::graph_store().emplace(handle, std::move(graph));
-    return handle;
 }
 
 inline uint64_t __dgtl_rt_graph_traverse(uint64_t graph_handle, uint64_t start_node, uint64_t mode) noexcept {
@@ -1134,22 +1161,32 @@ inline uint64_t __dgtl_rt_tensor_transpose(uint64_t tensor_handle, uint64_t dim0
     return handle;
 }
 
+inline uint64_t __dgtl_rt_tensor_free(uint64_t tensor_handle, uint64_t = 0, uint64_t = 0) noexcept {
+    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::tensor_mutex());
+    auto& store = dgtl::runtime::intrinsics_detail::tensor_store();
+    return store.erase(tensor_handle) > 0 ? 1u : 0u;
+}
+
 inline uint64_t __dgtl_rt_thread_spawn(uint64_t fn_ptr, uint64_t arg0, uint64_t arg1) noexcept {
     using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t);
     if (fn_ptr == 0u) return 0u;
     const Fn fn = reinterpret_cast<Fn>(fn_ptr);
     const uint64_t token = dgtl::runtime::intrinsics_detail::next_thread_token().fetch_add(1, std::memory_order_relaxed);
-    std::thread worker([fn, arg0, arg1]() {
-        (void)fn(arg0, arg1, 0u);
-    });
-    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::thread_tokens_mutex());
-    dgtl::runtime::intrinsics_detail::thread_tokens().emplace(token, std::move(worker));
-    auto it = dgtl::runtime::intrinsics_detail::thread_tokens().find(token);
-    if (it != dgtl::runtime::intrinsics_detail::thread_tokens().end() && it->second.joinable()) {
-        it->second.detach();
+    try {
+        std::thread worker([fn, arg0, arg1]() {
+            (void)fn(arg0, arg1, 0u);
+        });
+        std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::thread_tokens_mutex());
+        dgtl::runtime::intrinsics_detail::thread_tokens().emplace(token, std::move(worker));
+        auto it = dgtl::runtime::intrinsics_detail::thread_tokens().find(token);
+        if (it != dgtl::runtime::intrinsics_detail::thread_tokens().end() && it->second.joinable()) {
+            it->second.detach();
+        }
+        dgtl::runtime::intrinsics_detail::thread_tokens().erase(token);
+        return token;
+    } catch (...) {
+        return 0u;
     }
-    dgtl::runtime::intrinsics_detail::thread_tokens().erase(token);
-    return token;
 }
 
 inline uint64_t __dgtl_rt_tree_build(uint64_t tree_handle, uint64_t value, uint64_t = 0) noexcept {
@@ -1157,12 +1194,16 @@ inline uint64_t __dgtl_rt_tree_build(uint64_t tree_handle, uint64_t value, uint6
     auto& store = dgtl::runtime::intrinsics_detail::tree_store();
 
     if (tree_handle == 0u) {
-        dgtl::runtime::intrinsics_detail::Tree tree{};
-        tree.nodes.push_back({value, -1, -1});
-        tree.root = 0;
-        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tree_handle().fetch_add(1, std::memory_order_relaxed);
-        store.emplace(handle, std::move(tree));
-        return handle;
+        try {
+            dgtl::runtime::intrinsics_detail::Tree tree{};
+            tree.nodes.push_back({value, -1, -1});
+            tree.root = 0;
+            const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tree_handle().fetch_add(1, std::memory_order_relaxed);
+            store.emplace(handle, std::move(tree));
+            return handle;
+        } catch (...) {
+            return 0u;
+        }
     }
 
     const auto it = store.find(tree_handle);
@@ -1234,13 +1275,22 @@ inline uint64_t __dgtl_rt_tree_traverse(uint64_t tree_handle, uint64_t order, ui
     return (hash & 0xFFFFFFFF00000000ull) | (count & 0xFFFFFFFFull);
 }
 
+inline uint64_t __dgtl_rt_tree_free(uint64_t tree_handle, uint64_t = 0, uint64_t = 0) noexcept {
+    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::tree_mutex());
+    return dgtl::runtime::intrinsics_detail::tree_store().erase(tree_handle) > 0 ? 1u : 0u;
+}
+
 inline uint64_t __dgtl_rt_trie_build(uint64_t = 0, uint64_t = 0, uint64_t = 0) noexcept {
-    dgtl::runtime::intrinsics_detail::Trie trie{};
-    trie.nodes.emplace_back();
-    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::trie_mutex());
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_trie_handle().fetch_add(1, std::memory_order_relaxed);
-    dgtl::runtime::intrinsics_detail::trie_store().emplace(handle, std::move(trie));
-    return handle;
+    try {
+        dgtl::runtime::intrinsics_detail::Trie trie{};
+        trie.nodes.emplace_back();
+        std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::trie_mutex());
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_trie_handle().fetch_add(1, std::memory_order_relaxed);
+        dgtl::runtime::intrinsics_detail::trie_store().emplace(handle, std::move(trie));
+        return handle;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_trie_insert(uint64_t trie_handle, uint64_t key_raw, uint64_t value) noexcept {
@@ -1303,11 +1353,25 @@ inline uint64_t __dgtl_rt_trie_lookup(uint64_t trie_handle, uint64_t key_raw, ui
     return terminal.has_value ? terminal.value : fallback;
 }
 
+inline uint64_t __dgtl_rt_trie_free(uint64_t trie_handle, uint64_t = 0, uint64_t = 0) noexcept {
+    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::trie_mutex());
+    return dgtl::runtime::intrinsics_detail::trie_store().erase(trie_handle) > 0 ? 1u : 0u;
+}
+
+inline uint64_t __dgtl_rt_graph_free(uint64_t graph_handle, uint64_t = 0, uint64_t = 0) noexcept {
+    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::graph_mutex());
+    return dgtl::runtime::intrinsics_detail::graph_store().erase(graph_handle) > 0 ? 1u : 0u;
+}
+
 inline uint64_t __dgtl_rt_tuple_pack(uint64_t a, uint64_t b, uint64_t c) noexcept {
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tuple_handle().fetch_add(1, std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::tuple_mutex());
-    dgtl::runtime::intrinsics_detail::tuple_store()[handle] = {a, b, c};
-    return handle;
+    try {
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tuple_handle().fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::tuple_mutex());
+        dgtl::runtime::intrinsics_detail::tuple_store()[handle] = {a, b, c};
+        return handle;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_tuple_unpack(uint64_t tuple_handle, uint64_t index, uint64_t fallback) noexcept {
@@ -1318,14 +1382,23 @@ inline uint64_t __dgtl_rt_tuple_unpack(uint64_t tuple_handle, uint64_t index, ui
     return it->second[static_cast<std::size_t>(index)];
 }
 
+inline uint64_t __dgtl_rt_tuple_free(uint64_t tuple_handle, uint64_t = 0, uint64_t = 0) noexcept {
+    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::tuple_mutex());
+    return dgtl::runtime::intrinsics_detail::tuple_store().erase(tuple_handle) > 0 ? 1u : 0u;
+}
+
 inline uint64_t __dgtl_rt_vec_load(uint64_t data_ptr, uint64_t count, uint64_t = 0) noexcept {
     if (data_ptr == 0u || count == 0u) return 0u;
     const double* p = reinterpret_cast<const double*>(data_ptr);
-    std::vector<double> vec(p, p + static_cast<std::ptrdiff_t>(count));
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
-    dgtl::runtime::intrinsics_detail::vector_store().emplace(handle, std::move(vec));
-    return handle;
+    try {
+        std::vector<double> vec(p, p + static_cast<std::ptrdiff_t>(count));
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
+        dgtl::runtime::intrinsics_detail::vector_store().emplace(handle, std::move(vec));
+        return handle;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_vec_reduce_add(uint64_t vec_handle, uint64_t op, uint64_t = 0) noexcept {
@@ -1381,6 +1454,11 @@ inline uint64_t __dgtl_rt_vec_store(uint64_t vec_handle, uint64_t out_ptr, uint6
     const std::size_t n = std::min<std::size_t>(static_cast<std::size_t>(max_count), it->second.size());
     std::memcpy(out, it->second.data(), n * sizeof(double));
     return static_cast<uint64_t>(n);
+}
+
+inline uint64_t __dgtl_rt_vec_free(uint64_t vec_handle, uint64_t = 0, uint64_t = 0) noexcept {
+    std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
+    return dgtl::runtime::intrinsics_detail::vector_store().erase(vec_handle) > 0 ? 1u : 0u;
 }
 
 inline uint64_t __dgtl_rt_select(uint64_t cond, uint64_t when_true, uint64_t when_false) noexcept {
@@ -1471,11 +1549,15 @@ inline uint64_t __dgtl_rt_neon_vadd_q(uint64_t vec_a, uint64_t vec_b, uint64_t =
     if (it_a == store.end() || it_b == store.end()) return 0u;
     const std::size_t n = std::min(it_a->second.size(), it_b->second.size());
     if (n == 0u) return 0u;
-    std::vector<double> out(n, 0.0);
-    for (std::size_t i = 0; i < n; ++i) out[i] = it_a->second[i] + it_b->second[i];
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
-    dgtl::runtime::intrinsics_detail::vector_store().emplace(handle, std::move(out));
-    return handle;
+    try {
+        std::vector<double> out(n, 0.0);
+        for (std::size_t i = 0; i < n; ++i) out[i] = it_a->second[i] + it_b->second[i];
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
+        dgtl::runtime::intrinsics_detail::vector_store().emplace(handle, std::move(out));
+        return handle;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_matmul_bf16(uint64_t a_handle, uint64_t b_handle, uint64_t flags) noexcept {
@@ -1504,21 +1586,25 @@ inline uint64_t __dgtl_rt_layer_norm(uint64_t tensor_handle, uint64_t epsilon_bi
     auto& store = dgtl::runtime::intrinsics_detail::tensor_store();
     const auto it = store.find(tensor_handle);
     if (it == store.end() || it->second.data.empty()) return 0u;
-    dgtl::runtime::intrinsics_detail::Tensor out = it->second;
-    const double mean = std::accumulate(out.data.begin(), out.data.end(), 0.0) / static_cast<double>(out.data.size());
-    double var = 0.0;
-    for (double v : out.data) {
-        const double d = v - mean;
-        var += d * d;
+    try {
+        dgtl::runtime::intrinsics_detail::Tensor out = it->second;
+        const double mean = std::accumulate(out.data.begin(), out.data.end(), 0.0) / static_cast<double>(out.data.size());
+        double var = 0.0;
+        for (double v : out.data) {
+            const double d = v - mean;
+            var += d * d;
+        }
+        var /= static_cast<double>(out.data.size());
+        const double inv = 1.0 / std::sqrt(var + std::max(eps, 1e-12));
+        std::transform(out.data.begin(), out.data.end(), out.data.begin(), [mean, inv](double v) noexcept {
+            return (v - mean) * inv;
+        });
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tensor_handle().fetch_add(1, std::memory_order_relaxed);
+        store.emplace(handle, std::move(out));
+        return handle;
+    } catch (...) {
+        return 0u;
     }
-    var /= static_cast<double>(out.data.size());
-    const double inv = 1.0 / std::sqrt(var + std::max(eps, 1e-12));
-    std::transform(out.data.begin(), out.data.end(), out.data.begin(), [mean, inv](double v) noexcept {
-        return (v - mean) * inv;
-    });
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tensor_handle().fetch_add(1, std::memory_order_relaxed);
-    store.emplace(handle, std::move(out));
-    return handle;
 }
 
 inline uint64_t __dgtl_rt_rope_embed(uint64_t tensor_handle, uint64_t rotate_by, uint64_t = 0) noexcept {
@@ -1526,12 +1612,16 @@ inline uint64_t __dgtl_rt_rope_embed(uint64_t tensor_handle, uint64_t rotate_by,
     auto& store = dgtl::runtime::intrinsics_detail::tensor_store();
     const auto it = store.find(tensor_handle);
     if (it == store.end() || it->second.data.empty()) return 0u;
-    dgtl::runtime::intrinsics_detail::Tensor out = it->second;
-    const std::size_t shift = static_cast<std::size_t>(rotate_by % out.data.size());
-    std::rotate(out.data.begin(), out.data.begin() + static_cast<std::ptrdiff_t>(shift), out.data.end());
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tensor_handle().fetch_add(1, std::memory_order_relaxed);
-    store.emplace(handle, std::move(out));
-    return handle;
+    try {
+        dgtl::runtime::intrinsics_detail::Tensor out = it->second;
+        const std::size_t shift = static_cast<std::size_t>(rotate_by % out.data.size());
+        std::rotate(out.data.begin(), out.data.begin() + static_cast<std::ptrdiff_t>(shift), out.data.end());
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_tensor_handle().fetch_add(1, std::memory_order_relaxed);
+        store.emplace(handle, std::move(out));
+        return handle;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_fast_inv_sqrt(uint64_t value_bits, uint64_t = 0, uint64_t = 0) noexcept {
@@ -1552,13 +1642,17 @@ inline uint64_t __dgtl_rt_vec3_cross(uint64_t a_handle, uint64_t b_handle, uint6
     const auto it_b = store.find(b_handle);
     if (it_a == store.end() || it_b == store.end()) return 0u;
     if (it_a->second.size() < 3u || it_b->second.size() < 3u) return 0u;
-    std::vector<double> out(3u, 0.0);
-    out[0] = it_a->second[1] * it_b->second[2] - it_a->second[2] * it_b->second[1];
-    out[1] = it_a->second[2] * it_b->second[0] - it_a->second[0] * it_b->second[2];
-    out[2] = it_a->second[0] * it_b->second[1] - it_a->second[1] * it_b->second[0];
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
-    store.emplace(handle, std::move(out));
-    return handle;
+    try {
+        std::vector<double> out(3u, 0.0);
+        out[0] = it_a->second[1] * it_b->second[2] - it_a->second[2] * it_b->second[1];
+        out[1] = it_a->second[2] * it_b->second[0] - it_a->second[0] * it_b->second[2];
+        out[2] = it_a->second[0] * it_b->second[1] - it_a->second[1] * it_b->second[0];
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
+        store.emplace(handle, std::move(out));
+        return handle;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 inline uint64_t __dgtl_rt_vec4_dot(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
@@ -1582,17 +1676,21 @@ inline uint64_t __dgtl_rt_mat4_mul(uint64_t a_handle, uint64_t b_handle, uint64_
     const auto it_b = store.find(b_handle);
     if (it_a == store.end() || it_b == store.end()) return 0u;
     if (it_a->second.size() < 16u || it_b->second.size() < 16u) return 0u;
-    std::vector<double> out(16u, 0.0);
-    for (std::size_t r = 0; r < 4u; ++r) {
-        for (std::size_t c = 0; c < 4u; ++c) {
-            for (std::size_t k = 0; k < 4u; ++k) {
-                out[r * 4u + c] += it_a->second[r * 4u + k] * it_b->second[k * 4u + c];
+    try {
+        std::vector<double> out(16u, 0.0);
+        for (std::size_t r = 0; r < 4u; ++r) {
+            for (std::size_t c = 0; c < 4u; ++c) {
+                for (std::size_t k = 0; k < 4u; ++k) {
+                    out[r * 4u + c] += it_a->second[r * 4u + k] * it_b->second[k * 4u + c];
+                }
             }
         }
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
+        store.emplace(handle, std::move(out));
+        return handle;
+    } catch (...) {
+        return 0u;
     }
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
-    store.emplace(handle, std::move(out));
-    return handle;
 }
 
 inline uint64_t __dgtl_rt_quat_slerp(uint64_t a_handle, uint64_t b_handle, uint64_t t_bits) noexcept {
@@ -1605,13 +1703,17 @@ inline uint64_t __dgtl_rt_quat_slerp(uint64_t a_handle, uint64_t b_handle, uint6
     const auto it_b = store.find(b_handle);
     if (it_a == store.end() || it_b == store.end()) return 0u;
     if (it_a->second.size() < 4u || it_b->second.size() < 4u) return 0u;
-    std::vector<double> out(4u, 0.0);
-    for (std::size_t i = 0; i < 4u; ++i) {
-        out[i] = it_a->second[i] * (1.0 - t) + it_b->second[i] * t;
+    try {
+        std::vector<double> out(4u, 0.0);
+        for (std::size_t i = 0; i < 4u; ++i) {
+            out[i] = it_a->second[i] * (1.0 - t) + it_b->second[i] * t;
+        }
+        const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
+        store.emplace(handle, std::move(out));
+        return handle;
+    } catch (...) {
+        return 0u;
     }
-    const uint64_t handle = dgtl::runtime::intrinsics_detail::next_vector_handle().fetch_add(1, std::memory_order_relaxed);
-    store.emplace(handle, std::move(out));
-    return handle;
 }
 
 inline uint64_t __dgtl_rt_ray_aabb_isect(uint64_t ray_ptr, uint64_t box_ptr, uint64_t = 0) noexcept {

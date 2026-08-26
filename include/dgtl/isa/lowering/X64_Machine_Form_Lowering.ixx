@@ -269,6 +269,12 @@ export namespace dgtl::isa {
 
 class X64StrikeEmitter {
 public:
+    struct PendingBranchPatch {
+        size_t displacement_offset = 0;
+        size_t instruction_end_offset = 0;
+        uint32_t target_label = ir::INVALID_SLOT;
+    };
+
     X64StrikeEmitter()
                 : target_machine_(core::ArchType::X86_64_AVX2),
                   selector_(lowering::make_builtin_instruction_selector_program()) {}
@@ -320,13 +326,15 @@ public:
                 if (n.result_id != ir::INVALID_SLOT && n.result_id != 0u) {
                     label_to_node_index[n.result_id] = i;
                 }
-                if (n.op_a != ir::INVALID_SLOT && n.op_a != 0u) {
-                    label_to_node_index[n.op_a] = i;
+                const bool is_func_header = (n.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
+                if (!is_func_header) {
+                    if (n.op_a != ir::INVALID_SLOT && n.op_a != 0u) {
+                        label_to_node_index[n.op_a] = i;
+                    }
+                    if (n.op_b != ir::INVALID_SLOT && n.op_b != 0u) {
+                        label_to_node_index[n.op_b] = i;
+                    }
                 }
-                if (n.op_b != ir::INVALID_SLOT && n.op_b != 0u) {
-                    label_to_node_index[n.op_b] = i;
-                }
-                label_to_node_index[static_cast<uint32_t>(i)] = i;
             }
         }
 
@@ -343,18 +351,25 @@ public:
                 if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
                     label_offsets_[node.result_id] = byte_offset;
                 }
-                if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-                    label_offsets_[node.op_a] = byte_offset;
-                }
-                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-                    label_offsets_[node.op_b] = byte_offset;
+                const bool is_func_header = (node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
+                if (!is_func_header) {
+                    if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+                        label_offsets_[node.op_a] = byte_offset;
+                    }
+                    if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+                        label_offsets_[node.op_b] = byte_offset;
+                    }
                 }
             }
             const auto selected = selector_.select_instruction(machine_stream, i, node, target_machine_);
 
             switch (selected.form) {
                 case lowering::MachineForm::Move:
-                    if (node.opcode == ir::OpCode::STORE) {
+                    if (node.opcode == ir::OpCode::SELECT || node.opcode == ir::OpCode::BOOL_SELECT) {
+                        emit_select(selected, out);
+                    } else if (node.opcode == ir::OpCode::GEP || node.opcode == ir::OpCode::LEA) {
+                        emit_gep(selected, out);
+                    } else if (node.opcode == ir::OpCode::STORE || node.opcode == ir::OpCode::VOLATILE_STORE) {
                         emit_store_stack(selected, out, machine_stream);
                     } else {
                         emit_move(selected, out);
@@ -401,7 +416,7 @@ public:
                     emit_vec_store512(selected, out);
                     break;
                 case lowering::MachineForm::Call:
-                    emit_call_slot(selected, out, branch_patches, label_to_node_index, machine_stream);
+                    emit_call_slot(selected, i, out, branch_patches, label_to_node_index, machine_stream);
                     break;
                 case lowering::MachineForm::Goto:
                     emit_goto(selected, out, branch_patches, label_to_node_index);
@@ -492,7 +507,8 @@ public:
                 for (size_t k = 0; k < machine_stream.size(); ++k) {
                     const auto& knode = machine_stream.get_node(k);
                     if (knode.opcode == ir::OpCode::LABEL) {
-                        if (knode.result_id == patch.target_label || knode.op_a == patch.target_label || knode.op_b == patch.target_label) {
+                        const bool knode_is_func = (knode.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
+                        if (knode.result_id == patch.target_label || (!knode_is_func && (knode.op_a == patch.target_label || knode.op_b == patch.target_label))) {
                             target_node_index = k;
                             break;
                         }
@@ -603,8 +619,8 @@ private:
         out.push_back(static_cast<uint8_t>(0x38u | base_lo));
     }
 
-    static constexpr uint32_t MAX_FRAME_SLOTS = 256;
-    static constexpr uint32_t FIXED_FRAME_SIZE = 2088; // 8 mod 16, ensures (72 + 2088) % 16 == 0 for exact Win64 16-byte ABI alignment
+    static constexpr uint32_t MAX_FRAME_SLOTS = 16384;
+    static constexpr uint32_t FIXED_FRAME_SIZE = 131112; // 8 mod 16, ensures (64 + 131112 + 8) % 16 == 0 for exact Win64 16-byte ABI alignment
 
     static uint32_t compute_frame_size(const ir::IRStream& /*stream*/) noexcept {
         return FIXED_FRAME_SIZE;
@@ -835,20 +851,23 @@ private:
             }
 
             const ir::TypeCode tc = stream.get_result_type_code(param_slot);
+            const uint8_t src_gpr = gpr_params[i];
+            const uint8_t src_xmm = static_cast<uint8_t>(i);
+
+            // Always write GPR to the parameter's stack slot
+            emit_mov_stack_from_reg(out, vreg_offset(param_slot), src_gpr);
+
             if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
                 const uint8_t dst_xmm = map_xmm_reg(param_slot);
-                const uint8_t src_xmm = static_cast<uint8_t>(i); // XMM0..XMM3 match parameter index i
                 if (dst_xmm != src_xmm) {
                     emit_xmm_move_f64(out, dst_xmm, src_xmm);
                 }
                 emit_movsd_stack_from_xmm(out, vreg_offset(param_slot), src_xmm);
             } else {
                 const uint8_t dst_gpr = map_reg(param_slot);
-                const uint8_t src_gpr = gpr_params[i];
                 if (dst_gpr != src_gpr) {
                     emit_reg_move(out, dst_gpr, src_gpr);
                 }
-                emit_mov_stack_from_reg(out, vreg_offset(param_slot), src_gpr);
             }
         }
     }
@@ -857,7 +876,7 @@ private:
         const ir::IRNode& node = selected.node;
         uint32_t dst_vreg = node.result_id;
         uint32_t src_vreg = node.op_a;
-        if (node.opcode == ir::OpCode::STORE) {
+        if (node.opcode == ir::OpCode::STORE || node.opcode == ir::OpCode::VOLATILE_STORE) {
             dst_vreg = node.op_a;
             src_vreg = node.op_b;
         } else if (dst_vreg == ir::INVALID_SLOT && node.op_a != ir::INVALID_SLOT && node.op_b != ir::INVALID_SLOT) {
@@ -1042,6 +1061,80 @@ private:
         }
         if (dest_vreg != ir::INVALID_SLOT && dest_vreg != 0u) {
             emit_mov_stack_from_reg(out, vreg_offset(dest_vreg), r10);
+        }
+    }
+
+    static void emit_select(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
+        const ir::IRNode& node = selected.node;
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        const uint8_t dst = map_reg(node.result_id);
+
+        // Load cond (node.op_a)
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
+        } else {
+            out.push_back(exec::X64Encoding::rex(/*w=*/true, false, false, requires_rex(r10)));
+            out.push_back(0x31); out.push_back(static_cast<uint8_t>(0xC0u | ((r10 & 7u) << 3u) | (r10 & 7u)));
+        }
+
+        // Load false_val (node.op_c) into r11 as default
+        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
+            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_c));
+        } else {
+            out.push_back(exec::X64Encoding::rex(/*w=*/true, false, false, requires_rex(r11)));
+            out.push_back(0x31); out.push_back(static_cast<uint8_t>(0xC0u | ((r11 & 7u) << 3u) | (r11 & 7u)));
+        }
+
+        // TEST r10, r10
+        out.push_back(exec::X64Encoding::rex(/*w=*/true, requires_rex(r10), false, requires_rex(r10)));
+        out.push_back(0x85);
+        emit_modrm_reg_reg(out, r10, r10);
+
+        // If true_val (node.op_b) is present:
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_b));
+            // CMOVNZ r11, r10
+            out.push_back(exec::X64Encoding::rex(/*w=*/true, requires_rex(r11), false, requires_rex(r10)));
+            out.push_back(0x0F);
+            out.push_back(0x45);
+            emit_modrm_reg_reg(out, r11, r10);
+        }
+
+        if (dst != r11) {
+            emit_reg_move(out, dst, r11);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r11);
+        }
+    }
+
+    static void emit_gep(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
+        const ir::IRNode& node = selected.node;
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        const uint8_t dst = map_reg(node.result_id);
+
+        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
+            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
+        } else {
+            out.push_back(exec::X64Encoding::rex(/*w=*/true, false, false, requires_rex(r10)));
+            out.push_back(0x31); out.push_back(static_cast<uint8_t>(0xC0u | ((r10 & 7u) << 3u) | (r10 & 7u)));
+        }
+
+        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
+            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
+            // ADD r10, r11 (base + offset)
+            out.push_back(exec::X64Encoding::rex(/*w=*/true, requires_rex(r11), false, requires_rex(r10)));
+            out.push_back(0x01);
+            emit_modrm_reg_reg(out, r11, r10);
+        }
+
+        if (dst != r10) {
+            emit_reg_move(out, dst, r10);
+        }
+        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
+            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
         }
     }
 
@@ -1393,19 +1486,12 @@ private:
         emit_zmm_move(out, selected.node.op_a, selected.node.op_b);
     }
 
-    struct PendingBranchPatch {
-        size_t displacement_offset = 0;
-        size_t instruction_end_offset = 0;
-        uint32_t target_label = ir::INVALID_SLOT;
-    };
-
     static void emit_goto(const lowering::SelectedInstruction& selected,
                           std::vector<uint8_t>& out,
                           std::vector<PendingBranchPatch>& patches,
-                          const std::unordered_map<uint32_t, size_t>& label_to_node_index) {
+                          const std::unordered_map<uint32_t, size_t>& /*label_to_node_index*/) {
         const ir::IRNode& node = selected.node;
-        const auto target_opt = pick_known_label(label_to_node_index, {node.op_a, node.result_id, node.op_b});
-        const uint32_t target_label = target_opt.value_or(node.op_a != ir::INVALID_SLOT && node.op_a != 0u ? node.op_a : node.result_id);
+        const uint32_t target_label = (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) ? node.op_a : node.result_id;
 
         out.push_back(0xE9); // JMP rel32
         const size_t disp_offset = out.size();
@@ -1416,27 +1502,13 @@ private:
         patches.push_back(PendingBranchPatch{disp_offset, out.size(), target_label});
     }
 
-    static std::optional<uint32_t> pick_known_label(const std::unordered_map<uint32_t, size_t>& label_to_node_index,
-                                                    std::initializer_list<uint32_t> candidates) {
-        for (const uint32_t candidate : candidates) {
-            if (candidate == ir::INVALID_SLOT || candidate == 0u) {
-                continue;
-            }
-            if (label_to_node_index.find(candidate) != label_to_node_index.end()) {
-                return candidate;
-            }
-        }
-        return std::nullopt;
-    }
-
     static void emit_branch_cond(const lowering::SelectedInstruction& selected,
                                  std::vector<uint8_t>& out,
                                  std::vector<PendingBranchPatch>& patches,
-                                 const std::unordered_map<uint32_t, size_t>& label_to_node_index) {
+                                 const std::unordered_map<uint32_t, size_t>& /*label_to_node_index*/) {
         const ir::IRNode& node = selected.node;
         const uint32_t cond_vreg = node.op_a;
-        const auto target_opt = pick_known_label(label_to_node_index, {node.op_b, node.result_id});
-        const uint32_t target_label = target_opt.value_or(node.op_b != ir::INVALID_SLOT && node.op_b != 0u ? node.op_b : node.result_id);
+        const uint32_t target_label = (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) ? node.op_b : node.result_id;
 
         const uint8_t cond = map_reg(cond_vreg);
         if (cond_vreg != ir::INVALID_SLOT && cond_vreg != 0u) {
@@ -1536,8 +1608,12 @@ private:
             const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
             if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
                 const uint8_t dst_xmm = map_xmm_reg(node.result_id);
-                emit_movq_xmm_gpr(out, dst_xmm, static_cast<uint8_t>(exec::X64Reg::RAX));
-                emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), dst_xmm);
+                if (dst_xmm != 0) {
+                    emit_xmm_move_f64(out, dst_xmm, 0);
+                }
+                emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), 0);
+                emit_movq_gpr_xmm(out, static_cast<uint8_t>(exec::X64Reg::RAX), 0);
+                emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
             } else {
                 const uint8_t dst = map_reg(node.result_id);
                 if (dst != static_cast<uint8_t>(exec::X64Reg::RAX)) {
@@ -1570,6 +1646,7 @@ private:
     }
 
     void emit_call_slot(const lowering::SelectedInstruction& selected,
+                        size_t node_index,
                         std::vector<uint8_t>& out,
                         std::vector<PendingBranchPatch>& patches,
                         const std::unordered_map<uint32_t, size_t>& label_to_node_index,
@@ -1635,13 +1712,13 @@ private:
 
         const auto it = runtime_slots_.find(node.op_a);
         if (it == runtime_slots_.end() || it->second == 0) {
-            const auto target_opt = pick_known_label(label_to_node_index, {node.op_a, node.result_id, node.op_b});
-            const uint32_t target_label = target_opt.value_or(node.op_a);
+            const uint32_t target_label = node.op_a;
 
 #if defined(_WIN32)
             const uint8_t rcx = static_cast<uint8_t>(exec::X64Reg::RCX);
             const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
             const uint8_t r8  = static_cast<uint8_t>(exec::X64Reg::R8);
+            const uint8_t r9  = static_cast<uint8_t>(exec::X64Reg::R9);
 
             if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
                 const ir::TypeCode tc = stream.get_result_type_code(node.op_b);
@@ -1650,6 +1727,7 @@ private:
                     emit_movq_gpr_xmm(out, rcx, 0);
                 } else {
                     emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_b));
+                    emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
                 }
             }
             if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
@@ -1659,6 +1737,7 @@ private:
                     emit_movq_gpr_xmm(out, rdx, 1);
                 } else {
                     emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_c));
+                    emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
                 }
             }
             if (node.logic_flags != 0 && node.logic_flags != ir::INVALID_SLOT) {
@@ -1668,6 +1747,18 @@ private:
                     emit_movq_gpr_xmm(out, r8, 2);
                 } else {
                     emit_mov_reg_from_stack(out, r8, vreg_offset(node.logic_flags));
+                    emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
+                }
+            }
+            const auto overflow = stream.get_call_overflow_args(node_index);
+            if (!overflow.empty() && overflow[0] != ir::INVALID_SLOT && overflow[0] != 0u) {
+                const ir::TypeCode tc = stream.get_result_type_code(overflow[0]);
+                if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
+                    emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow[0]));
+                    emit_movq_gpr_xmm(out, r9, 3);
+                } else {
+                    emit_mov_reg_from_stack(out, r9, vreg_offset(overflow[0]));
+                    emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow[0]));
                 }
             }
             out.push_back(0x48); out.push_back(0x83); out.push_back(0xEC); out.push_back(0x20); // sub rsp, 32
@@ -1686,8 +1777,12 @@ private:
                 const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
                 if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
                     const uint8_t dst_xmm = map_xmm_reg(node.result_id);
-                    emit_movq_xmm_gpr(out, dst_xmm, static_cast<uint8_t>(exec::X64Reg::RAX));
-                    emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), dst_xmm);
+                    if (dst_xmm != 0) {
+                        emit_xmm_move_f64(out, dst_xmm, 0);
+                    }
+                    emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), 0);
+                    emit_movq_gpr_xmm(out, static_cast<uint8_t>(exec::X64Reg::RAX), 0);
+                    emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
                 } else {
                     const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
                     const uint8_t dst = map_reg(node.result_id);

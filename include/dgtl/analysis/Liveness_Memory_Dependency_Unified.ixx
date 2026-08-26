@@ -111,9 +111,12 @@ public:
             const auto& node = stream.get_node(static_cast<size_t>(i));
             const uint32_t current_idx = static_cast<uint32_t>(i);
 
-            const bool is_imm_node = node.opcode == ir::OpCode::LOAD_IMM ||
-                                     node.opcode == ir::OpCode::IMMEDIATE;
-            if (!is_imm_node) {
+            const bool is_non_use_node = node.opcode == ir::OpCode::LOAD_IMM ||
+                                         node.opcode == ir::OpCode::IMMEDIATE ||
+                                         node.opcode == ir::OpCode::CONST ||
+                                         node.opcode == ir::OpCode::STRING_CONST ||
+                                         node.opcode == ir::OpCode::LABEL;
+            if (!is_non_use_node) {
                 if (node.op_a != ir::INVALID_SLOT) track_and_mark_use(node.op_a, current_idx);
                 if (node.op_b != ir::INVALID_SLOT) track_and_mark_use(node.op_b, current_idx);
 

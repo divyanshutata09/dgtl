@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -100,6 +100,12 @@ export namespace dgtl::ir {
         case OpCode::SUB_I64:               return "SUB_I64";
         case OpCode::MUL_I64:               return "MUL_I64";
         case OpCode::DIV_I64:               return "DIV_I64";
+        case OpCode::MOD_I64:               return "MOD_I64";
+        case OpCode::AND_I64:               return "AND_I64";
+        case OpCode::OR_I64:                return "OR_I64";
+        case OpCode::XOR_I64:               return "XOR_I64";
+        case OpCode::SHL_I64:               return "SHL_I64";
+        case OpCode::SHR_I64:               return "SHR_I64";
         case OpCode::ADD_I128:              return "ADD_I128";
         case OpCode::ADD_I256:              return "ADD_I256";
         // Float f32
