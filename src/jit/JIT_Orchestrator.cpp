@@ -46,9 +46,13 @@ import dgtl.runtime_intrinsics;
 import dgtl.ir_core.code_cache;
 import dgtl.ir_core.execution_dispatcher;
 import dgtl.ir_core.linker_backend;
+import dgtl.backend.aot_linker;
+import dgtl.backend.aot_orchestrator;
 import dgtl.ir_core.semantic;
 import dgtl.ir_core.macho_emitter;
 import dgtl.ir_core.wasmsimd_fma_emitter;
+import dgtl.ir_core.nasm_emitter;
+import dgtl.ir_core.arm64_emitter;
 
 // ============================================================================
 // SECTION 1: MULTIARCH_ORCHESTRATOR.CPP (Multi-Architecture Dispatch)
@@ -150,6 +154,14 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
                 dgtl::backend::linker::DGTLLinker linker;
                 return linker.build_wasm_binary(*ctx->stream, *ctx->out) ? 0 : -2;
             });
+
+        dispatcher.set_executor(dgtl::execution::dispatcher::DispatchTarget::PE_Executable,
+            [](void* raw) -> int64_t {
+                auto* ctx = static_cast<EmitContext*>(raw);
+                if (!ctx || !ctx->stream || !ctx->out) return -1;
+                dgtl::backend::linker::DGTLLinker linker;
+                return linker.build_raw_x64_machine_code(*ctx->stream, *ctx->out) ? 0 : -2;
+            });
     });
     return dispatcher;
 }
@@ -158,7 +170,10 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
                                std::string_view key,
                                const dgtl::ir::IRStream& stream,
                                std::vector<uint8_t>& out) {
-    emit_cache().clear();
+    if (!key.empty() && emit_cache().retrieve_copy(key, out)) {
+        emit_counters().cache_hits.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
 
     emit_counters().cache_misses.fetch_add(1, std::memory_order_relaxed);
     switch (target) {
@@ -182,7 +197,9 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
         emit_counters().dispatcher_failures.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    (void)emit_cache().store(key, out.data(), out.size());
+    if (!key.empty()) {
+        (void)emit_cache().store(key, out.data(), out.size());
+    }
     return true;
 }
 
@@ -211,8 +228,42 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
 }
 
 void DGTLOrchestrator::dispatch_to_linker(std::string_view path, const dgtl::ir::IRStream& stream) {
-    dgtl::backend::linker::DGTLLinker linker;
-    linker.emit_elf64(path, stream);
+    dgtl::backend::aot::DGTLAOTLinker linker;
+    std::vector<uint8_t> bytes;
+    if (linker.build_elf_relocatable_binary(stream, bytes)) {
+        std::ofstream out(std::string(path), std::ios::binary | std::ios::trunc);
+        if (out.is_open() && !bytes.empty()) {
+            out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        }
+    }
+}
+
+void DGTLOrchestrator::dispatch_to_pe_executable(std::string_view path, const dgtl::ir::IRStream& stream) {
+    dgtl::backend::aot::DGTLAOTLinker linker;
+    if (!linker.build_pe_executable(path, stream)) {
+        throw std::runtime_error("PE_EXECUTABLE_WRITE_FAILED: Unable to emit PE executable binary");
+    }
+}
+
+void DGTLOrchestrator::dispatch_to_assembly(std::string_view path, const dgtl::ir::IRStream& stream) {
+    dgtl::semantic::SymbolTable symbols;
+    std::string text;
+    if (target.get_arch() == dgtl::core::ArchType::AARCH64_SVE) {
+        dgtl::isa::ARM64Emitter emitter(stream, symbols);
+        dgtl::isa::ARM64Emitter::Config cfg;
+        cfg.verbose_asm = true;
+        std::ostringstream oss;
+        emitter.emit_assembly(oss, cfg);
+        text = oss.str();
+    } else {
+        dgtl::isa::DGTLNasmEmitter emitter;
+        emitter.emit(stream, symbols);
+        text = emitter.get_output();
+    }
+    std::vector<uint8_t> bytes(text.begin(), text.end());
+    if (!write_binary_file(path, bytes)) {
+        throw std::runtime_error("ASSEMBLY_WRITE_FAILED: Unable to write assembly output file");
+    }
 }
 
 void DGTLOrchestrator::dispatch_to_relocatable(std::string_view path, const dgtl::ir::IRStream& stream) {
@@ -238,7 +289,7 @@ void DGTLOrchestrator::dispatch_to_archive(std::string_view path, const dgtl::ir
 }
 
 void DGTLOrchestrator::dispatch_to_coff_relocatable(std::string_view path, const dgtl::ir::IRStream& stream) {
-    dgtl::backend::linker::DGTLLinker linker;
+    dgtl::backend::aot::DGTLAOTLinker linker;
     std::vector<uint8_t> out_bytes;
     if (!linker.build_coff_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
         throw std::runtime_error("COFF_RELOCATABLE_WRITE_FAILED: Unable to emit COFF relocatable object");
@@ -249,7 +300,7 @@ void DGTLOrchestrator::dispatch_to_coff_relocatable(std::string_view path, const
 }
 
 void DGTLOrchestrator::dispatch_to_coff_archive(std::string_view path, const dgtl::ir::IRStream& stream) {
-    dgtl::backend::linker::DGTLLinker linker;
+    dgtl::backend::aot::DGTLAOTLinker linker;
     std::vector<uint8_t> out_bytes;
     if (!linker.build_coff_archive_binary(stream, out_bytes, "module.obj", "DGTL_kernel_entry")) {
         throw std::runtime_error("COFF_ARCHIVE_WRITE_FAILED: Unable to emit COFF archive");

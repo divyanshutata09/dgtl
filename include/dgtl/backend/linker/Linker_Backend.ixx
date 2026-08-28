@@ -52,8 +52,11 @@ export module dgtl.ir_core.linker_backend;
 import dgtl.ir_core;
 import dgtl.ir_core.isel_gen;
 import dgtl.ir_core.binary_loader;
+import dgtl.ir_core.code_cache;
+import dgtl.ir_core.execution_dispatcher;
 import dgtl.ir_core.wasm_encoder;
 import dgtl.ir_core.runtime_contract;
+import dgtl.backend.aot_linker;
 
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -128,6 +131,7 @@ export namespace dgtl::backend::linker::coff {
 
 inline constexpr uint16_t MACHINE_AMD64       = 0x8664;
 inline constexpr uint32_t SCN_CNT_CODE        = 0x00000020;
+inline constexpr uint32_t SCN_CNT_INITIALIZED_DATA = 0x00000040;
 inline constexpr uint32_t SCN_MEM_EXECUTE     = 0x20000000;
 inline constexpr uint32_t SCN_MEM_READ        = 0x40000000;
 inline constexpr uint32_t SCN_ALIGN_16BYTES   = 0x00500000;
@@ -172,6 +176,66 @@ struct Symbol {
     uint16_t Type;
     uint8_t  StorageClass;
     uint8_t  NumberOfAuxSymbols;
+};
+
+struct ImageDosHeader {
+    uint16_t e_magic;    // "MZ" (0x5A4D)
+    uint16_t e_cblp;
+    uint16_t e_cp;
+    uint16_t e_crlc;
+    uint16_t e_cparhdr;
+    uint16_t e_minalloc;
+    uint16_t e_maxalloc;
+    uint16_t e_ss;
+    uint16_t e_sp;
+    uint16_t e_csum;
+    uint16_t e_ip;
+    uint16_t e_cs;
+    uint16_t e_lfarlc;
+    uint16_t e_ovno;
+    uint16_t e_res[4];
+    uint16_t e_oemid;
+    uint16_t e_oeminfo;
+    uint16_t e_res2[10];
+    uint32_t e_lfanew;   // Offset to NT headers
+};
+
+struct ImageDataDirectory {
+    uint32_t VirtualAddress;
+    uint32_t Size;
+};
+
+struct ImageOptionalHeader64 {
+    uint16_t Magic;                // 0x020B = PE32+
+    uint8_t  MajorLinkerVersion;
+    uint8_t  MinorLinkerVersion;
+    uint32_t SizeOfCode;
+    uint32_t SizeOfInitializedData;
+    uint32_t SizeOfUninitializedData;
+    uint32_t AddressOfEntryPoint;
+    uint32_t BaseOfCode;
+    uint64_t ImageBase;
+    uint32_t SectionAlignment;
+    uint32_t FileAlignment;
+    uint16_t MajorOperatingSystemVersion;
+    uint16_t MinorOperatingSystemVersion;
+    uint16_t MajorImageVersion;
+    uint16_t MinorImageVersion;
+    uint16_t MajorSubsystemVersion;
+    uint16_t MinorSubsystemVersion;
+    uint32_t Win32VersionValue;
+    uint32_t SizeOfImage;
+    uint32_t SizeOfHeaders;
+    uint32_t CheckSum;
+    uint16_t Subsystem;
+    uint16_t DllCharacteristics;
+    uint64_t SizeOfStackReserve;
+    uint64_t SizeOfStackCommit;
+    uint64_t SizeOfHeapReserve;
+    uint64_t SizeOfHeapCommit;
+    uint32_t LoaderFlags;
+    uint32_t NumberOfRvaAndSizes;
+    ImageDataDirectory DataDirectory[16];
 };
 #pragma pack(pop)
 
@@ -284,14 +348,10 @@ protected:
         size_t sz = 11;
         if (!stream.is_null() && stream.size() > 0 && stream.get_node(0).opcode == ir::OpCode::LABEL) {
             const auto& fn_hdr = stream.get_node(0);
-            if (fn_hdr.op_a != ir::INVALID_SLOT && fn_hdr.op_a != 0u) sz += 7;
-            else sz += 7;
-            if (fn_hdr.op_b != ir::INVALID_SLOT && fn_hdr.op_b != 0u) sz += 7;
-            else sz += 7;
-            if (fn_hdr.op_c != ir::INVALID_SLOT && fn_hdr.op_c != 0u) sz += 7;
-            if (fn_hdr.logic_flags != 0u && fn_hdr.logic_flags != ir::INVALID_SLOT) sz += 7;
-        } else {
-            sz += 14;
+            if (fn_hdr.op_a != ir::INVALID_SLOT) sz += 7;
+            if (fn_hdr.op_b != ir::INVALID_SLOT) sz += 7;
+            if (fn_hdr.op_c != ir::INVALID_SLOT) sz += 7;
+            if (fn_hdr.logic_flags != ir::INVALID_SLOT && fn_hdr.logic_flags != 0u) sz += 7;
         }
         return sz;
     }
@@ -305,11 +365,11 @@ protected:
         const MachineForm form = generated::classify_machine_form(node.opcode);
 
         if (dgtl::isa::lowering::runtime_contract::has_runtime_symbol(node.opcode)) {
-            const size_t arg1_size = (node.op_a != ir::INVALID_SLOT) ? 7 : 2;
-            const size_t arg2_size = (node.op_b != ir::INVALID_SLOT) ? 7 : 2;
-            const size_t arg3_size = (node.op_c != ir::INVALID_SLOT) ? 7 : 3;
+            const size_t arg1_size = (node.op_b != ir::INVALID_SLOT) ? 7 : 2;
+            const size_t arg2_size = (node.op_c != ir::INVALID_SLOT) ? 7 : 2;
+            const size_t arg3_size = (node.logic_flags != ir::INVALID_SLOT && node.logic_flags != 0u) ? 7 : 3;
             const size_t result_size = (node.result_id != ir::INVALID_SLOT) ? 7 : 1;
-            return arg1_size + arg2_size + arg3_size + 10 + 4 + 14 + 4 + result_size + 10;
+            return arg1_size + arg2_size + arg3_size + 10 + 4 + 5 + 4 + result_size;
         }
 
         switch (form) {
@@ -317,10 +377,10 @@ protected:
                 if (node.opcode == ir::OpCode::LABEL) {
                     size_t lbl_bytes = 0;
                     if ((node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0) {
-                        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) lbl_bytes += 7;
-                        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) lbl_bytes += 7;
-                        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) lbl_bytes += 7;
-                        if (node.logic_flags != 0u && node.logic_flags != ir::INVALID_SLOT) lbl_bytes += 7;
+                        if (node.op_a != ir::INVALID_SLOT) lbl_bytes += 7;
+                        if (node.op_b != ir::INVALID_SLOT) lbl_bytes += 7;
+                        if (node.op_c != ir::INVALID_SLOT) lbl_bytes += 7;
+                        if (node.logic_flags != ir::INVALID_SLOT && node.logic_flags != 0u) lbl_bytes += 7;
                     }
                     return lbl_bytes;
                 }
@@ -363,19 +423,20 @@ protected:
             case MachineForm::Compare32:
                 return 27;
             case MachineForm::Call: {
-                const size_t arg1_size = (node.op_b != ir::INVALID_SLOT) ? 7 : 2;
-                const size_t arg2_size = (node.op_c != ir::INVALID_SLOT) ? 7 : 2;
-                const size_t result_size = (node.result_id != ir::INVALID_SLOT) ? 7 : 1;
-                return arg1_size + arg2_size + 10 + 4 + 14 + 4 + result_size + 10;
+                const size_t arg1_size = (node.op_b != ir::INVALID_SLOT) ? 7 : 3;
+                const size_t arg2_size = (node.op_c != ir::INVALID_SLOT) ? 7 : 3;
+                const size_t arg3_size = (node.logic_flags != ir::INVALID_SLOT && node.logic_flags != 0u) ? 7 : 3;
+                const size_t result_size = (node.result_id != ir::INVALID_SLOT) ? 24 : 1;
+                return arg1_size + arg2_size + arg3_size + 24 + 4 + 10 + 4 + result_size + 32;
             }
             case MachineForm::Return:
-                return (node.op_a != ir::INVALID_SLOT) ? 9 : 4;
+                return (node.op_a != ir::INVALID_SLOT) ? 14 : 8;
             case MachineForm::Goto:
                 return 5;
             case MachineForm::BranchCond:
                 return 16;
             case MachineForm::BranchCompare:
-                return 23;
+                return 20;
             case MachineForm::Syscall: {
                 const size_t arg0_size = (node.op_b != ir::INVALID_SLOT) ? 7 : 3;
                 const size_t arg1_size = (node.op_c != ir::INVALID_SLOT) ? 7 : 3;
@@ -440,851 +501,109 @@ public:
         }
     }
 
+    [[nodiscard]] static bool inspect_binary_format_from_memory(
+        const void* data,
+        size_t size,
+        dgtl::execution::format::Binary_Format& out_binary) {
+        if (data == nullptr || size == 0) return false;
+        try {
+            dgtl::execution::format::Binary_Loader loader;
+            auto bin = loader.load_from_memory(data, size);
+            if (!bin) return false;
+            out_binary = *bin;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] static bool build_cached_machine_code(
+        dgtl::execution::cache::Code_Cache& cache,
+        std::string_view key,
+        const ir::IRStream& stream,
+        std::vector<uint8_t>& out_bytes) {
+        if (!key.empty() && cache.retrieve_copy(key, out_bytes)) {
+            return true;
+        }
+        DGTLLinker linker;
+        if (!linker.build_raw_x64_machine_code(stream, out_bytes)) {
+            return false;
+        }
+        if (!key.empty()) {
+            (void)cache.store(key, out_bytes.data(), out_bytes.size());
+        }
+        return true;
+    }
+
+    using CoffCallReloc = dgtl::backend::aot::CoffCallReloc;
+
     bool build_elf_relocatable_binary(const ir::IRStream& stream,
                                       std::vector<uint8_t>& out,
                                       std::string_view entry_symbol = "DGTL_kernel_entry") {
-        out.clear();
-        if (stream.is_null() || stream.size() == 0 || !stream.validate_shadow_integrity()) [[unlikely]] {
-            return false;
-        }
-
-        std::vector<uint8_t> text_bytes;
-        text_bytes.resize(stream.size() * 32);
-        size_t text_size = 0;
-        if (!emit_machine_code(text_bytes.data(), text_bytes.size(), stream, &text_size)) {
-            return false;
-        }
-        text_bytes.resize(text_size);
-        if (text_bytes.empty()) {
-            return false;
-        }
-
-        std::string shstrtab;
-        shstrtab.reserve(64);
-        shstrtab.push_back('\0');
-        const uint32_t sh_name_text = static_cast<uint32_t>(shstrtab.size());
-        shstrtab += ".text";
-        shstrtab.push_back('\0');
-        const uint32_t sh_name_shstrtab = static_cast<uint32_t>(shstrtab.size());
-        shstrtab += ".shstrtab";
-        shstrtab.push_back('\0');
-        const uint32_t sh_name_strtab = static_cast<uint32_t>(shstrtab.size());
-        shstrtab += ".strtab";
-        shstrtab.push_back('\0');
-        const uint32_t sh_name_symtab = static_cast<uint32_t>(shstrtab.size());
-        shstrtab += ".symtab";
-        shstrtab.push_back('\0');
-        const uint32_t sh_name_relatext = static_cast<uint32_t>(shstrtab.size());
-        shstrtab += ".rela.text";
-        shstrtab.push_back('\0');
-
-        std::string strtab;
-        strtab.reserve(entry_symbol.size() + 2);
-        strtab.push_back('\0');
-        const uint32_t sym_name_off = static_cast<uint32_t>(strtab.size());
-        strtab.append(entry_symbol.data(), entry_symbol.size());
-        strtab.push_back('\0');
-
-        std::array<Elf64_Sym, 3> symtab{};
-        symtab[0] = Elf64_Sym{};
-        symtab[1].st_name = 0;
-        symtab[1].st_info = static_cast<unsigned char>(ELF64_ST_INFO(STB_LOCAL, STT_SECTION));
-        symtab[1].st_other = 0;
-        symtab[1].st_shndx = static_cast<uint16_t>(1);
-        symtab[1].st_value = 0;
-        symtab[1].st_size = 0;
-
-        symtab[2].st_name = sym_name_off;
-        symtab[2].st_info = static_cast<unsigned char>(ELF64_ST_INFO(STB_GLOBAL, STT_FUNC));
-        symtab[2].st_other = 0;
-        symtab[2].st_shndx = static_cast<uint16_t>(1);
-        symtab[2].st_value = 0;
-        symtab[2].st_size = text_bytes.size();
-
-        const size_t ehdr_size = sizeof(Elf64_Ehdr);
-        const size_t text_off = align_up(ehdr_size, 16);
-        const size_t shstrtab_off = align_up(text_off + text_bytes.size(), 1);
-        const size_t strtab_off = align_up(shstrtab_off + shstrtab.size(), 1);
-        const size_t symtab_off = align_up(strtab_off + strtab.size(), 8);
-        const size_t shoff = align_up(symtab_off + sizeof(symtab), 8);
-
-        const size_t section_count = 6;
-        const size_t total_size = shoff + section_count * sizeof(Elf64_Shdr);
-        out.assign(total_size, 0);
-
-        auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(out.data());
-        std::memcpy(ehdr->e_ident, ELFMAG, SELFMAG);
-        ehdr->e_ident[4] = ELFCLASS64;
-        ehdr->e_ident[5] = ELFDATA2LSB;
-        ehdr->e_ident[6] = EV_CURRENT;
-        ehdr->e_type = ET_REL;
-        ehdr->e_machine = EM_X86_64;
-        ehdr->e_version = EV_CURRENT;
-        ehdr->e_entry = 0;
-        ehdr->e_phoff = 0;
-        ehdr->e_shoff = shoff;
-        ehdr->e_flags = 0;
-        ehdr->e_ehsize = sizeof(Elf64_Ehdr);
-        ehdr->e_phentsize = 0;
-        ehdr->e_phnum = 0;
-        ehdr->e_shentsize = sizeof(Elf64_Shdr);
-        ehdr->e_shnum = static_cast<uint16_t>(section_count);
-        ehdr->e_shstrndx = 2;
-
-        std::memcpy(out.data() + text_off, text_bytes.data(), text_bytes.size());
-        std::memcpy(out.data() + shstrtab_off, shstrtab.data(), shstrtab.size());
-        std::memcpy(out.data() + strtab_off, strtab.data(), strtab.size());
-        std::memcpy(out.data() + symtab_off, symtab.data(), sizeof(symtab));
-
-        auto* shdr = reinterpret_cast<Elf64_Shdr*>(out.data() + shoff);
-        shdr[0] = Elf64_Shdr{};
-
-        shdr[1].sh_name = sh_name_text;
-        shdr[1].sh_type = SHT_PROGBITS;
-        shdr[1].sh_flags = SHF_ALLOC | SHF_EXECINSTR;
-        shdr[1].sh_addr = 0;
-        shdr[1].sh_offset = text_off;
-        shdr[1].sh_size = text_bytes.size();
-        shdr[1].sh_link = 0;
-        shdr[1].sh_info = 0;
-        shdr[1].sh_addralign = 16;
-        shdr[1].sh_entsize = 0;
-
-        shdr[2].sh_name = sh_name_shstrtab;
-        shdr[2].sh_type = SHT_STRTAB;
-        shdr[2].sh_flags = 0;
-        shdr[2].sh_addr = 0;
-        shdr[2].sh_offset = shstrtab_off;
-        shdr[2].sh_size = shstrtab.size();
-        shdr[2].sh_link = 0;
-        shdr[2].sh_info = 0;
-        shdr[2].sh_addralign = 1;
-        shdr[2].sh_entsize = 0;
-
-        shdr[3].sh_name = sh_name_strtab;
-        shdr[3].sh_type = SHT_STRTAB;
-        shdr[3].sh_flags = 0;
-        shdr[3].sh_addr = 0;
-        shdr[3].sh_offset = strtab_off;
-        shdr[3].sh_size = strtab.size();
-        shdr[3].sh_link = 0;
-        shdr[3].sh_info = 0;
-        shdr[3].sh_addralign = 1;
-        shdr[3].sh_entsize = 0;
-
-        shdr[4].sh_name = sh_name_symtab;
-        shdr[4].sh_type = SHT_SYMTAB;
-        shdr[4].sh_flags = 0;
-        shdr[4].sh_addr = 0;
-        shdr[4].sh_offset = symtab_off;
-        shdr[4].sh_size = sizeof(symtab);
-        shdr[4].sh_link = 3;
-        shdr[4].sh_info = 2;
-        shdr[4].sh_addralign = 8;
-        shdr[4].sh_entsize = sizeof(Elf64_Sym);
-
-        shdr[5].sh_name = sh_name_relatext;
-        shdr[5].sh_type = SHT_RELA;
-        shdr[5].sh_flags = SHF_INFO_LINK;
-        shdr[5].sh_addr = 0;
-        shdr[5].sh_offset = 0;
-        shdr[5].sh_size = 0;
-        shdr[5].sh_link = 4;
-        shdr[5].sh_info = 1;
-        shdr[5].sh_addralign = 8;
-        shdr[5].sh_entsize = sizeof(Elf64_Rela);
-
-        return true;
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_elf_relocatable_binary(stream, out, entry_symbol);
     }
 
     bool build_static_archive_binary(const ir::IRStream& stream,
                                      std::vector<uint8_t>& out,
                                      std::string_view member_name = "module.o") {
-        out.clear();
-
-        std::vector<uint8_t> object_bytes;
-        if (!build_elf_relocatable_binary(stream, object_bytes, "DGTL_kernel_entry")) {
-            return false;
-        }
-
-        std::string header_name(member_name);
-        if (header_name.empty()) {
-            header_name = "module.o";
-        }
-        if (header_name.size() > 15) {
-            header_name.resize(15);
-        }
-        header_name.push_back('/');
-
-        std::array<char, 60> hdr{};
-        std::fill(hdr.begin(), hdr.end(), ' ');
-
-        std::snprintf(hdr.data(), 17, "%-16s", header_name.c_str());
-        std::snprintf(hdr.data() + 16, 13, "%-12d", 0);
-        std::snprintf(hdr.data() + 28, 7, "%-6d", 0);
-        std::snprintf(hdr.data() + 34, 7, "%-6d", 0);
-        std::snprintf(hdr.data() + 40, 9, "%-8o", 0644);
-        std::snprintf(hdr.data() + 48, 11, "%-10u", static_cast<unsigned int>(object_bytes.size()));
-        hdr[58] = '`';
-        hdr[59] = '\n';
-
-        static constexpr char kArMagic[] = "!<arch>\n";
-        out.insert(out.end(), kArMagic, kArMagic + 8);
-        out.insert(out.end(), hdr.begin(), hdr.end());
-        out.insert(out.end(), object_bytes.begin(), object_bytes.end());
-        if ((object_bytes.size() & 1U) != 0U) {
-            out.push_back('\n');
-        }
-
-        return true;
-    }
-
-    struct CoffCallReloc {
-        uint32_t text_offset = 0;
-        std::string callee_name;
-    };
-
-    static std::vector<CoffCallReloc> collect_call_relocs(
-        const ir::IRStream& stream,
-        const std::unordered_map<uint32_t, std::string>& slot_to_callee)
-    {
-        std::vector<CoffCallReloc> relocs;
-        if (stream.is_null()) [[unlikely]] return relocs;
-        relocs.reserve(stream.size() / 10);
-
-        size_t text_offset = x64_prologue_size();
-        for (size_t i = 0; i < stream.size(); ++i) {
-            const auto& node = stream.get_node(i);
-            if (dgtl::isa::lowering::runtime_contract::has_runtime_symbol(node.opcode)) {
-                const size_t rcx_size = (node.op_a != ir::INVALID_SLOT) ? 7u : 2u;
-                const size_t rdx_size = (node.op_b != ir::INVALID_SLOT) ? 7u : 2u;
-                const size_t r8_size = (node.op_c != ir::INVALID_SLOT) ? 7u : 3u;
-                const size_t disp_offset = text_offset + rcx_size + rdx_size + r8_size + 10u + 4u + 1u;
-                const char* symbol = dgtl::isa::lowering::runtime_contract::runtime_symbol_for_opcode(node.opcode);
-                if (symbol != nullptr) {
-                    relocs.push_back({static_cast<uint32_t>(disp_offset), std::string(symbol)});
-                }
-                text_offset += x64_node_size(node);
-            } else {
-                switch (node.opcode) {
-                    case ir::OpCode::CALL: {
-                        const size_t rcx_size = (node.op_b != ir::INVALID_SLOT) ? 7u : 2u;
-                        const size_t rdx_size = (node.op_c != ir::INVALID_SLOT) ? 7u : 2u;
-                        const size_t disp_offset = text_offset + rcx_size + rdx_size + 10u + 4u + 1u;
-                        auto it = slot_to_callee.find(node.op_a);
-                        if (it != slot_to_callee.end()) {
-                            relocs.push_back({static_cast<uint32_t>(disp_offset), it->second});
-                        }
-                        text_offset += x64_node_size(node);
-                        break;
-                    }
-                    default:
-                        text_offset += x64_node_size(node);
-                        break;
-                }
-            }
-        }
-        return relocs;
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_static_archive_binary(stream, out, member_name);
     }
 
     bool build_coff_relocatable_binary_with_relocs(
         const ir::IRStream& stream,
         std::vector<uint8_t>& out,
         std::string_view entry_symbol,
-        const std::vector<CoffCallReloc>& call_relocs)
+        const std::vector<CoffCallReloc>& call_relocs,
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee = {},
+        const std::vector<uint8_t>& rdata_payload = {})
     {
-        out.clear();
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] return false;
-
-        std::vector<uint8_t> text_bytes;
-        text_bytes.resize(stream.size() * 64 + 256);
-        size_t text_size = 0;
-        if (!emit_machine_code(text_bytes.data(), text_bytes.size(), stream, &text_size)) return false;
-        text_bytes.resize(text_size);
-        if (text_bytes.empty()) return false;
-
-        using namespace dgtl::backend::linker::coff;
-
-        struct CoffReloc { uint32_t VirtualAddress; uint32_t SymbolTableIndex; uint16_t Type; };
-        static constexpr uint16_t kCoffRelAmd64Rel32 = 4;
-
-        std::vector<std::string> extern_names;
-        extern_names.reserve(call_relocs.size());
-        std::unordered_map<std::string, uint32_t> extern_sym_index;
-        extern_sym_index.reserve(call_relocs.size());
-        for (const auto& r : call_relocs) {
-            auto [it, inserted] = extern_sym_index.emplace(r.callee_name, 0u);
-            if (inserted) {
-                extern_names.push_back(r.callee_name);
-            }
-        }
-        for (uint32_t i = 0; i < static_cast<uint32_t>(extern_names.size()); ++i) {
-            extern_sym_index[extern_names[i]] = 2u + i;
-        }
-
-        std::vector<CoffReloc> coff_relocs;
-        coff_relocs.reserve(call_relocs.size());
-        for (const auto& r : call_relocs) {
-            uint32_t offset = r.text_offset;
-            if (offset + sizeof(uint32_t) > text_size) {
-                if (text_size >= 4) {
-                    offset = static_cast<uint32_t>(text_size - 4);
-                } else {
-                    continue;
-                }
-            }
-            const auto it = extern_sym_index.find(r.callee_name);
-            if (it == extern_sym_index.end()) {
-                continue;
-            }
-            const uint32_t sym_idx = it->second;
-            coff_relocs.push_back({offset, sym_idx, kCoffRelAmd64Rel32});
-        }
-        if (coff_relocs.size() > std::numeric_limits<uint16_t>::max()) {
-            return false;
-        }
-
-        std::string sym_name(entry_symbol);
-        std::string strtab_data; 
-        struct SymStrInfo { bool use_long; uint32_t strtab_off; };
-        
-        auto make_sym_str = [&](const std::string& n) -> SymStrInfo {
-            if (n.size() <= 8) return {false, 0};
-            uint32_t off = 4 + static_cast<uint32_t>(strtab_data.size());
-            strtab_data.append(n);
-            strtab_data.push_back('\0');
-            return {true, off};
-        };
-        
-        const auto entry_str = make_sym_str(sym_name);
-        std::vector<SymStrInfo> extern_str_infos;
-        extern_str_infos.reserve(extern_names.size());
-        std::transform(extern_names.begin(), extern_names.end(), std::back_inserter(extern_str_infos),
-                       [&make_sym_str](const auto& e) { return make_sym_str(e); });
-
-        const size_t num_symbols = 1 + 1 + extern_names.size();
-        const uint32_t strtab_total_size = 4 + static_cast<uint32_t>(strtab_data.size());
-
-        const size_t file_hdr_size  = sizeof(FileHeader);
-        const size_t sect_hdr_size  = sizeof(SectionHeader);
-        const size_t text_off       = file_hdr_size + sect_hdr_size;
-        const size_t reloc_off      = text_off + text_size;
-        const size_t symtab_off     = reloc_off + coff_relocs.size() * 10;
-        const size_t symtab_size    = num_symbols * sizeof(Symbol);
-        const size_t total_size     = symtab_off + symtab_size + strtab_total_size;
-        out.assign(total_size, 0);
-
-        auto* fhdr = reinterpret_cast<FileHeader*>(out.data());
-        fhdr->Machine              = MACHINE_AMD64;
-        fhdr->NumberOfSections     = 1;
-        fhdr->TimeDateStamp        = 0;
-        fhdr->PointerToSymbolTable = static_cast<uint32_t>(symtab_off);
-        fhdr->NumberOfSymbols      = static_cast<uint32_t>(num_symbols);
-        fhdr->SizeOfOptionalHeader = 0;
-        fhdr->Characteristics      = 0;
-
-        auto* shdr = reinterpret_cast<SectionHeader*>(out.data() + file_hdr_size);
-        std::memset(shdr, 0, sizeof(SectionHeader));
-        std::memcpy(shdr->Name, ".text\0\0\0", 8);
-        shdr->VirtualSize          = 0;
-        shdr->VirtualAddress       = 0;
-        shdr->SizeOfRawData        = static_cast<uint32_t>(text_size);
-        shdr->PointerToRawData     = static_cast<uint32_t>(text_off);
-        shdr->PointerToRelocations = coff_relocs.empty() ? 0 : static_cast<uint32_t>(reloc_off);
-        shdr->NumberOfRelocations  = static_cast<uint16_t>(coff_relocs.size());
-        shdr->Characteristics      = SCN_CNT_CODE | SCN_MEM_EXECUTE | SCN_MEM_READ | SCN_ALIGN_16BYTES;
-
-        std::memcpy(out.data() + text_off, text_bytes.data(), text_size);
-
-        for (size_t ri = 0; ri < coff_relocs.size(); ++ri) {
-            uint8_t* rptr = out.data() + reloc_off + ri * 10;
-            std::memcpy(rptr,     &coff_relocs[ri].VirtualAddress, 4);
-            std::memcpy(rptr + 4, &coff_relocs[ri].SymbolTableIndex, 4);
-            std::memcpy(rptr + 8, &coff_relocs[ri].Type, 2);
-        }
-
-        auto fill_sym = [&](Symbol& s, const std::string& name, const SymStrInfo& si,
-                            uint32_t value, int16_t sect, uint8_t cls) {
-            std::memset(&s, 0, sizeof(Symbol));
-            if (si.use_long) {
-                s.Name.LongName.Zeroes = 0;
-                s.Name.LongName.Offset = si.strtab_off;
-            } else {
-                const size_t n = name.size() > 8 ? 8 : name.size();
-                std::memcpy(s.Name.ShortName, name.data(), n);
-            }
-            s.Value         = value;
-            s.SectionNumber = sect;
-            s.Type          = (cls == SYM_CLASS_EXTERNAL) ? SYM_DTYPE_FUNCTION : 0;
-            s.StorageClass  = cls;
-        };
-
-        auto* sym_tbl = reinterpret_cast<Symbol*>(out.data() + symtab_off);
-        fill_sym(sym_tbl[0], ".text", {false, 0}, 0, 1, SYM_CLASS_STATIC);
-        fill_sym(sym_tbl[1], sym_name, entry_str, 0, 1, SYM_CLASS_EXTERNAL);
-        for (size_t ei = 0; ei < extern_names.size(); ++ei) {
-            fill_sym(sym_tbl[2 + ei], extern_names[ei], extern_str_infos[ei], 0, 0, SYM_CLASS_EXTERNAL);
-        }
-
-        uint8_t* strtab_ptr = out.data() + size_t(symtab_off) + symtab_size;
-        std::memcpy(strtab_ptr, &strtab_total_size, 4);
-        if (!strtab_data.empty()) {
-            std::memcpy(strtab_ptr + 4, strtab_data.data(), strtab_data.size());
-        }
-
-        return true;
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_coff_relocatable_binary_with_relocs(
+            stream, out, entry_symbol, {}, slot_to_callee, rdata_payload);
     }
 
     bool build_module_coff_with_relocs(
         const std::vector<std::pair<std::string, ir::IRStream>>& module_streams,
         std::vector<uint8_t>& out,
-        const std::unordered_map<uint32_t, std::string>& slot_to_callee)
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee,
+        const std::vector<uint8_t>& rdata_payload = {})
     {
-        out.clear();
-        if (module_streams.empty()) [[unlikely]] return false;
-
-        using namespace dgtl::backend::linker::coff;
-        struct CoffReloc { uint32_t VirtualAddress; uint32_t SymbolTableIndex; uint16_t Type; };
-        static constexpr uint16_t kCoffRelAmd64Rel32 = 4;
-
-        std::vector<uint8_t> master_text_bytes;
-        master_text_bytes.reserve(1024 * 1024);
-
-        struct ModuleFunc { std::string name; size_t text_offset = 0; size_t size = 0; };
-        std::vector<ModuleFunc> functions;
-        std::vector<CoffCallReloc> master_relocs;
-        std::unordered_map<std::string, uint32_t> internal_func_index;
-
-        internal_func_index.reserve(module_streams.size());
-
-        for (const auto& [name, stream] : module_streams) {
-            if (stream.is_null() || stream.size() == 0) continue;
-            
-            size_t func_start_offset = master_text_bytes.size();
-            
-            auto local_relocs = collect_call_relocs(stream, slot_to_callee);
-            for (auto& r : local_relocs) {
-                r.text_offset += static_cast<uint32_t>(func_start_offset);
-                master_relocs.push_back(std::move(r));
-            }
-
-            size_t emitted = 0;
-            size_t capacity_needed = stream.size() * 64 + 256;
-            master_text_bytes.resize(func_start_offset + capacity_needed);
-            
-            if (!emit_machine_code(master_text_bytes.data() + func_start_offset, capacity_needed, stream, &emitted)) {
-                return false;
-            }
-            
-            master_text_bytes.resize(func_start_offset + emitted);
-            internal_func_index.emplace(name, static_cast<uint32_t>(functions.size()));
-            functions.push_back({name, func_start_offset, emitted});
-        }
-
-        if (master_text_bytes.empty()) return false;
-
-        std::vector<std::string> extern_names;
-        std::unordered_map<std::string, uint32_t> extern_index;
-        extern_index.reserve(master_relocs.size());
-
-        for (const auto& r : master_relocs) {
-            if (internal_func_index.find(r.callee_name) != internal_func_index.end()) {
-                continue;
-            }
-            auto [it, inserted] = extern_index.emplace(r.callee_name, 0u);
-            if (inserted) {
-                extern_names.push_back(r.callee_name);
-            }
-        }
-        for (uint32_t i = 0; i < static_cast<uint32_t>(extern_names.size()); ++i) {
-            extern_index[extern_names[i]] = i;
-        }
-
-        std::vector<CoffReloc> coff_relocs;
-        coff_relocs.reserve(master_relocs.size());
-
-        for (const auto& r : master_relocs) {
-            uint32_t offset = r.text_offset;
-            if (offset + sizeof(uint32_t) > master_text_bytes.size()) {
-                if (master_text_bytes.size() >= 4) {
-                    offset = static_cast<uint32_t>(master_text_bytes.size() - 4);
-                } else {
-                    continue;
-                }
-            }
-            uint32_t sym_idx = 1;
-            const auto it_internal = internal_func_index.find(r.callee_name);
-            if (it_internal != internal_func_index.end()) {
-                sym_idx += it_internal->second;
-            } else {
-                sym_idx += static_cast<uint32_t>(functions.size());
-                const auto it_external = extern_index.find(r.callee_name);
-                if (it_external == extern_index.end()) {
-                    continue;
-                }
-                sym_idx += it_external->second;
-            }
-            coff_relocs.push_back({offset, sym_idx, kCoffRelAmd64Rel32});
-        }
-        if (coff_relocs.size() > std::numeric_limits<uint16_t>::max()) {
-            return false;
-        }
-
-        std::string strtab_data; 
-        struct SymStrInfo { bool use_long; uint32_t strtab_off; };
-        auto make_sym_str = [&](const std::string& n) -> SymStrInfo {
-            if (n.size() <= 8) return {false, 0};
-            uint32_t off = 4 + static_cast<uint32_t>(strtab_data.size());
-            strtab_data.append(n);
-            strtab_data.push_back('\0');
-            return {true, off};
-        };
-
-        std::vector<SymStrInfo> func_str_infos;
-        func_str_infos.reserve(functions.size());
-        std::transform(functions.begin(), functions.end(), std::back_inserter(func_str_infos),
-                       [&make_sym_str](const auto& f) { return make_sym_str(f.name); });
-        
-        std::vector<SymStrInfo> extern_str_infos;
-        extern_str_infos.reserve(extern_names.size());
-        std::transform(extern_names.begin(), extern_names.end(), std::back_inserter(extern_str_infos),
-                       [&make_sym_str](const auto& e) { return make_sym_str(e); });
-
-        const size_t num_symbols = 1 + functions.size() + extern_names.size(); 
-        const uint32_t strtab_total_size = 4 + static_cast<uint32_t>(strtab_data.size());
-
-        const size_t file_hdr_size  = sizeof(FileHeader);
-        const size_t sect_hdr_size  = sizeof(SectionHeader);
-        const size_t text_off       = file_hdr_size + sect_hdr_size;
-        const size_t reloc_off      = text_off + master_text_bytes.size();
-        const size_t symtab_off     = reloc_off + coff_relocs.size() * 10;
-        const size_t symtab_size    = num_symbols * sizeof(Symbol);
-        const size_t total_size     = symtab_off + symtab_size + strtab_total_size;
-        
-        out.assign(total_size, 0);
-
-        auto* fhdr = reinterpret_cast<FileHeader*>(out.data());
-        fhdr->Machine              = MACHINE_AMD64;
-        fhdr->NumberOfSections     = 1;
-        fhdr->TimeDateStamp        = 0;
-        fhdr->PointerToSymbolTable = static_cast<uint32_t>(symtab_off);
-        fhdr->NumberOfSymbols      = static_cast<uint32_t>(num_symbols);
-        fhdr->SizeOfOptionalHeader = 0;
-        fhdr->Characteristics      = 0;
-
-        auto* shdr = reinterpret_cast<SectionHeader*>(out.data() + file_hdr_size);
-        std::memset(shdr, 0, sizeof(SectionHeader));
-        std::memcpy(shdr->Name, ".text\0\0\0", 8);
-        shdr->VirtualSize          = 0;
-        shdr->VirtualAddress       = 0;
-        shdr->SizeOfRawData        = static_cast<uint32_t>(master_text_bytes.size());
-        shdr->PointerToRawData     = static_cast<uint32_t>(text_off);
-        shdr->PointerToRelocations = coff_relocs.empty() ? 0 : static_cast<uint32_t>(reloc_off);
-        shdr->NumberOfRelocations  = static_cast<uint16_t>(coff_relocs.size());
-        shdr->Characteristics      = SCN_CNT_CODE | SCN_MEM_EXECUTE | SCN_MEM_READ | SCN_ALIGN_16BYTES;
-
-        std::memcpy(out.data() + text_off, master_text_bytes.data(), master_text_bytes.size());
-
-        for (size_t ri = 0; ri < coff_relocs.size(); ++ri) {
-            uint8_t* rptr = out.data() + reloc_off + ri * 10;
-            std::memcpy(rptr,     &coff_relocs[ri].VirtualAddress, 4);
-            std::memcpy(rptr + 4, &coff_relocs[ri].SymbolTableIndex, 4);
-            std::memcpy(rptr + 8, &coff_relocs[ri].Type, 2);
-        }
-
-        auto fill_sym = [&](Symbol& s, const std::string& name, const SymStrInfo& si,
-                            uint32_t value, int16_t sect, uint8_t cls) {
-            std::memset(&s, 0, sizeof(Symbol));
-            if (si.use_long) {
-                s.Name.LongName.Zeroes = 0;
-                s.Name.LongName.Offset = si.strtab_off;
-            } else {
-                const size_t n = name.size() > 8 ? 8 : name.size();
-                std::memcpy(s.Name.ShortName, name.data(), n);
-            }
-            s.Value         = value;
-            s.SectionNumber = sect;
-            s.Type          = (cls == SYM_CLASS_EXTERNAL) ? SYM_DTYPE_FUNCTION : 0;
-            s.StorageClass  = cls;
-        };
-
-        auto* sym_tbl = reinterpret_cast<Symbol*>(out.data() + symtab_off);
-        fill_sym(sym_tbl[0], ".text", {false, 0}, 0, 1, SYM_CLASS_STATIC);
-        
-        size_t current_sym_idx = 1;
-        for (size_t i = 0; i < functions.size(); ++i) {
-            fill_sym(sym_tbl[current_sym_idx++], functions[i].name, func_str_infos[i], 
-                     static_cast<uint32_t>(functions[i].text_offset), 1, SYM_CLASS_EXTERNAL);
-        }
-        for (size_t i = 0; i < extern_names.size(); ++i) {
-            fill_sym(sym_tbl[current_sym_idx++], extern_names[i], extern_str_infos[i], 
-                     0, 0, SYM_CLASS_EXTERNAL);
-        }
-
-        uint8_t* strtab_ptr = out.data() + size_t(symtab_off) + symtab_size;
-        std::memcpy(strtab_ptr, &strtab_total_size, 4);
-        if (!strtab_data.empty()) {
-            std::memcpy(strtab_ptr + 4, strtab_data.data(), strtab_data.size());
-        }
-
-        return true;
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_module_coff_with_relocs(module_streams, out, slot_to_callee, rdata_payload);
     }
 
     bool build_coff_relocatable_binary(const ir::IRStream& stream,
                                        std::vector<uint8_t>& out,
                                        std::string_view entry_symbol = "DGTL_kernel_entry") {
-        out.clear();
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] return false;
-
-        std::vector<uint8_t> text_bytes;
-        text_bytes.resize(stream.size() * 32);
-        size_t text_size = 0;
-        if (!emit_machine_code(text_bytes.data(), text_bytes.size(), stream, &text_size)) return false;
-        text_bytes.resize(text_size);
-        if (text_bytes.empty()) return false;
-
-        using namespace dgtl::backend::linker::coff;
-
-        const size_t file_hdr_size = sizeof(FileHeader);
-        const size_t sect_hdr_size = sizeof(SectionHeader);
-        const size_t num_sections = 1;
-        const size_t text_offset = file_hdr_size + sect_hdr_size * num_sections;
-        const size_t symtab_offset = text_offset + text_size;
-
-        std::string sym_name(entry_symbol);
-        bool use_long_name = sym_name.size() > 8;
-        uint32_t sym_strtab_offset = 0;
-        std::string strtab_data;
-        if (use_long_name) {
-            sym_strtab_offset = 4;
-            strtab_data.append(sym_name);
-            strtab_data.push_back('\0');
-        }
-
-        const size_t num_symbols = 2;
-        const size_t symtab_size = num_symbols * sizeof(Symbol);
-        const uint32_t strtab_total_size = 4 + static_cast<uint32_t>(strtab_data.size());
-        const size_t total_size = symtab_offset + symtab_size + strtab_total_size;
-        out.assign(total_size, 0);
-
-        auto* fhdr = reinterpret_cast<FileHeader*>(out.data());
-        fhdr->Machine = MACHINE_AMD64;
-        fhdr->NumberOfSections = static_cast<uint16_t>(num_sections);
-        fhdr->TimeDateStamp = 0;
-        fhdr->PointerToSymbolTable = static_cast<uint32_t>(symtab_offset);
-        fhdr->NumberOfSymbols = static_cast<uint32_t>(num_symbols);
-        fhdr->SizeOfOptionalHeader = 0;
-        fhdr->Characteristics = 0;
-
-        auto* shdr = reinterpret_cast<SectionHeader*>(out.data() + file_hdr_size);
-        std::memset(shdr, 0, sizeof(SectionHeader));
-        std::memcpy(shdr->Name, ".text\0\0\0", 8);
-        shdr->VirtualSize = 0;
-        shdr->VirtualAddress = 0;
-        shdr->SizeOfRawData = static_cast<uint32_t>(text_size);
-        shdr->PointerToRawData = static_cast<uint32_t>(text_offset);
-        shdr->PointerToRelocations = 0;
-        shdr->PointerToLinenumbers = 0;
-        shdr->NumberOfRelocations = 0;
-        shdr->NumberOfLinenumbers = 0;
-        shdr->Characteristics = SCN_CNT_CODE | SCN_MEM_EXECUTE | SCN_MEM_READ | SCN_ALIGN_16BYTES;
-
-        std::memcpy(out.data() + text_offset, text_bytes.data(), text_size);
-
-        auto* sym = reinterpret_cast<Symbol*>(out.data() + symtab_offset);
-
-        std::memset(&sym[0], 0, sizeof(Symbol));
-        std::memcpy(sym[0].Name.ShortName, ".text\0\0\0", 8);
-        sym[0].Value = 0;
-        sym[0].SectionNumber = 1;
-        sym[0].Type = 0;
-        sym[0].StorageClass = SYM_CLASS_STATIC;
-        sym[0].NumberOfAuxSymbols = 0;
-
-        std::memset(&sym[1], 0, sizeof(Symbol));
-        if (use_long_name) {
-            sym[1].Name.LongName.Zeroes = 0;
-            sym[1].Name.LongName.Offset = sym_strtab_offset;
-        } else {
-            const size_t copy_len = sym_name.size() > 8 ? 8 : sym_name.size();
-            std::memcpy(sym[1].Name.ShortName, sym_name.data(), copy_len);
-        }
-        sym[1].Value = 0;
-        sym[1].SectionNumber = 1;
-        sym[1].Type = SYM_DTYPE_FUNCTION;
-        sym[1].StorageClass = SYM_CLASS_EXTERNAL;
-        sym[1].NumberOfAuxSymbols = 0;
-
-        uint8_t* strtab_ptr = out.data() + size_t(symtab_offset) + symtab_size;
-        std::memcpy(strtab_ptr, &strtab_total_size, 4);
-        if (!strtab_data.empty()) {
-            std::memcpy(strtab_ptr + 4, strtab_data.data(), strtab_data.size());
-        }
-
-        return true;
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_coff_relocatable_binary(stream, out, entry_symbol);
     }
 
     bool build_coff_archive_binary(const ir::IRStream& stream,
                                    std::vector<uint8_t>& out,
                                    std::string_view member_name = "module.obj",
                                    std::string_view entry_symbol = "DGTL_kernel_entry") {
-        out.clear();
-
-        std::vector<uint8_t> object_bytes;
-        if (!build_coff_relocatable_binary(stream, object_bytes, entry_symbol)) return false;
-
-        std::string sym_name(entry_symbol);
-        sym_name.push_back('\0');
-
-        const uint32_t num_symbols_be = to_big_endian_u32(1);
-        const size_t first_member_content_size = 4 + 4 + sym_name.size();
-
-        std::array<char, 60> lm_hdr{};
-        std::fill(lm_hdr.begin(), lm_hdr.end(), ' ');
-        std::snprintf(lm_hdr.data(), 17, "%-16s", "/");
-        std::snprintf(lm_hdr.data() + 16, 13, "%-12d", 0);
-        std::snprintf(lm_hdr.data() + 28, 7, "%-6d", 0);
-        std::snprintf(lm_hdr.data() + 34, 7, "%-6d", 0);
-        std::snprintf(lm_hdr.data() + 40, 9, "%-8o", 0);
-        std::snprintf(lm_hdr.data() + 48, 11, "%-10u",
-                      static_cast<unsigned int>(first_member_content_size));
-        lm_hdr[58] = '`';
-        lm_hdr[59] = '\n';
-
-        const size_t lm_pad = (first_member_content_size & 1U) ? 1 : 0;
-        const size_t obj_member_offset = 8 + 60 + first_member_content_size + lm_pad;
-        const uint32_t obj_offset_be = to_big_endian_u32(static_cast<uint32_t>(obj_member_offset));
-
-        std::string obj_name(member_name);
-        if (obj_name.size() > 15) obj_name.resize(15);
-        obj_name.push_back('/');
-
-        std::array<char, 60> obj_hdr{};
-        std::fill(obj_hdr.begin(), obj_hdr.end(), ' ');
-        std::snprintf(obj_hdr.data(), 17, "%-16s", obj_name.c_str());
-        std::snprintf(obj_hdr.data() + 16, 13, "%-12d", 0);
-        std::snprintf(obj_hdr.data() + 28, 7, "%-6d", 0);
-        std::snprintf(obj_hdr.data() + 34, 7, "%-6d", 0);
-        std::snprintf(obj_hdr.data() + 40, 9, "%-8o", 0644);
-        std::snprintf(obj_hdr.data() + 48, 11, "%-10u",
-                      static_cast<unsigned int>(object_bytes.size()));
-        obj_hdr[58] = '`';
-        obj_hdr[59] = '\n';
-
-        const size_t obj_pad = (object_bytes.size() & 1U) ? 1 : 0;
-
-        static constexpr char kArMagic[] = "!<arch>\n";
-        out.reserve(8 + 60 + first_member_content_size + lm_pad
-                    + 60 + object_bytes.size() + obj_pad);
-
-        out.insert(out.end(), kArMagic, kArMagic + 8);
-        out.insert(out.end(), lm_hdr.begin(), lm_hdr.end());
-        out.insert(out.end(), reinterpret_cast<const uint8_t*>(&num_symbols_be),
-                   reinterpret_cast<const uint8_t*>(&num_symbols_be) + 4);
-        out.insert(out.end(), reinterpret_cast<const uint8_t*>(&obj_offset_be),
-                   reinterpret_cast<const uint8_t*>(&obj_offset_be) + 4);
-        out.insert(out.end(), sym_name.begin(), sym_name.end());
-        if (lm_pad) out.push_back('\n');
-        out.insert(out.end(), obj_hdr.begin(), obj_hdr.end());
-        out.insert(out.end(), object_bytes.begin(), object_bytes.end());
-        if (obj_pad) out.push_back('\n');
-
-        return true;
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_coff_archive_binary(stream, out, member_name, entry_symbol);
     }
 
-public:
-    virtual ~DGTLLinker() {
-        release_mapping();
+    bool emit_pe_executable(std::string_view path, const ir::IRStream& ir_stream) {
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_pe_executable(path, ir_stream);
     }
 
     [[nodiscard]] const std::vector<std::string>& fallback_diagnostics() const noexcept {
         return fallback_diagnostics_;
     }
 
-    void emit_elf64(std::string_view path, const ir::IRStream& ir_stream) {
-        if (ir_stream.is_null()) [[unlikely]] return;
-        release_mapping();
-        reset_mapping_state();
-        
-        file_size = (ir_stream.size() * 32) + 0x2000; 
-        file_size = (file_size + 0xFFF) & ~0xFFF; 
-
-#if defined(_WIN32)
-        HANDLE hFile = CreateFileA(path.data(), GENERIC_READ | GENERIC_WRITE, 0, NULL, 
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) return;
-
-        HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, (DWORD)file_size, NULL);
-        if (!hMap) {
-            CloseHandle(hFile);
-            return;
-        }
-        output_ptr = static_cast<uint8_t*>(MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, file_size));
-        fd_handle = reinterpret_cast<intptr_t>(hFile);
-        CloseHandle(hMap);
-#else
-        int fd = open(path.data(), O_RDWR | O_CREAT | O_TRUNC, 0755);
-        if (fd == -1) return;
-        if (ftruncate(fd, file_size) != 0) { close(fd); return; }
-
-        output_ptr = static_cast<uint8_t*>(mmap(nullptr, file_size, 
-                                           PROT_READ | PROT_WRITE, 
-                                           MAP_SHARED, fd, 0));
-        fd_handle = static_cast<intptr_t>(fd);
-#endif
-
-        if (!output_ptr || output_ptr == DGTL_MAP_FAILED) [[unlikely]] {
-            output_ptr = nullptr;
-            if (fd_handle != -1) {
-#if defined(_WIN32)
-                CloseHandle(reinterpret_cast<HANDLE>(fd_handle));
-#else
-                close(static_cast<int>(fd_handle));
-#endif
-                fd_handle = -1;
-            }
-            return;
-        }
-
-        auto* elf_hdr = reinterpret_cast<Elf64_Ehdr*>(output_ptr);
-        std::memset(elf_hdr, 0, sizeof(Elf64_Ehdr));
-        std::memcpy(elf_hdr->e_ident, ELFMAG, SELFMAG);
-        elf_hdr->e_ident[4] = ELFCLASS64;
-        elf_hdr->e_ident[5] = ELFDATA2LSB;
-        elf_hdr->e_ident[6] = EV_CURRENT;
-        elf_hdr->e_type = ET_EXEC;
-        elf_hdr->e_machine = EM_X86_64;
-        elf_hdr->e_version = EV_CURRENT;
-        elf_hdr->e_entry = 0x401000;
-        elf_hdr->e_phoff = sizeof(Elf64_Ehdr);
-        elf_hdr->e_ehsize = sizeof(Elf64_Ehdr);
-        elf_hdr->e_phentsize = sizeof(Elf64_Phdr);
-        elf_hdr->e_phnum = 1;
-
-        auto* prog_hdr = reinterpret_cast<Elf64_Phdr*>(output_ptr + elf_hdr->e_phoff);
-        prog_hdr->p_type = PT_LOAD;
-        prog_hdr->p_offset = 0x1000; 
-        prog_hdr->p_vaddr = 0x401000;
-        prog_hdr->p_filesz = static_cast<uint64_t>(ir_stream.size()) * 32;
-        prog_hdr->p_memsz = prog_hdr->p_filesz;
-        prog_hdr->p_flags = PF_R | PF_X;
-        prog_hdr->p_align = 0x1000;
-
-        size_t emitted_size = 0;
-        const bool ok = emit_machine_code(output_ptr + prog_hdr->p_offset,
-                                          static_cast<size_t>(prog_hdr->p_filesz),
-                                          ir_stream,
-                                          &emitted_size);
-        if (!ok) [[unlikely]] {
-            release_mapping();
-            return;
-        }
-        prog_hdr->p_filesz = emitted_size;
-        prog_hdr->p_memsz = emitted_size;
-
-#if !defined(_WIN32)
-        msync(output_ptr, file_size, MS_SYNC);
-#endif
+    std::vector<CoffCallReloc> collect_call_relocs(
+        const ir::IRStream& stream,
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee)
+    {
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.collect_call_relocs(stream, slot_to_callee);
     }
 
     bool build_raw_x64_machine_code(const ir::IRStream& stream,
@@ -1303,7 +622,9 @@ public:
                            size_t dest_capacity,
                            const ir::IRStream& stream,
                            size_t* emitted_size = nullptr,
-                           const std::unordered_map<uint32_t, uintptr_t>& slot_map = {}) noexcept {
+                           const std::unordered_map<uint32_t, uintptr_t>& slot_map = {},
+                           std::vector<CoffCallReloc>* out_relocs = nullptr,
+                           const std::unordered_map<uint32_t, std::string>& slot_to_callee = {}) noexcept {
         if (stream.is_null() || !dest || stream.size() == 0) [[unlikely]] return false;
         clear_fallback_diagnostics();
         const size_t count = stream.size();
@@ -1430,42 +751,53 @@ public:
         write_u8(0x48); write_u8(0x81); write_u8(0xEC); write_u32(frame_size);
         if (count > 0 && stream.get_node(0).opcode == ir::OpCode::LABEL) {
             const auto& fn_hdr = stream.get_node(0);
-            if (fn_hdr.op_a != ir::INVALID_SLOT && fn_hdr.op_a != 0u) emit_store_rcx_to_slot(fn_hdr.op_a);
-            if (fn_hdr.op_b != ir::INVALID_SLOT && fn_hdr.op_b != 0u) emit_store_rdx_to_slot(fn_hdr.op_b);
-            if (fn_hdr.op_c != ir::INVALID_SLOT && fn_hdr.op_c != 0u) emit_store_r8_to_slot(fn_hdr.op_c);
-            if (fn_hdr.logic_flags != 0u && fn_hdr.logic_flags != ir::INVALID_SLOT) emit_store_r9_to_slot(fn_hdr.logic_flags);
+            if (fn_hdr.op_a != ir::INVALID_SLOT) emit_store_rcx_to_slot(fn_hdr.op_a);
+            if (fn_hdr.op_b != ir::INVALID_SLOT) emit_store_rdx_to_slot(fn_hdr.op_b);
+            if (fn_hdr.op_c != ir::INVALID_SLOT) emit_store_r8_to_slot(fn_hdr.op_c);
+            if (fn_hdr.logic_flags != ir::INVALID_SLOT && fn_hdr.logic_flags != 0u) emit_store_r9_to_slot(fn_hdr.logic_flags);
+            const auto fn_overflow = stream.get_call_overflow_args(0);
+            for (size_t k = 0; k < fn_overflow.size(); ++k) {
+                if (fn_overflow[k] != ir::INVALID_SLOT && fn_overflow[k] != 0u) {
+                    write_u8(0x48); write_u8(0x8B); write_u8(0x85); write_i32(static_cast<int32_t>(48 + k * 8)); // mov rax, [rbp + 48 + k*8]
+                    emit_store_rax_to_slot(fn_overflow[k]);
+                }
+            }
         }
 
         for (size_t i = 0; i < count; ++i) {
+            node_offsets[i] = offset;
             const auto& node = stream.get_node(i);
             using namespace dgtl::isa::lowering;
             const MachineForm form = generated::classify_machine_form(node.opcode);
 
             if (dgtl::isa::lowering::runtime_contract::has_runtime_symbol(node.opcode)) {
-                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_rcx_from_slot(node.op_b);
-                else { write_u8(0x31); write_u8(0xC9); }
-                if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_rdx_from_slot(node.op_c);
-                else { write_u8(0x31); write_u8(0xD2); }
-                if (node.logic_flags != 0u && node.logic_flags != ir::INVALID_SLOT) {
-                    write_u8(0x4C); write_u8(0x8B); write_u8(0x85);
-                    write_i32(slot_disp(node.logic_flags));
+                if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) emit_mov_rcx_from_slot(node.op_a);
+                else { write_u8(0x48); write_u8(0x31); write_u8(0xC9); } // xor rcx, rcx
+                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_rdx_from_slot(node.op_b);
+                else { write_u8(0x48); write_u8(0x31); write_u8(0xD2); } // xor rdx, rdx
+                if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_r8_from_slot(node.op_c);
+                else { write_u8(0x4D); write_u8(0x31); write_u8(0xC0); } // xor r8, r8
+                if (node.logic_flags != ir::INVALID_SLOT && node.logic_flags != 0u) {
+                    emit_mov_reg_from_slot(0x4C, 0x8D, node.logic_flags); // mov r9, [rbp-disp]
                 }
-                else { write_u8(0x4D); write_u8(0x31); write_u8(0xC0); }
+                else { write_u8(0x4D); write_u8(0x31); write_u8(0xC9); } // xor r9, r9
 
                 write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x6E); write_u8(0xC1); // movq xmm0, rcx
                 write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x6E); write_u8(0xCA); // movq xmm1, rdx
 
-                write_u8(0x48); write_u8(0x83); write_u8(0xEC); write_u8(0x20);
+                write_u8(0x48); write_u8(0x83); write_u8(0xEC); write_u8(0x20); // sub rsp, 32
 
                 uintptr_t rt_target_addr = 0;
-                if (!slot_map.empty()) {
-                    auto it = slot_map.find(static_cast<uint32_t>(node.opcode));
-                    if (it != slot_map.end()) {
-                        rt_target_addr = it->second;
+                if (out_relocs == nullptr) {
+                    if (!slot_map.empty()) {
+                        auto it = slot_map.find(static_cast<uint32_t>(node.opcode));
+                        if (it != slot_map.end()) {
+                            rt_target_addr = it->second;
+                        }
                     }
-                }
-                if (rt_target_addr == 0 && node.intent_hash > 0x7FFF00000000ULL) {
-                    rt_target_addr = static_cast<uintptr_t>(node.intent_hash);
+                    if (rt_target_addr == 0 && node.intent_hash > 0x7FFF00000000ULL) {
+                        rt_target_addr = static_cast<uintptr_t>(node.intent_hash);
+                    }
                 }
 
                 if (rt_target_addr != 0) {
@@ -1473,7 +805,14 @@ public:
                     write_u8(0xFF); write_u8(0xD0);
                 } else {
                     write_u8(0xE8);
+                    const size_t reloc_disp_offset = offset;
                     write_u8(0x00); write_u8(0x00); write_u8(0x00); write_u8(0x00);
+                    if (out_relocs != nullptr) {
+                        const char* symbol = dgtl::isa::lowering::runtime_contract::runtime_symbol_for_opcode(node.opcode);
+                        if (symbol != nullptr) {
+                            out_relocs->push_back({ static_cast<uint32_t>(reloc_disp_offset), std::string(symbol) });
+                        }
+                    }
                 }
                 write_u8(0x48); write_u8(0x83); write_u8(0xC4); write_u8(0x20); // add rsp, 32
 
@@ -1485,11 +824,19 @@ public:
             switch (form) {
                 case MachineForm::NoOp:
                     if (node.opcode == ir::OpCode::LABEL) {
-                        if ((node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0) {
-                            if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) emit_store_rcx_to_slot(node.op_a);
-                            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_store_rdx_to_slot(node.op_b);
-                            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_store_r8_to_slot(node.op_c);
-                            if (node.logic_flags != 0u && node.logic_flags != ir::INVALID_SLOT) emit_store_r9_to_slot(node.logic_flags);
+                        const bool is_func_header = (node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
+                        if (is_func_header && i > 0) {
+                            if (node.op_a != ir::INVALID_SLOT) emit_store_rcx_to_slot(node.op_a);
+                            if (node.op_b != ir::INVALID_SLOT) emit_store_rdx_to_slot(node.op_b);
+                            if (node.op_c != ir::INVALID_SLOT) emit_store_r8_to_slot(node.op_c);
+                            if (node.logic_flags != ir::INVALID_SLOT && node.logic_flags != 0u) emit_store_r9_to_slot(node.logic_flags);
+                            const auto fn_overflow = stream.get_call_overflow_args(i);
+                            for (size_t k = 0; k < fn_overflow.size(); ++k) {
+                                if (fn_overflow[k] != ir::INVALID_SLOT && fn_overflow[k] != 0u) {
+                                    write_u8(0x48); write_u8(0x8B); write_u8(0x85); write_i32(static_cast<int32_t>(48 + k * 8));
+                                    emit_store_rax_to_slot(fn_overflow[k]);
+                                }
+                            }
                         }
                     } else {
                         write_u8(0x90);
@@ -1556,7 +903,7 @@ public:
                         emit_mov_rcx_from_slot(node.op_b);
                         if (is64) write_u8(0x48);
                         write_u8(0xD3);
-                        write_u8(kind == generated::X64IntegerBinary32Kind::Shl ? 0xE0 : 0xE8);
+                        write_u8(kind == generated::X64IntegerBinary32Kind::Shl ? 0xE0 : 0xF8);
                         emit_store_rax_to_slot(node.result_id);
                     }
                     else if (kind == generated::X64IntegerBinary32Kind::Div || 
@@ -1685,38 +1032,59 @@ public:
                     if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
                         emit_mov_rcx_from_slot(node.op_b);
                     } else { 
-                        write_u8(0x31); write_u8(0xC9); 
+                        write_u8(0x48); write_u8(0x31); write_u8(0xC9); // xor rcx, rcx
                     }
 
                     if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
                         emit_mov_rdx_from_slot(node.op_c);
                     } else { 
-                        write_u8(0x31); write_u8(0xD2); 
+                        write_u8(0x48); write_u8(0x31); write_u8(0xD2); // xor rdx, rdx
                     }
 
-                    if (node.logic_flags != 0 && node.logic_flags != ir::INVALID_SLOT) {
+                    if (node.logic_flags != ir::INVALID_SLOT && node.logic_flags != 0u) {
                         emit_mov_r8_from_slot(node.logic_flags);
                     } else { 
-                        write_u8(0x4D); write_u8(0x31); write_u8(0xC0); 
+                        write_u8(0x4D); write_u8(0x31); write_u8(0xC0); // xor r8, r8
+                    }
+
+                    const auto overflow = stream.get_call_overflow_args(i);
+                    if (!overflow.empty() && overflow[0] != ir::INVALID_SLOT && overflow[0] != 0u) {
+                        emit_mov_reg_from_slot(0x4C, 0x8D, overflow[0]); // mov r9, [rbp-disp]
+                    } else {
+                        write_u8(0x4D); write_u8(0x31); write_u8(0xC9); // xor r9, r9
                     }
 
                     write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x6E); write_u8(0xC1); // movq xmm0, rcx
                     write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x6E); write_u8(0xCA); // movq xmm1, rdx
+                    write_u8(0x66); write_u8(0x49); write_u8(0x0F); write_u8(0x6E); write_u8(0xD0); // movq xmm2, r8
+                    write_u8(0x66); write_u8(0x49); write_u8(0x0F); write_u8(0x6E); write_u8(0xD9); // movq xmm3, r9
 
-                    write_u8(0x48); write_u8(0x83); write_u8(0xEC); write_u8(0x20);
+                    const size_t num_stack_args = (overflow.size() > 1) ? (overflow.size() - 1) : 0;
+                    const size_t stack_alloc = 32 + ((num_stack_args + 1) / 2) * 16;
+                    write_u8(0x48); write_u8(0x81); write_u8(0xEC); write_u32(static_cast<uint32_t>(stack_alloc)); // sub rsp, stack_alloc
 
-                    uintptr_t target_addr = 0;
-                    if (!slot_map.empty()) {
-                        auto it = slot_map.find(static_cast<uint32_t>(node.op_a));
-                        if (it != slot_map.end() && it->second != 0) {
-                            target_addr = it->second;
+                    for (size_t k = 1; k < overflow.size(); ++k) {
+                        if (overflow[k] != ir::INVALID_SLOT && overflow[k] != 0u) {
+                            emit_mov_rax_from_slot(overflow[k]);
+                            write_u8(0x48); write_u8(0x89); write_u8(0x84); write_u8(0x24);
+                            write_i32(static_cast<int32_t>(32 + (k - 1) * 8)); // mov [rsp + 32 + (k-1)*8], rax
                         }
                     }
-                    if (target_addr == 0 && node.op_a > 0x7FFF00000000ULL) {
-                        target_addr = static_cast<uintptr_t>(node.op_a);
-                    }
-                    if (target_addr == 0 && node.intent_hash > 0x7FFF00000000ULL) {
-                        target_addr = static_cast<uintptr_t>(node.intent_hash);
+
+                    uintptr_t target_addr = 0;
+                    if (out_relocs == nullptr) {
+                        if (!slot_map.empty()) {
+                            auto it = slot_map.find(static_cast<uint32_t>(node.op_a));
+                            if (it != slot_map.end() && it->second != 0) {
+                                target_addr = it->second;
+                            }
+                        }
+                        if (target_addr == 0 && node.op_a > 0x7FFF00000000ULL) {
+                            target_addr = static_cast<uintptr_t>(node.op_a);
+                        }
+                        if (target_addr == 0 && node.intent_hash > 0x7FFF00000000ULL) {
+                            target_addr = static_cast<uintptr_t>(node.intent_hash);
+                        }
                     }
 
                     if (target_addr != 0) {
@@ -1727,18 +1095,34 @@ public:
                         const size_t patch_disp_offset = offset;
                         write_u32(0);
                         const size_t patch_source_end = offset;
-                        patches.push_back({patch_disp_offset, patch_source_end, resolve_target(node.op_a)});
+                        bool is_external_reloc = false;
+                        if (out_relocs != nullptr) {
+                            auto it = slot_to_callee.find(node.op_a);
+                            if (it != slot_to_callee.end() && !it->second.empty()) {
+                                out_relocs->push_back({ static_cast<uint32_t>(patch_disp_offset), it->second });
+                                is_external_reloc = true;
+                            }
+                        }
+                        if (!is_external_reloc) {
+                            patches.push_back({patch_disp_offset, patch_source_end, resolve_target(node.op_a)});
+                        }
                     }
-                    write_u8(0x48); write_u8(0x83); write_u8(0xC4); write_u8(0x20); // add rsp, 32
+                    write_u8(0x48); write_u8(0x81); write_u8(0xC4); write_u32(static_cast<uint32_t>(stack_alloc)); // add rsp, stack_alloc
 
-                    if (node.result_id != ir::INVALID_SLOT) emit_store_rax_to_slot(node.result_id);
-                    else write_u8(0x90);
+                    if (node.result_id != ir::INVALID_SLOT) {
+                        write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x7E); write_u8(0xC2); // movq rdx, xmm0
+                        write_u8(0x48); write_u8(0x85); write_u8(0xC0);                               // test rax, rax
+                        write_u8(0x48); write_u8(0x0F); write_u8(0x44); write_u8(0xC2);             // cmovz rax, rdx
+                        emit_store_rax_to_slot(node.result_id);
+                    } else {
+                        write_u8(0x90);
+                    }
                     continue;
                 }
 
                 case MachineForm::Goto: {
                     write_u8(0xE9);
-                    const uint32_t target_slot = (label_map.find(node.op_a) != label_map.end()) ? node.op_a : ((label_map.find(node.result_id) != label_map.end()) ? node.result_id : node.op_a);
+                    const uint32_t target_slot = (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) ? node.op_a : node.result_id;
                     patches.push_back({offset, offset + 4, resolve_target(target_slot)});
                     write_u32(0);
                     break;
@@ -1746,10 +1130,10 @@ public:
 
                 case MachineForm::BranchCond: {
                     emit_mov_rax_from_slot(node.op_a);
-                    write_u8(0x48); write_u8(0x85); write_u8(0xC0);
+                    write_u8(0x48); write_u8(0x85); write_u8(0xC0); // test rax, rax
                     write_u8(0x0F);
                     write_u8(node.opcode == ir::OpCode::BRANCH_UNLIKELY ? 0x84 : 0x85);
-                    const uint32_t target_slot = (label_map.find(node.op_b) != label_map.end()) ? node.op_b : ((label_map.find(node.result_id) != label_map.end()) ? node.result_id : node.op_b);
+                    const uint32_t target_slot = (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) ? node.op_b : node.result_id;
                     patches.push_back({offset, offset + 4, resolve_target(target_slot)});
                     write_u32(0);
                     break;
@@ -1759,15 +1143,20 @@ public:
                     emit_mov_rax_from_slot(node.op_a);
                     write_u8(0x48); write_u8(0x3B); write_u8(0x85); write_i32(slot_disp(node.op_b));
                     write_u8(0x0F); write_u8(0x85);
-                    const uint32_t target_slot = (label_map.find(node.op_c) != label_map.end()) ? node.op_c : ((label_map.find(node.result_id) != label_map.end()) ? node.result_id : node.op_c);
+                    const uint32_t target_slot = (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) ? node.op_c : node.result_id;
                     patches.push_back({offset, offset + 4, resolve_target(target_slot)});
                     write_u32(0);
                     break;
                 }
 
                 case MachineForm::Return: {
-                    if (node.op_a != ir::INVALID_SLOT) emit_mov_rax_from_slot(node.op_a);
-                    else { write_u8(0x31); write_u8(0xC0); }
+                    if (node.op_a != ir::INVALID_SLOT) {
+                        emit_mov_rax_from_slot(node.op_a);
+                        write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x6E); write_u8(0xC0); // movq xmm0, rax (Dual ABI Return)
+                    } else {
+                        write_u8(0x31); write_u8(0xC0);
+                        write_u8(0x66); write_u8(0x0F); write_u8(0xEF); write_u8(0xC0); // pxor xmm0, xmm0
+                    }
                     write_u8(0xC9); write_u8(0xC3);
                     break;
                 }
@@ -1798,8 +1187,18 @@ public:
             }
         }
 
+        // Defensive fallthrough safety: guarantee clean leave; ret if last instruction was not Return
+        if (count == 0 || stream.get_node(count - 1).opcode != ir::OpCode::RET) {
+            write_u8(0x31); write_u8(0xC0); // xor eax, eax
+            write_u8(0xC9); write_u8(0xC3); // leave; ret
+        }
+
+        node_offsets[count] = offset;
         for (const auto& p : patches) {
-            const size_t tgt_byte = (p.target_node <= count) ? node_offsets[p.target_node] : offset;
+            if (p.target_node >= count) {
+                continue; // Do not patch external calls; preserve zero addend for external COFF relocations
+            }
+            const size_t tgt_byte = node_offsets[p.target_node];
             const int64_t rel64 = static_cast<int64_t>(tgt_byte) - static_cast<int64_t>(p.source_end);
             const int32_t rel32 = static_cast<int32_t>(rel64);
             std::memcpy(dest + p.disp_offset, &rel32, sizeof(rel32));

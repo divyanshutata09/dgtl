@@ -19,6 +19,7 @@ module;
 #include <map>
 #include <optional>
 #include <sstream>
+#include <fstream>
 #include <memory>
 #include <cstdint>
 #include <algorithm>
@@ -345,7 +346,7 @@ private:
     [[nodiscard]] static bool is_commutative_operation(ir::OpCode opcode) noexcept;
     [[nodiscard]] static bool is_associative_operation(ir::OpCode opcode) noexcept;
     [[nodiscard]] static int get_operation_arity(ir::OpCode opcode) noexcept;
-    [[nodiscard]] static std::string format_value_as_bitvector(uint32_t value, int width) noexcept;
+    [[nodiscard]] static std::string format_value_as_bitvector(uint64_t value, int width) noexcept;
     [[nodiscard]] static std::string extract_counterexample_from_solver_output(
         std::string_view solver_output
     ) noexcept;
@@ -469,11 +470,13 @@ inline int DGTLFormalVerificationSMT::get_operation_arity(ir::OpCode opcode) noe
     }
 }
 
-inline std::string DGTLFormalVerificationSMT::format_value_as_bitvector(uint32_t value, int width) noexcept {
+inline std::string DGTLFormalVerificationSMT::format_value_as_bitvector(uint64_t value, int width) noexcept {
+    if (width <= 0) width = 32;
+    if (width > 64) width = 64;
     std::ostringstream oss;
     oss << "#b";
     for (int i = width - 1; i >= 0; --i) {
-        oss << ((value >> i) & 1);
+        oss << ((value >> static_cast<unsigned>(i)) & 1ULL);
     }
     return oss.str();
 }
@@ -909,11 +912,18 @@ inline bool DGTLFormalVerificationSMT::log_verification_to_file(
     const VerificationResult& result,
     std::string_view smt_script
 ) noexcept {
-    // Placeholder: in production, use std::ofstream
-    (void)filepath;
-    (void)result;
-    (void)smt_script;
-    return false;
+    if (filepath.empty()) return false;
+    try {
+        std::ofstream ofs(std::string(filepath), std::ios::out | std::ios::trunc);
+        if (!ofs.is_open()) return false;
+        ofs << "; SMT Verification Log\n";
+        ofs << "; Status: " << (result.is_equivalent ? "EQUIVALENT" : "NOT_EQUIVALENT") << "\n";
+        ofs << "; Solver: " << result.solver_name << " (" << result.solve_time_ms << " ms)\n\n";
+        ofs << smt_script << "\n";
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 inline std::string DGTLFormalVerificationSMT::extract_counterexample_from_solver_output(

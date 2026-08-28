@@ -126,6 +126,9 @@ private:
     }
 
     static void apply_merge_numa_locality() noexcept {
+        thread_local bool pinned = false;
+        if (pinned) return;
+        pinned = true;
         const uint32_t nodes = dgtl::runtime::numa::get_num_nodes();
         if (nodes <= 1u) {
             return;

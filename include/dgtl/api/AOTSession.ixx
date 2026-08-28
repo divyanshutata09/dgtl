@@ -29,6 +29,8 @@ import dgtl.compiler_context;
 import dgtl.ir_core.stream;
 import dgtl.ir_core.pass_manager_orchestrator;
 import dgtl.ir_core.jit_orchestrator;
+import dgtl.backend.aot_linker;
+import dgtl.backend.aot_orchestrator;
 import dgtl.ir_core.runtime;
 
 // Import public interface parent securely 
@@ -106,9 +108,8 @@ public:
     [[nodiscard]] bool emit_object(std::string_view output_path) noexcept {
         if (optimized_stream_.is_null()) return false;
         try {
-            dgtl::jit::DGTLOrchestrator orchestrator;
-            orchestrator.compile_to_binary(output_path, optimized_stream_);
-            return true;
+            dgtl::backend::aot::DGTLAOTOrchestrator orchestrator;
+            return orchestrator.compile_and_emit(output_path, optimized_stream_, "DGTL_kernel_entry");
         } catch (...) {
             return false;
         }
@@ -122,9 +123,8 @@ public:
     [[nodiscard]] bool emit_binary(std::string_view output_path) noexcept {
         if (optimized_stream_.is_null()) return false;
         try {
-            dgtl::jit::DGTLOrchestrator orchestrator;
-            orchestrator.compile_to_binary(output_path, optimized_stream_);
-            return true;
+            dgtl::backend::aot::DGTLAOTOrchestrator orchestrator;
+            return orchestrator.compile_and_emit(output_path, optimized_stream_, "DGTL_kernel_entry");
         } catch (...) {
             return false;
         }

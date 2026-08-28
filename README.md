@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -48,8 +48,182 @@ For commercial licensing or evaluation access, contact: **licensing@dgtl.tech**
   - **Error Handling (1)**: **Enhanced Error Recovery** with graceful degradation
   - **Orchestration (2)**: **Distributed GPU Scheduling**, Pass Composer
   - **Memory (1)**: Redundant Store Fusion
-- ** Execution Runtime**: W^X-protected code execution via `StrikeOrchestrator` with closed-loop AI cost feedback
+- **Execution Runtime**: W^X-protected code execution via `StrikeOrchestrator` with closed-loop AI cost feedback
 - **Graph-Based Analysis**: Execution graphs, dependency tracking, region-level optimization, polyhedral regions
+
+## DGTL Architecture & Subsystem Layout
+
+DGTL is structured into clean, decoupled compiler layers separating IR middle-end transformations from backend target emission and execution.
+
+```
+DGTL Compiler Infrastructure
+├── 1. API Subsystem (include/dgtl/api/)
+│   ├── AOTSession.ixx          # High-performance Ahead-Of-Time compilation session
+│   ├── JITSession.ixx          # Ultra-low-latency Just-In-Time execution session
+│   ├── HybridSession.ixx       # Adaptive tier-routing execution engine
+│   ├── ExecutionEngine.ixx     # Abstract execution engine foundation
+│   ├── IRBuilder.ixx           # Programmatic fluent IR stream builder
+│   └── Config.ixx              # Global engine and telemetry configuration
+│
+├── 2. Core Foundation Subsystem (include/dgtl/core/)
+│   ├── Target.ixx              # TargetMachine, ArchType, CPU feature query & port models
+│   ├── Arena.ixx               # Transactional arena memory allocators
+│   ├── Compiler_Context.ixx    # DGTL compilation context & session state
+│   ├── ControlFlow.ixx         # CFG nodes, basic blocks, jump graphs
+│   ├── Function.ixx            # Function abstractions & signatures
+│   ├── MemoryManager.ixx       # Virtual memory & W^X page controls
+│   └── NUMA.ixx                # NUMA topology & memory affinity
+│
+├── 3. Intermediate Representation (include/dgtl/ir/)
+│   ├── base/
+│   │   ├── IR_Enums.ixx        # 178 canonical opcodes and flag definitions
+│   │   ├── IR_Node.ixx         # 64-byte canonical IR node representation
+│   │   ├── IR_Stream.ixx       # Transactional shadow stream & instruction buffer
+│   │   ├── IR_SSA.ixx          # SSA form invariants & dominance frontiers
+│   │   ├── IR_Storage.ixx      # Compressed bit-packed IR arrays
+│   │   └── IR_PrintSerialDumper.ixx # Textual IR dumper & format serializer
+│   ├── gen/
+│   │   └── DGTL_Gen_Ops.ixx    # 178 typed dialect builder wrappers
+│   └── Global_IR.ixx           # Whole-program translation units
+│
+├── 4. Analysis & Cost Modeling (include/dgtl/analysis/)
+│   ├── AI_Cost_Model.ixx       # AI neural cost model for loop/latency estimation
+│   ├── Liveness_Memory_Dependency_Unified.ixx # Liveness analysis & alias disambiguation
+│   ├── Polyhedral_Scop_Unified.ixx # Polyhedral SCoP detector & iteration space mapper
+│   └── Speculative_Value_Profiler.ixx # Value profiling & branch probability tracker
+│
+├── 5. Optimization Passes (include/dgtl/pass/)
+│   ├── transform/
+│   │   ├── Transform_Scalar_Core.ixx # GVN, SCCP, Constant Folding, Algebraic Simplify
+│   │   ├── Transform_Inlining.ixx # Adaptive multi-level function inliner
+│   │   ├── Transform_Poly_Loop.ixx # Polyhedral loop fusion, tiling & skewing
+│   │   └── Transform_Control_Predication.ixx # Branchless select/cmov predication
+│   ├── simd/
+│   │   └── SimdGScatter_LegalVecRecognizer.ixx # Vectorizer & gather/scatter matcher
+│   ├── speculative/
+│   │   └── SpecAliasDCE_InlineVecFusion.ixx # Speculative inlining, DCE & vector fusion
+│   └── error_handling/
+│       └── Enhanced_Error_Recovery.ixx # Transactional error recovery
+│
+├── 6. Optimization Pipeline (include/dgtl/pipeline/)
+│   ├── Pass_Manager.ixx        # Master pass manager aggregate
+│   ├── Pass_Manager_Config.ixx # Precision modes (HFT, CLOUD, HPC) & pass telemetry
+│   ├── Pass_Manager_Analysis.ixx # Analysis preservation & invalidation manager
+│   └── Pass_Manager_Orchestrator.ixx # Multi-threaded parallel pass pipelines
+│
+├── 7. JIT Execution Subsystem (include/dgtl/jit/)
+│   ├── JIT_Orchestrator.ixx    # Strike runner, Tier-1/Tier-2 compilation, OSR poller
+│   ├── JIT_Executor.ixx        # W^X in-memory code executor & trace mapper
+│   ├── Hardware_Scheduler.ixx  # Cycle-accurate hardware port scheduler & quiet-core policy
+│   └── Async_Dopt_Tiered.ixx   # Background speculative re-optimizer & deopt handlers
+│
+├── 8. Backend Code Generation & Linkers (include/dgtl/backend/ & include/dgtl/isa/)
+│   ├── orchestrator/
+│   │   └── AOT_Orchestrator.ixx # Static offline compilation dispatcher (.obj, .lib, .exe, .o, .a)
+│   ├── linker/
+│   │   ├── AOT_Linker.ixx      # Sovereign COFF/PE/ELF binary format synthesis
+│   │   └── Linker_Backend.ixx  # Dynamic in-memory JIT machine code lowerer & W^X flips
+│   ├── isel/ & lowering/
+│   │   ├── Instruction_Selector.ixx # Instruction selection engine
+│   │   ├── Legalizer.ixx       # Type & vector legalization
+│   │   └── X64_Machine_Form_Lowering.ixx # Canonical x64 machine form lowering
+│   ├── regalloc/
+│   │   ├── X64_GraphColoring_RegAlloc.ixx # Chaitin-Briggs graph coloring register allocator
+│   │   ├── X64_Reg_Map.ixx     # Register constraints and ABI mapping
+│   │   └── Strike_Live_Manager.ixx # Live range intervals & spill manager
+│   └── emitter/
+│       ├── ARM64_Emitter.ixx   # ARM64 / AArch64 machine code emitter
+│       ├── ARM32NEON_Emitter.ixx # ARM32 NEON SIMD emitter
+│       ├── NASM_Emitter.ixx    # x86-64 assembly emitter
+│       ├── RiscV64_Emitter.ixx # RISC-V 64 vector emitter
+│       └── WasmSIMD_FMA_Emitter.ixx # WebAssembly SIMD/FMA encoder
+│
+└── 9. Host Runtime Subsystem (include/dgtl/runtime/)
+    ├── Runtime_Intrinsics.ixx  # Math, string, memory runtime helpers
+    ├── Runtime_Context.ixx     # Per-thread TLS execution context
+    ├── dgtl_bulletins.ixx      # Intrinsic symbol dispatch tables
+    ├── NUMA_Runtime.ixx        # NUMA thread-pinning & memory allocator
+    └── TaskScheduler.ixx       # Work-stealing fiber & task scheduler
+```
+
+### Decoupled Execution Pipelines: JIT vs. AOT
+
+| Capability | JIT Pipeline (`dgtl/jit/` & `Linker_Backend.ixx`) | AOT Pipeline (`AOT_Orchestrator.ixx` & `AOT_Linker.ixx`) |
+| :--- | :--- | :--- |
+| **Primary Goal** | Sub-millisecond startup, dynamic tiering & in-memory execution | Whole-program whole-file offline compilation |
+| **Output Targets** | Direct RAM execution (`VirtualAlloc`/`mprotect`, W^X page flips) | Standalone `.exe`, Windows `.obj`/`.lib`, Linux `.o`/`.a` |
+| **Compilation Tiers** | Tier-1 Strike Baseline (<1ms) $\rightarrow$ Tier-2 Graph Coloring RegAlloc | Deep multi-pass optimization with full link-time string pooling |
+| **Relocation Handling** | Direct in-process host pointer patching | Industry-standard COFF/ELF relocation tables (`IMAGE_REL_AMD64_REL32`) |
+| **String Table Layout** | In-process immutable string interning | Dual-section `.text` + `.rdata` merged string tables |
+
+## DGTL Public SDK & Cross-Language C-ABI
+
+DGTL includes a standalone **Public C-ABI SDK** designed for embedding high-performance JIT and AOT code generation into any host language (C, C++, Rust, Python, Go, Zig, Odin, etc.) via Foreign Function Interface (FFI).
+
+### SDK Package Layout
+
+When running `dgtl package`, the self-contained SDK is generated under `build/package/DGTL_v*/`:
+
+```
+DGTL_SDK/
+├── include/
+│   └── dgtl_sdk/
+│       ├── dgtl.h              # Master Umbrella Header (include this for C/C++)
+│       ├── dgtl_c_api.h        # Pure C ABI, handles, and return statuses
+│       ├── dgtl_core.h         # Core scalar instructions and memory operations
+│       ├── dgtl_simd.h         # SIMD vectorization, AVX-512, gather/scatter, FMA
+│       ├── dgtl_session.h      # JIT / AOT execution session controls
+│       └── dgtl_capabilities.h # Target machine ISA & hardware feature queries
+└── lib/
+    └── x64/
+        └── dgtl.lib            # Ingestion static library (Windows MSVC / GCC)
+```
+
+### Cross-Language FFI Type Mappings
+
+| C ABI Handle | Description | Rust | Python (`ctypes`) | Go | Zig |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `dgtl_context_t*` | Context Handle | `*mut c_void` | `ctypes.c_void_p` | `unsafe.Pointer` | `?*anyopaque` |
+| `dgtl_stream_t*` | IR Stream Handle | `*mut c_void` | `ctypes.c_void_p` | `unsafe.Pointer` | `?*anyopaque` |
+| `dgtl_session_t*` | Session Handle | `*mut c_void` | `ctypes.c_void_p` | `unsafe.Pointer` | `?*anyopaque` |
+| `dgtl_status_t` | Response Code | `DGTLStatus` | `class DGTLStatus(Structure)` | `struct DGTLStatus` | `DGTLStatus` |
+| `uint32_t` | Virtual Slot ID | `u32` | `ctypes.c_uint32` | `uint32` | `u32` |
+
+### Embedding Quickstart (C / C++)
+
+```c
+#include <dgtl_sdk/dgtl.h>
+#include <stdio.h>
+
+int main(void) {
+    // 1. Initialize DGTL Context & IR Stream
+    dgtl_context_t* ctx = dgtl_context_create();
+    dgtl_stream_t* stream = dgtl_stream_create(ctx);
+
+    // 2. Build IR: func add(a, b) -> a + b
+    dgtl_emit_label(stream, 1);
+    dgtl_emit_add_i64(stream, 10, 1, 2); // slot 10 = slot 1 + slot 2
+    dgtl_emit_ret(stream, 10);
+
+    // 3. Create JIT Session & Execute in Memory
+    dgtl_session_t* session = dgtl_session_create_jit(ctx);
+    dgtl_session_compile(session, stream);
+
+    typedef uint64_t (*add_fn)(uint64_t, uint64_t);
+    add_fn fn = (add_fn)dgtl_session_get_function_pointer(session, "DGTL_kernel_entry");
+    
+    uint64_t result = fn(20, 22);
+    printf("Result: %llu\n", (unsigned long long)result); // Output: 42
+
+    // 4. Release Handles
+    dgtl_session_destroy(session);
+    dgtl_stream_destroy(stream);
+    dgtl_context_destroy(ctx);
+    return 0;
+}
+```
+
+For full integration details, refer to the [Public SDK Guide](docs/dgtl_public_sdk_guide.md).
 
 ## Performance-First Lowering
 

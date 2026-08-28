@@ -72,7 +72,7 @@ struct Options {
     std::string input_file;
     std::string output_file;
     std::optional<std::string> pass_name;
-    int opt_level = 2;              ///< 0=O0, 1=O1, 2=O2, 3=O3, 4=Ofast
+    int opt_level = 3;              ///< 0=O0, 1=O1, 2=O2, 3=O3, 4=Ofast
     uint32_t num_threads = 0;       ///< Parallel multithreading threads
     bool verify_before = true;
     bool verify_after = true;
@@ -86,7 +86,7 @@ void print_usage(std::string_view prog_name) {
               << "\nUSAGE:\n"
               << "  " << prog_name << " [OPTIONS] <input.dgtl>\n"
               << "\nOPTIONS:\n"
-              << "  -O0, -O1, -O2, -O3    Set optimization pipeline level (default: -O2)\n"
+              << "  -O0, -O1, -O2, -O3    Set optimization pipeline level (default: -O3)\n"
               << "  -Ofast                Enable aggressive non-IEEE math and vectorization\n"
               << "  --pass=<name>         Run specific pass (gvn, dce, predication, inlining, escape, fusion, simd, all)\n"
               << "  --j=<n>               Set parallel thread count for pass optimization (default: auto)\n"

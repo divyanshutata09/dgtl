@@ -20,6 +20,7 @@
 #include "dgtl_sdk/dgtl_core.h"
 #include "dgtl_sdk/dgtl_session.h"
 #include "dgtl_sdk/dgtl_simd.h"
+#include "dgtl_sdk/dgtl_gpu.h"
 #include "dgtl_sdk/dgtl_c_api.h"
 
 #include <cstring>
@@ -55,10 +56,15 @@ import dgtl.ir_core.io;
 import dgtl.ir_core.verifier;
 import dgtl.ir_core.function;
 import dgtl.ir_core.semantic;
-
-import dgtl.ir_core.pass_manager;
+import dgtl.ir_core.formal_verification_smt;
+import dgtl.ir_core.transform_scalar_core;
+import dgtl.ir_core.transform_inlining;
+import dgtl.ir_core.transform_poly_loop;
+import dgtl.ir_core.error_recovery;
+import dgtl.ir_core.escape_analysis;
 import dgtl.ir_core.simd_gather_scatter;
 import dgtl.ir_core.linker_backend;
+import dgtl.backend.aot_linker;
 import dgtl.ir_core.macho_emitter;
 import dgtl.ir_core.jit_orchestrator;
 import dgtl.ir_core.code_cache;
@@ -190,10 +196,10 @@ static dgtl_session_config_t normalize_session_config(const dgtl_session_config_
 
     dgtl_session_config_t out{};
     out.mode = DGTL_SESSION_MODE_HYBRID;
-    out.opt_level = DGTL_SESSION_OPT_O2;
+    out.opt_level = DGTL_SESSION_OPT_O3;
     out.timeout_us = 1000000u;
-    out.enable_temporal_fusion = 0;
-    out.enable_polyhedral_scop = 0;
+    out.enable_temporal_fusion = 1;
+    out.enable_polyhedral_scop = 1;
     out.enable_speculation = 1;
     out.enable_vectorization = 1;
     out.thread_count = 0u;
@@ -286,6 +292,10 @@ static void sdk_prime_simd_units() {
 }
 
 static void sdk_apply_numa_locality() noexcept {
+    thread_local bool applied = false;
+    if (applied) [[likely]] return;
+    applied = true;
+
     const uint32_t nodes = dgtl::runtime::numa::get_num_nodes();
     if (nodes <= 1u) {
         return;
@@ -343,14 +353,6 @@ static dgtl::ir::BackendProfile::TargetISA to_internal_isa(dgtl_target_t target)
     }
 }
 
-/* SDK Pass Initialization */
-
-static void sdk_populate_passes_for_profile(
-    dgtl::pipeline::DGTLoptManager& mgr,
-    dgtl_opt_profile_t profile) {
-    (void)mgr;      // Suppress unused parameter warning
-    (void)profile;  // Suppress unused parameter warning
-}
 
 /* Helper: build an IRNode from fields and push into stream */
 static uint32_t push_ir_node(dgtl_stream_t* s,
@@ -1193,8 +1195,18 @@ extern "C" DGTL_API dgtl_status_t dgtl_optimize(dgtl_stream_t* s) {
     if (!s) return make_err(1, "null stream");
     auto& stream = s->function.stream();
 
-    dgtl::pipeline::DGTLoptManager mgr;
-    mgr.execute(stream);
+    dgtl::pass::transform::DeadCodeElimination dce;
+    dce.execute(stream);
+    dgtl::pass::transform::DGTLGVN gvn;
+    gvn.execute(stream);
+    dgtl::pass::transform::DGTLLoopFusion fusion;
+    fusion.execute(stream);
+    dgtl::pass::transform::DGTLAggressiveInliner inliner;
+    inliner.execute(stream);
+    dgtl::pass::DGTLEscapeAnalysis ea;
+    ea.execute(stream);
+    dgtl::pass::DGTLEnhancedErrorRecovery er;
+    er.execute(stream);
     return make_ok();
 }
 
@@ -1223,10 +1235,8 @@ static bool has_suffix(std::string_view path, std::string_view suffix) {
 extern "C" DGTL_API dgtl_strike_result_t dgtl_strike_stream(dgtl_stream_t* s, dgtl_target_t target) {
     if (!s) return make_strike_err("null stream");
 
+    (void)dgtl_optimize(s);
     auto& stream = s->function.stream();
-
-    dgtl::pipeline::DGTLoptManager mgr;
-    mgr.execute(stream);
 
     // Apply advanced architecture-aware backend specific optimizations
     auto isa = to_internal_isa(target);
@@ -1363,47 +1373,33 @@ static dgtl_status_t sdk_emit_with_callee_bindings(
     /* Proceed with callee-aware emission for bound slots */
 
     dgtl::exec::DGTLLinker linker;
+    dgtl::backend::aot::DGTLAOTLinker aot_linker;
     std::vector<uint8_t> bytes;
     bool ok = false;
+
+    const std::vector<uint8_t> rdata_payload = dgtl::runtime::build_registered_strings_rdata();
 
     switch (target) {
         case DGTL_TARGET_COFF_OBJ: {
             auto module_streams = sdk_split_stream_by_callee_functions(stream, bindings);
             if (module_streams.size() > 1) {
-                ok = linker.build_module_coff_with_relocs(module_streams, bytes, bindings);
+                ok = aot_linker.build_module_coff_with_relocs(module_streams, bytes, bindings, rdata_payload);
             } else {
-                const auto relocs = linker.collect_call_relocs(stream, bindings);
-                ok = linker.build_coff_relocatable_binary_with_relocs(
-                         stream, bytes, "DGTL_kernel_entry", relocs);
-            }
-            if (ok && !linker.fallback_diagnostics().empty()) {
-                std::fprintf(stderr,
-                             "[DGTL][sdk] %zu fallback opcode(s) during coffobj emission\n",
-                             linker.fallback_diagnostics().size());
-                for (const auto& d : linker.fallback_diagnostics()) {
-                    std::fprintf(stderr, "  - %s\n", d.c_str());
-                }
+                ok = aot_linker.build_coff_relocatable_binary_with_relocs(
+                         stream, bytes, "DGTL_kernel_entry", {}, bindings, rdata_payload);
             }
             break;
         }
         case DGTL_TARGET_COFF_LIB: {
-            /* Build an archive containing a reloc-aware object.  The archive
-             * builder internally wraps a relocatable COFF object; we call the
-             * with-relocs variant to get correct call relocations inside. */
-            const auto relocs = linker.collect_call_relocs(stream, bindings);
+            const auto relocs = aot_linker.collect_call_relocs(stream, bindings);
             std::vector<uint8_t> obj_bytes;
-            const bool obj_ok = linker.build_coff_relocatable_binary_with_relocs(
-                                     stream, obj_bytes, "DGTL_kernel_entry", relocs);
+            const bool obj_ok = aot_linker.build_coff_relocatable_binary_with_relocs(
+                                     stream, obj_bytes, "DGTL_kernel_entry", relocs, bindings, rdata_payload);
             if (!obj_ok) {
                 ok = false;
                 break;
             }
-            /* Wrap the reloc-correct object in an AR/COFF archive.
-             * build_coff_archive_binary re-builds the object internally, so we
-             * use the standard stream-level archive path which at a minimum
-             * gives a well-formed archive; the embedded object has relocs
-             * because the linker will resolve them from the outer archive. */
-            ok = linker.build_coff_archive_binary(stream, bytes,
+            ok = aot_linker.build_coff_archive_binary(stream, bytes,
                                                    "module.obj",
                                                    "DGTL_kernel_entry");
             break;
@@ -1455,8 +1451,16 @@ extern "C" DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_targe
     const char* ext = extension_for_target(target);
     const std::string_view ext_view(ext);
 
-    // Zero-copy fast path: use caller-owned path when extension already matches.
-    const bool already_typed = has_suffix(output_path_view, ext_view);
+    bool has_explicit_ext = false;
+    for (const char* known : {".exe", ".o", ".obj", ".s", ".asm", ".wasm", ".macho", ".bin", ".a", ".lib", ".dgtl", ".elf64"}) {
+        if (has_suffix(output_path_view, known)) {
+            has_explicit_ext = true;
+            break;
+        }
+    }
+
+    // Zero-copy fast path: use caller-owned path when extension already matches or has explicit extension.
+    const bool already_typed = has_explicit_ext || has_suffix(output_path_view, ext_view);
     std::string owned_path;
     std::string_view final_path = output_path_view;
 
@@ -1665,11 +1669,29 @@ extern "C" DGTL_API void DGTL_CALL dgtl_emit_constant_str(dgtl_stream_t* s, dgtl
 extern "C" DGTL_API dgtl_status_t dgtl_run_pass_by_name(dgtl_stream_t* s, const char* pass_name) {
     if (!s || !pass_name) return make_err(1, "null argument");
     
-    /* Placeholder: in a full implementation, dispatch to specific pass by name */
-    if (std::string_view(pass_name) == "DCE") {
-        /* Dead code elimination would run here */
-    } else if (std::string_view(pass_name) == "GVN") {
-        /* Global value numbering would run here */
+    auto& stream = s->function.stream();
+    std::string_view name(pass_name);
+
+    if (name == "DCE" || name == "dce") {
+        dgtl::pass::transform::DeadCodeElimination dce;
+        dce.execute(stream);
+    } else if (name == "GVN" || name == "gvn") {
+        dgtl::pass::transform::DGTLGVN gvn;
+        gvn.execute(stream);
+    } else if (name == "LoopFusion" || name == "loop_fusion") {
+        dgtl::pass::transform::DGTLLoopFusion fusion;
+        fusion.execute(stream);
+    } else if (name == "Inliner" || name == "inlining") {
+        dgtl::pass::transform::DGTLAggressiveInliner inliner;
+        inliner.execute(stream);
+    } else if (name == "DGTLEnhancedErrorRecovery" || name == "error_recovery") {
+        dgtl::pass::DGTLEnhancedErrorRecovery er;
+        er.execute(stream);
+    } else if (name == "EscapeAnalysis" || name == "escape") {
+        dgtl::pass::DGTLEscapeAnalysis ea;
+        ea.execute(stream);
+    } else {
+        (void)dgtl_optimize(s);
     }
     
     return make_ok();
@@ -1701,39 +1723,13 @@ extern "C" DGTL_API dgtl_status_t dgtl_optimize_with_profile(dgtl_stream_t* s,
     if (!s) return make_err(1, "null stream");
     auto& stream = s->function.stream();
 
-    dgtl::pipeline::TargetPrecision precision = dgtl::pipeline::TargetPrecision::HFT;
-    dgtl::pipeline::PassExecutionPolicy policy{};
+    /* 1. Run core canonicalization passes */
+    dgtl::pass::transform::DeadCodeElimination dce;
+    dce.execute(stream);
+    dgtl::pass::transform::DGTLGVN gvn;
+    gvn.execute(stream);
 
-    switch (profile) {
-        case DGTL_OPT_PROFILE_DEFAULT:
-            break;
-        case DGTL_OPT_PROFILE_FOLD:
-            policy.favor_binary_size = true;
-            break;
-        case DGTL_OPT_PROFILE_FUSION:
-            precision = dgtl::pipeline::TargetPrecision::HPC;
-            break;
-        case DGTL_OPT_PROFILE_SIMD:
-            precision = dgtl::pipeline::TargetPrecision::HPC;
-            break;
-        case DGTL_OPT_PROFILE_PRESSURE:
-            precision = dgtl::pipeline::TargetPrecision::MOBILE;
-            break;
-        case DGTL_OPT_PROFILE_PREDICATION:
-            policy.enforce_safety_checks = true;
-            break;
-        default:
-            break;
-    }
-
-    dgtl::pipeline::DGTLoptManager mgr(precision);
-    mgr.set_execution_policy(policy);
-
-    sdk_populate_passes_for_profile(mgr, profile);
-
-    mgr.execute(stream, precision);
-
-    /* Run advanced optimization passes based on profile */
+    /* 2. Run advanced optimization passes based on profile */
     if (profile == DGTL_OPT_PROFILE_SIMD) {
         stream.analyze_simd_opportunities();
         sdk_prime_simd_units();
@@ -1761,9 +1757,17 @@ extern "C" DGTL_API dgtl_status_t dgtl_optimize_with_profile(dgtl_stream_t* s,
         stream.perform_speculative_optimization();
         stream.optimize_branch_prediction();
     } else if (profile == DGTL_OPT_PROFILE_FUSION || profile == DGTL_OPT_PROFILE_DEFAULT) {
+        dgtl::pass::transform::DGTLLoopFusion fusion;
+        fusion.execute(stream);
         stream.perform_loop_unrolling(s->emit_options.unroll_factor > 0 ? s->emit_options.unroll_factor : 4);
         stream.optimize_branch_prediction();
+    } else if (profile == DGTL_OPT_PROFILE_FOLD) {
+        dce.execute(stream);
+        gvn.execute(stream);
     }
+
+    dgtl::pass::DGTLEnhancedErrorRecovery er;
+    er.execute(stream);
 
     return make_ok();
 }
@@ -1808,7 +1812,7 @@ extern "C" DGTL_API dgtl_runtime_context_t* dgtl_runtime_context_create(
     size_t arena_mb_per_worker) {
     try {
         return new dgtl_runtime_context(worker_threads, arena_mb_per_worker);
-    } catch (const std::exception&) {
+    } catch (...) {
         return nullptr;
     }
 }
@@ -1958,9 +1962,9 @@ extern "C" DGTL_API int dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgt
     out->total_compilation_time_us = 0;
     out->optimization_time_us = 0;
     out->emission_time_us = 0;
-    out->peak_register_count = 16;
-    out->peak_memory_usage_bytes = static_cast<uint32_t>(stream.size() * 32);
-    out->estimated_cycle_count = stream.size() * 3; /* Conservative estimate: 3 cycles per IR node */
+    out->peak_register_count = std::max<uint32_t>(16u, stream.get_max_id());
+    out->peak_memory_usage_bytes = static_cast<uint32_t>(stream.size() * sizeof(dgtl::ir::IRNode));
+    out->estimated_cycle_count = dgtl_stream_estimate_cycles(s);
     
     return 1;
 }
@@ -2102,17 +2106,33 @@ extern "C" DGTL_API dgtl_status_t dgtl_stream_compact(dgtl_stream_t* s) {
     auto& stream = s->function.stream();
     if (stream.size() == 0) return make_ok();
     
-    /* Mark dead nodes */
+    /* Build result_id to node_index mapping */
+    std::unordered_map<uint32_t, size_t> result_to_node;
+    result_to_node.reserve(stream.size());
+    for (size_t i = 0; i < stream.size(); ++i) {
+        const auto node = stream.get_node(i);
+        if (node.result_id != dgtl::ir::INVALID_SLOT) {
+            result_to_node[node.result_id] = i;
+        }
+    }
+
+    /* Mark root live nodes */
     std::vector<bool> live(stream.size(), false);
-    
-    /* Walk from terminal nodes backwards to mark live nodes */
-    for (size_t i = stream.size(); i-- > 0;) {
+    for (size_t i = 0; i < stream.size(); ++i) {
         const auto node = stream.get_node(i);
         if (node.opcode == dgtl::ir::OpCode::RET || 
             node.opcode == dgtl::ir::OpCode::STORE ||
             node.opcode == dgtl::ir::OpCode::STORE_V512 ||
+            node.opcode == dgtl::ir::OpCode::ATOMIC_STORE ||
+            node.opcode == dgtl::ir::OpCode::ATOMIC_FENCE ||
+            node.opcode == dgtl::ir::OpCode::CALL ||
+            node.opcode == dgtl::ir::OpCode::CALL_VARIADIC ||
             node.opcode == dgtl::ir::OpCode::GOTO ||
             node.opcode == dgtl::ir::OpCode::BRANCH_COND ||
+            node.opcode == dgtl::ir::OpCode::BRANCH_LIKELY ||
+            node.opcode == dgtl::ir::OpCode::BRANCH_UNLIKELY ||
+            node.opcode == dgtl::ir::OpCode::LABEL ||
+            node.opcode == dgtl::ir::OpCode::BARRIER_SYNC ||
             (node.flags & dgtl::ir::Flags::HAS_SIDE_EFFECTS) != 0) {
             live[i] = true;
         }
@@ -2126,18 +2146,18 @@ extern "C" DGTL_API dgtl_status_t dgtl_stream_compact(dgtl_stream_t* s) {
             if (!live[i]) continue;
             
             const auto node = stream.get_node(i);
-            if (node.op_a < stream.size() && is_operand_slot(node.opcode, 0) && !live[node.op_a]) {
-                live[node.op_a] = true;
-                changed = true;
-            }
-            if (node.op_b < stream.size() && is_operand_slot(node.opcode, 1) && !live[node.op_b]) {
-                live[node.op_b] = true;
-                changed = true;
-            }
-            if (node.op_c < stream.size() && is_operand_slot(node.opcode, 2) && !live[node.op_c]) {
-                live[node.op_c] = true;
-                changed = true;
-            }
+            auto mark_live = [&](uint32_t reg_id) {
+                if (reg_id == dgtl::ir::INVALID_SLOT) return;
+                auto it = result_to_node.find(reg_id);
+                if (it != result_to_node.end() && !live[it->second]) {
+                    live[it->second] = true;
+                    changed = true;
+                }
+            };
+
+            if (is_operand_slot(node.opcode, 0)) mark_live(node.op_a);
+            if (is_operand_slot(node.opcode, 1)) mark_live(node.op_b);
+            if (is_operand_slot(node.opcode, 2)) mark_live(node.op_c);
         }
     }
     
@@ -2167,6 +2187,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_stream_compact(dgtl_stream_t* s) {
         }
         
         node.result_id = new_slot;
+        node.refresh_intent_hash();
         compacted_stream.push_back(node);
     }
     
@@ -2269,7 +2290,8 @@ extern "C" DGTL_API uint32_t dgtl_emit_function_label_with_params(dgtl_stream_t*
     uint32_t op_c = (param_count > 2 && params) ? params[2] : dgtl::ir::INVALID_SLOT;
     uint32_t logic_flags = (param_count > 3 && params) ? params[3] : 0u;
 
-    return push_ir_node_explicit_slot(s,
+    const size_t node_idx = s->function.stream().size();
+    uint32_t res = push_ir_node_explicit_slot(s,
                                       dgtl::ir::OpCode::LABEL,
                                       static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS | dgtl::ir::Flags::IS_VOLATILE),
                                       function_slot,
@@ -2278,6 +2300,12 @@ extern "C" DGTL_API uint32_t dgtl_emit_function_label_with_params(dgtl_stream_t*
                                       op_c,
                                       0ULL,
                                       logic_flags);
+    if (param_count > 4 && params) {
+        s->function.stream().set_call_overflow_args(
+            node_idx,
+            std::span<const uint32_t>(params + 4, param_count - 4));
+    }
+    return res;
 }
 
 extern "C" DGTL_API void dgtl_emit_branch_cond(dgtl_stream_t* s,
@@ -2639,4 +2667,62 @@ extern "C" DGTL_API int dgtl_binary_loader_validate_payload(const uint8_t* bytes
 
 extern "C" DGTL_API const char* dgtl_get_build_config(void) {
     return "DGTL v1.2.0 (Release) | C++26 | Architecture-aware | Multi-target";
+}
+
+/* ---------- NUMA Capabilities & Control ---------- */
+
+extern "C" DGTL_API uint32_t dgtl_numa_node_count(void) {
+    return dgtl::ir::IRStream::numa_node_count();
+}
+
+extern "C" DGTL_API uint32_t dgtl_numa_current_node(void) {
+    return dgtl::ir::IRStream::current_numa_node();
+}
+
+extern "C" DGTL_API int dgtl_numa_pin_thread_to_node(uint32_t node_id) {
+    return dgtl::runtime::numa::pin_current_thread_to_node(node_id) ? 1 : 0;
+}
+
+extern "C" DGTL_API int dgtl_numa_pin_thread_to_core(uint32_t core_id) {
+    return dgtl::runtime::numa::pin_thread_to_core(core_id) ? 1 : 0;
+}
+
+extern "C" DGTL_API void* dgtl_numa_alloc_on_node(size_t size, uint32_t node_id) {
+    return dgtl::runtime::numa::allocate_on_node(size, node_id);
+}
+
+extern "C" DGTL_API void dgtl_numa_free_on_node(void* ptr, size_t size) {
+    (void)size;
+    dgtl::runtime::numa::free_allocation(ptr);
+}
+
+/* ---------- Formal Verification & SMT API ---------- */
+
+extern "C" DGTL_API int32_t dgtl_verify_pass_equivalence(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass_name) {
+    if (!orig || !opt) return 0;
+    dgtl::formal::DGTLFormalVerificationSMT verifier;
+    auto res = verifier.verify_pass_equivalence(
+        orig->function.stream(),
+        opt->function.stream(),
+        pass_name ? pass_name : "pass",
+        dgtl::formal::VerificationLevel::Standard
+    );
+    return res.is_equivalent ? 1 : 0;
+}
+
+extern "C" DGTL_API size_t dgtl_export_smtlib2_script(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass_name, char* out_buf, size_t out_buf_size) {
+    if (!orig || !opt) return 0;
+    dgtl::formal::DGTLFormalVerificationSMT verifier;
+    std::string script = verifier.export_to_smtlib2(
+        orig->function.stream(),
+        opt->function.stream(),
+        pass_name ? pass_name : "pass"
+    );
+    if (!out_buf || out_buf_size == 0) {
+        return script.size();
+    }
+    size_t to_copy = std::min(script.size(), out_buf_size - 1);
+    std::memcpy(out_buf, script.data(), to_copy);
+    out_buf[to_copy] = '\0';
+    return to_copy;
 }

@@ -105,7 +105,24 @@ import dgtl.ir_core.hardware_scheduler;
 import dgtl.ir_core.x64_lowering;
 import dgtl.ir_core.x64_reg_map;
 import dgtl.ir_core.x64_graphcoloring_regalloc;
-import dgtl.ir_core.linker_backend;
+
+extern "C" {
+    void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* window_title) noexcept;
+    void dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale) noexcept;
+    void dgtl_gpu_destroy_pipeline(void* ctx_ptr) noexcept;
+    void dgtl_gpu_begin_frame(void* ctx_ptr, float clear_r, float clear_g, float clear_b, float clear_a) noexcept;
+    void dgtl_gpu_end_frame(void* ctx_ptr) noexcept;
+    uint32_t dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) noexcept;
+    void dgtl_gpu_pop_clip_rect(void* ctx_ptr) noexcept;
+    void dgtl_gpu_render_quad_instances(void* ctx_ptr, const void* instances, uint32_t count) noexcept;
+    void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const void* instances, uint32_t count) noexcept;
+    void dgtl_gpu_render_vector_paths(void* ctx_ptr, const void* instances, uint32_t count) noexcept;
+    uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba_data) noexcept;
+    void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) noexcept;
+    bool dgtl_platform_poll_events(void* ctx_ptr, void* out_event) noexcept;
+    uint64_t dgtl_platform_get_time_us(void) noexcept;
+    void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) noexcept;
+}
 
 // Forward Declarations for specialized backend emitters
 export namespace dgtl::exec {
@@ -302,7 +319,11 @@ public:
         switch (target.get_arch()) {
             case dgtl::core::ArchType::X86_64_AVX512:
             case dgtl::core::ArchType::X86_64_AVX2:
+#if defined(_WIN32) || defined(_WIN64)
+                last_report.target_arch_used = "x86_64-pc-windows-msvc";
+#else
                 last_report.target_arch_used = "x86_64-pc-linux-gnu";
+#endif
                 break;
             case dgtl::core::ArchType::AARCH64_SVE:
                 last_report.target_arch_used = "aarch64-unknown-linux-gnu";
@@ -345,6 +366,12 @@ public:
         else if (ext_lower == ".macho") {
             this->dispatch_to_macho(output_path, stream);
         }
+        else if (ext_lower == ".exe") {
+            this->dispatch_to_pe_executable(output_path, stream);
+        }
+        else if (ext_lower == ".s" || ext_lower == ".asm") {
+            this->dispatch_to_assembly(output_path, stream);
+        }
         else {
             this->dispatch_to_linker(output_path, stream);
         }
@@ -384,6 +411,8 @@ private:
     }
 
     void dispatch_to_linker(std::string_view path, const dgtl::ir::IRStream& stream);
+    void dispatch_to_pe_executable(std::string_view path, const dgtl::ir::IRStream& stream);
+    void dispatch_to_assembly(std::string_view path, const dgtl::ir::IRStream& stream);
     void dispatch_to_relocatable(std::string_view path, const dgtl::ir::IRStream& stream);
     void dispatch_to_archive(std::string_view path, const dgtl::ir::IRStream& stream);
     void dispatch_to_coff_relocatable(std::string_view path, const dgtl::ir::IRStream& stream);
@@ -659,6 +688,23 @@ public:
         register_runtime_function("print_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str));
         register_runtime_function("println_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool));
         register_runtime_function("print_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool));
+
+        // Sovereign GPU & Platform Runtime Pipeline Symbols
+        register_runtime_function("dgtl_gpu_init_pipeline", reinterpret_cast<uintptr_t>(&dgtl_gpu_init_pipeline));
+        register_runtime_function("dgtl_gpu_resize", reinterpret_cast<uintptr_t>(&dgtl_gpu_resize));
+        register_runtime_function("dgtl_gpu_destroy_pipeline", reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_pipeline));
+        register_runtime_function("dgtl_gpu_begin_frame", reinterpret_cast<uintptr_t>(&dgtl_gpu_begin_frame));
+        register_runtime_function("dgtl_gpu_end_frame", reinterpret_cast<uintptr_t>(&dgtl_gpu_end_frame));
+        register_runtime_function("dgtl_gpu_push_clip_rect", reinterpret_cast<uintptr_t>(&dgtl_gpu_push_clip_rect));
+        register_runtime_function("dgtl_gpu_pop_clip_rect", reinterpret_cast<uintptr_t>(&dgtl_gpu_pop_clip_rect));
+        register_runtime_function("dgtl_gpu_render_quad_instances", reinterpret_cast<uintptr_t>(&dgtl_gpu_render_quad_instances));
+        register_runtime_function("dgtl_gpu_render_glyph_instances", reinterpret_cast<uintptr_t>(&dgtl_gpu_render_glyph_instances));
+        register_runtime_function("dgtl_gpu_render_vector_paths", reinterpret_cast<uintptr_t>(&dgtl_gpu_render_vector_paths));
+        register_runtime_function("dgtl_gpu_upload_texture", reinterpret_cast<uintptr_t>(&dgtl_gpu_upload_texture));
+        register_runtime_function("dgtl_gpu_destroy_texture", reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_texture));
+        register_runtime_function("dgtl_platform_poll_events", reinterpret_cast<uintptr_t>(&dgtl_platform_poll_events));
+        register_runtime_function("dgtl_platform_get_time_us", reinterpret_cast<uintptr_t>(&dgtl_platform_get_time_us));
+        register_runtime_function("dgtl_platform_set_cursor", reinterpret_cast<uintptr_t>(&dgtl_platform_set_cursor));
     }
 
     /**

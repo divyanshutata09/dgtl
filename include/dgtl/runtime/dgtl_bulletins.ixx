@@ -14,6 +14,7 @@ module;
 #include <cstdint>
 #include <cstddef>
 #include <string_view>
+#include <vector>
 
 export module dgtl.dgtl_bulletins;
 
@@ -27,6 +28,7 @@ void register_dgtl_string(uint32_t handle, const char* data, uint32_t len);
 void register_string_handle(uint32_t handle, const char* data, uint32_t len);
 void unregister_string_handle(uint32_t handle) noexcept;
 [[nodiscard]] size_t get_registered_string_count() noexcept;
+[[nodiscard]] std::vector<uint8_t> build_registered_strings_rdata();
 
 } // namespace dgtl::runtime
 

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -27,7 +27,12 @@ enum class DispatchTarget : uint8_t {
     WASM_Interpreter = 2,
     WASM_JIT = 3,
     WASM_ = WASM_JIT,
-    Count = 4
+    PE_Executable = 4,
+    ELF_Executable = 5,
+    MachO_Executable = 6,
+    ARM32_Native = 7,
+    RiscV64_Native = 8,
+    Count = 9
 };
 
 enum class DispatchError : int64_t {
@@ -40,6 +45,7 @@ enum class DispatchError : int64_t {
 
 class Execution_Dispatcher {
 public:
+    static constexpr size_t kMaxDispatchTargets = 16;
     using ExecutionFunc = std::function<int64_t(void*)>;
     using RawExecutionFunc = int64_t (*)(void*);
 
@@ -73,11 +79,7 @@ public:
         }
     }
 
-    [[nodiscard]] int64_t dispatch(DispatchTarget target, void* context) const noexcept {
-        if (context == nullptr) [[unlikely]] {
-            return static_cast<int64_t>(DispatchError::NullContext);
-        }
-
+    [[nodiscard]] int64_t dispatch(DispatchTarget target, void* context = nullptr) const noexcept {
         const auto idx = static_cast<uint8_t>(target);
         if (idx >= static_cast<uint8_t>(DispatchTarget::Count)) [[unlikely]] {
             return static_cast<int64_t>(DispatchError::InvalidTarget);
@@ -124,9 +126,9 @@ public:
     }
 
 private:
-    alignas(64) std::array<std::atomic<RawExecutionFunc>, static_cast<size_t>(DispatchTarget::Count)> raw_executors_{};
+    alignas(64) std::array<std::atomic<RawExecutionFunc>, kMaxDispatchTargets> raw_executors_{};
     alignas(64) mutable std::shared_mutex mutex_;
-    alignas(64) std::array<ExecutionFunc, static_cast<size_t>(DispatchTarget::Count)> executors_{};
+    alignas(64) std::array<ExecutionFunc, kMaxDispatchTargets> executors_{};
 };
 
 } // namespace dgtl::execution::dispatcher

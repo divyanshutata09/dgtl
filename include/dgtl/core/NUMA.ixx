@@ -174,8 +174,9 @@ public:
         return NUMAPolicy::None;
     }
 
-    [[nodiscard]] static NUMATopology topology() noexcept {
-        return probe_numa_topology();
+    [[nodiscard]] static const NUMATopology& topology() noexcept {
+        static const NUMATopology s_topo = probe_numa_topology();
+        return s_topo;
     }
 
     [[nodiscard]] static bool available() noexcept {

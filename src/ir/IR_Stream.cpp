@@ -1448,10 +1448,11 @@ void IRStream::perform_speculative_optimization() noexcept {
 // 8.4  Loop Unrolling (profile-guided unroll factor, backend-aware)
 // ---------------------------------------------------------------------------
 void IRStream::perform_loop_unrolling(uint8_t unroll_factor) noexcept {
+    if (unroll_factor <= 1 || count == 0) return;
+    unroll_factor = std::clamp<uint8_t>(unroll_factor, 2u, 8u);
+
     begin_transaction();
     if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
-
-    unroll_factor = std::clamp<uint8_t>(unroll_factor, 2u, 8u);
 
     // Detect simple natural loops: LABEL ... BRANCH_COND(back-to-label)
     std::vector<std::pair<size_t, size_t>> loops;
@@ -1467,26 +1468,75 @@ void IRStream::perform_loop_unrolling(uint8_t unroll_factor) noexcept {
         }
     }
 
+    if (loops.empty()) {
+        commit_transaction();
+        return;
+    }
+
+    // Build newly expanded stream in a temporary buffer to avoid clobbering downstream nodes
+    std::vector<IRAtom> new_atoms;
+    std::vector<IRCore> new_cores;
+    new_atoms.reserve(shadow_count * unroll_factor);
+    new_cores.reserve(shadow_count * unroll_factor);
+
+    const uint32_t vreg_stride = std::max(get_max_id() + 1u, 1000u);
+    size_t cur_src = 0;
+
     for (const auto& [header_idx, end_idx] : loops) {
+        if (header_idx < cur_src) continue; // overlapping loop guard
         const size_t body_sz = end_idx - header_idx - 1u;
-        if (body_sz < 3u || body_sz > 100u) continue;
+        if (body_sz < 3u || body_sz > 100u) {
+            // Copy loop verbatim without unrolling
+            for (size_t i = cur_src; i <= end_idx; ++i) {
+                new_atoms.push_back(shadow_atoms[i]);
+                new_cores.push_back(shadow_cores[i]);
+            }
+            cur_src = end_idx + 1;
+            continue;
+        }
 
-        size_t insert_pt = end_idx;
-        for (uint8_t iter = 1u; iter < unroll_factor; ++iter) {
+        // 1. Copy instructions before the loop
+        for (size_t i = cur_src; i <= header_idx; ++i) {
+            new_atoms.push_back(shadow_atoms[i]);
+            new_cores.push_back(shadow_cores[i]);
+        }
+
+        // 2. Unroll the loop body (iterations 0 .. unroll_factor - 1)
+        for (uint8_t iter = 0u; iter < unroll_factor; ++iter) {
             for (size_t bi = header_idx + 1u; bi < end_idx; ++bi) {
-                // Capacity guard: stop if we can no longer safely write.
-                if (insert_pt >= _capacity) goto next_loop;
-
-                shadow_atoms[insert_pt]            = shadow_atoms[bi];
-                shadow_cores[insert_pt]            = shadow_cores[bi];
-                shadow_cores[insert_pt].result_id +=
-                    static_cast<uint32_t>(iter) * 1000u;
-                ++insert_pt;
+                IRAtom a = shadow_atoms[bi];
+                IRCore c = shadow_cores[bi];
+                if (iter > 0 && c.result_id != INVALID_SLOT) {
+                    c.result_id += static_cast<uint32_t>(iter) * vreg_stride;
+                }
+                c.intent_hash = IRNode::calculate_hash(
+                    a.opcode, c.result_id, c.op_a, c.op_b, c.op_c);
+                new_atoms.push_back(a);
+                new_cores.push_back(c);
             }
         }
-        shadow_count = insert_pt;
-        next_loop:;
+
+        // 3. Copy the loop terminator (BRANCH_COND)
+        new_atoms.push_back(shadow_atoms[end_idx]);
+        new_cores.push_back(shadow_cores[end_idx]);
+
+        cur_src = end_idx + 1;
     }
+
+    // 4. Copy remaining tail instructions
+    for (size_t i = cur_src; i < shadow_count; ++i) {
+        new_atoms.push_back(shadow_atoms[i]);
+        new_cores.push_back(shadow_cores[i]);
+    }
+
+    if (new_atoms.size() > _capacity) {
+        rollback_transaction();
+        return;
+    }
+
+    std::memcpy(shadow_atoms, new_atoms.data(), new_atoms.size() * sizeof(IRAtom));
+    std::memcpy(shadow_cores, new_cores.data(), new_cores.size() * sizeof(IRCore));
+    shadow_count = new_atoms.size();
 
     validate_shadow_integrity() ? commit_transaction() : rollback_transaction();
 }
@@ -1580,41 +1630,23 @@ void IRStream::optimize_memory_access_patterns() noexcept {
     if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
 
     // Group load/store instructions by address register.
-    dgtl::utils::FastFlatMap<uint32_t, std::vector<size_t>, 4096> addr_accesses_fast;
-    dgtl::utils::FastFlatMap<uint32_t, std::vector<size_t>, 65536> addr_accesses_overflow;
+    std::unordered_map<uint32_t, std::vector<size_t>> addr_accesses;
+    addr_accesses.reserve(std::min(shadow_count, size_t{1024}));
+
     for (size_t i = 0; i < shadow_count; ++i) {
         const IRAtom& atom = shadow_atoms[i];
         const IRCore& core = shadow_cores[i];
         if ((atom.opcode == OpCode::LOAD || atom.opcode == OpCode::ATOMIC_LOAD ||
              atom.opcode == OpCode::STORE || atom.opcode == OpCode::ATOMIC_STORE)
                 && core.op_a != INVALID_SLOT) {
-            if (std::vector<size_t>* bucket = addr_accesses_fast.find(core.op_a)) {
-                bucket->push_back(i);
-            } else {
-                const bool inserted = addr_accesses_fast.insert_or_assign(core.op_a, std::vector<size_t>{});
-                if (inserted) {
-                    std::vector<size_t>* fast_bucket = addr_accesses_fast.find(core.op_a);
-                    DGTL_ASSERT_NOT_NULL(fast_bucket);
-                    fast_bucket->push_back(i);
-                } else {
-                    if (std::vector<size_t>* overflow_bucket = addr_accesses_overflow.find(core.op_a)) {
-                        overflow_bucket->push_back(i);
-                    } else {
-                        const bool overflow_ok = addr_accesses_overflow.insert_or_assign(core.op_a, std::vector<size_t>{});
-                        if (overflow_ok) {
-                            std::vector<size_t>* new_bucket = addr_accesses_overflow.find(core.op_a);
-                            DGTL_ASSERT_NOT_NULL(new_bucket);
-                            new_bucket->push_back(i);
-                        }
-                    }
-                }
-            }
+            addr_accesses[core.op_a].push_back(i);
         }
     }
 
     // Detect uniform stride patterns and insert prefetch hints.
-    auto process_indices = [&](const std::vector<size_t>& indices) {
-        if (indices.size() < 2u) return;
+    for (const auto& [addr_reg, indices] : addr_accesses) {
+        (void)addr_reg;
+        if (indices.size() < 2u) continue;
         std::vector<int32_t> strides;
         strides.reserve(indices.size() - 1u);
         for (size_t k = 1u; k < indices.size(); ++k)
@@ -1630,15 +1662,6 @@ void IRStream::optimize_memory_access_patterns() noexcept {
                     shadow_atoms[idx].flags |= Flags::IS_LOOP_INVARIANT;
             }
         }
-    };
-
-    for (const auto& [addr_reg, indices] : addr_accesses_fast) {
-        (void)addr_reg;
-        process_indices(indices);
-    }
-    for (const auto& [addr_reg, indices] : addr_accesses_overflow) {
-        (void)addr_reg;
-        process_indices(indices);
     }
 
     validate_shadow_integrity() ? commit_transaction() : rollback_transaction();

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -50,10 +50,10 @@ enum class OptimizationLevel : uint8_t {
  */
 struct Config {
     ExecutionMode mode = ExecutionMode::JIT;
-    OptimizationLevel opt_level = OptimizationLevel::O2;
+    OptimizationLevel opt_level = OptimizationLevel::O3;
     uint64_t _timeout_us = 1000000;
-    bool enable_temporal_fusion = false;
-    bool enable_polyhedral_scop = false;
+    bool enable_temporal_fusion = true;
+    bool enable_polyhedral_scop = true;
     bool enable_speculation = true;
     bool enable_vectorization = true;
     uint32_t thread_count = 0;
@@ -100,10 +100,10 @@ struct Config {
 [[nodiscard]] inline constexpr Config default_config() noexcept {
     return Config{
         .mode = ExecutionMode::Adaptive,
-        .opt_level = OptimizationLevel::O2,
+        .opt_level = OptimizationLevel::O3,
         ._timeout_us = 1000000, // 1 second
-        .enable_temporal_fusion = false,
-        .enable_polyhedral_scop = false,
+        .enable_temporal_fusion = true,
+        .enable_polyhedral_scop = true,
         .enable_speculation = true,
         .enable_vectorization = true,
         .thread_count = 0

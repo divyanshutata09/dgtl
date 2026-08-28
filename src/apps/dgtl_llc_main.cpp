@@ -82,7 +82,7 @@ struct Options {
     bool verify_ir = true;
     bool verbose = false;
     bool emit_dwarf = false;    // Dwarf debug info
-    int optimization_level = 2; // 0-3 (O0, O1, O2, O3)
+    int optimization_level = 3; // 0-3 (O0, O1, O2, O3)
 };
 
 void print_usage(std::string_view prog_name) {
@@ -93,7 +93,7 @@ void print_usage(std::string_view prog_name) {
               << "  --target=<arch>       Target architecture (x86_64, arm64; default: x86_64)\n"
               << "  --output=<file>       Output file (default: a.s)\n"
               << "  --filetype=<type>     Output format: asm, obj (default: asm)\n"
-              << "  --O<level>            Optimization level (0-3; default: 2)\n"
+              << "  --O<level>            Optimization level (0-3; default: 3)\n"
               << "  --dwarf               Emit DWARF debug information\n"
               << "  --verify              Enable IR verification (default: on)\n"
               << "  --no-verify           Skip IR verification\n"

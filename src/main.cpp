@@ -229,8 +229,8 @@ struct AppOptions {
     std::string backend_name = "arm64";
     ReleaseIRMode ir_mode = ReleaseIRMode::integer;
     std::string ir_mode_name = "int";
-    PolyhedralMode polyhedral_mode = PolyhedralMode::off;
-    std::string polyhedral_mode_name = "off";
+    PolyhedralMode polyhedral_mode = PolyhedralMode::safe;
+    std::string polyhedral_mode_name = "safe";
     uint32_t polyhedral_tile = 0;
     PolyhedralParallelPolicy polyhedral_parallel = PolyhedralParallelPolicy::auto_policy;
     std::string polyhedral_parallel_name = "auto";

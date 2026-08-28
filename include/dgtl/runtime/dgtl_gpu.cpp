@@ -82,17 +82,19 @@ public:
 
         size_t idx = static_cast<size_t>(y) * width + x;
         uint32_t dst = pixels[idx];
-        float da = ((dst >> 24) & 0xFF) / 255.0f;
-        float db = ((dst >> 16) & 0xFF) / 255.0f;
-        float dg = ((dst >> 8) & 0xFF) / 255.0f;
-        float dr = (dst & 0xFF) / 255.0f;
+        constexpr float inv255 = 1.0f / 255.0f;
+        float da = static_cast<float>((dst >> 24) & 0xFF) * inv255;
+        float db = static_cast<float>((dst >> 16) & 0xFF) * inv255;
+        float dg = static_cast<float>((dst >> 8) & 0xFF) * inv255;
+        float dr = static_cast<float>(dst & 0xFF) * inv255;
 
         float out_a = a + da * (1.0f - a);
         if (out_a <= 0.0001f) return;
 
-        float out_r = (r * a + dr * da * (1.0f - a)) / out_a;
-        float out_g = (g * a + dg * da * (1.0f - a)) / out_a;
-        float out_b = (b * a + db * da * (1.0f - a)) / out_a;
+        float inv_out_a = 1.0f / out_a;
+        float out_r = (r * a + dr * da * (1.0f - a)) * inv_out_a;
+        float out_g = (g * a + dg * da * (1.0f - a)) * inv_out_a;
+        float out_b = (b * a + db * da * (1.0f - a)) * inv_out_a;
 
         uint32_t ur = static_cast<uint32_t>(std::clamp(out_r, 0.0f, 1.0f) * 255.0f);
         uint32_t ug = static_cast<uint32_t>(std::clamp(out_g, 0.0f, 1.0f) * 255.0f);
@@ -286,7 +288,7 @@ public:
                     float cy = q.y + q.h * 0.5f;
                     float dx = std::abs(fx - cx) - (q.w * 0.5f - q.radius_tl);
                     float dy = std::abs(fy - cy) - (q.h * 0.5f - q.radius_tl);
-                    float dist = std::length(std::max(dx, 0.0f), std::max(dy, 0.0f)) + std::min(std::max(dx, dy), 0.0f) - q.radius_tl;
+                    float dist = std::hypot(std::max(dx, 0.0f), std::max(dy, 0.0f)) + std::min(std::max(dx, dy), 0.0f) - q.radius_tl;
 
                     // Anti-aliased edge factor
                     float alpha_factor = std::clamp(0.5f - dist, 0.0f, 1.0f);
@@ -513,7 +515,7 @@ public:
 
 extern "C" {
 
-void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* window_title) noexcept {
+void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* window_title) {
     try {
         auto* ctx = new dgtl::gpu::GpuContext(width, height, dpi_scale, window_title);
         return static_cast<void*>(ctx);
@@ -522,53 +524,53 @@ void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, c
     }
 }
 
-void dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale) noexcept {
+void dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale) {
     if (!ctx_ptr) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->resize(width, height, dpi_scale);
 }
 
-void dgtl_gpu_destroy_pipeline(void* ctx_ptr) noexcept {
+void dgtl_gpu_destroy_pipeline(void* ctx_ptr) {
     if (ctx_ptr) {
         delete static_cast<dgtl::gpu::GpuContext*>(ctx_ptr);
     }
 }
 
-void dgtl_gpu_begin_frame(void* ctx_ptr, float clear_r, float clear_g, float clear_b, float clear_a) noexcept {
+void dgtl_gpu_begin_frame(void* ctx_ptr, float clear_r, float clear_g, float clear_b, float clear_a) {
     if (!ctx_ptr) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->begin_frame(clear_r, clear_g, clear_b, clear_a);
 }
 
-void dgtl_gpu_end_frame(void* ctx_ptr) noexcept {
+void dgtl_gpu_end_frame(void* ctx_ptr) {
     if (!ctx_ptr) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->end_frame();
 }
 
-uint32_t dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) noexcept {
+uint32_t dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) {
     if (!ctx_ptr) return 0;
     return static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->push_clip(x, y, w, h);
 }
 
-void dgtl_gpu_pop_clip_rect(void* ctx_ptr) noexcept {
+void dgtl_gpu_pop_clip_rect(void* ctx_ptr) {
     if (!ctx_ptr) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->pop_clip();
 }
 
-void dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl::gpu::QuadInstance* instances, uint32_t count) noexcept {
+void dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl::gpu::QuadInstance* instances, uint32_t count) {
     if (!ctx_ptr || !instances || count == 0) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->push_quads(instances, count);
 }
 
-void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl::gpu::GlyphGPUInstance* instances, uint32_t count) noexcept {
+void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl::gpu::GlyphGPUInstance* instances, uint32_t count) {
     if (!ctx_ptr || !instances || count == 0) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->push_glyphs(atlas_slot, instances, count);
 }
 
-void dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl::gpu::VectorPathInstance* instances, uint32_t count) noexcept {
+void dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl::gpu::VectorPathInstance* instances, uint32_t count) {
     if (!ctx_ptr || !instances || count == 0) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->push_vector_paths(instances, count);
 }
 
-uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba_data) noexcept {
+uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba_data) {
     if (!ctx_ptr || width == 0 || height == 0) return 0xFFFFFFFFu;
     try {
         return static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->register_texture(width, height, rgba_data);
@@ -577,22 +579,22 @@ uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height,
     }
 }
 
-void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) noexcept {
+void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) {
     if (!ctx_ptr) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->destroy_texture(texture_slot);
 }
 
-bool dgtl_platform_poll_events(void* ctx_ptr, dgtl::gpu::RawInputEvent* out_event) noexcept {
+bool dgtl_platform_poll_events(void* ctx_ptr, dgtl::gpu::RawInputEvent* out_event) {
     if (!ctx_ptr || !out_event) return false;
     return static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->poll_event(out_event);
 }
 
-uint64_t dgtl_platform_get_time_us() noexcept {
+uint64_t dgtl_platform_get_time_us() {
     auto now = std::chrono::high_resolution_clock::now();
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
 }
 
-void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) noexcept {
+void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) {
     if (!ctx_ptr) return;
     static_cast<dgtl::gpu::GpuContext*>(ctx_ptr)->set_cursor(cursor_type);
 }

@@ -72,13 +72,16 @@ struct alignas(16) ValueKey {
 };
 
 class DGTLGVN {
-    static constexpr size_t TableSize = 1 << 22;
+    static constexpr size_t DefaultTableSize = 16384;
+    static constexpr size_t MaxTableCap = 1 << 20;
 
     struct Entry {
         ValueKey key{};
         uint32_t result_id = 0;
     };
 
+    size_t table_size_ = DefaultTableSize;
+    size_t table_mask_ = DefaultTableSize - 1;
     std::unique_ptr<Entry[]> primary_table;
     std::unique_ptr<Entry[]> secondary_table;
     std::vector<uint32_t> id_map;
@@ -87,14 +90,23 @@ class DGTLGVN {
     std::vector<ValueKey> pre_keys;
     std::vector<uint32_t> pre_ids;
 
-public:
-    explicit DGTLGVN(size_t max_ids = 1048576) {
-        // FIXED: Fixed the double make typo here
-        primary_table = std::make_unique<Entry[]>(TableSize);
-        secondary_table = std::make_unique<Entry[]>(TableSize);
+    static size_t next_pow2(size_t v) noexcept {
+        if (v <= 1024) return 1024;
+        v--;
+        v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16; v |= v >> 32;
+        v++;
+        return (v > MaxTableCap) ? MaxTableCap : v;
+    }
 
-        id_map.resize(max_ids);
-        for (uint32_t i = 0; i < max_ids; ++i) id_map[i] = i;
+public:
+    explicit DGTLGVN(size_t max_ids = 65536) {
+        table_size_ = next_pow2(max_ids * 2);
+        table_mask_ = table_size_ - 1;
+        primary_table = std::make_unique<Entry[]>(table_size_);
+        secondary_table = std::make_unique<Entry[]>(table_size_);
+
+        id_map.resize(max_ids > 0 ? max_ids : 65536);
+        for (uint32_t i = 0; i < id_map.size(); ++i) id_map[i] = i;
 
         pre_keys.reserve(PRE_WINDOW);
         pre_ids.reserve(PRE_WINDOW);
@@ -104,8 +116,20 @@ public:
         const size_t N = stream.size();
         if (N == 0) return;
 
-        std::fill_n(primary_table.get(), TableSize, Entry{});
-        std::fill_n(secondary_table.get(), TableSize, Entry{});
+        const size_t needed_size = next_pow2(N * 4);
+        if (needed_size != table_size_) {
+            table_size_ = needed_size;
+            table_mask_ = table_size_ - 1;
+            primary_table = std::make_unique<Entry[]>(table_size_);
+            secondary_table = std::make_unique<Entry[]>(table_size_);
+        } else {
+            std::fill_n(primary_table.get(), table_size_, Entry{});
+            std::fill_n(secondary_table.get(), table_size_, Entry{});
+        }
+
+        if (id_map.size() <= N + 64) {
+            id_map.resize(N + 256);
+        }
 
         pre_keys.clear();
         pre_ids.clear();
@@ -307,8 +331,8 @@ private:
     uint32_t lookup_or_insert(const ValueKey& key, uint32_t id) {
         static constexpr size_t MaxProbes = 32;
 
-        const uint64_t h1 = mix_h1(key) & (TableSize - 1);
-        const uint64_t h2 = mix_h2(key) & (TableSize - 1);
+        const uint64_t h1 = mix_h1(key) & table_mask_;
+        const uint64_t h2 = mix_h2(key) & table_mask_;
 
         if (primary_table[h1].result_id && primary_table[h1].key == key)
             return primary_table[h1].result_id;
@@ -327,7 +351,7 @@ private:
         }
 
         for (size_t probes = 1; probes < MaxProbes; ++probes) {
-            const uint64_t idx = (h1 + probes) & (TableSize - 1);
+            const uint64_t idx = (h1 + probes) & table_mask_;
             if (primary_table[idx].result_id && primary_table[idx].key == key)
                 return primary_table[idx].result_id;
             if (!primary_table[idx].result_id) {
@@ -522,46 +546,53 @@ public:
             return;
         }
 
-        size_t shadow_count = stream.size();
+        const size_t shadow_count = stream.size();
+        if (shadow_count == 0) {
+            stream.commit_transaction();
+            return;
+        }
 
+        // 1. Scan true virtual register IDs only (ignore immediate payloads)
         uint32_t max_reg_id = 0;
         for (size_t i = 0; i < shadow_count; ++i) {
+            const ir::IRAtom& a = shadow_atoms[i];
             const ir::IRCore& c = shadow_cores[i];
+            
             auto bump = [&](uint32_t r) {
-                if (r != ir::INVALID_SLOT && r > max_reg_id) {
+                if (r != ir::INVALID_SLOT && r < 0x80000000u && r > max_reg_id) {
                     max_reg_id = r;
                 }
             };
             bump(c.result_id);
-            bump(c.op_a);
-            bump(c.op_b);
-            bump(c.op_c);
+            if (!(a.flags & ir::Flags::IS_CONST) && a.opcode != ir::OpCode::LOAD_IMM && a.opcode != ir::OpCode::IMMEDIATE) {
+                bump(c.op_a);
+                bump(c.op_b);
+                bump(c.op_c);
+            }
         }
 
-        constexpr uint32_t kDenseIdLimit = 8u * 1024u * 1024u;
-        const bool use_dense = (max_reg_id != ir::INVALID_SLOT) && (max_reg_id <= kDenseIdLimit);
+        // 2. Ultra-fast Zero-Heap ThreadLocalArena Allocation
+        constexpr uint32_t kDenseIdLimit = 16u * 1024u * 1024u;
+        const bool use_dense = (max_reg_id <= kDenseIdLimit);
 
         dgtl::core::ThreadLocalArena scratch;
         const size_t dense_sz = use_dense ? (static_cast<size_t>(max_reg_id) + 1u) : 0u;
 
-        size_t ss_sz = 4u;
+        size_t ss_sz = 64u;
         if (!use_dense) {
-            const size_t needed = (shadow_count > 0u) ? (shadow_count * 3u) : 4u;
-            while (ss_sz < needed) {
+            const size_t needed = (shadow_count > 0u) ? (shadow_count * 4u) : 64u;
+            while (ss_sz < needed && ss_sz < (1u << 22)) {
                 ss_sz <<= 1;
             }
         }
 
-        scratch.init(dense_sz + ss_sz * sizeof(uint32_t) + 512u + 64u * 8u);
-
+        scratch.init(dense_sz + ss_sz * sizeof(uint32_t) + 1024u);
         uint8_t* dense_live = use_dense ? scratch.allocate<uint8_t>(dense_sz) : nullptr;
         uint32_t* ss_keys = !use_dense ? scratch.allocate<uint32_t>(ss_sz) : nullptr;
 
-        if ((use_dense && !dense_live) || (!use_dense && !ss_keys)) {
-            stream.rollback_transaction();
-            return;
+        if (dense_live) {
+            std::memset(dense_live, 0, dense_sz);
         }
-
         if (ss_keys) {
             std::memset(ss_keys, 0xFF, ss_sz * sizeof(uint32_t));
         }
@@ -569,75 +600,75 @@ public:
         const size_t ss_mask = ss_sz - 1u;
         constexpr uint32_t SS_EMPTY = 0xFFFFFFFFu;
         constexpr uint32_t SS_DELETED = 0xFFFFFFFEu;
+        constexpr size_t kMaxProbes = 64;
 
         const auto ss_contains = [&](uint32_t k) noexcept -> bool {
+            if (!ss_keys) return false;
             size_t slot = static_cast<size_t>(k) & ss_mask;
-            while (ss_keys[slot] != SS_EMPTY) {
-                if (ss_keys[slot] == k) {
-                    return true;
-                }
+            for (size_t p = 0; p < kMaxProbes; ++p) {
+                const uint32_t entry = ss_keys[slot];
+                if (entry == k) return true;
+                if (entry == SS_EMPTY) return false;
                 slot = (slot + 1u) & ss_mask;
             }
             return false;
         };
 
         const auto ss_insert = [&](uint32_t k) noexcept {
+            if (!ss_keys) return;
             size_t slot = static_cast<size_t>(k) & ss_mask;
-            while (ss_keys[slot] != SS_EMPTY && ss_keys[slot] != SS_DELETED && ss_keys[slot] != k) {
-                slot = (slot + 1u) & ss_mask;
-            }
-            ss_keys[slot] = k;
-        };
-
-        const auto ss_erase = [&](uint32_t k) noexcept {
-            size_t slot = static_cast<size_t>(k) & ss_mask;
-            while (ss_keys[slot] != SS_EMPTY) {
-                if (ss_keys[slot] == k) {
-                    ss_keys[slot] = SS_DELETED;
+            for (size_t p = 0; p < kMaxProbes; ++p) {
+                const uint32_t entry = ss_keys[slot];
+                if (entry == SS_EMPTY || entry == SS_DELETED || entry == k) {
+                    ss_keys[slot] = k;
                     return;
                 }
                 slot = (slot + 1u) & ss_mask;
             }
         };
 
-        const auto is_live_fn = [&](uint32_t r) noexcept -> bool {
-            if (r == ir::INVALID_SLOT) {
-                return false;
+        const auto ss_erase = [&](uint32_t k) noexcept {
+            if (!ss_keys) return;
+            size_t slot = static_cast<size_t>(k) & ss_mask;
+            for (size_t p = 0; p < kMaxProbes; ++p) {
+                const uint32_t entry = ss_keys[slot];
+                if (entry == k) {
+                    ss_keys[slot] = SS_DELETED;
+                    return;
+                }
+                if (entry == SS_EMPTY) return;
+                slot = (slot + 1u) & ss_mask;
             }
+        };
+
+        const auto is_live_fn = [&](uint32_t r) noexcept -> bool {
+            if (r == ir::INVALID_SLOT) return false;
             return use_dense ? (r < dense_sz && dense_live[r] != 0u) : ss_contains(r);
         };
 
         const auto set_live = [&](uint32_t r) noexcept {
-            if (r == ir::INVALID_SLOT) {
-                return;
-            }
+            if (r == ir::INVALID_SLOT) return;
             if (use_dense) {
-                if (r < dense_sz) {
-                    dense_live[r] = 1u;
-                }
+                if (r < dense_sz) dense_live[r] = 1u;
             } else {
                 ss_insert(r);
             }
         };
 
         const auto clear_live = [&](uint32_t r) noexcept {
-            if (r == ir::INVALID_SLOT) {
-                return;
-            }
+            if (r == ir::INVALID_SLOT) return;
             if (use_dense) {
-                if (r < dense_sz) {
-                    dense_live[r] = 0u;
-                }
+                if (r < dense_sz) dense_live[r] = 0u;
             } else {
                 ss_erase(r);
             }
         };
 
+        // 3. Backward Liveness Analysis
         for (int i = static_cast<int>(shadow_count) - 1; i >= 0; --i) {
             ir::IRAtom& atom = shadow_atoms[i];
             ir::IRCore& core = shadow_cores[i];
 
-            // FIXED: Substituted IRTraitsStatic with clear optraits trait definitions and flag logic mapping
             const bool is_terminator = iface::has_trait(atom.opcode, iface::OpTrait::IsTerminator);
             const bool is_call_like = atom.opcode == ir::OpCode::CALL || atom.opcode == ir::OpCode::SYSCALL;
             const bool is_essential = is_call_like ||
@@ -649,7 +680,9 @@ public:
                 atom.flags |= ir::Flags::IS_DEAD;
             } else {
                 clear_live(core.result_id);
-                const bool is_imm = atom.opcode == ir::OpCode::LOAD_IMM || atom.opcode == ir::OpCode::IMMEDIATE;
+                const bool is_imm = (atom.flags & ir::Flags::IS_CONST) ||
+                                    atom.opcode == ir::OpCode::LOAD_IMM ||
+                                    atom.opcode == ir::OpCode::IMMEDIATE;
                 if (!is_imm) {
                     set_live(core.op_a);
                     set_live(core.op_b);
@@ -658,6 +691,7 @@ public:
             }
         }
 
+        // 4. In-Place Stream Compaction
         size_t write_idx = 0;
         for (size_t i = 0; i < shadow_count; ++i) {
             if (!(shadow_atoms[i].flags & ir::Flags::IS_DEAD)) {
@@ -699,25 +733,28 @@ public:
 
         uint32_t max_reg_id = 0;
         for (size_t i = 0; i < shadow_count; ++i) {
+            const ir::IRAtom& a = shadow_atoms[i];
             const ir::IRCore& c = shadow_cores[i];
             auto bump = [&](uint32_t r) {
-                if (r != ir::INVALID_SLOT && r > max_reg_id) {
+                if (r != ir::INVALID_SLOT && r < 0x80000000u && r > max_reg_id) {
                     max_reg_id = r;
                 }
             };
             bump(c.result_id);
-            bump(c.op_a);
-            bump(c.op_b);
-            bump(c.op_c);
+            if (!(a.flags & ir::Flags::IS_CONST) && a.opcode != ir::OpCode::LOAD_IMM && a.opcode != ir::OpCode::IMMEDIATE) {
+                bump(c.op_a);
+                bump(c.op_b);
+                bump(c.op_c);
+            }
         }
-        const size_t reg_sz = (max_reg_id != ir::INVALID_SLOT)
+        const size_t reg_sz = (max_reg_id != ir::INVALID_SLOT && max_reg_id < (16u * 1024u * 1024u))
             ? (static_cast<size_t>(max_reg_id) + 1u)
             : 1u;
 
-        size_t et_sz = 4u;
+        size_t et_sz = 64u;
         {
-            const size_t needed = (shadow_count > 0u) ? (shadow_count * 2u) : 4u;
-            while (et_sz < needed) {
+            const size_t needed = (shadow_count > 0u) ? (shadow_count * 4u) : 64u;
+            while (et_sz < needed && et_sz < (1u << 22)) {
                 et_sz <<= 1;
             }
         }
@@ -725,7 +762,7 @@ public:
         dgtl::core::ThreadLocalArena scratch;
         scratch.init(reg_sz * (sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint8_t))
                      + et_sz * (sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint8_t))
-                     + 512u + 64u * 8u);
+                     + 1024u);
 
         uint32_t* remap_table = scratch.allocate<uint32_t>(reg_sz);
         uint64_t* const_tab = scratch.allocate<uint64_t>(reg_sz);
@@ -740,15 +777,17 @@ public:
         }
 
         std::memset(remap_table, 0xFF, reg_sz * sizeof(uint32_t));
+        std::memset(has_const, 0, reg_sz * sizeof(uint8_t));
+        std::memset(et_occ, 0, et_sz * sizeof(uint8_t));
 
         const size_t et_mask = et_sz - 1u;
+        constexpr size_t kMaxProbes = 64;
 
         const auto et_find = [&](uint64_t k) noexcept -> uint32_t {
             size_t slot = static_cast<size_t>(k) & et_mask;
-            while (et_occ[slot]) {
-                if (et_keys[slot] == k) {
-                    return et_vals[slot];
-                }
+            for (size_t p = 0; p < kMaxProbes; ++p) {
+                if (!et_occ[slot]) return ir::INVALID_SLOT;
+                if (et_keys[slot] == k) return et_vals[slot];
                 slot = (slot + 1u) & et_mask;
             }
             return ir::INVALID_SLOT;
@@ -756,12 +795,15 @@ public:
 
         const auto et_insert = [&](uint64_t k, uint32_t v) noexcept {
             size_t slot = static_cast<size_t>(k) & et_mask;
-            while (et_occ[slot] && et_keys[slot] != k) {
+            for (size_t p = 0; p < kMaxProbes; ++p) {
+                if (!et_occ[slot] || et_keys[slot] == k) {
+                    et_keys[slot] = k;
+                    et_vals[slot] = v;
+                    et_occ[slot] = 1u;
+                    return;
+                }
                 slot = (slot + 1u) & et_mask;
             }
-            et_keys[slot] = k;
-            et_vals[slot] = v;
-            et_occ[slot] = 1u;
         };
 
         const auto remap_get = [&](uint32_t r) noexcept -> uint32_t {

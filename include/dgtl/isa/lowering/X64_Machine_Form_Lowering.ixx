@@ -473,7 +473,7 @@ public:
                         out.push_back(0x41); out.push_back(0x57); // push r15
                         emit_sub_rsp(out, frame_size);
 #endif
-                        emit_function_prologue_params(node, out, machine_stream);
+                        emit_function_prologue_params(node, i, out, machine_stream);
                     }
                     break;
                 case lowering::MachineForm::Unhandled:
@@ -829,7 +829,7 @@ private:
         emit_modrm_reg_reg(out, xmm_src, gpr_dst);
     }
 
-    void emit_function_prologue_params(const ir::IRNode& node, std::vector<uint8_t>& out, const ir::IRStream& stream) const {
+    void emit_function_prologue_params(const ir::IRNode& node, size_t node_index, std::vector<uint8_t>& out, const ir::IRStream& stream) const {
         const uint8_t gpr_params[4] = {
             static_cast<uint8_t>(exec::X64Reg::RCX),
             static_cast<uint8_t>(exec::X64Reg::RDX),
@@ -868,6 +868,17 @@ private:
                 if (dst_gpr != src_gpr) {
                     emit_reg_move(out, dst_gpr, src_gpr);
                 }
+            }
+        }
+
+        const auto overflow = stream.get_call_overflow_args(node_index);
+        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        for (size_t k = 0; k < overflow.size(); ++k) {
+            const uint32_t param_slot = overflow[k];
+            if (param_slot != ir::INVALID_SLOT && param_slot != 0u) {
+                const int32_t incoming_disp = static_cast<int32_t>(FIXED_FRAME_SIZE + 104 + k * 8);
+                emit_mov_reg_from_stack(out, r10, incoming_disp);
+                emit_mov_stack_from_reg(out, vreg_offset(param_slot), r10);
             }
         }
     }
@@ -1196,8 +1207,8 @@ private:
                 const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
                 emit_reg_move32(out, count_reg, r11);
                 out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0xD3); // SHR r/m32, CL
-                emit_modrm_reg_reg(out, 0x05, r10);
+                out.push_back(0xD3); // SAR r/m32, CL
+                emit_modrm_reg_reg(out, 0x07, r10);
                 break;
             }
             case ir::OpCode::DIV_I32:
@@ -1282,8 +1293,8 @@ private:
                 const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
                 emit_reg_move(out, count_reg, r11);
                 out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0xD3); // SHR r/m64, CL
-                emit_modrm_reg_reg(out, 0x05, r10);
+                out.push_back(0xD3); // SAR r/m64, CL
+                emit_modrm_reg_reg(out, 0x07, r10);
                 break;
             }
             case ir::OpCode::MUL_I64:
@@ -1585,10 +1596,20 @@ private:
         return dgtl::isa::lowering::runtime_contract::runtime_symbol_for_opcode(opcode);
     }
 
-    void emit_call_address(uintptr_t address, const ir::IRNode& node, std::vector<uint8_t>& out, const ir::IRStream& stream) const {
+    void emit_call_address(uintptr_t address, const ir::IRNode& node, size_t node_index, std::vector<uint8_t>& out, const ir::IRStream& stream) const {
 #if defined(_WIN32)
-        // Win64 requires 32-byte shadow space at each call site.
-        out.push_back(0x48); out.push_back(0x83); out.push_back(0xEC); out.push_back(0x20); // sub rsp, 32
+        const auto overflow = stream.get_call_overflow_args(node_index);
+        const size_t num_stack_args = (overflow.size() > 1) ? (overflow.size() - 1) : 0;
+        const size_t stack_alloc = 32 + ((num_stack_args + 1) / 2) * 16;
+        emit_sub_rsp(out, static_cast<uint32_t>(stack_alloc));
+
+        for (size_t k = 1; k < overflow.size(); ++k) {
+            if (overflow[k] != ir::INVALID_SLOT && overflow[k] != 0u) {
+                const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+                emit_mov_reg_from_stack(out, r10, static_cast<int32_t>(vreg_offset(overflow[k]) + stack_alloc));
+                emit_mov_stack_from_reg(out, static_cast<int32_t>(32 + (k - 1) * 8), r10);
+            }
+        }
 #endif
 
         // movabs rax, imm64
@@ -1601,7 +1622,7 @@ private:
         out.push_back(0xD0);
 
 #if defined(_WIN32)
-        out.push_back(0x48); out.push_back(0x83); out.push_back(0xC4); out.push_back(0x20); // add rsp, 32
+        emit_add_rsp(out, static_cast<uint32_t>(stack_alloc));
 #endif
 
         if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
@@ -1686,7 +1707,7 @@ private:
             if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_b));
             if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_reg_from_stack(out, r8, vreg_offset(node.op_c));
 
-            emit_call_address(target, node, out, stream);
+            emit_call_address(target, node, node_index, out, stream);
             return;
         }
 
@@ -1706,7 +1727,7 @@ private:
             if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_b));
             if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_reg_from_stack(out, r8, vreg_offset(node.op_c));
 
-            emit_call_address(target, node, out, stream);
+            emit_call_address(target, node, node_index, out, stream);
             return;
         }
 
@@ -1760,8 +1781,20 @@ private:
                     emit_mov_reg_from_stack(out, r9, vreg_offset(overflow[0]));
                     emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow[0]));
                 }
+            } else {
+                out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC9); // xor r9, r9
             }
-            out.push_back(0x48); out.push_back(0x83); out.push_back(0xEC); out.push_back(0x20); // sub rsp, 32
+            const size_t num_stack_args = (overflow.size() > 1) ? (overflow.size() - 1) : 0;
+            const size_t stack_alloc = 32 + ((num_stack_args + 1) / 2) * 16;
+            emit_sub_rsp(out, static_cast<uint32_t>(stack_alloc));
+
+            for (size_t k = 1; k < overflow.size(); ++k) {
+                if (overflow[k] != ir::INVALID_SLOT && overflow[k] != 0u) {
+                    const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+                    emit_mov_reg_from_stack(out, r10, static_cast<int32_t>(vreg_offset(overflow[k]) + stack_alloc));
+                    emit_mov_stack_from_reg(out, static_cast<int32_t>(32 + (k - 1) * 8), r10);
+                }
+            }
 #endif
             out.push_back(0xE8); // CALL rel32
             const size_t disp_offset = out.size();
@@ -1771,7 +1804,7 @@ private:
             out.push_back(0x00);
             const size_t instr_end = out.size();
 #if defined(_WIN32)
-            out.push_back(0x48); out.push_back(0x83); out.push_back(0xC4); out.push_back(0x20); // add rsp, 32
+            emit_add_rsp(out, static_cast<uint32_t>(stack_alloc));
 #endif
             if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
                 const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
@@ -1798,6 +1831,7 @@ private:
         const uint8_t rcx = static_cast<uint8_t>(exec::X64Reg::RCX);
         const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
         const uint8_t r8  = static_cast<uint8_t>(exec::X64Reg::R8);
+        const uint8_t r9  = static_cast<uint8_t>(exec::X64Reg::R9);
 
         std::string callee_name;
         for (const auto& [name, addr] : runtime_functions_) {
@@ -1875,6 +1909,21 @@ private:
             out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC0); // xor r8, r8
         }
 
+        const auto overflow_args = stream.get_call_overflow_args(node_index);
+        if (!overflow_args.empty() && overflow_args[0] != ir::INVALID_SLOT && overflow_args[0] != 0u) {
+            if (is_gpr_float_helper && is_float_slot(overflow_args[0])) {
+                emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow_args[0]));
+                emit_movq_gpr_xmm(out, r9, 3);
+            } else if (is_float_slot(overflow_args[0])) {
+                emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow_args[0]));
+                emit_mov_reg_from_stack(out, r9, vreg_offset(overflow_args[0]));
+            } else {
+                emit_mov_reg_from_stack(out, r9, vreg_offset(overflow_args[0]));
+            }
+        } else {
+            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC9); // xor r9, r9
+        }
+
         if (!is_gpr_float_helper && !callee_name.empty() && 
             (callee_name.find("push_f64") != std::string::npos || 
              callee_name.find("push_f32") != std::string::npos || 
@@ -1901,7 +1950,7 @@ private:
         }
 #endif
 
-        emit_call_address(static_cast<uintptr_t>(it->second), node, out, stream);
+        emit_call_address(static_cast<uintptr_t>(it->second), node, node_index, out, stream);
     }
 
     void mark_error(const char* msg, ir::OpCode opcode) const {

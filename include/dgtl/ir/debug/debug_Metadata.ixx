@@ -283,13 +283,13 @@ public:
      * @brief Resets the store and clears all metadata mappings.
      */
     void reset() noexcept { 
-        count.store(0, std::memory_order_release); 
+        const size_t current_count = std::min(count.exchange(0, std::memory_order_acq_rel), capacity); 
         scopes.clear(); 
-        if (locations && capacity > 0) {
-            std::memset(locations, 0, sizeof(SourceLoc) * capacity);
-            std::memset(shadow_locations, 0, sizeof(SourceLoc) * capacity);
-            std::memset(type_locations, 0, sizeof(TypeLoc) * capacity);
-            std::memset(shadow_type_locations, 0, sizeof(TypeLoc) * capacity);
+        if (locations && current_count > 0) {
+            std::memset(locations, 0, sizeof(SourceLoc) * current_count);
+            std::memset(shadow_locations, 0, sizeof(SourceLoc) * current_count);
+            std::memset(type_locations, 0, sizeof(TypeLoc) * current_count);
+            std::memset(shadow_type_locations, 0, sizeof(TypeLoc) * current_count);
         }
     }
 };

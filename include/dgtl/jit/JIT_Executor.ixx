@@ -91,7 +91,7 @@ class alignas(64) DGTLExecutor {
     dgtl::core::TargetMachine target_machine_;
 
 public:
-    explicit DGTLExecutor(size_t size_mb = 128,
+    explicit DGTLExecutor(size_t size_mb = 32,
                           dgtl::core::ArchType arch = dgtl::core::select_preferred_x86_arch())
         : target_machine_(arch) {
         if (size_mb == 0 || size_mb > (std::numeric_limits<size_t>::max() / (1024u * 1024u))) {

@@ -127,6 +127,10 @@ inline void free_allocation(void* ptr) noexcept {
 #endif
 }
 
+inline void free_on_node(void* ptr, [[maybe_unused]] size_t size = 0) noexcept {
+    free_allocation(ptr);
+}
+
 [[nodiscard]] inline void* allocate_executable_on_node(size_t size, uint32_t node) noexcept {
     if (size == 0) {
         return nullptr;

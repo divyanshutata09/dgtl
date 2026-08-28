@@ -153,8 +153,12 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
                                          uint32_t pressure_vars,
                                          bool arm64_binary_stream) {
     
-    // TITAN-STABLE: Lock thread to prevent context-switching and frequency scaling ter
-    [[maybe_unused]] const auto quiet_core_policy = dgtl::jit::DGTLHardwareScheduler::apply_quiet_core_policy(2);
+    // TITAN-STABLE: Lock thread to prevent context-switching and frequency scaling jitter (applied once per thread)
+    thread_local bool quiet_core_applied = []() {
+        (void)dgtl::jit::DGTLHardwareScheduler::apply_quiet_core_policy(2);
+        return true;
+    }();
+    (void)quiet_core_applied;
 
     TimedEmissionResult timed{};
     const size_t capacity = (profile == BenchmarkProfile::pressure)

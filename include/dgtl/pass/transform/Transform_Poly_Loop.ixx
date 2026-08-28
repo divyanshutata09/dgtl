@@ -401,35 +401,51 @@ private:
     bool perform_fusion(ir::IRStream& stream,
                        const std::vector<LoopRange>& loops,
                        const std::vector<std::pair<size_t, size_t>>& fusion_pairs) noexcept {
+        if (fusion_pairs.empty()) return false;
         uint32_t shadow_cursor = 0;
         bool modified = false;
+        size_t cur_src = 0;
+        const size_t total_size = stream.size();
 
         for (const auto& pair : fusion_pairs) {
             const LoopRange& loop1 = loops[pair.first];
             const LoopRange& loop2 = loops[pair.second];
 
-            for (uint32_t i = loop1.start_idx; i <= loop1.end_idx; ++i) {
-                sync_to_shadow(stream, i, shadow_cursor++);
+            if (loop1.start_idx < cur_src) continue;
+
+            // 1. Copy nodes before loop1
+            for (size_t i = cur_src; i < loop1.start_idx; ++i) {
+                if (shadow_cursor < stream.capacity()) {
+                    sync_to_shadow(stream, static_cast<uint32_t>(i), shadow_cursor++);
+                }
             }
 
-            for (uint32_t i = loop2.start_idx; i <= loop2.end_idx; ++i) {
+            // 2. Copy loop1 body (skip terminator)
+            for (uint32_t i = loop1.start_idx; i <= loop1.end_idx; ++i) {
                 const auto& node = stream.get_node_readonly(i);
-
                 const bool is_control_terminator =
                     iface::has_trait(node.opcode, iface::OpTrait::IsTerminator) &&
                     iface::implements_interface(node.opcode, iface::OpInterface::ControlFlow);
-                if (!is_control_terminator) {
+                if (!is_control_terminator && shadow_cursor < stream.capacity()) {
                     sync_to_shadow(stream, i, shadow_cursor++);
                 }
             }
 
+            // 3. Copy loop2 body and its terminator
+            for (uint32_t i = loop2.start_idx; i <= loop2.end_idx; ++i) {
+                if (shadow_cursor < stream.capacity()) {
+                    sync_to_shadow(stream, i, shadow_cursor++);
+                }
+            }
+
+            cur_src = loop2.end_idx + 1;
             modified = true;
         }
 
-        for (uint32_t i = static_cast<uint32_t>(stream.size()) / 2;
-             i < static_cast<uint32_t>(stream.size()); ++i) {
+        // 4. Copy remaining tail nodes
+        for (size_t i = cur_src; i < total_size; ++i) {
             if (shadow_cursor < stream.capacity()) {
-                sync_to_shadow(stream, i, shadow_cursor++);
+                sync_to_shadow(stream, static_cast<uint32_t>(i), shadow_cursor++);
             }
         }
 

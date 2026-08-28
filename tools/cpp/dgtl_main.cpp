@@ -200,6 +200,7 @@ int sync_sdk_public_headers() {
         "dgtl_capabilities.h",
         "dgtl_c_api.h",
         "dgtl_core.h",
+        "dgtl_gpu.h",
         "dgtl_session.h",
         "dgtl_simd.h",
         "dgtl.h"
@@ -689,6 +690,11 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
 
         cpp_sources.push_back(entry.path());
     }
+
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        cpp_sources.push_back(gpu_runtime_cpp);
+    }
     std::sort(cpp_sources.begin(), cpp_sources.end());
 
     std::cout << "[build] Compiling " << binary_name << " objects in parallel..." << std::endl;
@@ -796,6 +802,10 @@ void append_core_sources_for_test_build(std::string& cmd) {
             cmd += " " + quote_path(entry.path());
         }
     }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        cmd += " " + quote_path(gpu_runtime_cpp);
+    }
 }
 
 int build_test_suite_binary(const fs::path& output,
@@ -830,6 +840,10 @@ int build_test_suite_binary(const fs::path& output,
     }
     for (const auto& src : test_sources) {
         cpp_sources.push_back(src);
+    }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        cpp_sources.push_back(gpu_runtime_cpp);
     }
     std::sort(cpp_sources.begin(), cpp_sources.end());
 
@@ -933,6 +947,10 @@ int build_standalone_test_binary(const fs::path& output, const fs::path& entry_p
         }
         if (!skip) cpp_sources.push_back(entry.path());
     }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        cpp_sources.push_back(gpu_runtime_cpp);
+    }
     std::sort(cpp_sources.begin(), cpp_sources.end());
 
     std::vector<fs::path> common_objs;
@@ -945,7 +963,7 @@ int build_standalone_test_binary(const fs::path& output, const fs::path& entry_p
     if (ec != 0) return ec;
 
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
+    cmd += " -std=c++26 -fmodules-ts -O3 -pipe";
     for (const auto& obj : common_objs) {
         cmd += " " + quote_path(obj);
     }
@@ -984,7 +1002,12 @@ int ensure_standalone_test_binary(const fs::path& output, const fs::path& entry_
 }
 
 [[nodiscard]] fs::path make_obj_path(const fs::path& obj_dir, const fs::path& src_path) {
-    fs::path rel = fs::relative(src_path, g_config.src_dir).lexically_normal();
+    fs::path rel;
+    if (src_path.string().find(g_config.src_dir.string()) != std::string::npos) {
+        rel = fs::relative(src_path, g_config.src_dir).lexically_normal();
+    } else {
+        rel = fs::relative(src_path, g_config.root).lexically_normal();
+    }
     std::string stem = rel.string();
     std::replace(stem.begin(), stem.end(), '\\', '_');
     std::replace(stem.begin(), stem.end(), '/', '_');
@@ -1008,7 +1031,7 @@ int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool stri
     std::cout << "[build] Compiling: " << src.filename().string() << "..." << std::endl;
     ensure_directory(obj.parent_path());
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -I" + quote_path(g_config.include_dir);
+    cmd += " -std=c++26 -fmodules-ts -O3 -pipe -I" + quote_path(g_config.include_dir);
     if (strict) {
         cmd += " -Wall -Wextra -Wpedantic -Werror";
     }
@@ -1103,6 +1126,10 @@ int build_tools_optimized(const fs::path& prod_main,
             common_sources.push_back(entry.path());
         }
     }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        common_sources.push_back(gpu_runtime_cpp);
+    }
     std::sort(common_sources.begin(), common_sources.end());
 
     std::vector<fs::path> common_objs;
@@ -1144,7 +1171,7 @@ int build_tools_optimized(const fs::path& prod_main,
         }
 
         std::string cmd = g_config.gpp_path;
-        cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
+        cmd += " -std=c++26 -fmodules-ts -O3 -pipe";
         for (const auto& obj : common_objs) {
             cmd += " " + quote_path(obj);
         }
@@ -1201,7 +1228,7 @@ int build_tools_optimized(const fs::path& prod_main,
     const fs::path rodata_source = g_config.tools_dir / "dgtl_rodata_maker_main.cpp";
     const fs::path rodata_exe = g_config.build_dir / "tools" / "dgtl-rodata-maker.exe";
     ensure_directory(rodata_exe.parent_path());
-    const std::string rodata_cmd = g_config.gpp_path + " -std=c++26 -O2 -pipe " + quote_path(rodata_source) + " -o " + quote_path(rodata_exe);
+    const std::string rodata_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(rodata_source) + " -o " + quote_path(rodata_exe);
     if (run_command(rodata_cmd) == 0) {
         std::cout << "[build] Wrote " << rodata_exe.string() << std::endl;
     }
@@ -1209,7 +1236,7 @@ int build_tools_optimized(const fs::path& prod_main,
     const fs::path debugger_source = g_config.tools_dir / "dgtl_debugger_main.cpp";
     const fs::path debugger_exe = g_config.build_dir / "tools" / "dgtl-debugger.exe";
     ensure_directory(debugger_exe.parent_path());
-    const std::string debugger_cmd = g_config.gpp_path + " -std=c++26 -O2 -pipe " + quote_path(debugger_source) + " -o " + quote_path(debugger_exe);
+    const std::string debugger_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(debugger_source) + " -o " + quote_path(debugger_exe);
     if (run_command(debugger_cmd) == 0) {
         std::cout << "[build] Wrote " << debugger_exe.string() << std::endl;
     }
@@ -1263,6 +1290,10 @@ int build_sdk_static_library() {
         if (!skip) {
             sdk_sources.push_back(entry.path());
         }
+    }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        sdk_sources.push_back(gpu_runtime_cpp);
     }
     std::sort(sdk_sources.begin(), sdk_sources.end());
 
@@ -1371,6 +1402,10 @@ int build_internal_static_library() {
         if (!skip) {
             internal_sources.push_back(entry.path());
         }
+    }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        internal_sources.push_back(gpu_runtime_cpp);
     }
     std::sort(internal_sources.begin(), internal_sources.end());
 
@@ -1508,7 +1543,7 @@ BACKEND & DISTRIBUTION:
   package                 Create SDK distribution package (DGTL_v*.zip)
                           Includes: headers, static library, binaries
                                                     Public SDK headers: dgtl.h, dgtl_core.h, dgtl_c_api.h,
-                                                                                         dgtl_simd.h, dgtl_capabilities.h,
+                                                                                         dgtl_gpu.h, dgtl_simd.h, dgtl_capabilities.h,
                                                                                          dgtl_session.h
 
 ================================================================================
@@ -2337,6 +2372,7 @@ int verify_public_api_artifacts() {
     const fs::path sdk_include = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl.h";
     const fs::path sdk_c_api = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_c_api.h";
     const fs::path sdk_core = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_core.h";
+    const fs::path sdk_gpu = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_gpu.h";
     const fs::path sdk_simd = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_simd.h";
     const fs::path sdk_capabilities = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_capabilities.h";
     const fs::path sdk_session = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_session.h";
@@ -2352,6 +2388,10 @@ int verify_public_api_artifacts() {
     }
     if (!file_exists(sdk_core)) {
         std::cerr << "[api] Public SDK not ready: missing core definitions header " << sdk_core.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_gpu)) {
+        std::cerr << "[api] Public SDK not ready: missing GPU header " << sdk_gpu.string() << std::endl;
         return 1;
     }
     if (!file_exists(sdk_simd)) {

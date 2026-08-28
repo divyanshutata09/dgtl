@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -74,7 +74,11 @@ public:
                 cache_.erase(erase_it);
             }
             lru_list_.pop_back();
-            projected = current_size_ - existing_size + size;
+
+            // Refind current key in case hash table was reorganized during erasure
+            it = cache_.find(key);
+            const size_t cur_existing = (it != cache_.end()) ? it->second.size : 0;
+            projected = current_size_ - cur_existing + size;
         }
 
         if (projected > max_size_) {
@@ -91,15 +95,16 @@ public:
             it->second.size = size;
             it->second.lru_it = lru_list_.begin();
         } else {
-            std::string owned_key(key);
-            lru_list_.push_front(owned_key);
+            lru_list_.push_front(std::string(key));
+            auto lru_it = lru_list_.begin();
             CacheNode node{
-                owned_key,
+                *lru_it,
                 std::move(buf),
                 size,
-                lru_list_.begin()
+                lru_it
             };
-            cache_.emplace(std::string_view(node.key), std::move(node));
+            std::string_view stable_key(*lru_it);
+            cache_.emplace(stable_key, std::move(node));
         }
 
         current_size_ = projected;

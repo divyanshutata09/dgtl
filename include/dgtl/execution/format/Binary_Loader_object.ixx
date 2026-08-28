@@ -350,11 +350,17 @@ private:
 					fmt->entry_point = read_u64(&bytes[32]);
 				}
 				break;
-			case BinaryFormatType::PE64:
-				if (fmt->data.size() >= 44) {
-					fmt->entry_point = read_u32(&bytes[40]);
+			case BinaryFormatType::PE64: {
+				if (fmt->data.size() >= 0x40) {
+					const uint32_t lfanew = read_u32(&bytes[0x3C]);
+					if (lfanew + 44 <= fmt->data.size()) {
+						fmt->entry_point = read_u32(&bytes[lfanew + 40]);
+					} else {
+						fmt->entry_point = 0x1000;
+					}
 				}
 				break;
+			}
 			case BinaryFormatType::WASM:
 				fmt->entry_point = 0;
 				break;
@@ -588,7 +594,7 @@ private:
 			if (sh.type != kShtSymTab && sh.type != kShtDynSym) {
 				continue;
 			}
-			if (sh.entsize == 0 || sh.size == 0 || sh.offset + sh.size > buffer.size() || sh.link >= headers.size()) {
+			if (sh.entsize < 24 || sh.size == 0 || sh.offset + sh.size > buffer.size() || sh.link >= headers.size()) {
 				continue;
 			}
 

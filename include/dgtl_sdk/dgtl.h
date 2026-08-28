@@ -341,6 +341,8 @@ DGTL_API dgtl_status_t dgtl_stream_serialize(const dgtl_stream_t* s, void** out_
 DGTL_API dgtl_status_t dgtl_stream_deserialize(dgtl_stream_t* s, const void* blob, size_t size);
 DGTL_API void          dgtl_free_serialized_blob(void* blob);
 DGTL_API int32_t       dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* err_buf, size_t err_buf_size);
+DGTL_API int32_t       dgtl_verify_pass_equivalence(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass_name);
+DGTL_API size_t        dgtl_export_smtlib2_script(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass_name, char* out_buf, size_t out_buf_size);
 
 /* ---------- Callee-Slot Symbol Binding ---------- */
 #ifndef DGTL_CALLEE_BINDING_DEFINED
@@ -384,6 +386,14 @@ DGTL_API void dgtl_yield(void);
 DGTL_API uint64_t dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg);
 DGTL_API void dgtl_join_task(uint64_t task_handle);
 
+/* ---------- NUMA Capabilities & Control ---------- */
+DGTL_API uint32_t dgtl_numa_node_count(void);
+DGTL_API uint32_t dgtl_numa_current_node(void);
+DGTL_API int      dgtl_numa_pin_thread_to_node(uint32_t node_id);
+DGTL_API int      dgtl_numa_pin_thread_to_core(uint32_t core_id);
+DGTL_API void*    dgtl_numa_alloc_on_node(size_t size, uint32_t node_id);
+DGTL_API void     dgtl_numa_free_on_node(void* ptr, size_t size);
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif
@@ -393,5 +403,6 @@ DGTL_API void dgtl_join_task(uint64_t task_handle);
 #include "dgtl_capabilities.h"
 #include "dgtl_session.h"
 #include "dgtl_simd.h"
+#include "dgtl_gpu.h"
 
 #endif /* DGTL_SDK_H */

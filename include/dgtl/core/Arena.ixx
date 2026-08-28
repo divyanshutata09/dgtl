@@ -226,7 +226,7 @@ private:
     std::atomic<std::size_t> next_arena_ticket_{0};
 
 public:
-    explicit DGTL_Arena(std::size_t threads = 0, std::size_t size_mb_per_thread = 128) {
+    explicit DGTL_Arena(std::size_t threads = 0, std::size_t size_mb_per_thread = 16) {
         if (threads == 0) {
             threads = std::thread::hardware_concurrency();
         }

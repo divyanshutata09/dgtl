@@ -182,7 +182,12 @@ std::optional<ApiMode> parse_api_mode(std::vector<std::string>& args,
 }
 
 [[nodiscard]] fs::path make_obj_path(const fs::path& obj_dir, const fs::path& src_path) {
-    fs::path rel = fs::relative(src_path, g_config.src_dir).lexically_normal();
+    fs::path rel;
+    if (src_path.string().find(g_config.src_dir.string()) != std::string::npos) {
+        rel = fs::relative(src_path, g_config.src_dir).lexically_normal();
+    } else {
+        rel = fs::relative(src_path, g_config.root).lexically_normal();
+    }
     std::string stem = rel.string();
     std::replace(stem.begin(), stem.end(), '\\', '_');
     std::replace(stem.begin(), stem.end(), '/', '_');
@@ -231,6 +236,7 @@ int verify_public_api_artifacts() {
     const fs::path sdk_include = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl.h";
     const fs::path sdk_c_api = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_c_api.h";
     const fs::path sdk_core = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_core.h";
+    const fs::path sdk_gpu = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_gpu.h";
     const fs::path sdk_simd = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_simd.h";
     const fs::path sdk_capabilities = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_capabilities.h";
     const fs::path sdk_session = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_session.h";
@@ -246,6 +252,10 @@ int verify_public_api_artifacts() {
     }
     if (!file_exists(sdk_core)) {
         std::cerr << "[api] Public SDK not ready: missing core definitions header " << sdk_core.string() << "\n";
+        return 1;
+    }
+    if (!file_exists(sdk_gpu)) {
+        std::cerr << "[api] Public SDK not ready: missing GPU header " << sdk_gpu.string() << "\n";
         return 1;
     }
     if (!file_exists(sdk_simd)) {
@@ -309,6 +319,10 @@ std::vector<fs::path> get_release_sources() {
                 sources.push_back(entry.path());
             }
         }
+    }
+    const fs::path gpu_runtime_cpp = g_config.include_dir / "dgtl" / "runtime" / "dgtl_gpu.cpp";
+    if (file_exists(gpu_runtime_cpp)) {
+        sources.push_back(gpu_runtime_cpp);
     }
     return sources;
 }
@@ -684,6 +698,7 @@ int main(int argc, char** argv) {
         {"debug",        {g_config.tools_dir / "dgtl_debugger_main.cpp", {"--root", quote_path(g_config.root), "--relative-paths"}}},
         {"gen",          {g_config.tools_dir / "dgtl_gen_main.cpp", {}}},
         {"gen-validate", {g_config.tools_dir / "validate_dgtl_gen_main.cpp", {}}},
+        {"isel-gen",     {g_config.tools_dir / "dgtl_isel_gen_main.cpp", {}}},
         {"rodata-maker", {g_config.tools_dir / "dgtl_rodata_maker_main.cpp", {}}}
     };
 

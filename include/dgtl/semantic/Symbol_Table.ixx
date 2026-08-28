@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -236,6 +236,49 @@ public:
     void reset() {
         m_scopes.clear();
         m_scopes.emplace_back();
+    }
+
+    /**
+     * @brief Pre-populates the symbol table with core runtime and GPU symbols.
+     */
+    void register_builtin_runtime_symbols() {
+        static constexpr std::string_view kBuiltinSymbols[] = {
+            "dgtl_gpu_init_pipeline",
+            "dgtl_gpu_resize",
+            "dgtl_gpu_destroy_pipeline",
+            "dgtl_gpu_begin_frame",
+            "dgtl_gpu_end_frame",
+            "dgtl_gpu_push_clip_rect",
+            "dgtl_gpu_pop_clip_rect",
+            "dgtl_gpu_render_quad_instances",
+            "dgtl_gpu_render_glyph_instances",
+            "dgtl_gpu_render_vector_paths",
+            "dgtl_gpu_upload_texture",
+            "dgtl_gpu_destroy_texture",
+            "dgtl_platform_poll_events",
+            "dgtl_platform_get_time_us",
+            "dgtl_platform_set_cursor",
+            "__dgtl_rt_string_length",
+            "__dgtl_rt_string_compare",
+            "__dgtl_rt_string_concat",
+            "__dgtl_rt_string_substring",
+            "__dgtl_rt_async_await",
+            "__dgtl_rt_async_launch",
+            "__dgtl_rt_async_spawn",
+            "__dgtl_rt_chan_recv",
+            "__dgtl_rt_chan_send",
+            "__dgtl_rt_fiber_yield",
+            "__dgtl_rt_dsa_allocate",
+            "__dgtl_rt_dsa_deallocate"
+        };
+
+        for (uint32_t i = 0; i < sizeof(kBuiltinSymbols) / sizeof(kBuiltinSymbols[0]); ++i) {
+            define(kBuiltinSymbols[i], 0x80000000u | i, dgtl::ir::OpCode::CALL);
+        }
+    }
+
+    static void populate_default_symbols(SymbolTable& symtab) {
+        symtab.register_builtin_runtime_symbols();
     }
 
 private:

@@ -1,4 +1,4 @@
-﻿[FILE]: D:\TataG\DGTL\include\dgtl\core\NUMA.ixx -> [MODULE]: dgtl.numa
+[FILE]: D:\TataG\DGTL\include\dgtl\core\NUMA.ixx -> [MODULE]: dgtl.numa
 [FILE]: D:\TataG\DGTL\include\dgtl\runtime\NUMA_Runtime.ixx -> [MODULE]: dgtl.numa_runtime
 [FILE]: D:\TataG\DGTL\include\dgtl\ir\base\IR_Enums.ixx -> [MODULE]: dgtl.ir_enums
 [FILE]: D:\TataG\DGTL\include\dgtl\ir\base\IR_Node.ixx -> [MODULE]: dgtl.ir_node
@@ -108,3 +108,4 @@
 [FILE]: D:\TataG\DGTL\include\dgtl\testing\FileCheck.ixx -> [MODULE]: dgtl.testing.filecheck
 [FILE]: D:\TataG\DGTL\include\dgtl\utils\automata\LUT_FSM_Matcher.ixx -> [MODULE]: dgtl.lut_fsm
 [FILE]: D:\TataG\DGTL\include\dgtl\dgtl_all.ixx -> [MODULE]: dgtl_all
+[FILE]: D:\TataG\DGTL\include\dgtl\runtime\dgtl_gpu.ixx -> [MODULE]: dgtl.runtime.gpu

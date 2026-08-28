@@ -90,6 +90,9 @@ public:
     }
 
     [[nodiscard]] DGTLBasicBlock* find_block(uint32_t block_id) noexcept {
+        if (block_id < blocks_.size() && blocks_[block_id].id == block_id) [[likely]] {
+            return &blocks_[block_id];
+        }
         auto it = std::find_if(blocks_.begin(), blocks_.end(), [block_id](const DGTLBasicBlock& block) noexcept {
             return block.id == block_id;
         });
@@ -97,6 +100,9 @@ public:
     }
 
     [[nodiscard]] const DGTLBasicBlock* find_block(uint32_t block_id) const noexcept {
+        if (block_id < blocks_.size() && blocks_[block_id].id == block_id) [[likely]] {
+            return &blocks_[block_id];
+        }
         auto it = std::find_if(blocks_.begin(), blocks_.end(), [block_id](const DGTLBasicBlock& block) noexcept {
             return block.id == block_id;
         });

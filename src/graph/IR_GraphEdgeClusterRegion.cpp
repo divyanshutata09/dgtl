@@ -15,6 +15,7 @@ module;
 #include <vector>
 #include <memory>
 #include <limits>
+#include <unordered_map>
 
 module dgtl.ir_core;
 
@@ -77,14 +78,15 @@ void ExecutionGraph::build_from_ir(::dgtl::ir::IRStream& global_ir) {
 
     flush_region();
 
-    // 🚀 MODERNIZE: Replaced std::unordered_map with HFT-grade FastFlatMap
-    dgtl::utils::FastFlatMap<uint32_t, Region*, 512> producer_region;
+    // Standard dynamic hash map with pre-reservation eliminates 512-vreg limitation
+    std::unordered_map<uint32_t, Region*> producer_region;
+    producer_region.reserve(global_ir.size() + 16);
     
     for (auto& region_ptr : regions) {
         Region* r = region_ptr.get();
         for (const auto& node : r->nodes) {
-            if (is_valid_vreg(node.result_id) && !producer_region.find(node.result_id)) {
-                producer_region.insert_or_assign(node.result_id, r);
+            if (is_valid_vreg(node.result_id) && producer_region.find(node.result_id) == producer_region.end()) {
+                producer_region.emplace(node.result_id, r);
             }
         }
     }
@@ -98,9 +100,9 @@ void ExecutionGraph::build_from_ir(::dgtl::ir::IRStream& global_ir) {
                 if (!is_valid_vreg(op)) {
                     continue;
                 }
-                auto** producer_ptr = producer_region.find(op);
-                if (producer_ptr && *producer_ptr != consumer) {
-                    consumer->add_dependency(*producer_ptr);
+                auto it = producer_region.find(op);
+                if (it != producer_region.end() && it->second != consumer) {
+                    consumer->add_dependency(it->second);
                 }
             }
         }
@@ -118,7 +120,7 @@ void ExecutionGraph::build_from_ir(::dgtl::ir::IRStream& global_ir) {
         if (region_ptr) {
             auto scop_meta = detector.analyze_region(*region_ptr);
             
-            if (scop_meta.classification == analysis::polyhedral::ScopClassification::AFFINE_CANDIATE) {
+            if (scop_meta.classification == analysis::polyhedral::ScopClassification::AFFINE_CANDIDATE) {
                 region_ptr->scop_annotation.affinity = ScopAffinity::AFFINE_CANDIDATE;
             } else {
                 region_ptr->scop_annotation.affinity = ScopAffinity::NON_AFFINE;
@@ -135,6 +137,8 @@ void ExecutionGraph::build_from_ir(::dgtl::ir::IRStream& global_ir) {
 }
 
 void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
+    if (regions.empty()) return;
+
     const bool vector_bias = target.prefers_vector_heavy_schedule();
     const float mem_bias = target.memory_latency_bias();
 
@@ -143,24 +147,12 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
             return a != nullptr;
         }
 
-        const double a_pressure = a->live_range_pressure();
-        const double b_pressure = b->live_range_pressure();
-        if (a_pressure != b_pressure) {
-            return a_pressure < b_pressure;
+        if (a->memory_bound != b->memory_bound) {
+            return !a->memory_bound;
         }
 
-        const double a_mem = a->memory_density() * static_cast<double>(mem_bias);
-        const double b_mem = b->memory_density() * static_cast<double>(mem_bias);
-        if (a_mem != b_mem) {
-            return a_mem < b_mem;
-        }
-
-        if (vector_bias) {
-            const double a_simd = a->simd_density();
-            const double b_simd = b->simd_density();
-            if (a_simd != b_simd) {
-                return a_simd > b_simd;
-            }
+        if (vector_bias && (a->vectorizable != b->vectorizable)) {
+            return a->vectorizable;
         }
 
         if (a->dependencies.size() != b->dependencies.size()) {
@@ -169,32 +161,19 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
         if (a->is_hot != b->is_hot) {
             return a->is_hot;
         }
-        if (a->vectorizable != b->vectorizable) {
-            return a->vectorizable;
-        }
         return a->estimated_cycles > b->estimated_cycles;
     };
 
-    // 🚀 MODERNIZE: Replaced std::unordered_map with FastFlatMap for indegree trackers
-    dgtl::utils::FastFlatMap<Region*, size_t, 128> indegree;
+    std::unordered_map<Region*, size_t> indegree;
+    indegree.reserve(regions.size() + 8);
     for (const auto& r : regions) {
-        indegree.insert_or_assign(r.get(), 0);
-    }
-
-    for (const auto& r : regions) {
-        for (Region* dep : r->dependencies) {
-            if (dep && indegree.find(r.get())) {
-                auto* val = indegree.find(r.get());
-                (*val)++;
-            }
-        }
+        indegree[r.get()] = r->dependencies.size();
     }
 
     std::vector<Region*> ready;
     ready.reserve(regions.size());
     for (const auto& r : regions) {
-        auto* val = indegree.find(r.get());
-        if (val && *val == 0) {
+        if (indegree[r.get()] == 0) {
             ready.push_back(r.get());
         }
     }
@@ -221,21 +200,21 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
         auto pos = std::find_if(regions.begin(), regions.end(), [chosen](const auto& ptr) {
             return ptr.get() == chosen;
         });
-        if (pos == regions.end()) {
+        if (pos == regions.end() || !(*pos)) {
             continue;
         }
 
         ordered.push_back(std::move(*pos));
-        regions.erase(pos);
+        *pos = nullptr; // O(1) in-place release avoids quadratic vector shifts
 
         for (size_t i = 0; i < chosen->dependents.count; ++i) {
             Region* dependent = chosen->dependents.storage[i];
             if (!dependent) continue;
             
-            auto* deg = indegree.find(dependent);
-            if (deg && *deg > 0) {
-                (*deg)--;
-                if (*deg == 0) {
+            auto it = indegree.find(dependent);
+            if (it != indegree.end() && it->second > 0) {
+                it->second--;
+                if (it->second == 0) {
                     ready.push_back(dependent);
                 }
             }
@@ -243,7 +222,9 @@ void ExecutionGraph::schedule(const dgtl::core::TargetMachine& target) {
     }
 
     for (auto& leftover : regions) {
-        ordered.push_back(std::move(leftover));
+        if (leftover) {
+            ordered.push_back(std::move(leftover));
+        }
     }
     regions = std::move(ordered);
 }

@@ -14,10 +14,12 @@ module;
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #ifdef _WIN32
 #   ifndef WIN32_LEAN_AND_MEAN
@@ -100,6 +102,27 @@ void unregister_string_handle(uint32_t handle) noexcept {
 [[nodiscard]] size_t get_registered_string_count() noexcept {
     std::shared_lock<std::shared_mutex> lock(detail::string_registry_mutex());
     return detail::string_registry().size();
+}
+
+[[nodiscard]] std::vector<uint8_t> build_registered_strings_rdata() {
+    std::shared_lock<std::shared_mutex> lock(detail::string_registry_mutex());
+    std::vector<uint8_t> rdata;
+    for (const auto& [handle, str] : detail::string_registry()) {
+        if (handle == 0 || str.empty()) continue;
+        const size_t start = rdata.size();
+        const uint32_t len = static_cast<uint32_t>(str.size());
+        rdata.resize(start + 8 + len + 1);
+        std::memcpy(rdata.data() + start, &handle, 4);
+        std::memcpy(rdata.data() + start + 4, &len, 4);
+        std::memcpy(rdata.data() + start + 8, str.data(), len);
+        rdata[start + 8 + len] = '\0';
+        while (rdata.size() % 8 != 0) {
+            rdata.push_back(0);
+        }
+    }
+    const size_t end_sentinel = rdata.size();
+    rdata.resize(end_sentinel + 8, 0);
+    return rdata;
 }
 
 } // namespace dgtl::runtime

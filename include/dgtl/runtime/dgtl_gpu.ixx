@@ -135,29 +135,29 @@ class GpuContext;
 
 extern "C" {
     // Pipeline Lifecycle & Configuration
-    export void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* window_title) noexcept;
-    export void dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale) noexcept;
-    export void dgtl_gpu_destroy_pipeline(void* ctx_ptr) noexcept;
+    export void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* window_title);
+    export void dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale);
+    export void dgtl_gpu_destroy_pipeline(void* ctx_ptr);
 
     // Frame Lifecycle
-    export void dgtl_gpu_begin_frame(void* ctx_ptr, float clear_r, float clear_g, float clear_b, float clear_a) noexcept;
-    export void dgtl_gpu_end_frame(void* ctx_ptr) noexcept;
+    export void dgtl_gpu_begin_frame(void* ctx_ptr, float clear_r, float clear_g, float clear_b, float clear_a);
+    export void dgtl_gpu_end_frame(void* ctx_ptr);
 
     // Hardware Clip / Scissor Operations
-    export uint32_t dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) noexcept;
-    export void dgtl_gpu_pop_clip_rect(void* ctx_ptr) noexcept;
+    export uint32_t dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h);
+    export void dgtl_gpu_pop_clip_rect(void* ctx_ptr);
 
     // Geometry & Texture Batch Submissions
-    export void dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl::gpu::QuadInstance* instances, uint32_t count) noexcept;
-    export void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl::gpu::GlyphGPUInstance* instances, uint32_t count) noexcept;
-    export void dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl::gpu::VectorPathInstance* instances, uint32_t count) noexcept;
+    export void dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl::gpu::QuadInstance* instances, uint32_t count);
+    export void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl::gpu::GlyphGPUInstance* instances, uint32_t count);
+    export void dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl::gpu::VectorPathInstance* instances, uint32_t count);
 
     // Texture Asset Uploads
-    export uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba_data) noexcept;
-    export void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) noexcept;
+    export uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba_data);
+    export void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot);
 
     // Platform Input & Timer Queries
-    export bool dgtl_platform_poll_events(void* ctx_ptr, dgtl::gpu::RawInputEvent* out_event) noexcept;
-    export uint64_t dgtl_platform_get_time_us() noexcept;
-    export void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) noexcept;
+    export bool dgtl_platform_poll_events(void* ctx_ptr, dgtl::gpu::RawInputEvent* out_event);
+    export uint64_t dgtl_platform_get_time_us(void);
+    export void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type);
 }
