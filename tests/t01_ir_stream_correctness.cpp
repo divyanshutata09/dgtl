@@ -6,11 +6,12 @@
  *         shadow integrity. Core IR layer health check.
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
+
 
 #include <iostream>
 #include <stdexcept>
+import dgtl.ir_core.stream;
+import dgtl.arena;
 
 void run_test_t01_ir_stream_correctness() {
     std::cout << "[T01] IR Stream Correctness\n";
@@ -39,28 +40,28 @@ void run_test_t01_ir_stream_correctness() {
     // --- round-trip get_node ---
     const auto n0 = stream.get_node(0);
     if (n0.opcode != dgtl::ir::OpCode::LOAD_IMM) {
-        throw std::runtime_error("T01: node[0] opcode mismatch — expected LOAD_IMM");
+        throw std::runtime_error("T01: node[0] opcode mismatch - expected LOAD_IMM");
     }
     if (n0.result_id != 10) {
-        throw std::runtime_error("T01: node[0] result_id mismatch — expected 10");
+        throw std::runtime_error("T01: node[0] result_id mismatch - expected 10");
     }
 
     const auto n2 = stream.get_node(2);
     if (n2.opcode != dgtl::ir::OpCode::ADD_I32) {
-        throw std::runtime_error("T01: node[2] opcode mismatch — expected ADD_I32");
+        throw std::runtime_error("T01: node[2] opcode mismatch - expected ADD_I32");
     }
     if (n2.op_a != 10 || n2.op_b != 11) {
-        throw std::runtime_error("T01: node[2] operands mismatch — expected op_a=10, op_b=11");
+        throw std::runtime_error("T01: node[2] operands mismatch - expected op_a=10, op_b=11");
     }
 
     // --- hash must be non-zero and deterministic ---
     const uint64_t hash1 = stream.generate_logic_hash();
     const uint64_t hash2 = stream.generate_logic_hash();
     if (hash1 == 0) {
-        throw std::runtime_error("T01: generate_logic_hash() returned zero — hash computation broken");
+        throw std::runtime_error("T01: generate_logic_hash() returned zero - hash computation broken");
     }
     if (hash1 != hash2) {
-        throw std::runtime_error("T01: generate_logic_hash() is non-deterministic — different on two calls");
+        throw std::runtime_error("T01: generate_logic_hash() is non-deterministic - different on two calls");
     }
 
     // --- shadow integrity must hold on a freshly built stream ---
@@ -68,5 +69,5 @@ void run_test_t01_ir_stream_correctness() {
         throw std::runtime_error("T01: validate_shadow_integrity() failed on a freshly built stream");
     }
 
-    std::cout << "[T01] PASS — push/get round-trip, size, hash determinism, shadow integrity OK\n";
+    std::cout << "[T01] PASS - push/get round-trip, size, hash determinism, shadow integrity OK\n";
 }

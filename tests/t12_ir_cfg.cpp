@@ -6,13 +6,15 @@
  *         reconstruction from a linear IR stream.
  */
 
-#include "dgtl/ir/base/IR_PrintSerialDumper.hpp"
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
 
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+
+import dgtl.ir_core.stream;
+import dgtl.arena;
+import dgtl.ir_core.io;
+import dgtl.ir_core.arm64_emitter;
 
 namespace {
 
@@ -38,7 +40,12 @@ void run_test_t12_ir_cfg() {
 
     stream.push_node(dgtl::ir::OpCode::LABEL, dgtl::ir::Flags::NONE, 100, 0, 0, 0);
     stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 10, 0, 0, 1);
-    stream.push_node(dgtl::ir::OpCode::BRANCH_COND, dgtl::ir::Flags::NONE, 0, 200, 10, 0);
+    stream.push_node(dgtl::ir::OpCode::BRANCH_COND,
+                     dgtl::ir::Flags::NONE,
+                     0,
+                     10,
+                     200,
+                     dgtl::ir::INVALID_SLOT);
 
     stream.push_node(dgtl::ir::OpCode::LABEL, dgtl::ir::Flags::NONE, 300, 0, 0, 0);
     stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 11, 10, 10, 0);

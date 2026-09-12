@@ -14,6 +14,9 @@
 #include <vector>
 #include <chrono>
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
 void dgtl_matmul_avx(const float* A, const float* B, float* C, int N) {
     // Simplified AVX-256 block for demonstration (can be extended to AVX-512)
     for (int i = 0; i < N; ++i) {

@@ -525,9 +525,146 @@ public:
         std::memcpy(&machine_code_buffer[jmp_op_offset + 1], &rel32, sizeof(int32_t));
     }
 
+    static const std::unordered_map<std::string, uintptr_t>& get_builtin_bulletins_map() noexcept {
+        static const auto s_map = []() {
+            std::unordered_map<std::string, uintptr_t> m;
+            m.reserve(128);
+            m["__dgtl_rt_string_length"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_length);
+            m["__dgtl_rt_string_compare"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_compare);
+            m["__dgtl_rt_string_concat"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_concat);
+            m["__dgtl_rt_string_substring"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_substring);
+            m["__dgtl_rt_acquire_fence"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_acquire_fence);
+            m["__dgtl_rt_async_await"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_async_await);
+            m["__dgtl_rt_async_launch"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_async_launch);
+            m["__dgtl_rt_async_spawn"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_async_spawn);
+            m["__dgtl_rt_atomic_fence"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_fence);
+            m["__dgtl_rt_atomic_load"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_load);
+            m["__dgtl_rt_atomic_snapshot"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_snapshot);
+            m["__dgtl_rt_atomic_store"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_store);
+            m["__dgtl_rt_barrier_sync"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_barrier_sync);
+            m["__dgtl_rt_bool_select"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_bool_select);
+            m["__dgtl_rt_select"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_select);
+            m["__dgtl_rt_chan_recv"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_chan_recv);
+            m["__dgtl_rt_chan_send"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_chan_send);
+            m["__dgtl_rt_deopt_trigger"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_deopt_trigger);
+            m["__dgtl_rt_dsa_allocate"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_dsa_allocate);
+            m["__dgtl_rt_dsa_deallocate"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_dsa_deallocate);
+            m["__dgtl_rt_fcvtl_f16_to_f32"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_fcvtl_f16_to_f32);
+            m["__dgtl_rt_fcvtn_f32_to_f16"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_fcvtn_f32_to_f16);
+            m["__dgtl_rt_fiber_yield"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_fiber_yield);
+            m["__dgtl_rt_fma_widen_f16_f32"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_fma_widen_f16_f32);
+            m["__dgtl_rt_gather_16"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_gather_16);
+            m["__dgtl_rt_gpu_launch"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_gpu_launch);
+            m["__dgtl_rt_graph_build"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_graph_build);
+            m["__dgtl_rt_graph_traverse"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_graph_traverse);
+            m["__dgtl_rt_guard_alias"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_guard_alias);
+            m["__dgtl_rt_guard_value"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_guard_value);
+            m["__dgtl_rt_lea"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_lea);
+            m["__dgtl_rt_gep"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_gep);
+            m["__dgtl_rt_ptr_to_int"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ptr_to_int);
+            m["__dgtl_rt_int_to_ptr"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_int_to_ptr);
+            m["__dgtl_rt_lock_acquire"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_lock_acquire);
+            m["__dgtl_rt_lock_release"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_lock_release);
+            m["__dgtl_rt_memory_fence"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_memory_fence);
+            m["__dgtl_rt_ownership_acquire"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ownership_acquire);
+            m["__dgtl_rt_ownership_release"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ownership_release);
+            m["__dgtl_rt_ownership_transfer"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ownership_transfer);
+            m["__dgtl_rt_phi_multi"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_phi_multi);
+            m["__dgtl_rt_phi_node"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_phi_node);
+            m["__dgtl_rt_prefetch"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_prefetch);
+            m["__dgtl_rt_prefetch_t0"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_prefetch_t0);
+            m["__dgtl_rt_clflush"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_clflush);
+            m["__dgtl_rt_read_tsc"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_read_tsc);
+            m["__dgtl_rt_spin_acquire"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_spin_acquire);
+            m["__dgtl_rt_ring_push_free"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ring_push_free);
+            m["__dgtl_rt_wasm_invoke"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_wasm_invoke);
+            m["__dgtl_rt_fiber_yield_loop"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_fiber_yield_loop);
+            m["__dgtl_rt_suspend_ctx"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_suspend_ctx);
+            m["__dgtl_rt_resume_ctx"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_resume_ctx);
+            m["__dgtl_rt_neon_vadd_q"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_neon_vadd_q);
+            m["__dgtl_rt_matmul_bf16"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_matmul_bf16);
+            m["__dgtl_rt_matmul_fp8"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_matmul_fp8);
+            m["__dgtl_rt_sdpa_f16"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_sdpa_f16);
+            m["__dgtl_rt_softmax_fast"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_softmax_fast);
+            m["__dgtl_rt_layer_norm"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_layer_norm);
+            m["__dgtl_rt_rope_embed"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_rope_embed);
+            m["__dgtl_rt_fast_inv_sqrt"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_fast_inv_sqrt);
+            m["__dgtl_rt_vec3_cross"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_vec3_cross);
+            m["__dgtl_rt_vec4_dot"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_vec4_dot);
+            m["__dgtl_rt_mat4_mul"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_mat4_mul);
+            m["__dgtl_rt_quat_slerp"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_quat_slerp);
+            m["__dgtl_rt_ray_aabb_isect"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ray_aabb_isect);
+            m["__dgtl_rt_ptr_diff"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_ptr_diff);
+            m["__dgtl_rt_release_fence"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_release_fence);
+            m["__dgtl_rt_scop_analyze"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_scop_analyze);
+            m["__dgtl_rt_select_multi"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_select_multi);
+            m["__dgtl_rt_simd_bsl_predicate"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_simd_bsl_predicate);
+            m["__dgtl_rt_switch_dispatch"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_switch_dispatch);
+            m["__dgtl_rt_sync_barrier"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_sync_barrier);
+            m["__dgtl_rt_tensor_broadcast"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_broadcast);
+            m["__dgtl_rt_tensor_concat"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_concat);
+            m["__dgtl_rt_tensor_conv"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_conv);
+            m["__dgtl_rt_tensor_gemm"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_gemm);
+            m["__dgtl_rt_tensor_pool"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_pool);
+            m["__dgtl_rt_tensor_reduce"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_reduce);
+            m["__dgtl_rt_tensor_reshape"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_reshape);
+            m["__dgtl_rt_tensor_slice"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_slice);
+            m["__dgtl_rt_tensor_softmax"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_softmax);
+            m["__dgtl_rt_tensor_transpose"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_transpose);
+            m["__dgtl_rt_thread_spawn"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_thread_spawn);
+            m["__dgtl_rt_tree_build"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tree_build);
+            m["__dgtl_rt_tree_traverse"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tree_traverse);
+            m["__dgtl_rt_trie_build"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_trie_build);
+            m["__dgtl_rt_trie_insert"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_trie_insert);
+            m["__dgtl_rt_trie_lookup"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_trie_lookup);
+            m["__dgtl_rt_tuple_pack"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tuple_pack);
+            m["__dgtl_rt_tuple_unpack"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tuple_unpack);
+            m["__dgtl_rt_vec_load"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_load);
+            m["__dgtl_rt_vec_reduce_add"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_reduce_add);
+            m["__dgtl_rt_vec_shuffle"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_shuffle);
+            m["__dgtl_rt_vec_store"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_store);
+            m["__dgtl_rt_println_i64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_i64);
+            m["__dgtl_rt_print_i64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_i64);
+            m["__dgtl_rt_println_f64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_f64);
+            m["__dgtl_rt_print_f64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_f64);
+            m["__dgtl_rt_println_str"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_str);
+            m["__dgtl_rt_print_str"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str);
+            m["__dgtl_rt_println_bool"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool);
+            m["__dgtl_rt_print_bool"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool);
+            m["println_i64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_i64);
+            m["print_i64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_i64);
+            m["println_f64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_f64);
+            m["print_f64"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_f64);
+            m["println_str"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_str);
+            m["print_str"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str);
+            m["println_bool"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool);
+            m["print_bool"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool);
+            m["dgtl_gpu_init_pipeline"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_init_pipeline);
+            m["dgtl_gpu_resize"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_resize);
+            m["dgtl_gpu_destroy_pipeline"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_pipeline);
+            m["dgtl_gpu_begin_frame"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_begin_frame);
+            m["dgtl_gpu_end_frame"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_end_frame);
+            m["dgtl_gpu_push_clip_rect"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_push_clip_rect);
+            m["dgtl_gpu_pop_clip_rect"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_pop_clip_rect);
+            m["dgtl_gpu_render_quad_instances"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_quad_instances);
+            m["dgtl_gpu_render_glyph_instances"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_glyph_instances);
+            m["dgtl_gpu_render_vector_paths"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_vector_paths);
+            m["dgtl_gpu_upload_texture"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_upload_texture);
+            m["dgtl_gpu_destroy_texture"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_texture);
+            m["dgtl_platform_poll_events"] = reinterpret_cast<uintptr_t>(&dgtl_platform_poll_events);
+            m["dgtl_platform_get_time_us"] = reinterpret_cast<uintptr_t>(&dgtl_platform_get_time_us);
+            m["dgtl_platform_set_cursor"] = reinterpret_cast<uintptr_t>(&dgtl_platform_set_cursor);
+            return m;
+        }();
+        return s_map;
+    }
+
     [[nodiscard]] uintptr_t lookup_global_symbol(const std::string& name) const noexcept {
         auto it = global_symbol_table.find(name);
-        return it != global_symbol_table.end() ? it->second : 0;
+        if (it != global_symbol_table.end()) return it->second;
+        const auto& builtins = get_builtin_bulletins_map();
+        auto bit = builtins.find(name);
+        return bit != builtins.end() ? bit->second : 0;
     }
 
     static constexpr uint32_t STRIKE_OK = static_cast<uint32_t>(StrikeStatus::Ok);
@@ -540,7 +677,7 @@ public:
         : ctx(c), arena(a), spiller(arena),
           executor(128, dgtl::core::select_preferred_x86_arch()),
           async_speculator_(executor, 2) {
-        machine_code_buffer.reserve(1024 * 1024 * 16);
+        machine_code_buffer.reserve(64 * 1024);
         const dgtl::core::TargetMachine target_machine(dgtl::core::select_preferred_x86_arch());
         emitter.set_target_machine(target_machine);
         executor.set_target_machine(target_machine);
@@ -573,138 +710,10 @@ public:
      * @brief Register runtime intrinsic symbols into the linker and symbol table.
      */
     void register_bulletins() {
-        register_runtime_function("__dgtl_rt_string_length", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_length));
-        register_runtime_function("__dgtl_rt_string_compare", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_compare));
-        register_runtime_function("__dgtl_rt_string_concat", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_concat));
-        register_runtime_function("__dgtl_rt_string_substring", reinterpret_cast<uintptr_t>(&__dgtl_rt_string_substring));
-
-        register_runtime_function("__dgtl_rt_acquire_fence", reinterpret_cast<uintptr_t>(&__dgtl_rt_acquire_fence));
-        register_runtime_function("__dgtl_rt_async_await", reinterpret_cast<uintptr_t>(&__dgtl_rt_async_await));
-        register_runtime_function("__dgtl_rt_async_launch", reinterpret_cast<uintptr_t>(&__dgtl_rt_async_launch));
-        register_runtime_function("__dgtl_rt_async_spawn", reinterpret_cast<uintptr_t>(&__dgtl_rt_async_spawn));
-        register_runtime_function("__dgtl_rt_atomic_fence", reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_fence));
-        register_runtime_function("__dgtl_rt_atomic_load", reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_load));
-        register_runtime_function("__dgtl_rt_atomic_snapshot", reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_snapshot));
-        register_runtime_function("__dgtl_rt_atomic_store", reinterpret_cast<uintptr_t>(&__dgtl_rt_atomic_store));
-        register_runtime_function("__dgtl_rt_barrier_sync", reinterpret_cast<uintptr_t>(&__dgtl_rt_barrier_sync));
-        register_runtime_function("__dgtl_rt_bool_select", reinterpret_cast<uintptr_t>(&__dgtl_rt_bool_select));
-        register_runtime_function("__dgtl_rt_select", reinterpret_cast<uintptr_t>(&__dgtl_rt_select));
-        register_runtime_function("__dgtl_rt_chan_recv", reinterpret_cast<uintptr_t>(&__dgtl_rt_chan_recv));
-        register_runtime_function("__dgtl_rt_chan_send", reinterpret_cast<uintptr_t>(&__dgtl_rt_chan_send));
-        register_runtime_function("__dgtl_rt_deopt_trigger", reinterpret_cast<uintptr_t>(&__dgtl_rt_deopt_trigger));
-        register_runtime_function("__dgtl_rt_dsa_allocate", reinterpret_cast<uintptr_t>(&__dgtl_rt_dsa_allocate));
-        register_runtime_function("__dgtl_rt_dsa_deallocate", reinterpret_cast<uintptr_t>(&__dgtl_rt_dsa_deallocate));
-        register_runtime_function("__dgtl_rt_fcvtl_f16_to_f32", reinterpret_cast<uintptr_t>(&__dgtl_rt_fcvtl_f16_to_f32));
-        register_runtime_function("__dgtl_rt_fcvtn_f32_to_f16", reinterpret_cast<uintptr_t>(&__dgtl_rt_fcvtn_f32_to_f16));
-        register_runtime_function("__dgtl_rt_fiber_yield", reinterpret_cast<uintptr_t>(&__dgtl_rt_fiber_yield));
-        register_runtime_function("__dgtl_rt_fma_widen_f16_f32", reinterpret_cast<uintptr_t>(&__dgtl_rt_fma_widen_f16_f32));
-        register_runtime_function("__dgtl_rt_gather_16", reinterpret_cast<uintptr_t>(&__dgtl_rt_gather_16));
-        register_runtime_function("__dgtl_rt_gpu_launch", reinterpret_cast<uintptr_t>(&__dgtl_rt_gpu_launch));
-        register_runtime_function("__dgtl_rt_graph_build", reinterpret_cast<uintptr_t>(&__dgtl_rt_graph_build));
-        register_runtime_function("__dgtl_rt_graph_traverse", reinterpret_cast<uintptr_t>(&__dgtl_rt_graph_traverse));
-        register_runtime_function("__dgtl_rt_guard_alias", reinterpret_cast<uintptr_t>(&__dgtl_rt_guard_alias));
-        register_runtime_function("__dgtl_rt_guard_value", reinterpret_cast<uintptr_t>(&__dgtl_rt_guard_value));
-        register_runtime_function("__dgtl_rt_lea", reinterpret_cast<uintptr_t>(&__dgtl_rt_lea));
-        register_runtime_function("__dgtl_rt_gep", reinterpret_cast<uintptr_t>(&__dgtl_rt_gep));
-        register_runtime_function("__dgtl_rt_ptr_to_int", reinterpret_cast<uintptr_t>(&__dgtl_rt_ptr_to_int));
-        register_runtime_function("__dgtl_rt_int_to_ptr", reinterpret_cast<uintptr_t>(&__dgtl_rt_int_to_ptr));
-        register_runtime_function("__dgtl_rt_lock_acquire", reinterpret_cast<uintptr_t>(&__dgtl_rt_lock_acquire));
-        register_runtime_function("__dgtl_rt_lock_release", reinterpret_cast<uintptr_t>(&__dgtl_rt_lock_release));
-        register_runtime_function("__dgtl_rt_memory_fence", reinterpret_cast<uintptr_t>(&__dgtl_rt_memory_fence));
-        register_runtime_function("__dgtl_rt_ownership_acquire", reinterpret_cast<uintptr_t>(&__dgtl_rt_ownership_acquire));
-        register_runtime_function("__dgtl_rt_ownership_release", reinterpret_cast<uintptr_t>(&__dgtl_rt_ownership_release));
-        register_runtime_function("__dgtl_rt_ownership_transfer", reinterpret_cast<uintptr_t>(&__dgtl_rt_ownership_transfer));
-        register_runtime_function("__dgtl_rt_phi_multi", reinterpret_cast<uintptr_t>(&__dgtl_rt_phi_multi));
-        register_runtime_function("__dgtl_rt_phi_node", reinterpret_cast<uintptr_t>(&__dgtl_rt_phi_node));
-        register_runtime_function("__dgtl_rt_prefetch", reinterpret_cast<uintptr_t>(&__dgtl_rt_prefetch));
-        register_runtime_function("__dgtl_rt_prefetch_t0", reinterpret_cast<uintptr_t>(&__dgtl_rt_prefetch_t0));
-        register_runtime_function("__dgtl_rt_clflush", reinterpret_cast<uintptr_t>(&__dgtl_rt_clflush));
-        register_runtime_function("__dgtl_rt_read_tsc", reinterpret_cast<uintptr_t>(&__dgtl_rt_read_tsc));
-        register_runtime_function("__dgtl_rt_spin_acquire", reinterpret_cast<uintptr_t>(&__dgtl_rt_spin_acquire));
-        register_runtime_function("__dgtl_rt_ring_push_free", reinterpret_cast<uintptr_t>(&__dgtl_rt_ring_push_free));
-        register_runtime_function("__dgtl_rt_wasm_invoke", reinterpret_cast<uintptr_t>(&__dgtl_rt_wasm_invoke));
-        register_runtime_function("__dgtl_rt_fiber_yield_loop", reinterpret_cast<uintptr_t>(&__dgtl_rt_fiber_yield_loop));
-        register_runtime_function("__dgtl_rt_suspend_ctx", reinterpret_cast<uintptr_t>(&__dgtl_rt_suspend_ctx));
-        register_runtime_function("__dgtl_rt_resume_ctx", reinterpret_cast<uintptr_t>(&__dgtl_rt_resume_ctx));
-        register_runtime_function("__dgtl_rt_neon_vadd_q", reinterpret_cast<uintptr_t>(&__dgtl_rt_neon_vadd_q));
-        register_runtime_function("__dgtl_rt_matmul_bf16", reinterpret_cast<uintptr_t>(&__dgtl_rt_matmul_bf16));
-        register_runtime_function("__dgtl_rt_matmul_fp8", reinterpret_cast<uintptr_t>(&__dgtl_rt_matmul_fp8));
-        register_runtime_function("__dgtl_rt_sdpa_f16", reinterpret_cast<uintptr_t>(&__dgtl_rt_sdpa_f16));
-        register_runtime_function("__dgtl_rt_softmax_fast", reinterpret_cast<uintptr_t>(&__dgtl_rt_softmax_fast));
-        register_runtime_function("__dgtl_rt_layer_norm", reinterpret_cast<uintptr_t>(&__dgtl_rt_layer_norm));
-        register_runtime_function("__dgtl_rt_rope_embed", reinterpret_cast<uintptr_t>(&__dgtl_rt_rope_embed));
-        register_runtime_function("__dgtl_rt_fast_inv_sqrt", reinterpret_cast<uintptr_t>(&__dgtl_rt_fast_inv_sqrt));
-        register_runtime_function("__dgtl_rt_vec3_cross", reinterpret_cast<uintptr_t>(&__dgtl_rt_vec3_cross));
-        register_runtime_function("__dgtl_rt_vec4_dot", reinterpret_cast<uintptr_t>(&__dgtl_rt_vec4_dot));
-        register_runtime_function("__dgtl_rt_mat4_mul", reinterpret_cast<uintptr_t>(&__dgtl_rt_mat4_mul));
-        register_runtime_function("__dgtl_rt_quat_slerp", reinterpret_cast<uintptr_t>(&__dgtl_rt_quat_slerp));
-        register_runtime_function("__dgtl_rt_ray_aabb_isect", reinterpret_cast<uintptr_t>(&__dgtl_rt_ray_aabb_isect));
-        register_runtime_function("__dgtl_rt_ptr_diff", reinterpret_cast<uintptr_t>(&__dgtl_rt_ptr_diff));
-        register_runtime_function("__dgtl_rt_release_fence", reinterpret_cast<uintptr_t>(&__dgtl_rt_release_fence));
-        register_runtime_function("__dgtl_rt_scop_analyze", reinterpret_cast<uintptr_t>(&__dgtl_rt_scop_analyze));
-        register_runtime_function("__dgtl_rt_select_multi", reinterpret_cast<uintptr_t>(&__dgtl_rt_select_multi));
-        register_runtime_function("__dgtl_rt_simd_bsl_predicate", reinterpret_cast<uintptr_t>(&__dgtl_rt_simd_bsl_predicate));
-        register_runtime_function("__dgtl_rt_switch_dispatch", reinterpret_cast<uintptr_t>(&__dgtl_rt_switch_dispatch));
-        register_runtime_function("__dgtl_rt_sync_barrier", reinterpret_cast<uintptr_t>(&__dgtl_rt_sync_barrier));
-        register_runtime_function("__dgtl_rt_tensor_broadcast", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_broadcast));
-        register_runtime_function("__dgtl_rt_tensor_concat", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_concat));
-        register_runtime_function("__dgtl_rt_tensor_conv", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_conv));
-        register_runtime_function("__dgtl_rt_tensor_gemm", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_gemm));
-        register_runtime_function("__dgtl_rt_tensor_pool", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_pool));
-        register_runtime_function("__dgtl_rt_tensor_reduce", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_reduce));
-        register_runtime_function("__dgtl_rt_tensor_reshape", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_reshape));
-        register_runtime_function("__dgtl_rt_tensor_slice", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_slice));
-        register_runtime_function("__dgtl_rt_tensor_softmax", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_softmax));
-        register_runtime_function("__dgtl_rt_tensor_transpose", reinterpret_cast<uintptr_t>(&__dgtl_rt_tensor_transpose));
-        register_runtime_function("__dgtl_rt_thread_spawn", reinterpret_cast<uintptr_t>(&__dgtl_rt_thread_spawn));
-        register_runtime_function("__dgtl_rt_tree_build", reinterpret_cast<uintptr_t>(&__dgtl_rt_tree_build));
-        register_runtime_function("__dgtl_rt_tree_traverse", reinterpret_cast<uintptr_t>(&__dgtl_rt_tree_traverse));
-        register_runtime_function("__dgtl_rt_trie_build", reinterpret_cast<uintptr_t>(&__dgtl_rt_trie_build));
-        register_runtime_function("__dgtl_rt_trie_insert", reinterpret_cast<uintptr_t>(&__dgtl_rt_trie_insert));
-        register_runtime_function("__dgtl_rt_trie_lookup", reinterpret_cast<uintptr_t>(&__dgtl_rt_trie_lookup));
-        register_runtime_function("__dgtl_rt_tuple_pack", reinterpret_cast<uintptr_t>(&__dgtl_rt_tuple_pack));
-        register_runtime_function("__dgtl_rt_tuple_unpack", reinterpret_cast<uintptr_t>(&__dgtl_rt_tuple_unpack));
-        register_runtime_function("__dgtl_rt_vec_load", reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_load));
-        register_runtime_function("__dgtl_rt_vec_reduce_add", reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_reduce_add));
-        register_runtime_function("__dgtl_rt_vec_shuffle", reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_shuffle));
-        register_runtime_function("__dgtl_rt_vec_store", reinterpret_cast<uintptr_t>(&__dgtl_rt_vec_store));
-
-        // Language-level High-Level Print Intrinsics
-        register_runtime_function("__dgtl_rt_println_i64", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_i64));
-        register_runtime_function("__dgtl_rt_print_i64", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_i64));
-        register_runtime_function("__dgtl_rt_println_f64", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_f64));
-        register_runtime_function("__dgtl_rt_print_f64", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_f64));
-        register_runtime_function("__dgtl_rt_println_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_str));
-        register_runtime_function("__dgtl_rt_print_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str));
-        register_runtime_function("__dgtl_rt_println_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool));
-        register_runtime_function("__dgtl_rt_print_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool));
-
-        // Friendly aliases
-        register_runtime_function("println_i64", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_i64));
-        register_runtime_function("print_i64", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_i64));
-        register_runtime_function("println_f64", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_f64));
-        register_runtime_function("print_f64", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_f64));
-        register_runtime_function("println_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_str));
-        register_runtime_function("print_str", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_str));
-        register_runtime_function("println_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_println_bool));
-        register_runtime_function("print_bool", reinterpret_cast<uintptr_t>(&__dgtl_rt_print_bool));
-
-        // Sovereign GPU & Platform Runtime Pipeline Symbols
-        register_runtime_function("dgtl_gpu_init_pipeline", reinterpret_cast<uintptr_t>(&dgtl_gpu_init_pipeline));
-        register_runtime_function("dgtl_gpu_resize", reinterpret_cast<uintptr_t>(&dgtl_gpu_resize));
-        register_runtime_function("dgtl_gpu_destroy_pipeline", reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_pipeline));
-        register_runtime_function("dgtl_gpu_begin_frame", reinterpret_cast<uintptr_t>(&dgtl_gpu_begin_frame));
-        register_runtime_function("dgtl_gpu_end_frame", reinterpret_cast<uintptr_t>(&dgtl_gpu_end_frame));
-        register_runtime_function("dgtl_gpu_push_clip_rect", reinterpret_cast<uintptr_t>(&dgtl_gpu_push_clip_rect));
-        register_runtime_function("dgtl_gpu_pop_clip_rect", reinterpret_cast<uintptr_t>(&dgtl_gpu_pop_clip_rect));
-        register_runtime_function("dgtl_gpu_render_quad_instances", reinterpret_cast<uintptr_t>(&dgtl_gpu_render_quad_instances));
-        register_runtime_function("dgtl_gpu_render_glyph_instances", reinterpret_cast<uintptr_t>(&dgtl_gpu_render_glyph_instances));
-        register_runtime_function("dgtl_gpu_render_vector_paths", reinterpret_cast<uintptr_t>(&dgtl_gpu_render_vector_paths));
-        register_runtime_function("dgtl_gpu_upload_texture", reinterpret_cast<uintptr_t>(&dgtl_gpu_upload_texture));
-        register_runtime_function("dgtl_gpu_destroy_texture", reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_texture));
-        register_runtime_function("dgtl_platform_poll_events", reinterpret_cast<uintptr_t>(&dgtl_platform_poll_events));
-        register_runtime_function("dgtl_platform_get_time_us", reinterpret_cast<uintptr_t>(&dgtl_platform_get_time_us));
-        register_runtime_function("dgtl_platform_set_cursor", reinterpret_cast<uintptr_t>(&dgtl_platform_set_cursor));
+        const auto& builtins = get_builtin_bulletins_map();
+        for (const auto& [name, address] : builtins) {
+            emitter.register_runtime_function(name, address);
+        }
     }
 
     /**

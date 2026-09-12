@@ -1,28 +1,31 @@
-# DGTL Build Diagnostic Report
+# DGTL Incident Report
 
-- Status: **SUCCESS** (0 errors detected)
-- Root: D:\TataG\dgtl
-- Last command: `dgtl GEN-VALIDATE`
-- Last exit code: `0`
-- Compiler fingerprint: `cc06a44a6546513b`
-- Command fingerprint: `005a1c650ba5ebd8`
+- Root: D:\tatag\dgtl
+- Last command: `dgtl --help`
+- Last exit code: `1`
+- Compiler fingerprint: `4c170f441e5daac2`
+- Command fingerprint: `1501e832aca2951f`
 - Logs scanned: 1
-- Declaration cache: 0 hits, 241 misses, 241 rescanned files
+- Declaration cache: 253 hits, 0 misses, 0 rescanned files
+- Likely failing command: `g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -c "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" -o "D:\TataG\DGTL\build\sdk_obj\sdk_dgtl_sdk_impl.o"`
 
 ## Error Clusters
-- No errors detected.
+- (x1) --help
+- (x1) --help:String) [], RemoteException
+
+## Failing Command Context
 
 ## Ownership Recommendations
 - Symbol `find_generated_op_def`
-  Winner: include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:8998 (score 110)
+  Winner: include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:9354 (score 110)
   Evidence:
 
 ```cpp
-8996: }();
-8997: 
-8998: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
-8999:     const size_t index = static_cast<size_t>(opcode);
-9000:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+9352: }();
+9353: 
+9354: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
+9355:     const size_t index = static_cast<size_t>(opcode);
+9356:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
 ```
 - Symbol `IRStream`
   Winner: include/dgtl/backend/driver/Backend_Driver_API.ixx:281 (score 40)
@@ -36,15 +39,15 @@
 283:                               std::string& out_text) {
 ```
 - Symbol `TargetMachine`
-  Winner: include/dgtl/isa/lowering/Instruction_Selector.ixx:462 (score 40)
+  Winner: include/dgtl/isa/common/Instruction_Selector.ixx:460 (score 40)
   Evidence:
 
 ```cpp
-460: }
-461: 
-462: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
-463:     if (rule.require_fma && !target.get_caps().has_fma) {
-464:         return false;
+458: }
+459: 
+460: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
+461:     if (rule.require_fma && !target.get_caps().has_fma) {
+462:         return false;
 ```
 - Symbol `RuntimeFeedback`
   Winner: include/dgtl/analysis/AI_Cost_Model.ixx:47 (score 20)
@@ -57,3 +60,6 @@
 48:     double actual_latency = 0.0;
 49:     double cache_miss_rate = 0.0;
 ```
+
+## Regression Notes
+- Previous run: error cluster count increased from 0 to 2.

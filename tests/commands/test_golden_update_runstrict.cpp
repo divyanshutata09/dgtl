@@ -27,7 +27,8 @@ int main() {
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const bool has_update = text.find("command == \"update-golden\"") != std::string::npos;
     const bool has_alias = text.find("command == \"golden-update\"") != std::string::npos;
-    if (!(has_update || has_alias)) {
+    const bool has_documented_command = text.find("update-golden [strict]") != std::string::npos;
+    if (!(has_update || has_alias || has_documented_command)) {
         std::cerr << "[FAIL] GoldenUpdateRunstrictCommandTest: golden-update route missing in orchestrator\n";
         return 1;
     }

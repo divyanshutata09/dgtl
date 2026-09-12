@@ -365,6 +365,41 @@ int main(int argc, char** argv) {
         return bits;
     };
 
+    auto map_result_to_typecode = [](std::string_view ty) -> std::string {
+        if (ty.empty() || ty == "void") return "dgtl::ir::TypeCode::VOID_T";
+        if (ty == "Bool") return "dgtl::ir::TypeCode::BOOL";
+        if (ty == "Predicate") return "dgtl::ir::TypeCode::PREDICATE";
+        if (ty == "AddressSpace") return "dgtl::ir::TypeCode::ADDRESS_SPACE";
+        if (ty == "Ptr") return "dgtl::ir::TypeCode::PTR";
+        if (ty == "StringHandle") return "dgtl::ir::TypeCode::STRING_HANDLE";
+        if (ty == "I4") return "dgtl::ir::TypeCode::I4";
+        if (ty == "I8") return "dgtl::ir::TypeCode::I8";
+        if (ty == "I16") return "dgtl::ir::TypeCode::I16";
+        if (ty == "I32") return "dgtl::ir::TypeCode::I32";
+        if (ty == "I64") return "dgtl::ir::TypeCode::I64";
+        if (ty == "I128") return "dgtl::ir::TypeCode::I128";
+        if (ty == "I256") return "dgtl::ir::TypeCode::I256";
+        if (ty == "I512") return "dgtl::ir::TypeCode::I512";
+        if (ty == "F8") return "dgtl::ir::TypeCode::F8";
+        if (ty == "BF16") return "dgtl::ir::TypeCode::BF16";
+        if (ty == "F16") return "dgtl::ir::TypeCode::F16";
+        if (ty == "F32") return "dgtl::ir::TypeCode::F32";
+        if (ty == "F64") return "dgtl::ir::TypeCode::F64";
+        if (ty == "F128") return "dgtl::ir::TypeCode::F128";
+        if (ty == "Vec3xF32") return "dgtl::ir::TypeCode::VEC3_F32";
+        if (ty == "Vec4xF32") return "dgtl::ir::TypeCode::VEC4_F32";
+        if (ty == "Mat4x4F32") return "dgtl::ir::TypeCode::MAT4X4_F32";
+        if (ty == "QuatF32") return "dgtl::ir::TypeCode::QUAT_F32";
+        if (ty == "VectorF32x16") return "dgtl::ir::TypeCode::VECTOR_F32X16";
+        if (ty == "VectorI32x16") return "dgtl::ir::TypeCode::VECTOR_I32X16";
+        if (ty == "VectorF16x32") return "dgtl::ir::TypeCode::VECTOR_F16X32";
+        if (ty == "TensorFP8") return "dgtl::ir::TypeCode::TENSOR_FP8";
+        if (ty == "TensorBF16") return "dgtl::ir::TypeCode::TENSOR_BF16";
+        if (ty == "TensorF32") return "dgtl::ir::TypeCode::TENSOR_F32";
+        if (ty == "TensorI64") return "dgtl::ir::TypeCode::TENSOR_I64";
+        return "dgtl::ir::TypeCode::VOID_T";
+    };
+
     std::string verifier_switch_cases;
     for (const auto& op : operations) {
         if (!op.verifier.empty()) {
@@ -390,13 +425,14 @@ int main(int argc, char** argv) {
         << "module;\n\n"
         << "#include <algorithm>\n"
         << "#include <array>\n"
+        << "#include <concepts>\n"
         << "#include <cstddef>\n"
         << "#include <cstdint>\n"
+        << "#include <optional>\n"
         << "#include <string_view>\n\n"
         << "export module dgtl.ir_core.gen;\n\n"
         << "import dgtl.ir_enums;\n"
-        << "import dgtl.ir_node;\n"
-        << "import dgtl.ir_core.stream;\n\n"
+        << "import dgtl.ir_node;\n\n"
         << "export namespace dgtl::ir::gen {\n\n";
 
     out << "inline constexpr std::string_view kDslVersion = \"" << cpp_escape(dsl_version) << "\";\n";
@@ -498,6 +534,20 @@ int main(int argc, char** argv) {
     }
     out << "}};\n\n";
 
+    out << "struct OpDefMetadata {\n"
+        << "    std::string_view name;\n"
+        << "    dgtl::ir::OpCode opcode;\n"
+        << "    std::string_view dialect;\n"
+        << "    uint64_t trait_bits;\n"
+        << "    uint64_t interface_bits;\n"
+        << "    uint64_t attribute_bits;\n"
+        << "    uint8_t operand_count;\n"
+        << "    std::string_view result_type;\n"
+        << "    std::string_view description;\n"
+        << "    bool has_result;\n"
+        << "    dgtl::ir::TypeCode result_type_code;\n"
+        << "};\n\n";
+
     out << "inline constexpr std::size_t kNumGeneratedOps = " << operations.size() << ";\n";
     out << "inline constexpr std::array<OpDefMetadata, " << operations.size() << "> kGeneratedOpDefs = {{\n";
 
@@ -508,7 +558,8 @@ int main(int argc, char** argv) {
             << compute_bits(op.interfaces, interface_indices) << "ULL, " 
             << compute_bits(op.attributes, attribute_indices) << "ULL, "
             << "static_cast<uint8_t>(" << op.operands << "), \"" << cpp_escape(op.result) << "\", \""
-            << cpp_escape(op.description) << "\", " << (op.result != "void" ? "true" : "false") << "},\n";
+            << cpp_escape(op.description) << "\", " << (op.result != "void" ? "true" : "false") << ", "
+            << map_result_to_typecode(op.result) << "},\n";
     }
 
     out << "}};\n\n";
@@ -573,19 +624,57 @@ static_assert(validate_attribute_defs(), "Generated attribute metadata failed co
 
 template <typename Derived>
 struct OpWrapperBase {
-    dgtl::ir::IRNode* node_ptr{nullptr};
+    dgtl::ir::IRNode* node_ptr = nullptr;
 
     constexpr OpWrapperBase() noexcept = default;
     explicit constexpr OpWrapperBase(dgtl::ir::IRNode& n) noexcept : node_ptr(&n) {}
     explicit constexpr OpWrapperBase(dgtl::ir::IRNode* n) noexcept : node_ptr(n) {}
 
     [[nodiscard]] constexpr bool is_valid() const noexcept { return node_ptr != nullptr; }
-    [[nodiscard]] constexpr dgtl::ir::IRNode* get() const noexcept { return node_ptr; }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return node_ptr != nullptr; }
+    [[nodiscard]] constexpr dgtl::ir::IRNode* get() noexcept { return node_ptr; }
+    [[nodiscard]] constexpr const dgtl::ir::IRNode* get() const noexcept { return node_ptr; }
+    [[nodiscard]] constexpr dgtl::ir::IRNode* operator->() noexcept { return node_ptr; }
+    [[nodiscard]] constexpr const dgtl::ir::IRNode* operator->() const noexcept { return node_ptr; }
+    [[nodiscard]] constexpr dgtl::ir::IRNode& operator*() noexcept { return *node_ptr; }
+    [[nodiscard]] constexpr const dgtl::ir::IRNode& operator*() const noexcept { return *node_ptr; }
+
     [[nodiscard]] constexpr uint32_t result_id() const noexcept { return node_ptr ? node_ptr->result_id : dgtl::ir::INVALID_SLOT; }
     [[nodiscard]] constexpr uint32_t op_a() const noexcept { return node_ptr ? node_ptr->op_a : dgtl::ir::INVALID_SLOT; }
     [[nodiscard]] constexpr uint32_t op_b() const noexcept { return node_ptr ? node_ptr->op_b : dgtl::ir::INVALID_SLOT; }
     [[nodiscard]] constexpr uint32_t op_c() const noexcept { return node_ptr ? node_ptr->op_c : dgtl::ir::INVALID_SLOT; }
     [[nodiscard]] constexpr uint16_t flags() const noexcept { return node_ptr ? node_ptr->flags : 0u; }
+    [[nodiscard]] constexpr uint32_t logic_flags() const noexcept { return node_ptr ? node_ptr->logic_flags : 0u; }
+    [[nodiscard]] constexpr uint64_t intent_hash() const noexcept { return node_ptr ? node_ptr->intent_hash : 0ULL; }
+
+    // Semantic named operand accessors
+    [[nodiscard]] constexpr uint32_t lhs() const noexcept { return op_a(); }
+    [[nodiscard]] constexpr uint32_t rhs() const noexcept { return op_b(); }
+    [[nodiscard]] constexpr uint32_t extra() const noexcept { return op_c(); }
+    [[nodiscard]] constexpr uint32_t ptr() const noexcept { return op_a(); }
+    [[nodiscard]] constexpr uint32_t val() const noexcept { return op_b(); }
+    [[nodiscard]] constexpr uint32_t condition() const noexcept { return op_a(); }
+    [[nodiscard]] constexpr uint32_t true_target() const noexcept { return op_b(); }
+    [[nodiscard]] constexpr uint32_t false_target() const noexcept { return op_c(); }
+    [[nodiscard]] constexpr uint32_t true_value() const noexcept { return op_b(); }
+    [[nodiscard]] constexpr uint32_t false_value() const noexcept { return op_c(); }
+    [[nodiscard]] constexpr uint32_t target() const noexcept { return op_a(); }
+    [[nodiscard]] constexpr uint32_t source() const noexcept { return op_a(); }
+    [[nodiscard]] constexpr uint32_t base_ptr() const noexcept { return op_a(); }
+    [[nodiscard]] constexpr uint32_t index_slot() const noexcept { return op_b(); }
+
+    // In-place node mutation helpers
+    constexpr void set_result_id(uint32_t id) noexcept { if (node_ptr) node_ptr->result_id = id; }
+    constexpr void set_op_a(uint32_t a) noexcept { if (node_ptr) node_ptr->op_a = a; }
+    constexpr void set_op_b(uint32_t b) noexcept { if (node_ptr) node_ptr->op_b = b; }
+    constexpr void set_op_c(uint32_t c) noexcept { if (node_ptr) node_ptr->op_c = c; }
+    constexpr void set_flags(uint16_t f) noexcept { if (node_ptr) node_ptr->flags = f; }
+    constexpr void set_lhs(uint32_t a) noexcept { set_op_a(a); }
+    constexpr void set_rhs(uint32_t b) noexcept { set_op_b(b); }
+    constexpr void set_ptr(uint32_t a) noexcept { set_op_a(a); }
+    constexpr void set_val(uint32_t b) noexcept { set_op_b(b); }
+    constexpr void set_condition(uint32_t a) noexcept { set_op_a(a); }
+    constexpr void set_target(uint32_t a) noexcept { set_op_a(a); }
 
     [[nodiscard]] static constexpr bool has_trait(GenTrait t) noexcept {
         if constexpr (Derived::kTraitBits == 0ULL) return false;
@@ -599,7 +688,110 @@ struct OpWrapperBase {
         if constexpr (Derived::kInterfaceBits == 0ULL) return false;
         else return (Derived::kInterfaceBits & static_cast<uint64_t>(i)) != 0ULL;
     }
+
+    [[nodiscard]] static constexpr bool is_commutative() noexcept { return has_trait(GenTrait::Commutative); }
+    [[nodiscard]] static constexpr bool is_terminator() noexcept { return has_trait(GenTrait::IsTerminator); }
+    [[nodiscard]] static constexpr bool is_memory_op() noexcept {
+        return has_trait(GenTrait::IsMemoryOp) || has_trait(GenTrait::IsMemoryRead) || has_trait(GenTrait::IsMemoryWrite);
+    }
+    [[nodiscard]] static constexpr bool is_memory_read() noexcept { return has_trait(GenTrait::IsMemoryRead); }
+    [[nodiscard]] static constexpr bool is_memory_write() noexcept { return has_trait(GenTrait::IsMemoryWrite); }
+    [[nodiscard]] static constexpr bool has_no_side_effects() noexcept { return has_trait(GenTrait::HasNoSideEffects); }
+    [[nodiscard]] static constexpr bool is_vectorizable() noexcept { return has_trait(GenTrait::IsVectorizable); }
+    [[nodiscard]] static constexpr bool is_fusible() noexcept { return has_trait(GenTrait::IsFusible); }
+    [[nodiscard]] static constexpr bool is_speculative() noexcept { return has_trait(GenTrait::IsSpeculative); }
+    [[nodiscard]] static constexpr bool is_gpu() noexcept { return has_trait(GenTrait::IsGPU); }
+    [[nodiscard]] static constexpr bool is_tensor() noexcept { return has_trait(GenTrait::IsTensor); }
+    [[nodiscard]] static constexpr bool is_async() noexcept { return has_trait(GenTrait::IsAsyncSpawnable); }
+    [[nodiscard]] static constexpr bool is_hardware_intrinsic() noexcept { return has_trait(GenTrait::IsHardwareIntrinsic); }
+    [[nodiscard]] static constexpr bool is_guard() noexcept { return has_trait(GenTrait::IsGuard); }
+    [[nodiscard]] static constexpr bool is_latency_critical() noexcept { return has_trait(GenTrait::IsLatencyCritical); }
+
+    [[nodiscard]] static constexpr bool classof(const dgtl::ir::IRNode* node) noexcept {
+        return node && node->opcode == Derived::kOpcode;
+    }
+    [[nodiscard]] static constexpr bool classof(const dgtl::ir::IRNode& node) noexcept {
+        return node.opcode == Derived::kOpcode;
+    }
 };
+
+// C++20 Concepts for compile-time op reflection
+template <typename T>
+concept IsDGTLOp = requires {
+    { T::kOpcode } -> std::convertible_to<dgtl::ir::OpCode>;
+    { T::kName } -> std::convertible_to<std::string_view>;
+    { T::kTraitBits } -> std::convertible_to<uint64_t>;
+};
+
+template <typename T>
+concept IsDGTLTerminatorOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsTerminator)) != 0ULL);
+
+template <typename T>
+concept IsDGTLCommutativeOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::Commutative)) != 0ULL);
+
+template <typename T>
+concept IsDGTLMemoryOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & (static_cast<uint64_t>(GenTrait::IsMemoryOp) |
+                       static_cast<uint64_t>(GenTrait::IsMemoryRead) |
+                       static_cast<uint64_t>(GenTrait::IsMemoryWrite))) != 0ULL);
+
+template <typename T>
+concept IsDGTLVectorOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsVectorizable)) != 0ULL);
+
+template <typename T>
+concept IsDGTLGPUOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsGPU)) != 0ULL);
+
+template <typename T>
+concept IsDGTLFusibleOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsFusible)) != 0ULL);
+
+template <typename T>
+concept IsDGTLPureOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::HasNoSideEffects)) != 0ULL);
+
+template <typename T>
+concept IsDGTLGuardOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsGuard)) != 0ULL);
+
+template <typename T>
+concept IsDGTLTensorOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsTensor)) != 0ULL);
+
+template <typename T>
+concept IsDGTLAsyncOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsAsyncSpawnable)) != 0ULL);
+
+// LLVM-style RTTI casting support
+template <typename Op>
+[[nodiscard]] constexpr bool isa(const dgtl::ir::IRNode* node) noexcept {
+    return Op::classof(node);
+}
+template <typename Op>
+[[nodiscard]] constexpr bool isa(const dgtl::ir::IRNode& node) noexcept {
+    return Op::classof(node);
+}
+template <typename Op>
+[[nodiscard]] constexpr std::optional<Op> dyn_cast(dgtl::ir::IRNode* node) noexcept {
+    if (isa<Op>(node)) return Op(*node);
+    return std::nullopt;
+}
+template <typename Op>
+[[nodiscard]] constexpr std::optional<Op> dyn_cast(dgtl::ir::IRNode& node) noexcept {
+    if (isa<Op>(node)) return Op(node);
+    return std::nullopt;
+}
+template <typename Op>
+[[nodiscard]] constexpr Op cast(dgtl::ir::IRNode& node) noexcept {
+    return Op(node);
+}
+template <typename Op>
+[[nodiscard]] constexpr Op cast(dgtl::ir::IRNode* node) noexcept {
+    return Op(node);
+}
 
 )";
 
@@ -631,6 +823,7 @@ struct OpWrapperBase {
         out << "    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::" << op.opcode << ";\n";
         out << "    static constexpr std::string_view kDialect = \"" << cpp_escape(op.dialect) << "\";\n";
         out << "    static constexpr std::string_view kResultType = \"" << cpp_escape(op.result) << "\";\n";
+        out << "    static constexpr dgtl::ir::TypeCode kResultTypeCode = " << map_result_to_typecode(op.result) << ";\n";
         out << "    static constexpr std::string_view kDescription = \"" << cpp_escape(op.description) << "\";\n";
         out << "    static constexpr int kOperandsCount = " << op.operands << ";\n";
         out << "    static constexpr bool kIsVariadicOperands = " << (op.is_variadic_operands ? "true" : "false") << ";\n";
@@ -645,6 +838,7 @@ struct OpWrapperBase {
         out << "    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }\n";
         out << "    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }\n";
         out << "    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }\n";
+        out << "    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }\n";
         out << "    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }\n";
         out << "    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }\n";
         out << "    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }\n";
@@ -674,9 +868,29 @@ struct OpWrapperBase {
         n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
         return n;
     }
-};
-
 )";
+        if (op.operands == 2 && op.result != "void") {
+            out << "    [[nodiscard]] static dgtl::ir::IRNode build_binary(uint32_t result_id, uint32_t lhs, uint32_t rhs, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {\n"
+                << "        return build(result_id, lhs, rhs, dgtl::ir::INVALID_SLOT, flags);\n"
+                << "    }\n";
+        } else if (op.operands == 2 && op.result == "void") {
+            out << "    [[nodiscard]] static dgtl::ir::IRNode build_store(uint32_t ptr, uint32_t val, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {\n"
+                << "        return build(dgtl::ir::INVALID_SLOT, ptr, val, dgtl::ir::INVALID_SLOT, flags);\n"
+                << "    }\n";
+        } else if (op.operands == 1 && op.result != "void") {
+            out << "    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {\n"
+                << "        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);\n"
+                << "    }\n";
+        } else if (op.operands == 0 && op.result != "void") {
+            out << "    [[nodiscard]] static dgtl::ir::IRNode build_nullary(uint32_t result_id, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {\n"
+                << "        return build(result_id, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);\n"
+                << "    }\n";
+        } else if (op.operands == 3) {
+            out << "    [[nodiscard]] static dgtl::ir::IRNode build_ternary(uint32_t result_id, uint32_t a, uint32_t b, uint32_t c, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {\n"
+                << "        return build(result_id, a, b, c, flags);\n"
+                << "    }\n";
+        }
+        out << "};\n\n";
     }
 
     out << R"(template <typename Op>
@@ -722,6 +936,40 @@ static_assert(validate_all_op_types<
 [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
     const size_t index = static_cast<size_t>(opcode);
     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+}
+
+[[nodiscard]] inline constexpr const OpDefMetadata* find_generated_op_def_by_name(std::string_view name) noexcept {
+    for (const auto& def : kGeneratedOpDefs) {
+        if (def.name == name) return &def;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] inline constexpr std::optional<dgtl::ir::OpCode> find_opcode_by_name(std::string_view name) noexcept {
+    const auto* def = find_generated_op_def_by_name(name);
+    return def ? std::optional<dgtl::ir::OpCode>(def->opcode) : std::nullopt;
+}
+
+[[nodiscard]] inline constexpr const DialectDefMetadata* find_dialect_by_name(std::string_view name) noexcept {
+    for (const auto& d : kGeneratedDialects) {
+        if (d.name == name) return &d;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] inline constexpr const DialectDefMetadata* find_dialect_for_opcode(dgtl::ir::OpCode opcode) noexcept {
+    const auto val = static_cast<uint32_t>(opcode);
+    for (const auto& d : kGeneratedDialects) {
+        if (val >= d.range_low && val <= d.range_high) return &d;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] inline constexpr const TypeDefMetadata* find_type_by_name(std::string_view name) noexcept {
+    for (const auto& t : kGeneratedTypes) {
+        if (t.name == name) return &t;
+    }
+    return nullptr;
 }
 
 [[nodiscard]] inline constexpr std::string_view op_custom_verifier(dgtl::ir::OpCode opcode) noexcept {

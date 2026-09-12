@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
 Integration test for FileCheck functionality in dgtl-opt
@@ -55,10 +55,10 @@ function Assert-FileCheckPassed {
 	$exitCode = $LASTEXITCODE
     
 	if ($exitCode -eq 0) {
-		Log "✓ PASS: $TestName (exit code 0)" "PASS"
+		Log "[PASS] PASS: $TestName (exit code 0)" "PASS"
 		$script:testsPassed++
 	} else {
-		Log "✗ FAIL: $TestName (exit code $exitCode)" "FAIL"
+		Log "[FAIL] FAIL: $TestName (exit code $exitCode)" "FAIL"
 		Log "Output: $output" "DEBUG"
 		$script:testsFailed++
 	}
@@ -83,10 +83,10 @@ function Assert-FileCheckFailed {
 	$exitCode = $LASTEXITCODE
     
 	if ($exitCode -eq 4) {
-		Log "✓ PASS: $TestName (correctly failed with exit code 4)" "PASS"
+		Log "[PASS] PASS: $TestName (correctly failed with exit code 4)" "PASS"
 		$script:testsPassed++
 	} else {
-		Log "✗ FAIL: $TestName (expected exit code 4, got $exitCode)" "FAIL"
+		Log "[FAIL] FAIL: $TestName (expected exit code 4, got $exitCode)" "FAIL"
 		Log "Output: $output" "DEBUG"
 		$script:testsFailed++
 	}
@@ -118,10 +118,10 @@ function Test-EOLNormalization {
 	$exit2 = $LASTEXITCODE
     
 	if ($exit1 -eq 0 -and $exit2 -eq 0) {
-		Log "✓ PASS: EOL normalization works (both CRLF and LF)" "PASS"
+		Log "[PASS] PASS: EOL normalization works (both CRLF and LF)" "PASS"
 		$script:testsPassed++
 	} else {
-		Log "✗ FAIL: EOL normalization failed (Windows=$exit1, Unix=$exit2)" "FAIL"
+		Log "[FAIL] FAIL: EOL normalization failed (Windows=$exit1, Unix=$exit2)" "FAIL"
 		$script:testsFailed++
 	}
     
@@ -161,10 +161,10 @@ Test-EOLNormalization
 Log "Testing verbose mode" "TEST"
 $output = & $DgtlOptPath --pass=gvn --filecheck --verbose "$dotDgtlDir\test_filecheck_gvn_basic.dgtl" 2>&1
 if ($output -match "FileCheck verification") {
-	Log "✓ PASS: Verbose output contains FileCheck status" "PASS"
+	Log "[PASS] PASS: Verbose output contains FileCheck status" "PASS"
 	$script:testsPassed++
 } else {
-	Log "✗ FAIL: Verbose output missing FileCheck status" "FAIL"
+	Log "[FAIL] FAIL: Verbose output missing FileCheck status" "FAIL"
 	$script:testsFailed++
 }
 
@@ -174,9 +174,10 @@ Log "Tests passed: $script:testsPassed" "INFO"
 Log "Tests failed: $script:testsFailed" "INFO"
 
 if ($script:testsFailed -eq 0) {
-	Log "All FileCheck integration tests PASSED ✓" "PASS"
+	Log "All FileCheck integration tests PASSED [PASS]" "PASS"
 	exit 0
 } else {
-	Log "Some tests FAILED ✗" "FAIL"
+	Log "Some tests FAILED [FAIL]" "FAIL"
 	exit 1
 }
+

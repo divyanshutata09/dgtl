@@ -9,6 +9,11 @@
 #include <iostream>
 #include <stdexcept>
 
+import dgtl.arena;
+import dgtl.ir_stream;
+import dgtl.ir_core.transform_scalar_core;
+
+
 void run_test_t01_pipeline_smoke() {
     std::cout << "[T01] Pipeline smoke\n";
 

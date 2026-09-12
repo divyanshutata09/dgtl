@@ -1,0 +1,61 @@
+// module KernelPipeline
+
+// fn compute_pipeline(data: u64, count: u64) -> f32 {
+//     var x: f32 = 1.0
+//     var i: u64 = 0
+
+//     while i < count {
+//         x = x * 1.000001 + 0.000001
+//         data[i] = x
+//         i = i + 1
+//     }
+
+//     return x
+// }
+
+// fn main() -> i64 {
+//     let count: u64 = 2000000
+//     let buffer_size: u64 = count * 4
+
+//     let buf: u64 = alloc(buffer_size)
+
+//     println("Starting authentic Myzon JIT kernel execution...")
+//     let _res: f32 = compute_pipeline(buf, count)
+//     println("Kernel execution finished successfully.")
+
+//     return 0
+// }
+
+module KernelPipeline
+
+fn compute_pipeline(data: u64, count: u64) -> f32 {
+    var x: f32 = 1.0
+    var i: u64 = 0
+
+    while i < count {
+        x = x * 1.000001 + 0.000001
+        data[i] = x
+        i = i + 1
+    }
+
+    return x
+}
+
+fn main() -> i64 {
+    let count: u64 = 2000000
+    let buffer_size: u64 = count * 4
+    let buf: u64 = alloc(buffer_size)
+
+    println("Running 10 benchmark iterations in JIT machine code...")
+
+    var iter: u64 = 0
+    var final_val: f32 = 0.0
+
+    while iter < 10 {
+        final_val = compute_pipeline(buf, count)
+        iter = iter + 1
+    }
+
+    println("10 iterations complete. Final value:", final_val)
+    return 0
+}

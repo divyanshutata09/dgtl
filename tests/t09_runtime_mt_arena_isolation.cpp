@@ -7,8 +7,6 @@
  *         contamination or integrity faults should occur.
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
 
 #include <atomic>
 #include <iostream>
@@ -16,6 +14,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+import dgtl.ir_core.stream;
+import dgtl.arena;
 
 namespace {
 
@@ -71,6 +71,6 @@ void run_test_t09_runtime_mt_arena_isolation() {
             " thread(s) reported arena allocation or shadow integrity failures");
     }
 
-    std::cout << "[T09] PASS — " << kWorkers
+    std::cout << "[T09] PASS - " << kWorkers
               << " concurrent arenas: all isolated and integrity-verified\n";
 }

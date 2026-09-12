@@ -6,11 +6,12 @@
  *         shadow integrity holds after both operations.
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
+
 
 #include <iostream>
 #include <stdexcept>
+import dgtl.ir_core.stream;
+import dgtl.arena;
 
 void run_test_t02_ir_transaction_rollback() {
     std::cout << "[T02] IR Transaction Commit and Rollback\n";
@@ -61,8 +62,8 @@ void run_test_t02_ir_transaction_rollback() {
     // ensure the rolled-back nodes are gone
     const auto n2_after = stream.get_node(2);
     if (n2_after.opcode != dgtl::ir::OpCode::ADD_I32) {
-        throw std::runtime_error("T02: node[2] opcode changed after rollback — core stream corrupted");
+        throw std::runtime_error("T02: node[2] opcode changed after rollback - core stream corrupted");
     }
 
-    std::cout << "[T02] PASS — commit preserved nodes, rollback discarded nodes, integrity OK\n";
+    std::cout << "[T02] PASS - commit preserved nodes, rollback discarded nodes, integrity OK\n";
 }

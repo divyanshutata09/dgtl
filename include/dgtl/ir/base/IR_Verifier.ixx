@@ -271,7 +271,22 @@ public:
         for (size_t i = 0; i < n && !capped(diags, opts); ++i) {
             const IRNode nd = stream.get_node(i);
             if (nd.opcode == OpCode::NOP)            continue; // tombstone
-            if (!is_value_producing(nd.opcode))      continue;
+            if (nd.opcode == OpCode::REG_MOVE) {
+                // REG_MOVE can either be SSA value-producing (result_id = MOV(op_a))
+                // or side-effecting register copy (result_id == INVALID_SLOT, op_a = dst, op_b = src).
+                if (nd.result_id == INVALID_SLOT) {
+                    if (nd.op_a == INVALID_SLOT || nd.op_b == INVALID_SLOT) {
+                        push(diags, {
+                            IRVerifyDiagnostic::Kind::StructuralError,
+                            u32(i), INVALID_SLOT,
+                            "Node[" + s(i) + "]: REG_MOVE has result_id == INVALID_SLOT but invalid operand slots"
+                        });
+                    }
+                    continue;
+                }
+            } else if (!is_value_producing(nd.opcode)) {
+                continue;
+            }
             if (nd.result_id == INVALID_SLOT) {
                 push(diags, {
                     IRVerifyDiagnostic::Kind::StructuralError,
@@ -471,24 +486,54 @@ public:
                     continue;
                 }
 
-                const bool skip_operands =
-                    nd.opcode == OpCode::PHI_NODE ||
-                    uses_immediate_in_operands(nd.opcode);
+                if (nd.opcode == OpCode::LABEL) {
+                    if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
+                        defined.insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
+                    if (nd.op_a != INVALID_SLOT && nd.op_a != 0)
+                        defined.insert_or_assign(nd.op_a, static_cast<uint8_t>(1));
+                    if (nd.op_b != INVALID_SLOT && nd.op_b != 0)
+                        defined.insert_or_assign(nd.op_b, static_cast<uint8_t>(1));
+                    if (nd.op_c != INVALID_SLOT && nd.op_c != 0)
+                        defined.insert_or_assign(nd.op_c, static_cast<uint8_t>(1));
+                    if (nd.logic_flags != 0 && nd.logic_flags != INVALID_SLOT)
+                        defined.insert_or_assign(nd.logic_flags, static_cast<uint8_t>(1));
+                    const auto extra_params = stream.get_call_overflow_args(i);
+                    for (uint32_t p : extra_params) {
+                        if (p != INVALID_SLOT && p != 0)
+                            defined.insert_or_assign(p, static_cast<uint8_t>(1));
+                    }
+                    continue;
+                }
 
-                if (!skip_operands) {
-                    auto chk = [&](uint32_t id, const char* slot) {
-                        if (id == INVALID_SLOT || id == 0) return;
-                        if (!defined.contains(id)) {
-                            push(diags, {
-                                IRVerifyDiagnostic::Kind::UseBeforeDef,
-                                u32(i), id,
-                                "Node[" + s(i) + "] opcode=" +
-                                std::string(opcode_name(nd.opcode)) +
-                                ": operand " + slot + " (id=" + std::to_string(id) +
-                                ") used before any definition in flat stream"
-                            });
-                        }
-                    };
+                auto chk = [&](uint32_t id, const char* slot) {
+                    if (id == INVALID_SLOT || id == 0) return;
+                    if (!defined.contains(id)) {
+                        push(diags, {
+                            IRVerifyDiagnostic::Kind::UseBeforeDef,
+                            u32(i), id,
+                            "Node[" + s(i) + "] opcode=" +
+                            std::string(opcode_name(nd.opcode)) +
+                            ": operand " + slot + " (id=" + std::to_string(id) +
+                            ") used before any definition in flat stream"
+                        });
+                    }
+                };
+
+                if (nd.opcode == OpCode::CALL || nd.opcode == OpCode::CALL_VARIADIC) {
+                    // op_a is callee slot (symbol/label), op_b and op_c are argument registers
+                    chk(nd.op_b, "op_b");
+                    chk(nd.op_c, "op_c");
+                    chk(nd.logic_flags, "arg2");
+                    const auto extra_args = stream.get_call_overflow_args(i);
+                    for (uint32_t arg : extra_args) {
+                        chk(arg, "extra_arg");
+                    }
+                } else if (nd.opcode == OpCode::GOTO || nd.opcode == OpCode::BRANCH) {
+                    // op_a is branch target label, not an SSA dataflow register
+                } else if (nd.opcode == OpCode::BRANCH_COND || nd.opcode == OpCode::BRANCH_LIKELY || nd.opcode == OpCode::BRANCH_UNLIKELY) {
+                    // op_a is boolean condition register; op_b and op_c are branch target labels
+                    chk(nd.op_a, "op_a");
+                } else if (nd.opcode != OpCode::PHI_NODE && !uses_immediate_in_operands(nd.opcode)) {
                     chk(nd.op_a, "op_a");
                     chk(nd.op_b, "op_b");
                     chk(nd.op_c, "op_c");
@@ -522,24 +567,54 @@ public:
                 continue;
             }
 
-            const bool skip_operands =
-                nd.opcode == OpCode::PHI_NODE ||           // loop-carried defs allowed
-                uses_immediate_in_operands(nd.opcode);     // op_a/op_b are raw immediates
+            if (nd.opcode == OpCode::LABEL) {
+                if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
+                    defined.insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
+                if (nd.op_a != INVALID_SLOT && nd.op_a != 0)
+                    defined.insert_or_assign(nd.op_a, static_cast<uint8_t>(1));
+                if (nd.op_b != INVALID_SLOT && nd.op_b != 0)
+                    defined.insert_or_assign(nd.op_b, static_cast<uint8_t>(1));
+                if (nd.op_c != INVALID_SLOT && nd.op_c != 0)
+                    defined.insert_or_assign(nd.op_c, static_cast<uint8_t>(1));
+                if (nd.logic_flags != 0 && nd.logic_flags != INVALID_SLOT)
+                    defined.insert_or_assign(nd.logic_flags, static_cast<uint8_t>(1));
+                const auto extra_params = stream.get_call_overflow_args(i);
+                for (uint32_t p : extra_params) {
+                    if (p != INVALID_SLOT && p != 0)
+                        defined.insert_or_assign(p, static_cast<uint8_t>(1));
+                }
+                continue;
+            }
 
-            if (!skip_operands) {
-                auto chk = [&](uint32_t id, const char* slot) {
-                    if (id == INVALID_SLOT || id == 0) return;
-                    if (!defined.contains(id)) {
-                        push(diags, {
-                            IRVerifyDiagnostic::Kind::UseBeforeDef,
-                            u32(i), id,
-                            "Node[" + s(i) + "] opcode=" +
-                            std::string(opcode_name(nd.opcode)) +
-                            ": operand " + slot + " (id=" + std::to_string(id) +
-                            ") used before any definition in flat stream"
-                        });
-                    }
-                };
+            auto chk = [&](uint32_t id, const char* slot) {
+                if (id == INVALID_SLOT || id == 0) return;
+                if (!defined.contains(id)) {
+                    push(diags, {
+                        IRVerifyDiagnostic::Kind::UseBeforeDef,
+                        u32(i), id,
+                        "Node[" + s(i) + "] opcode=" +
+                        std::string(opcode_name(nd.opcode)) +
+                        ": operand " + slot + " (id=" + std::to_string(id) +
+                        ") used before any definition in flat stream"
+                    });
+                }
+            };
+
+            if (nd.opcode == OpCode::CALL || nd.opcode == OpCode::CALL_VARIADIC) {
+                // op_a is callee slot (symbol/label), op_b and op_c are argument registers
+                chk(nd.op_b, "op_b");
+                chk(nd.op_c, "op_c");
+                chk(nd.logic_flags, "arg2");
+                const auto extra_args = stream.get_call_overflow_args(i);
+                for (uint32_t arg : extra_args) {
+                    chk(arg, "extra_arg");
+                }
+            } else if (nd.opcode == OpCode::GOTO || nd.opcode == OpCode::BRANCH) {
+                // op_a is branch target label, not an SSA dataflow register
+            } else if (nd.opcode == OpCode::BRANCH_COND || nd.opcode == OpCode::BRANCH_LIKELY || nd.opcode == OpCode::BRANCH_UNLIKELY) {
+                // op_a is boolean condition register; op_b and op_c are branch target labels
+                chk(nd.op_a, "op_a");
+            } else if (nd.opcode != OpCode::PHI_NODE && !uses_immediate_in_operands(nd.opcode)) {
                 chk(nd.op_a, "op_a");
                 chk(nd.op_b, "op_b");
                 chk(nd.op_c, "op_c");

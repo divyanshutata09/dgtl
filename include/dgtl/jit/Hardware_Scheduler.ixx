@@ -162,7 +162,7 @@ public:
         uint32_t lookahead_ptr = 0;
 
         while (scheduled_count < static_cast<uint32_t>(count)) {
-            current_cycle_resources.reset();
+            current_cycle_resources.init_from_target(m_target_machine);
 
             // 1. Fill ready queue (Speculative Lookahead Window)
             while (ready_queue.size() < WINDOW_SIZE && lookahead_ptr < static_cast<uint32_t>(count)) {
@@ -176,6 +176,7 @@ public:
             });
 
             // 3. Port Dispatch
+            bool dispatched_any = false;
             for (auto it = ready_queue.begin(); it != ready_queue.end(); ) {
                 if (can_dispatch(*it)) {
                     consume_resources(*it);
@@ -185,14 +186,14 @@ public:
                     
                     scheduled_count++;
                     it = ready_queue.erase(it);
+                    dispatched_any = true;
                 } else {
                     ++it;
                 }
             }
 
-            // Stall-Breaker: If ports are depleted AND queue is non-empty, force dispatch to prevent starvation
-            if (!ready_queue.empty() && current_cycle_resources.alu_slots == 0 && 
-                scheduled_count < static_cast<uint32_t>(count)) [[unlikely]] {
+            // Stall-Breaker: If nothing dispatched in this cycle and queue is non-empty, force dispatch to prevent starvation
+            if (!dispatched_any && !ready_queue.empty() && scheduled_count < static_cast<uint32_t>(count)) [[unlikely]] {
                 write_shadow_node(stream, scheduled_count, ready_queue[0]);
                 ready_queue.erase(ready_queue.begin());
                 scheduled_count++;
@@ -236,7 +237,7 @@ public:
 
 private:
     [[nodiscard]] bool can_dispatch(const dgtl::ir::IRNode& node) const noexcept {
-        const uint32_t f = static_cast<uint32_t>(node.flags);
+        const uint32_t lf = static_cast<uint32_t>(node.logic_flags);
         
         // Query target description for instruction latency
         const uint8_t latency = m_target_machine.instruction_latency(node.opcode);
@@ -247,8 +248,8 @@ private:
             }
         }
         
-        // Check for Vector/SIMD Port Availability
-        if (f & static_cast<uint32_t>(dgtl::ir::HintFlags::RequiresVecPort)) {
+        // Check for Vector/SIMD Port Availability (HintFlags in logic_flags)
+        if (lf & static_cast<uint32_t>(dgtl::ir::HintFlags::RequiresVecPort)) {
             return current_cycle_resources.vec_slots > 0;
         }
         
@@ -268,14 +269,13 @@ private:
     }
 
     void consume_resources(const dgtl::ir::IRNode& node) noexcept {
-        const uint32_t f = static_cast<uint32_t>(node.flags);
+        const uint32_t lf = static_cast<uint32_t>(node.logic_flags);
         
         // Query instruction latency to determine resource hold duration
-        // (For now we hold for 1 cycle; latency > 1 requires reservation)
         const uint8_t latency = m_target_machine.instruction_latency(node.opcode);
-        (void)latency;  // Use for multi-cycle reservation in future
+        (void)latency;
 
-        if (f & static_cast<uint32_t>(dgtl::ir::HintFlags::RequiresVecPort)) {
+        if (lf & static_cast<uint32_t>(dgtl::ir::HintFlags::RequiresVecPort)) {
             if (current_cycle_resources.vec_slots > 0) current_cycle_resources.vec_slots--;
         } else if (node.opcode == dgtl::ir::OpCode::LOAD || node.opcode == dgtl::ir::OpCode::ATOMIC_LOAD ||
                    node.opcode == dgtl::ir::OpCode::STORE || node.opcode == dgtl::ir::OpCode::ATOMIC_STORE ||

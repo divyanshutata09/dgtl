@@ -7,13 +7,13 @@
  *         drop a hardware side-effect (e.g., CSR write, accumulator flush).
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/core/Verified_Formal.hpp"
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
 
 #include <iostream>
 #include <stdexcept>
+import dgtl.ir_core.stream;
+import dgtl.arena;
+import dgtl.ir_core.verified_formal;
+import dgtl.ir_core.transform_scalar_core;
 
 void run_test_t05_optimizer_volatile_guard() {
     std::cout << "[T05] Volatile Side-Effect Isolation\n";
@@ -41,7 +41,7 @@ void run_test_t05_optimizer_volatile_guard() {
     // If fusion incorrectly fired, node0 would be NOP and node1 would be FMA_F32
     if (n0.opcode == dgtl::ir::OpCode::NOP && n1.opcode == dgtl::ir::OpCode::FMA_F32) {
         throw std::runtime_error(
-            "T05: optimizer illegally fused across a volatile side-effect boundary — "
+            "T05: optimizer illegally fused across a volatile side-effect boundary - "
             "HAS_SIDE_EFFECTS flag was not respected");
     }
 
@@ -57,5 +57,5 @@ void run_test_t05_optimizer_volatile_guard() {
             + std::to_string(static_cast<int>(n1.opcode)));
     }
 
-    std::cout << "[T05] PASS — volatile boundary respected, no illegal fusion occurred\n";
+    std::cout << "[T05] PASS - volatile boundary respected, no illegal fusion occurred\n";
 }

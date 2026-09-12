@@ -71,6 +71,9 @@ double test_ecs() {
 // -----------------------------
 // TEST 3: SIMD Kernel
 // -----------------------------
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
 double test_simd() {
     const int N = 1 << 24;
 

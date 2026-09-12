@@ -169,9 +169,9 @@ DGTL_SDK/
 ├── include/
 │   └── dgtl_sdk/
 │       ├── dgtl.h              # Master Umbrella Header (include this for C/C++)
-│       ├── dgtl_c_api.h        # Pure C ABI, handles, and return statuses
+│       ├──         # Pure C ABI, handles, and return statuses
 │       ├── dgtl_core.h         # Core scalar instructions and memory operations
-│       ├── dgtl_simd.h         # SIMD vectorization, AVX-512, gather/scatter, FMA
+│       ├──          # SIMD vectorization, AVX-512, gather/scatter, FMA
 │       ├── dgtl_session.h      # JIT / AOT execution session controls
 │       └── dgtl_capabilities.h # Target machine ISA & hardware feature queries
 └── lib/

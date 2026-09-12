@@ -405,7 +405,7 @@ protected:
                     return is64 ? 22 : 21;
                 }
                 if (kind == generated::X64IntegerBinary32Kind::Div || kind == generated::X64IntegerBinary32Kind::Mod) {
-                    return is64 ? 23 : 21;
+                    return is64 ? 80 : 40;
                 }
                 return is64 ? 21 : 20;
             }
@@ -536,6 +536,9 @@ public:
     }
 
     using CoffCallReloc = dgtl::backend::aot::CoffCallReloc;
+    using CoffReloc     = dgtl::backend::aot::CoffReloc;
+    using MagicMultiplierS64 = dgtl::backend::aot::MagicMultiplierS64;
+    using DGTLAOTLinker = dgtl::backend::aot::DGTLAOTLinker;
 
     bool build_elf_relocatable_binary(const ir::IRStream& stream,
                                       std::vector<uint8_t>& out,
@@ -561,7 +564,7 @@ public:
     {
         dgtl::backend::aot::DGTLAOTLinker aot;
         return aot.build_coff_relocatable_binary_with_relocs(
-            stream, out, entry_symbol, {}, slot_to_callee, rdata_payload);
+            stream, out, entry_symbol, call_relocs, slot_to_callee, rdata_payload);
     }
 
     bool build_module_coff_with_relocs(
@@ -589,9 +592,33 @@ public:
         return aot.build_coff_archive_binary(stream, out, member_name, entry_symbol);
     }
 
+    bool build_pe_executable_buffer(const ir::IRStream& ir_stream,
+                                    std::vector<uint8_t>& pe_image) {
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_pe_executable_buffer(ir_stream, pe_image);
+    }
+
+    bool build_pe_executable(std::string_view path, const ir::IRStream& ir_stream) {
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.build_pe_executable(path, ir_stream);
+    }
+
     bool emit_pe_executable(std::string_view path, const ir::IRStream& ir_stream) {
         dgtl::backend::aot::DGTLAOTLinker aot;
         return aot.build_pe_executable(path, ir_stream);
+    }
+
+    bool emit_aot_machine_code(
+        uint8_t* dest,
+        size_t dest_capacity,
+        const ir::IRStream& stream,
+        size_t* emitted_size = nullptr,
+        const std::unordered_map<uint32_t, uintptr_t>& slot_map = {},
+        std::vector<CoffCallReloc>* out_relocs = nullptr,
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee = {})
+    {
+        dgtl::backend::aot::DGTLAOTLinker aot;
+        return aot.emit_aot_machine_code(dest, dest_capacity, stream, emitted_size, slot_map, out_relocs, slot_to_callee);
     }
 
     [[nodiscard]] const std::vector<std::string>& fallback_diagnostics() const noexcept {
@@ -628,6 +655,21 @@ public:
         if (stream.is_null() || !dest || stream.size() == 0) [[unlikely]] return false;
         clear_fallback_diagnostics();
         const size_t count = stream.size();
+
+        std::unordered_map<uint32_t, uint64_t> known_constants;
+        known_constants.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::CONST || node.opcode == ir::OpCode::IMMEDIATE) {
+                uint64_t imm = (static_cast<uint64_t>(node.op_b) << 32u) | (static_cast<uint64_t>(node.op_a) & 0xFFFFFFFFu);
+                if (imm == 0 && node.intent_hash != 0) {
+                    imm = node.intent_hash;
+                }
+                if (node.result_id != ir::INVALID_SLOT) {
+                    known_constants[node.result_id] = imm;
+                }
+            }
+        }
 
         std::unordered_map<uint32_t, size_t> label_map;
         label_map.reserve(count / 4 + 4);
@@ -740,6 +782,7 @@ public:
         auto emit_mov_rcx_from_slot = [&](uint32_t slot_id) { emit_mov_reg_from_slot(0x48, 0x8D, slot_id); };
         auto emit_mov_rdx_from_slot = [&](uint32_t slot_id) { emit_mov_reg_from_slot(0x48, 0x95, slot_id); };
         auto emit_mov_r8_from_slot  = [&](uint32_t slot_id) { emit_mov_reg_from_slot(0x4C, 0x85, slot_id); };
+        auto emit_mov_r9_from_slot  = [&](uint32_t slot_id) { emit_mov_reg_from_slot(0x4C, 0x8D, slot_id); };
         auto emit_store_rax_to_slot = [&](uint32_t slot_id) { emit_mov_slot_from_reg(0x48, 0x85, slot_id); };
         auto emit_store_rdx_to_slot = [&](uint32_t slot_id) { emit_mov_slot_from_reg(0x48, 0x95, slot_id); };
         auto emit_store_rcx_to_slot = [&](uint32_t slot_id) { emit_mov_slot_from_reg(0x48, 0x8D, slot_id); };
@@ -908,18 +951,78 @@ public:
                     }
                     else if (kind == generated::X64IntegerBinary32Kind::Div || 
                              kind == generated::X64IntegerBinary32Kind::Mod) {
-                        emit_mov_rax_from_slot(node.op_a);
-                        if (is64) {
-                            write_u8(0x48); write_u8(0x99);
-                            write_u8(0x48); write_u8(0xF7); write_u8(0xBD);
-                        } else {
-                            write_u8(0x99);
-                            write_u8(0xF7); write_u8(0xBD);
+                        auto const_it = (node.op_b != ir::INVALID_SLOT) ? known_constants.find(node.op_b) : known_constants.end();
+                        bool has_const_divisor = (const_it != known_constants.end() && const_it->second > 0);
+                        int64_t divisor = has_const_divisor ? static_cast<int64_t>(const_it->second) : 0;
+                        auto magic = (has_const_divisor && is64) ? dgtl::backend::aot::compute_magic_s64(divisor) : dgtl::backend::aot::MagicMultiplierS64{};
+
+                        if (is64 && has_const_divisor && divisor == 1) {
+                            if (kind == generated::X64IntegerBinary32Kind::Div) {
+                                emit_mov_rax_from_slot(node.op_a);
+                                emit_store_rax_to_slot(node.result_id);
+                            } else {
+                                write_u8(0x48); write_u8(0x31); write_u8(0xC0); // xor rax, rax
+                                emit_store_rax_to_slot(node.result_id);
+                            }
                         }
-                        write_i32(slot_disp(node.op_b));
-                        if (kind == generated::X64IntegerBinary32Kind::Div)
-                            emit_store_rax_to_slot(node.result_id);
-                        else emit_store_rdx_to_slot(node.result_id);
+                        else if (is64 && has_const_divisor && magic.valid && !magic.is_power_of_2) {
+                            emit_mov_rax_from_slot(node.op_a);
+                            write_u8(0x48); write_u8(0xB9); write_u64(magic.M);
+                            write_u8(0x48); write_u8(0xF7); write_u8(0xE9);
+                            if (magic.s > 0) {
+                                write_u8(0x48); write_u8(0xC1); write_u8(0xFA); write_u8(magic.s);
+                            }
+                            emit_mov_rax_from_slot(node.op_a);
+                            write_u8(0x48); write_u8(0xC1); write_u8(0xF8); write_u8(0x3F);
+                            write_u8(0x48); write_u8(0x29); write_u8(0xC2);
+                            if (kind == generated::X64IntegerBinary32Kind::Div) {
+                                emit_store_rdx_to_slot(node.result_id);
+                            } else {
+                                write_u8(0x48); write_u8(0x89); write_u8(0xD0);
+                                write_u8(0x48); write_u8(0xB9); write_u64(static_cast<uint64_t>(divisor));
+                                write_u8(0x48); write_u8(0x0F); write_u8(0xAF); write_u8(0xC1);
+                                emit_mov_rdx_from_slot(node.op_a);
+                                write_u8(0x48); write_u8(0x29); write_u8(0xC2);
+                                emit_store_rdx_to_slot(node.result_id);
+                            }
+                        }
+                        else if (is64 && has_const_divisor && magic.is_power_of_2 && divisor > 1) {
+                            emit_mov_rax_from_slot(node.op_a);
+                            write_u8(0x48); write_u8(0x99);
+                            uint8_t k = magic.s;
+                            if (k == 1) {
+                                write_u8(0x48); write_u8(0xC1); write_u8(0xEA); write_u8(0x3F);
+                            } else if (k < 31) {
+                                write_u8(0x48); write_u8(0x81); write_u8(0xE2); write_u32(static_cast<uint32_t>((1ULL << k) - 1));
+                            } else {
+                                write_u8(0x48); write_u8(0xB9); write_u64((1ULL << k) - 1);
+                                write_u8(0x48); write_u8(0x21); write_u8(0xCA);
+                            }
+                            write_u8(0x48); write_u8(0x01); write_u8(0xD0);
+                            write_u8(0x48); write_u8(0xC1); write_u8(0xF8); write_u8(k);
+                            if (kind == generated::X64IntegerBinary32Kind::Div) {
+                                emit_store_rax_to_slot(node.result_id);
+                            } else {
+                                write_u8(0x48); write_u8(0xC1); write_u8(0xE0); write_u8(k);
+                                emit_mov_rdx_from_slot(node.op_a);
+                                write_u8(0x48); write_u8(0x29); write_u8(0xC2);
+                                emit_store_rdx_to_slot(node.result_id);
+                            }
+                        }
+                        else {
+                            emit_mov_rax_from_slot(node.op_a);
+                            if (is64) {
+                                write_u8(0x48); write_u8(0x99);
+                                write_u8(0x48); write_u8(0xF7); write_u8(0xBD);
+                            } else {
+                                write_u8(0x99);
+                                write_u8(0xF7); write_u8(0xBD);
+                            }
+                            write_i32(slot_disp(node.op_b));
+                            if (kind == generated::X64IntegerBinary32Kind::Div)
+                                emit_store_rax_to_slot(node.result_id);
+                            else emit_store_rdx_to_slot(node.result_id);
+                        }
                     }
                     else {
                         emit_mov_rax_from_slot(node.op_a);
@@ -1049,7 +1152,7 @@ public:
 
                     const auto overflow = stream.get_call_overflow_args(i);
                     if (!overflow.empty() && overflow[0] != ir::INVALID_SLOT && overflow[0] != 0u) {
-                        emit_mov_reg_from_slot(0x4C, 0x8D, overflow[0]); // mov r9, [rbp-disp]
+                        emit_mov_r9_from_slot(overflow[0]); // mov r9, [rbp-disp]
                     } else {
                         write_u8(0x4D); write_u8(0x31); write_u8(0xC9); // xor r9, r9
                     }
@@ -1110,9 +1213,29 @@ public:
                     write_u8(0x48); write_u8(0x81); write_u8(0xC4); write_u32(static_cast<uint32_t>(stack_alloc)); // add rsp, stack_alloc
 
                     if (node.result_id != ir::INVALID_SLOT) {
-                        write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x7E); write_u8(0xC2); // movq rdx, xmm0
-                        write_u8(0x48); write_u8(0x85); write_u8(0xC0);                               // test rax, rax
-                        write_u8(0x48); write_u8(0x0F); write_u8(0x44); write_u8(0xC2);             // cmovz rax, rdx
+                        bool returns_in_xmm0 = false;
+                        auto it_callee = slot_to_callee.find(node.op_a);
+                        if (it_callee != slot_to_callee.end() && !it_callee->second.empty()) {
+                            const std::string& name = it_callee->second;
+                            if (name.find("_bits") != std::string::npos) {
+                                returns_in_xmm0 = false;
+                            } else if (name == "pow" || name == "sqrt" || name == "sin" ||
+                                       name == "cos" || name == "tan" || name == "exp" ||
+                                       name == "log" || name == "fabs" || name == "floor" ||
+                                       name == "ceil") {
+                                returns_in_xmm0 = true;
+                            } else {
+                                const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
+                                returns_in_xmm0 = ir::is_floating_type_code(tc);
+                            }
+                        } else {
+                            const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
+                            returns_in_xmm0 = ir::is_floating_type_code(tc);
+                        }
+
+                        if (returns_in_xmm0) {
+                            write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x7E); write_u8(0xC0); // movq rax, xmm0
+                        }
                         emit_store_rax_to_slot(node.result_id);
                     } else {
                         write_u8(0x90);

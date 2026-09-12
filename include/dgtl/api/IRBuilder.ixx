@@ -24,20 +24,21 @@ module;
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 export module dgtl.internal.api_ir_builder;
 
 // Import native compiler base interfaces and consolidated parent modules
 import dgtl.ir_core;
-
-// FIXED: Point directly to the unified consolidated pass infrastructure to resolve traits/gen bindings
-import dgtl.ir_core;
 import dgtl.op_traits;
-
 import dgtl.compiler_context;
 import dgtl.numa_runtime;
 import dgtl.dgtl_bulletins;
 import dgtl.hashing;
+
+// Native import of the verified semantic layer
+import dgtl.ir_core.semantic;
+import dgtl.ir_core.type_system;
 
 export namespace dgtl {
 namespace api {
@@ -50,9 +51,11 @@ concept DGTLBuildableOp = requires(Args&&... args) {
 /**
  * @class IRBuilder
  * @brief Factory for constructing IR nodes and streams.
- * * Provides high-level methods for building IR programs programmatically.
+ *
+ * Provides high-level methods for building IR programs programmatically.
  * Encapsulates low-level IR Atom/Core details and ensures structural validity.
- * * [STAFF NOTE]: Builder objects are strictly Thread-Local. Do not share 
+ *
+ * [STAFF NOTE]: Builder objects are strictly Thread-Local. Do not share 
  * across threads without external synchronization. 
  */
 class alignas(64) IRBuilder final {
@@ -217,6 +220,19 @@ public:
         return active_stream_ != nullptr && !active_stream_->is_null();
     }
 
+    void set_semantic_context(dgtl::semantic::SymbolTable* sym_tab, dgtl::semantic::TypeSystem* type_sys) noexcept {
+        active_symbol_table_ = sym_tab;
+        active_type_system_ = type_sys;
+    }
+
+    [[nodiscard]] dgtl::semantic::SymbolTable* semantic_symbol_table() const noexcept {
+        return active_symbol_table_;
+    }
+
+    [[nodiscard]] dgtl::semantic::TypeSystem* semantic_type_system() const noexcept {
+        return active_type_system_;
+    }
+
     [[nodiscard]] uint32_t emit_i32(BinaryI32Op op,
                                     uint32_t lhs,
                                     uint32_t rhs,
@@ -262,7 +278,7 @@ public:
             return EmitOutcome{EmitStatus::UnknownOperation, ir::INVALID_SLOT, static_cast<size_t>(-1)};
         }
 
-        if (operands.size() < meta->operand_count) {
+        if (operands.size() < meta->operand_count && meta->operand_count != static_cast<uint8_t>(-1)) {
             return EmitOutcome{EmitStatus::OperandArityMismatch, ir::INVALID_SLOT, static_cast<size_t>(-1)};
         }
 
@@ -668,26 +684,9 @@ public:
         return stream.size();
     }
 
-    /**
-     * @brief Slot ID allocation proxy.
-     * Frontend SDK consumers use this to obtain unique SSA value IDs that
-     * are stable and non-overlapping with the builder's internal counter.
-     */
-    [[nodiscard]] uint32_t allocate_id() noexcept { return allocate_temp_id(); }
-
     // =========================================================================
     // FRONTEND SDK FACADE
     // =========================================================================
-    // Named-method API for SDK consumers (Myzon, DSLs, SQL compilers, etc.).
-    // These methods operate on the active insertion point set via
-    // set_insertion_point().  They return uint32_t value slot IDs and accept
-    // only primitive types â€” no internal IR types are exposed.
-    //
-    // Rule: SDK consumers MUST use only these methods.  create_node() and
-    // direct OpCode references are reserved for DGTL-internal use.
-    // =========================================================================
-
-    // ---- Control Flow -------------------------------------------------------
 
     /**
      * @brief Emit a function entry point.
@@ -698,7 +697,6 @@ public:
     [[nodiscard]] uint32_t create_function_entry(ir::IRStream& stream, const char* function_name) noexcept {
         const uint32_t fn_id = allocate_temp_id();
         
-        // Infer canonical visibility flag bits for the driver entry point
         uint16_t automatic_flags = ir::Flags::NONE;
         if (function_name != nullptr && std::string_view(function_name) == "DGTL_kernel_entry") {
             automatic_flags |= (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE);
@@ -707,17 +705,15 @@ public:
         stream.push_back(ir::gen::make_generated_node(ir::OpCode::LABEL, fn_id, fn_id,
                                                       ir::INVALID_SLOT, ir::INVALID_SLOT,
                                                       automatic_flags));
+        if (active_symbol_table_ && function_name) {
+            active_symbol_table_->insert_function(function_name, fn_id);
+        }
         return fn_id;
     }
 
-    /// Emit a function-entry label.  @p fn_slot is the unique slot ID for this
-    /// function (obtain one via allocate_id() or a stable hash of the name).
     void emit_function_label(uint32_t fn_slot) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
 
-        // Facade Boundary Optimization: Force every global function label to act
-        // as a volatile side-effect barrier. This completely locks the label into
-        // the text segment and prevents the backend from stripping it out.
         const uint16_t automatic_flags = ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE;
 
         active_stream_->push_back(
@@ -725,18 +721,22 @@ public:
                                          ir::INVALID_SLOT, ir::INVALID_SLOT,
                                          automatic_flags));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        if (active_symbol_table_) {
+            active_symbol_table_->insert_function(std::to_string(fn_slot), fn_slot);
+        }
     }
 
-    /// Emit a basic-block label with the given @p label_id.
     void emit_label(uint32_t label_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
         active_stream_->push_back(
             ir::gen::make_generated_node(ir::OpCode::LABEL,
                                          static_cast<uint32_t>(label_id)));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        if (active_symbol_table_) {
+            active_symbol_table_->insert_label(std::to_string(label_id), label_id);
+        }
     }
 
-    /// Emit an unconditional jump to @p target_label_id.
     void emit_goto(uint32_t target_label_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
         active_stream_->push_back(
@@ -749,9 +749,6 @@ public:
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
 
-    /// Emit a conditional branch.  Jumps to @p then_label_id when @p cond_id
-    /// is non-zero, falls through otherwise (else_label_id = INVALID_SLOT
-    /// means fall-through).
     void emit_branch_cond(uint32_t cond_id,
                           uint32_t then_label_id,
                           uint32_t else_label_id = ir::INVALID_SLOT) noexcept {
@@ -766,10 +763,6 @@ public:
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
 
-    /// Emit a function call.  @p callee_slot is the slot ID of the callee
-    /// (produced by a prior emit_function_label or a stable name hash).
-    /// Up to three inline argument IDs are packed; overflow args are attached
-    /// via the stream's overflow-args sidecar.  Returns the result slot ID.
     [[nodiscard]] uint32_t emit_call(uint32_t callee_slot,
                                      std::span<const uint32_t> args,
                                      uint32_t result_id = ir::INVALID_SLOT) noexcept {
@@ -796,7 +789,6 @@ public:
         active_stream_->push_back(call_node);
         annotate_result_type_(*active_stream_, ir::OpCode::CALL, rid);
         try_annotate_debug_and_type_(*active_stream_, node_idx);
-        // Attach overflow args beyond the first three packed args.
         if (args.size() > 3 && active_stream_->size() > node_idx) {
             active_stream_->set_call_overflow_args(
                 node_idx,
@@ -839,7 +831,6 @@ public:
         return rid;
     }
     
-    /// Emit a return, yielding @p value_id as the function's return value.
     void emit_ret(uint32_t value_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
         active_stream_->push_back(
@@ -854,7 +845,6 @@ public:
 
     // ---- Constants ----------------------------------------------------------
 
-    /// Emit a 64-bit integer constant.  Returns the allocated result slot ID.
     [[nodiscard]] uint32_t emit_constant_i64(int64_t value,
                                              uint32_t result_id = ir::INVALID_SLOT) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) {
@@ -864,6 +854,9 @@ public:
                                  ? allocate_temp_id()
                                  : result_id;
         (void)create_immediate(*active_stream_, rid, static_cast<uint64_t>(value));
+        if (active_symbol_table_) {
+            active_symbol_table_->insert_constant_i64(std::to_string(rid), rid, static_cast<uint64_t>(value));
+        }
         return rid;
     }
 
@@ -1021,7 +1014,6 @@ public:
 
     // ---- Memory -------------------------------------------------------------
 
-    /// Emit a load from @p addr_id.  Returns the result slot ID.
     [[nodiscard]] uint32_t emit_load(uint32_t addr_id,
                                      uint32_t result_id = ir::INVALID_SLOT) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) {
@@ -1037,7 +1029,6 @@ public:
         return rid;
     }
 
-    /// Emit a store of @p val_id to @p addr_id.
     void emit_store(uint32_t addr_id, uint32_t val_id,
                     uint32_t node_id = ir::INVALID_SLOT) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
@@ -1109,6 +1100,148 @@ public:
     [[nodiscard]] uint32_t emit_compare_ge_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
         return emit_binary_op_i32_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+    }
+
+    // ---- Comparisons (i64) --------------------------------------------------
+
+    [[nodiscard]] uint32_t emit_compare_eq_i64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_ne_i64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_lt_i64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_le_i64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_gt_i64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_ge_i64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+    }
+
+    // ---- Comparisons (f32) --------------------------------------------------
+
+    [[nodiscard]] uint32_t emit_compare_eq_f32(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_ne_f32(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_lt_f32(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_le_f32(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_gt_f32(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_ge_f32(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+    }
+
+    // ---- Comparisons (f64) --------------------------------------------------
+
+    [[nodiscard]] uint32_t emit_compare_eq_f64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_ne_f64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_lt_f64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_le_f64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_gt_f64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+    }
+    [[nodiscard]] uint32_t emit_compare_ge_f64(uint32_t lhs, uint32_t rhs,
+                                               uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+    }
+
+    // ---- Unary & Inversion Operations ---------------------------------------
+
+    [[nodiscard]] uint32_t emit_neg_i32(uint32_t val,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        const uint32_t zero = get_constant_i32(0);
+        return emit_sub_i32(zero, val, result_id);
+    }
+    [[nodiscard]] uint32_t emit_not_i32(uint32_t val,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        const uint32_t all_ones = get_constant_i32(-1);
+        return emit_xor_i32(val, all_ones, result_id);
+    }
+    [[nodiscard]] uint32_t emit_neg_i64(uint32_t val,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        const uint32_t zero = emit_constant_i64(0);
+        return emit_sub_i64(zero, val, result_id);
+    }
+    [[nodiscard]] uint32_t emit_not_i64(uint32_t val,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        const uint32_t all_ones = emit_constant_i64(-1LL);
+        return emit_xor_i64(val, all_ones, result_id);
+    }
+    [[nodiscard]] uint32_t emit_neg_f32(uint32_t val,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return ir::INVALID_SLOT;
+        const uint32_t zero = allocate_temp_id();
+        (void)create_immediate(*active_stream_, zero, 0);
+        return emit_sub_f32(zero, val, result_id);
+    }
+    [[nodiscard]] uint32_t emit_neg_f64(uint32_t val,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return ir::INVALID_SLOT;
+        const uint32_t zero = allocate_temp_id();
+        (void)create_immediate(*active_stream_, zero, 0);
+        return emit_sub_f64(zero, val, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_ptr_diff(uint32_t lhs_ptr, uint32_t rhs_ptr,
+                                         uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::PTR_DIFF, lhs_ptr, rhs_ptr, result_id);
+    }
+    [[nodiscard]] uint32_t emit_reg_move(uint32_t dst_slot, uint32_t src_slot) noexcept {
+        pre_emit_numa_();
+        if (!has_insertion_point() || dst_slot == ir::INVALID_SLOT || src_slot == ir::INVALID_SLOT) {
+            return ir::INVALID_SLOT;
+        }
+        active_stream_->push_back(
+            ir::gen::make_generated_node(ir::OpCode::REG_MOVE,
+                                         ir::INVALID_SLOT,
+                                         dst_slot,
+                                         src_slot,
+                                         ir::INVALID_SLOT,
+                                         ir::Flags::HAS_SIDE_EFFECTS));
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return dst_slot;
+    }
+    [[nodiscard]] uint32_t emit_alloca(uint32_t size_bytes, uint32_t align,
+                                       uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::DSA_ALLOCATE, size_bytes, align, result_id);
     }
 
     // ---- New IR surface synced with .dgtl_def/.dgtl_isel -------------------
@@ -1221,30 +1354,65 @@ public:
                                       static_cast<uint16_t>(ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE));
     }
 
-    void emit_branch_likely(uint32_t cond_id,
-                            uint32_t then_label_id,
-                            uint32_t else_label_id = ir::INVALID_SLOT) noexcept {
-        if (!has_insertion_point()) return;
-        active_stream_->push_back(ir::gen::make_generated_node(ir::OpCode::BRANCH_LIKELY,
-                                                                allocate_temp_id(),
-                                                                cond_id,
-                                                                then_label_id,
-                                                                else_label_id,
-                                                                static_cast<uint16_t>(ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_BRANCH)));
-        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+    // =========================================================================
+    // NATIVE AI/ML & SPATIAL MATHEMATICS EXTENSIONS
+    // =========================================================================
+
+    [[nodiscard]] uint32_t emit_matmul_bf16(uint32_t a, uint32_t b, uint32_t c, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::MATMUL_BF16, a, b, c, result_id);
     }
 
-    void emit_branch_unlikely(uint32_t cond_id,
-                              uint32_t then_label_id,
-                              uint32_t else_label_id = ir::INVALID_SLOT) noexcept {
-        if (!has_insertion_point()) return;
-        active_stream_->push_back(ir::gen::make_generated_node(ir::OpCode::BRANCH_UNLIKELY,
-                                                                allocate_temp_id(),
-                                                                cond_id,
-                                                                then_label_id,
-                                                                else_label_id,
-                                                                static_cast<uint16_t>(ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_BRANCH)));
+    [[nodiscard]] uint32_t emit_matmul_fp8(uint32_t a, uint32_t b, uint32_t c, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::MATMUL_FP8, a, b, c, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_sdpa_f16(uint32_t q, uint32_t k, uint32_t v, uint32_t mask = ir::INVALID_SLOT, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        pre_emit_numa_();
+        if (!has_insertion_point()) return ir::INVALID_SLOT;
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        ir::IRNode n = ir::gen::make_generated_node(ir::OpCode::SDPA_F16, rid, q, k, v);
+        n.logic_flags = mask; // Pack 4th operand into logic_flags
+        n.refresh_intent_hash();
+        active_stream_->push_back(n);
+        annotate_result_type_(*active_stream_, ir::OpCode::SDPA_F16, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_softmax_fast(uint32_t input, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SOFTMAX_FAST, input, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_layer_norm(uint32_t input, uint32_t gamma, uint32_t beta, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::LAYER_NORM, input, gamma, beta, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_rope_embed(uint32_t input, uint32_t freqs, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::ROPE_EMBED, input, freqs, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_fast_inv_sqrt(uint32_t input, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::FAST_INV_SQRT, input, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_vec3_cross(uint32_t a, uint32_t b, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::VEC3_CROSS, a, b, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_vec4_dot(uint32_t a, uint32_t b, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::VEC4_DOT, a, b, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_mat4_mul(uint32_t a, uint32_t b, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::MAT4_MUL, a, b, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_quat_slerp(uint32_t q1, uint32_t q2, uint32_t t, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::QUAT_SLERP, q1, q2, t, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_ray_aabb_isect(uint32_t ray, uint32_t aabb, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::RAY_AABB_ISECT, ray, aabb, result_id);
     }
 
     // ---- Debug & Type Metadata Annotations ----
@@ -1399,6 +1567,10 @@ private:
     std::unordered_map<int32_t, uint32_t> constant_i32_cache_;
     std::unordered_map<std::string, uint32_t> string_handle_cache_;
     std::unordered_map<uint32_t, uint32_t> string_constant_slot_cache_;
+
+    // Semantic integration pointers
+    dgtl::semantic::SymbolTable* active_symbol_table_ = nullptr;
+    dgtl::semantic::TypeSystem* active_type_system_ = nullptr;
 
     // Active Debug Store and metadata status
     ir::debug::DGTLDebugStore* active_debug_store_ = nullptr;
@@ -1633,9 +1805,7 @@ private:
     }
 
     [[nodiscard]] static const ir::gen::OpDefMetadata* lookup_generated_op_def_(ir::OpCode opcode) noexcept {
-        const auto it = std::find_if(std::begin(ir::gen::kGeneratedOpDefs), std::end(ir::gen::kGeneratedOpDefs),
-                                     [opcode](const auto& meta) { return meta.opcode == opcode; });
-        return it != std::end(ir::gen::kGeneratedOpDefs) ? &(*it) : nullptr;
+        return ir::gen::find_generated_op_def(opcode);
     }
 };
 

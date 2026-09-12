@@ -71,7 +71,6 @@ class StrikeLiveManager {
     [[nodiscard]] static OperandUseMask operand_uses(ir::OpCode opcode) noexcept {
         switch (opcode) {
         // Reads exactly 1 virtual register (op_a)
-        case ir::OpCode::REG_MOVE:
         case ir::OpCode::LOAD:
         case ir::OpCode::VOLATILE_LOAD:
         case ir::OpCode::STORE_V512:
@@ -84,6 +83,7 @@ class StrikeLiveManager {
             return {true, false, false};
 
         // Reads 2 virtual registers (op_a, op_b)
+        case ir::OpCode::REG_MOVE:
         case ir::OpCode::STORE:
         case ir::OpCode::VOLATILE_STORE:
         case ir::OpCode::ADD_I32:

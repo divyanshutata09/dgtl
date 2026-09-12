@@ -26,8 +26,8 @@ int main() {
 
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const bool has_test = text.find("if (command == \"test\")") != std::string::npos;
-    const bool has_extra_args_guard = text.find("Extra arguments are not supported. Use only: dgtl test") != std::string::npos;
-    if (!(has_test && has_extra_args_guard)) {
+    const bool has_test_mode_guard = text.find("Supported modes: dgtl test or dgtl test full") != std::string::npos;
+    if (!(has_test && has_test_mode_guard)) {
         std::cerr << "[FAIL] TestCommandTest: test command route/guard missing in orchestrator\n";
         return 1;
     }

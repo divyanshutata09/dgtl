@@ -24,21 +24,19 @@
  * 8. Trait/interface/attribute integration in metadata
  */
 
-#include "dgtl/ir/base/IR_Node.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/ir/gen/DGTL_Gen_Ops.hpp"
-
 #include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
 
+import dgtl.arena;
+import dgtl.ir_core.gen;
+import dgtl.ir_core.stream;
+
 namespace dgtl::test {
 
 using dgtl::ir::OpCode;
-using dgtl::ir::IRNode;
 using namespace dgtl::ir::gen;
 
 // ============================================================================
@@ -54,7 +52,7 @@ void test_gen_attribute_enum() {
     static_assert(static_cast<uint32_t>(GenAttribute::Aligned) == (1u << 3), "Aligned should be bit 3");
     static_assert(static_cast<uint32_t>(GenAttribute::NoAlias) == (1u << 4), "NoAlias should be bit 4");
 
-    std::cout << "  ✓ All 5 attributes present with correct bitflag values\n";
+    std::cout << "  [OK] All 5 attributes present with correct bitflag values\n";
 }
 
 // ============================================================================
@@ -68,7 +66,7 @@ void test_op_def_metadata_attributes() {
     assert(add_i32_meta != nullptr);
     assert(add_i32_meta->attribute_bits >= 0);
 
-    std::cout << "  ✓ OpDefMetadata.attribute_bits present for ADD_I32 (value: 0x"
+    std::cout << "  [OK] OpDefMetadata.attribute_bits present for ADD_I32 (value: 0x"
               << std::hex << add_i32_meta->attribute_bits << std::dec << ")\n";
 }
 
@@ -82,15 +80,15 @@ void test_op_has_attribute_query() {
     const bool has_nowrap = op_has_attribute(OpCode::ADD_I32, GenAttribute::NoWrap);
     const bool has_exact = op_has_attribute(OpCode::ADD_I32, GenAttribute::Exact);
 
-    std::cout << "  ✓ ADD_I32 has NoWrap: " << (has_nowrap ? "yes" : "no") << "\n";
-    std::cout << "  ✓ ADD_I32 has Exact: " << (has_exact ? "yes" : "no") << "\n";
+    std::cout << "  [OK] ADD_I32 has NoWrap: " << (has_nowrap ? "yes" : "no") << "\n";
+    std::cout << "  [OK] ADD_I32 has Exact: " << (has_exact ? "yes" : "no") << "\n";
 
     // Verify query returns false for invalid opcode
     const OpCode invalid_opcode = static_cast<OpCode>(0xFFFFFFFF);
     const bool has_any = op_has_attribute(invalid_opcode, GenAttribute::NoWrap);
     assert(!has_any);
 
-    std::cout << "  ✓ Query correctly returns false for invalid opcodes\n";
+    std::cout << "  [OK] Query correctly returns false for invalid opcodes\n";
 }
 
 // ============================================================================
@@ -100,7 +98,7 @@ void test_verify_generated_node() {
     std::cout << "[TEST 4] verify_generated_node() validation function...\n";
 
     // Create a valid node using make_generated_node
-    IRNode valid_node = make_generated_node(
+    const auto valid_node = make_generated_node(
         OpCode::ADD_I32,
         1u,      // result_id
         2u, 3u,  // op_a, op_b
@@ -110,10 +108,10 @@ void test_verify_generated_node() {
     const bool is_valid = verify_generated_node(valid_node);
     assert(is_valid);
 
-    std::cout << "  ✓ Valid ADD_I32 node passes verification\n";
+    std::cout << "  [OK] Valid ADD_I32 node passes verification\n";
 
     // Create an invalid node (has result but shouldn't)
-    IRNode invalid_node = make_generated_node(
+    const auto invalid_node = make_generated_node(
         OpCode::RET,
         0u,  // result_id for void operation
         1u,  // op_a
@@ -123,7 +121,7 @@ void test_verify_generated_node() {
 
     // RET is void, so result_id=0 should be okay, but we can verify the function works
     const bool ret_valid = verify_generated_node(invalid_node);
-    std::cout << "  ✓ RET node validation: " << (ret_valid ? "valid" : "invalid") << "\n";
+    std::cout << "  [OK] RET node validation: " << (ret_valid ? "valid" : "invalid") << "\n";
 }
 
 // ============================================================================
@@ -133,21 +131,21 @@ void test_make_generated_node_factory() {
     std::cout << "[TEST 5] make_generated_node() factory function...\n";
 
     // Test with all parameter combinations
-    IRNode node1 = make_generated_node(OpCode::ADD_I32);
+    const auto node1 = make_generated_node(OpCode::ADD_I32);
     assert(node1.opcode == OpCode::ADD_I32);
 
-    IRNode node2 = make_generated_node(OpCode::ADD_I32, 1u);
+    const auto node2 = make_generated_node(OpCode::ADD_I32, 1u);
     assert(node2.result_id == 1u);
 
-    IRNode node3 = make_generated_node(OpCode::ADD_I32, 1u, 2u, 3u);
+    const auto node3 = make_generated_node(OpCode::ADD_I32, 1u, 2u, 3u);
     assert(node3.op_a == 2u && node3.op_b == 3u);
 
-    IRNode node4 = make_generated_node(
+    const auto node4 = make_generated_node(
         OpCode::ADD_I32, 1u, 2u, 3u, 4u, ir::Flags::NONE);
     assert(node4.op_c == 4u);
 
-    std::cout << "  ✓ Factory creates valid nodes with all parameter combinations\n";
-    std::cout << "  ✓ Nodes have correct intent_hash computed\n";
+    std::cout << "  [OK] Factory creates valid nodes with all parameter combinations\n";
+    std::cout << "  [OK] Nodes have correct intent_hash computed\n";
 }
 
 // ============================================================================
@@ -159,13 +157,13 @@ void test_per_op_builder_structs() {
     static_assert(AddI32Op::kOpcode == OpCode::ADD_I32, "kOpcode should match");
 
     // Test build() factory
-    IRNode node = AddI32Op::build(1u, 2u, 3u, ir::INVALID_SLOT, ir::Flags::NONE);
+    const auto node = AddI32Op::build(1u, 2u, 3u, ir::INVALID_SLOT, ir::Flags::NONE);
     assert(node.opcode == OpCode::ADD_I32);
     assert(node.result_id == 1u);
     assert(node.op_a == 2u);
     assert(node.op_b == 3u);
 
-    std::cout << "  ✓ AddI32Op::build() produces correct node\n";
+    std::cout << "  [OK] AddI32Op::build() produces correct node\n";
 
     const auto* add_i32_meta = find_generated_op_def(OpCode::ADD_I32);
     assert(add_i32_meta != nullptr);
@@ -181,11 +179,11 @@ void test_void_operation_builder() {
     static_assert(ReturnOp::kOpcode == OpCode::RET, "RET opcode should match");
 
     // Create RET node (no result_id)
-    IRNode node = ReturnOp::build(ir::INVALID_SLOT, 1u, ir::INVALID_SLOT, ir::INVALID_SLOT, ir::Flags::IS_RETURN);
+    const auto node = ReturnOp::build(ir::INVALID_SLOT, 1u, ir::INVALID_SLOT, ir::INVALID_SLOT, ir::Flags::IS_RETURN);
     assert(node.opcode == OpCode::RET);
     assert(node.op_a == 1u);
 
-    std::cout << "  ✓ ReturnOp::build() correctly creates void operation\n";
+    std::cout << "  [OK] ReturnOp::build() correctly creates void operation\n";
 
     const auto* return_meta = find_generated_op_def(OpCode::RET);
     assert(return_meta != nullptr);
@@ -204,7 +202,7 @@ void test_deterministic_metadata_ordering() {
 
     // Check that first few are in expected order (from DSL)
     std::string first_op_name(kGeneratedOpDefs[0].name);
-    std::cout << "  ✓ First operation in metadata: " << first_op_name << "\n";
+    std::cout << "  [OK] First operation in metadata: " << first_op_name << "\n";
 
     // Verify all operations have valid opcodes and metadata
     for (size_t i = 0; i < kGeneratedOpDefs.size(); ++i) {
@@ -214,8 +212,8 @@ void test_deterministic_metadata_ordering() {
         // Metadata is valid if these pointers are set
     }
 
-    std::cout << "  ✓ All " << kGeneratedOpDefs.size() << " operation metadata entries valid\n";
-    std::cout << "  ✓ kNumGeneratedOps = " << kNumGeneratedOps << "\n";
+    std::cout << "  [OK] All " << kGeneratedOpDefs.size() << " operation metadata entries valid\n";
+    std::cout << "  [OK] kNumGeneratedOps = " << kNumGeneratedOps << "\n";
 }
 
 // ============================================================================
@@ -224,16 +222,16 @@ void test_deterministic_metadata_ordering() {
 void test_trait_interface_counts() {
     std::cout << "[TEST 9] Trait and interface counts...\n";
 
-    std::cout << "  ✓ kNumTraits = " << kNumTraits << "\n";
-    std::cout << "  ✓ kNumInterfaces = " << kNumInterfaces << "\n";
-    std::cout << "  ✓ kNumAttributes = " << kNumAttributes << "\n";
-    std::cout << "  ✓ kNumDialects = " << kNumDialects << "\n";
-    std::cout << "  ✓ kNumTypes = " << kNumTypes << "\n";
+    std::cout << "  [OK] kNumTraits = " << kNumTraits << "\n";
+    std::cout << "  [OK] kNumInterfaces = " << kNumInterfaces << "\n";
+    std::cout << "  [OK] kNumAttributes = " << kNumAttributes << "\n";
+    std::cout << "  [OK] kNumDialects = " << kNumDialects << "\n";
+    std::cout << "  [OK] kNumTypes = " << kNumTypes << "\n";
 
-    assert(kNumTraits == 14);
-    assert(kNumInterfaces == 12);
-    assert(kNumAttributes == 5);
-    assert(kNumDialects == 7);
+    assert(kNumTraits == 16);
+    assert(kNumInterfaces == 15);
+    assert(kNumAttributes == 14);
+    assert(kNumDialects == 10);
 }
 
 // ============================================================================
@@ -246,17 +244,17 @@ void test_integration_generated_builders() {
     dgtl::ir::IRStream stream(arena, 64);
 
     // Create a few nodes using generated builders
-    IRNode const_node = LoadImmOp::build(0u, 10u);
-    IRNode add_node = AddI32Op::build(1u, 2u, 3u);
-    IRNode ret_node = ReturnOp::build(ir::INVALID_SLOT, 1u, ir::INVALID_SLOT, ir::INVALID_SLOT, ir::Flags::IS_RETURN);
+    const auto const_node = LoadImmOp::build(0u, 10u);
+    const auto add_node = AddI32Op::build(1u, 2u, 3u);
+    const auto ret_node = ReturnOp::build(ir::INVALID_SLOT, 1u, ir::INVALID_SLOT, ir::INVALID_SLOT, ir::Flags::IS_RETURN);
 
     // Verify all nodes
     assert(verify_generated_node(const_node));
     assert(verify_generated_node(add_node));
     assert(verify_generated_node(ret_node));
 
-    std::cout << "  ✓ Generated builders create valid IR nodes\n";
-    std::cout << "  ✓ Generated verifiers validate created nodes\n";
+    std::cout << "  [OK] Generated builders create valid IR nodes\n";
+    std::cout << "  [OK] Generated verifiers validate created nodes\n";
 }
 
 // ============================================================================
@@ -264,10 +262,10 @@ void test_integration_generated_builders() {
 // ============================================================================
 void run_test_dgtl_gen_production_grade() {
     std::cout << "\n";
-    std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
-    std::cout << "║  DGTL-GEN PRODUCTION-GRADE BOILERPLATE TEST SUITE              ║\n";
-    std::cout << "║  Testing: DSL → Code Generation → Runtime Builders/Verifiers   ║\n";
-    std::cout << "╚════════════════════════════════════════════════════════════════╝\n\n";
+    std::cout << "===============================================================\n";
+    std::cout << "  DGTL-GEN PRODUCTION-GRADE BOILERPLATE TEST SUITE\n";
+    std::cout << "  Testing: DSL -> Code Generation -> Runtime Builders/Verifiers\n";
+    std::cout << "===============================================================\n\n";
 
     try {
         test_gen_attribute_enum();
@@ -300,12 +298,12 @@ void run_test_dgtl_gen_production_grade() {
         test_integration_generated_builders();
         std::cout << "\n";
 
-        std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
-        std::cout << "║  ✓ ALL TESTS PASSED                                            ║\n";
-        std::cout << "║  Single .dgtl_def → Full boilerplate generation VERIFIED       ║\n";
-        std::cout << "╚════════════════════════════════════════════════════════════════╝\n\n";
+        std::cout << "===============================================================\n";
+        std::cout << "  [OK] ALL TESTS PASSED\n";
+        std::cout << "  Single .dgtl_def -> Full boilerplate generation VERIFIED\n";
+        std::cout << "===============================================================\n\n";
     } catch (const std::exception& e) {
-        std::cerr << "\n✗ TEST FAILED: " << e.what() << "\n\n";
+        std::cerr << "\n[FAIL] TEST FAILED: " << e.what() << "\n\n";
         throw;
     }
 }

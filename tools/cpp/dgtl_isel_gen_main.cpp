@@ -31,8 +31,8 @@ inline constexpr std::size_t kOpcodeTableSize = 65536;
 
 struct Options {
     fs::path input{"include/dgtl/isa/defs/x64_core.dgtl_isel"};
-    fs::path output_rules{"include/dgtl/isa/lowering/gen/X64_ISel_Rules_Generated.ixx"};
-    fs::path output_generated{"include/dgtl/isa/lowering/gen/X64_ISel_Generated.ixx"};
+    fs::path output_rules{"include/dgtl/isa/X64/X64_ISel_Rules_Generated.ixx"};
+    fs::path output_generated{"include/dgtl/isa/X64/X64_ISel_Generated.ixx"};
     fs::path root{"."};
 };
 

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -78,6 +78,19 @@ public:
      */
     [[nodiscard]] uint64_t get_symbol_address(const std::string& symbol_name) noexcept {
         return get_symbol_address(symbol_name.c_str());
+    }
+
+    /**
+     * @brief Resolve a native function pointer by name for zero-overhead invocation.
+     * @param symbol_name The name of the symbol to resolve
+     * @return Raw function pointer (nullptr if not found)
+     */
+    [[nodiscard]] void* get_function_pointer(const char* symbol_name) noexcept {
+        return reinterpret_cast<void*>(get_symbol_address(symbol_name));
+    }
+
+    [[nodiscard]] void* get_function_pointer(const std::string& symbol_name) noexcept {
+        return get_function_pointer(symbol_name.c_str());
     }
 
     /**

@@ -75,6 +75,6 @@ void run_test_t08_sdk_c_api_roundtrip() {
     dgtl_stream_destroy(stream);
     dgtl_context_destroy(ctx);
 
-    std::cout << "[T08] PASS — full C API lifecycle: create/emit/optimize/hash/destroy OK "
+    std::cout << "[T08] PASS - full C API lifecycle: create/emit/optimize/hash/destroy OK "
               << "(SDK v" << ver << ")\n";
 }

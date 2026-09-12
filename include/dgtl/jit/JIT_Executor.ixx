@@ -525,134 +525,24 @@ private:
     size_t exec_size_ = 0;
     uintptr_t exec_addr_ = 0;
 
-    void release_exec_region() noexcept {
-        if (!exec_region_) return;
-#ifdef _WIN32
-        VirtualFree(exec_region_, 0, 0x00008000); // MEM_RELEASE
-#else
-        munmap(exec_region_, exec_size_);
-#endif
-        exec_region_ = nullptr;
-        exec_size_ = 0;
-        exec_addr_ = 0;
-    }
+    void release_exec_region() noexcept;
 
 public:
     StrikeRunner() = default;
-    ~StrikeRunner() { release_exec_region(); }
+    ~StrikeRunner();
 
     StrikeRunner(const StrikeRunner&) = delete;
     StrikeRunner& operator=(const StrikeRunner&) = delete;
 
-    StrikeRunner(StrikeRunner&& other) noexcept
-        : exec_region_(other.exec_region_), exec_size_(other.exec_size_), exec_addr_(other.exec_addr_) {
-        other.exec_region_ = nullptr;
-        other.exec_size_ = 0;
-        other.exec_addr_ = 0;
-    }
+    StrikeRunner(StrikeRunner&& other) noexcept;
+    StrikeRunner& operator=(StrikeRunner&& other) noexcept;
 
-    StrikeRunner& operator=(StrikeRunner&& other) noexcept {
-        if (this == &other) return *this;
-        release_exec_region();
-        exec_region_ = other.exec_region_;
-        exec_size_ = other.exec_size_;
-        exec_addr_ = other.exec_addr_;
-        other.exec_region_ = nullptr;
-        other.exec_size_ = 0;
-        other.exec_addr_ = 0;
-        return *this;
-    }
+    size_t inject_code(dgtl::core::DGTL_Arena& arena,
+                       const std::vector<uint8_t>& machine_code);
 
-    size_t inject_code([[maybe_unused]] dgtl::core::DGTL_Arena& arena,
-                       const std::vector<uint8_t>& machine_code) {
-        if (machine_code.empty()) [[unlikely]] return 0;
+    [[nodiscard]] uintptr_t last_injected_address() const noexcept;
 
-        release_exec_region();
-        exec_size_ = machine_code.size();
-
-#ifdef _WIN32
-        exec_region_ = static_cast<uint8_t*>(
-            VirtualAlloc(nullptr, exec_size_, (0x00002000 | 0x00001000), 0x04)
-        );
-#else
-        int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    #if defined(__APPLE__)
-        mmap_flags |= MAP_JIT;
-    #endif
-        exec_region_ = static_cast<uint8_t*>(
-            mmap(nullptr, exec_size_, PROT_READ | PROT_WRITE, mmap_flags, -1, 0)
-        );
-#endif
-
-        if (!exec_region_
-    #ifndef _WIN32
-            || exec_region_ == MAP_FAILED
-    #endif
-            ) [[unlikely]] {
-            exec_region_ = nullptr;
-            exec_size_ = 0;
-            exec_addr_ = 0;
-            return 0;
-        }
-
-        std::memcpy(exec_region_, machine_code.data(), exec_size_);
-
-        bool protect_ok = true;
-#ifdef _WIN32
-        DWORD old_prot = 0;
-        protect_ok = (VirtualProtect(exec_region_, exec_size_, 0x20, &old_prot) != 0);
-        if (protect_ok) {
-            FlushInstructionCache(GetCurrentProcess(), exec_region_, exec_size_);
-        }
-#else
-        protect_ok = (mprotect(exec_region_, exec_size_, PROT_READ | PROT_EXEC) == 0);
-        if (protect_ok) {
-            __builtin___clear_cache(reinterpret_cast<char*>(exec_region_),
-                                    reinterpret_cast<char*>(exec_region_) + exec_size_);
-        }
-#endif
-
-        if (!protect_ok) [[unlikely]] {
-            release_exec_region();
-            return 0;
-        }
-
-        exec_addr_ = reinterpret_cast<uintptr_t>(exec_region_);
-        return exec_size_;
-    }
-
-    [[nodiscard]] uintptr_t last_injected_address() const noexcept { return exec_addr_; }
-
-    StrikeMetrics execute(dgtl::core::DGTL_Arena& arena, size_t injected_size, void* payload) {
-        StrikeMetrics metrics{};
-        if (!exec_region_ || injected_size == 0 || injected_size > exec_size_) [[unlikely]] {
-            metrics.status_code = static_cast<uint32_t>(StrikeStatus::InvalidInput);
-            return metrics;
-        }
-
-        (void)dgtl::core::apply_high_performance_affinity();
-        detail::prime_runner_simd_units();
-        detail::stabilize_hardware_clock();
-
-        typedef uint64_t (*StrikeFn)(void*);
-        StrikeFn run_strike = reinterpret_cast<StrikeFn>(exec_region_);
-
-        (void)arena;
-        const auto start = std::chrono::high_resolution_clock::now();
-
-        try {
-            run_strike(payload);
-            metrics.status_code = static_cast<uint32_t>(StrikeStatus::Ok);
-        } catch (...) {
-            metrics.status_code = static_cast<uint32_t>(StrikeStatus::InjectFailed);
-        }
-
-        const auto end = std::chrono::high_resolution_clock::now();
-        metrics.execution_time_ns = std::chrono::duration<double, std::nano>(end - start).count();
-        metrics.executed_instructions = static_cast<uint64_t>(injected_size);
-
-        return metrics;
-    }
+    StrikeMetrics execute(dgtl::core::DGTL_Arena& arena, size_t injected_size, void* payload);
 };
 
 } // namespace dgtl::jit

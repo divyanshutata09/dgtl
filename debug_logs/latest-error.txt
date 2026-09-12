@@ -1,23 +1,27 @@
 DGTL Forensic Debugger
-Root: D:\TataG\dgtl
+Root: D:\tatag\dgtl
 
-Last command: dgtl GEN-VALIDATE
-Last exit code: 0
-Compiler fingerprint: cc06a44a6546513b
-Command fingerprint: 005a1c650ba5ebd8
-Declaration cache: 241 hits, 0 misses, 0 rescanned files
+Last command: dgtl --help
+Last exit code: 1
+Compiler fingerprint: 4c170f441e5daac2
+Command fingerprint: 1501e832aca2951f
+Declaration cache: 253 hits, 0 misses, 0 rescanned files
+Likely failing command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -c "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" -o "D:\TataG\DGTL\build\sdk_obj\sdk_dgtl_sdk_impl.o"
 Last session log: debug_logs/sessions/last-nondebug-session.log
 
 [1] Module Graph
-  Modules discovered: 128
+  Modules discovered: 141
   Cycles detected:    0
 
 [2] Error Clusters
   Logs scanned: 1
-  Clusters: 0
+  Clusters: 2
+  - (x1) --help
+       :: --help
+  - (x1) --help:String) [], RemoteException
+       :: --help:String) [], RemoteException
 
 [2a] Failing Command Context
-  No error clusters available for command attribution.
 
 [3] Cache & Cycle Hints
   No cache-specific hints emitted.
@@ -25,11 +29,11 @@ Last session log: debug_logs/sessions/last-nondebug-session.log
 [4] Symbol Collision Radar
   Dynamic suspect symbols: 5
   Suspect symbols: 4
-  - IRStream appears at 523 sites
+  - IRStream appears at 558 sites
       include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:97 :: void analyze_stream(const ir::IRStream& stream) {
-      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:205 :: [[nodiscard]] float predict_alias_probability(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) noexcept {
-      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:239 :: [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
-  - find_generated_op_def appears at 25 sites
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:208 :: [[nodiscard]] float predict_alias_probability(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) noexcept {
+      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:242 :: [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
+  - find_generated_op_def appears at 26 sites
       include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:219 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
       include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:251 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
       include/dgtl/ir/base/IR_SSA.ixx:1361 :: const auto* def = dgtl::ir::gen::find_generated_op_def(node.opcode);
@@ -43,13 +47,13 @@ Last session log: debug_logs/sessions/last-nondebug-session.log
 
 [5] Ownership Arbitration
   Recommendations: 4
-  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:8998 (score 110)
+  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:9354 (score 110)
       why: inside DGTL workspace, generated-definition ownership path, importable generated IR interface, inline or constexpr definition
-      8996: }();
-      8997: 
-      8998: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
-      8999:     const size_t index = static_cast<size_t>(opcode);
-      9000:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+      9352: }();
+      9353: 
+      9354: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
+      9355:     const size_t index = static_cast<size_t>(opcode);
+      9356:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
   - IRStream -> include/dgtl/backend/driver/Backend_Driver_API.ixx:281 (score 40)
       why: inside DGTL workspace, inline or constexpr definition
       279: }
@@ -57,13 +61,13 @@ Last session log: debug_logs/sessions/last-nondebug-session.log
       281: inline bool emit_arm64_direct(const dgtl::ir::IRStream& stream,
       282:                               const dgtl::semantic::SymbolTable& symbols,
       283:                               std::string& out_text) {
-  - TargetMachine -> include/dgtl/isa/lowering/Instruction_Selector.ixx:462 (score 40)
+  - TargetMachine -> include/dgtl/isa/common/Instruction_Selector.ixx:460 (score 40)
       why: inside DGTL workspace, inline or constexpr definition
-      460: }
-      461: 
-      462: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
-      463:     if (rule.require_fma && !target.get_caps().has_fma) {
-      464:         return false;
+      458: }
+      459: 
+      460: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
+      461:     if (rule.require_fma && !target.get_caps().has_fma) {
+      462:         return false;
   - RuntimeFeedback -> include/dgtl/analysis/AI_Cost_Model.ixx:47 (score 20)
       why: inside DGTL workspace
       45: 
@@ -74,4 +78,5 @@ Last session log: debug_logs/sessions/last-nondebug-session.log
 
 [6] Staff-Level Triage
   Primary structural risk: no import SCCs detected in scanned units.
+  Primary execution risk: fix the highest-frequency error cluster first because downstream diagnostics are likely derivative noise.
   Regression: Previous run: identical fingerprint to previous snapshot.

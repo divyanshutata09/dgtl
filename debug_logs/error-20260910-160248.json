@@ -1,0 +1,21 @@
+{
+  "root": "D:\\TataG\\DGTL",
+  "module_count": 141,
+  "cycle_count": 0,
+  "declaration_cache": {"hits": 252, "misses": 0, "files_scanned": 0},
+  "logs_scanned": ["D:\\TataG\\DGTL\\debug_logs\\sessions\\last-nondebug-session.log"],
+  "cycles": [
+  ],
+  "error_clusters": [
+    {"signature": "###: error: could not convert 'true' from 'bool'", "count": 1, "likely_command": "g++ -std=c++26 -fmodules-ts -O2 -pipe -I\"D:\\TataG\\DGTL\\include\" \"D:\\TataG\\DGTL\\tools\\cpp\\dgtl_api_policy_main.cpp\" -o \"D:\\TataG\\DGTL\\build\\tools\\dgtl-api-policy.exe\"", "likely_command_hits": 1}
+  ],
+  "cache_hints": [],
+  "last_command": "dgtl build-release",
+  "last_exit_code": "1",
+  "likely_failing_command": "g++ -std=c++26 -fmodules-ts -O2 -pipe -I\"D:\\TataG\\DGTL\\include\" \"D:\\TataG\\DGTL\\tools\\cpp\\dgtl_api_policy_main.cpp\" -o \"D:\\TataG\\DGTL\\build\\tools\\dgtl-api-policy.exe\"",
+  "compiler_fingerprint": "c1382903212685a9",
+  "command_fingerprint": "2609532795688541",
+  "symbol_collisions": [{"symbol": "IRStream", "site_count": 558}, {"symbol": "find_generated_op_def", "site_count": 26}, {"symbol": "TargetMachine", "site_count": 24}, {"symbol": "RuntimeFeedback", "site_count": 2}],
+  "regression_notes": ["Previous run: identical fingerprint to previous snapshot."],
+  "ownership_recommendations": [{"symbol": "find_generated_op_def", "candidate_count": 26, "winner": "D:/TataG/DGTL/include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:9354"}, {"symbol": "IRStream", "candidate_count": 558, "winner": "D:/TataG/DGTL/include/dgtl/backend/driver/Backend_Driver_API.ixx:281"}, {"symbol": "TargetMachine", "candidate_count": 24, "winner": "D:/TataG/DGTL/include/dgtl/isa/common/Instruction_Selector.ixx:460"}, {"symbol": "RuntimeFeedback", "candidate_count": 2, "winner": "D:/TataG/DGTL/include/dgtl/analysis/AI_Cost_Model.ixx:47"}]
+}

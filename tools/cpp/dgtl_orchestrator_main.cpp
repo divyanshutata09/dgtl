@@ -228,54 +228,40 @@ int verify_internal_api_artifacts() {
         return 1;
     }
 
+    const std::vector<std::string> required_semantic_gcms = {
+        "dgtl.ir_core.semantic.gcm",
+        "dgtl.ir_core.type_system.gcm",
+        "dgtl.ir_core.type_checker.gcm",
+        "dgtl.ir_core.borrow_checker.gcm",
+        "dgtl.ir_core.name_resolver.gcm",
+        "dgtl.ir_core.constant_evaluator.gcm",
+        "dgtl.ir_core.semantic_analyzer.gcm"
+    };
+    for (const auto& gcm_name : required_semantic_gcms) {
+        if (!file_exists(gcm_cache / gcm_name)) {
+            std::cerr << "[api] Internal API not ready: missing semantic module " << gcm_name << "\n";
+            return 1;
+        }
+    }
+
     std::cout << "[api] Internal API ready (module cache + internal library present)\n";
     return 0;
 }
 
 int verify_public_api_artifacts() {
     const fs::path sdk_include = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl.h";
-    const fs::path sdk_c_api = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_c_api.h";
-    const fs::path sdk_core = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_core.h";
-    const fs::path sdk_gpu = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_gpu.h";
-    const fs::path sdk_simd = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_simd.h";
-    const fs::path sdk_capabilities = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_capabilities.h";
-    const fs::path sdk_session = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_session.h";
-    const fs::path sdk_lib = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl.lib";
+    const fs::path sdk_lib     = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl.lib";
 
     if (!file_exists(sdk_include)) {
-        std::cerr << "[api] Public SDK not ready: missing namespaced header " << sdk_include.string() << "\n";
-        return 1;
-    }
-    if (!file_exists(sdk_c_api)) {
-        std::cerr << "[api] Public SDK not ready: missing C ABI header " << sdk_c_api.string() << "\n";
-        return 1;
-    }
-    if (!file_exists(sdk_core)) {
-        std::cerr << "[api] Public SDK not ready: missing core definitions header " << sdk_core.string() << "\n";
-        return 1;
-    }
-    if (!file_exists(sdk_gpu)) {
-        std::cerr << "[api] Public SDK not ready: missing GPU header " << sdk_gpu.string() << "\n";
-        return 1;
-    }
-    if (!file_exists(sdk_simd)) {
-        std::cerr << "[api] Public SDK not ready: missing SIMD header " << sdk_simd.string() << "\n";
-        return 1;
-    }
-    if (!file_exists(sdk_capabilities)) {
-        std::cerr << "[api] Public SDK not ready: missing capability header " << sdk_capabilities.string() << "\n";
-        return 1;
-    }
-    if (!file_exists(sdk_session)) {
-        std::cerr << "[api] Public SDK not ready: missing session header " << sdk_session.string() << "\n";
+        std::cerr << "[api] Public SDK not ready: missing namespaced header " << sdk_include.string() << std::endl;
         return 1;
     }
     if (!file_exists(sdk_lib)) {
-        std::cerr << "[api] Public SDK not ready: missing library " << sdk_lib.string() << "\n";
+        std::cerr << "[api] Public SDK not ready: missing library " << sdk_lib.string() << std::endl;
         return 1;
     }
 
-    std::cout << "[api] Public SDK ready (headers + static library present)\n";
+    std::cout << "[api] Public SDK ready (unified header + static library present)" << std::endl;
     return 0;
 }
 
@@ -483,6 +469,26 @@ int compile_all_modules() {
     std::vector<ModuleUnit> deployment_pipeline;
     std::unordered_set<std::string> visited;
     std::unordered_set<std::string> active_stack;
+
+    const std::vector<std::string> bootstrap_roots{
+        "dgtl.ir_enums",
+        "dgtl.ir_node",
+        "dgtl.ir_core.stream",
+        "dgtl.op_traits",
+        "dgtl.target",
+        "dgtl.ir_core.semantic",
+        "dgtl.ir_core.type_system",
+        "dgtl.ir_core.type_checker",
+        "dgtl.ir_core.borrow_checker",
+        "dgtl.ir_core.name_resolver",
+        "dgtl.ir_core.constant_evaluator",
+        "dgtl.ir_core.semantic_analyzer"
+    };
+    for (const auto& root_key : bootstrap_roots) {
+        if (module_database.count(root_key)) {
+            resolve_topological_dfs(root_key, module_database, visited, active_stack, deployment_pipeline);
+        }
+    }
 
     for (const auto& root_key : scan_roots) {
         resolve_topological_dfs(root_key, module_database, visited, active_stack, deployment_pipeline);

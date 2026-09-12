@@ -5348,13 +5348,13 @@ D:\TATAG\DGTL\src\sdk\dgtl_sdk_impl.cpp:21:2: information: Include file: "dgtl_s
 [missingInclude]
 #include "dgtl_sdk/dgtl_session.h"
  ^
-D:\TATAG\DGTL\src\sdk\dgtl_sdk_impl.cpp:22:2: information: Include file: "dgtl_sdk/dgtl_simd.h" not found. 
+D:\TATAG\DGTL\src\sdk\dgtl_sdk_impl.cpp:22:2: information: Include file: "dgtl_sdk/" not found. 
 [missingInclude]
-#include "dgtl_sdk/dgtl_simd.h"
+#include "dgtl_sdk/"
  ^
-D:\TATAG\DGTL\src\sdk\dgtl_sdk_impl.cpp:23:2: information: Include file: "dgtl_sdk/dgtl_c_api.h" not found. 
+D:\TATAG\DGTL\src\sdk\dgtl_sdk_impl.cpp:23:2: information: Include file: "dgtl_sdk/" not found. 
 [missingInclude]
-#include "dgtl_sdk/dgtl_c_api.h"
+#include "dgtl_sdk/"
  ^
 D:\TATAG\DGTL\src\sdk\dgtl_sdk_impl.cpp:25:2: information: Include file: <cstring> not found. Please note: Standard 
 library headers do not need to be provided to get proper results. [missingIncludeSystem]
@@ -6991,8 +6991,8 @@ D:\TATAG\DGTL\tests\sdk\sdk_smoke_test.cpp:24:2: information: Include file: "dgt
 D:\TATAG\DGTL\tests\sdk\sdk_smoke_test.cpp:25:2: information: Include file: "dgtl_core.h" not found. [missingInclude]
 #include "dgtl_core.h"
  ^
-D:\TATAG\DGTL\tests\sdk\sdk_smoke_test.cpp:26:2: information: Include file: "dgtl_simd.h" not found. [missingInclude]
-#include "dgtl_simd.h"
+D:\TATAG\DGTL\tests\sdk\sdk_smoke_test.cpp:26:2: information: Include file: "" not found. [missingInclude]
+#include ""
  ^
 D:\TATAG\DGTL\tests\sdk\sdk_smoke_test.cpp:28:2: information: Include file: <stdio.h> not found. Please note: Standard 
 library headers do not need to be provided to get proper results. [missingIncludeSystem]

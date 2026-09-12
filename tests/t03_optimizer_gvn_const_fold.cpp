@@ -6,13 +6,13 @@
  *         and remaps a downstream consumer's operand from the duplicate to
  *         the canonical result.
  */
-
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
-
 #include <iostream>
 #include <stdexcept>
+import dgtl.ir_core.stream;
+import dgtl.arena;
+import dgtl.ir_core.transform_scalar_core;
+
+
 
 void run_test_t03_optimizer_gvn_const_fold() {
     std::cout << "[T03] GVN: Constant Folding\n";
@@ -44,7 +44,7 @@ void run_test_t03_optimizer_gvn_const_fold() {
         }
     }
     if (!found) {
-        throw std::runtime_error("T03: result node (result_id=1) is missing after GVN — incorrectly eliminated");
+        throw std::runtime_error("T03: result node (result_id=1) is missing after GVN - incorrectly eliminated");
     }
 
     // Duplicate elimination: two identical ADDs must resolve to same canonical node
@@ -70,5 +70,5 @@ void run_test_t03_optimizer_gvn_const_fold() {
         }
     }
 
-    std::cout << "[T03] PASS — constant folding and duplicate elimination correct\n";
+    std::cout << "[T03] PASS - constant folding and duplicate elimination correct\n";
 }

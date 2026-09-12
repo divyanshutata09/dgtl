@@ -91,7 +91,7 @@ class DGTLGVN {
     std::vector<uint32_t> pre_ids;
 
     static size_t next_pow2(size_t v) noexcept {
-        if (v <= 1024) return 1024;
+        if (v <= 64) return 64;
         v--;
         v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16; v |= v >> 32;
         v++;
@@ -99,13 +99,13 @@ class DGTLGVN {
     }
 
 public:
-    explicit DGTLGVN(size_t max_ids = 65536) {
-        table_size_ = next_pow2(max_ids * 2);
+    explicit DGTLGVN(size_t max_ids = 64) {
+        table_size_ = next_pow2(std::max<size_t>(64, max_ids * 2));
         table_mask_ = table_size_ - 1;
         primary_table = std::make_unique<Entry[]>(table_size_);
         secondary_table = std::make_unique<Entry[]>(table_size_);
 
-        id_map.resize(max_ids > 0 ? max_ids : 65536);
+        id_map.resize(table_size_);
         for (uint32_t i = 0; i < id_map.size(); ++i) id_map[i] = i;
 
         pre_keys.reserve(PRE_WINDOW);
@@ -116,7 +116,9 @@ public:
         const size_t N = stream.size();
         if (N == 0) return;
 
-        const size_t needed_size = next_pow2(N * 4);
+        const ir::IRStream source = stream.clone();
+
+        const size_t needed_size = next_pow2(std::max<size_t>(64, N * 4));
         if (needed_size != table_size_) {
             table_size_ = needed_size;
             table_mask_ = table_size_ - 1;
@@ -140,12 +142,13 @@ public:
 
         stream.begin_transaction();
         stream.prune_shadow_buffer();
+        stream.set_shadow_count(0);
 
         bool has_live = false;
 
         for (size_t i = 0; i < N; ++i) {
-            const auto& atom = stream.get_atom_readonly(i);
-            const auto& core = stream.get_core_readonly(i);
+            const auto& atom = source.get_atom_readonly(i);
+            const auto& core = source.get_core_readonly(i);
 
             // FIXED: Checked side effects via the native flag mask layout directly
             if (atom.flags & ir::Flags::HAS_SIDE_EFFECTS) {
@@ -192,12 +195,12 @@ public:
             uint32_t c = resolve(core.op_c);
 
             if (atom.opcode == ir::OpCode::ADD_I32) {
-                if (is_zero(stream, a, i)) {
+                if (is_zero(source, a, i)) {
                     map_id(core.result_id, b);
                     stream.push_to_shadow(make_mov(core.result_id, b));
                     continue;
                 }
-                if (is_zero(stream, b, i)) {
+                if (is_zero(source, b, i)) {
                     map_id(core.result_id, a);
                     stream.push_to_shadow(make_mov(core.result_id, a));
                     continue;
@@ -293,7 +296,7 @@ private:
         return root;
     }
 
-    static bool is_zero(ir::IRStream& s, uint32_t id, size_t upto) {
+    static bool is_zero(const ir::IRStream& s, uint32_t id, size_t upto) {
         if (id == 0 || id == ir::INVALID_SLOT) return false;
 
         for (size_t j = 0; j < upto; ++j) {

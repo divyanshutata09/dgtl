@@ -7,10 +7,6 @@
  *         This is the key production performance SLA gate.
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/analysis/AI_Cost_Model.hpp"
-#include "dgtl/pass/speculative/Speculate_Alias_DCE_Inliner_Temporal_Vector_Fusion.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -18,6 +14,11 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+
+import dgtl.ir_core.stream;
+import dgtl.arena;
+import dgtl.ir_core.ai_cost_model;
+import dgtl.ir_core.speculate_alias_dce_inliner;
 
 void run_test_t10_optimizer_strike_throughput() {
     std::cout << "[T10] Speculative DCE Strike Throughput (1M nodes, SLA >= 150 Mn/s)\n";
@@ -70,9 +71,9 @@ void run_test_t10_optimizer_strike_throughput() {
     constexpr double kSlaMinMnps = 5.0;
     if (throughput_mnps < kSlaMinMnps) {
         throw std::runtime_error(
-            "T10: throughput SLA FAILED — got " + std::to_string(throughput_mnps)
+            "T10: throughput SLA FAILED - got " + std::to_string(throughput_mnps)
             + " M-nodes/sec, required >= " + std::to_string(kSlaMinMnps));
     }
 
-    std::cout << "[T10] PASS — strike throughput exceeds " << kSlaMinMnps << " M-nodes/sec SLA\n";
+    std::cout << "[T10] PASS - strike throughput exceeds " << kSlaMinMnps << " M-nodes/sec SLA\n";
 }

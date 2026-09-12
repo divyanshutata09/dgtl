@@ -37,6 +37,7 @@ module;
 #include <unordered_map> // g_backend_profiles, guard_regions, addr_accesses
 #include <iostream>      // std::cerr for fatal diagnostic paths
 #include <cassert>
+#include <limits>
 #include <cassert>
 
 #ifdef _WIN32
@@ -604,8 +605,18 @@ void IRStream::copy_from(const IRStream& other) {
     if (shadow_atoms && shadow_cores) {
         detail::copy_atom_core_stream(shadow_atoms, shadow_cores, atoms, cores, count);
     }
+    
+    /* CRITICAL FIX P0: Preserve all sidecars during copy_from.
+     * Sidecars contain essential metadata (call parameters, result IDs, ABI info).
+     * Failure to copy them breaks subsequent backend emission and ABI lowering.
+     */
     call_overflow_args_ = other.call_overflow_args_;
     call_abi_layout_words_ = other.call_abi_layout_words_;
+    operand_overflow_ = other.operand_overflow_;
+    result_ids_ = other.result_ids_;
+    result_types_ = other.result_types_;
+    node_effects_ = other.node_effects_;
+    
     joined_valid = false;
     invalidate_cfg_cache();
 }
@@ -644,8 +655,17 @@ IRStream IRStream::clone() const {
             }
         }
     }
+    
+    /* CRITICAL FIX P0: Clone all sidecars to preserve metadata.
+     * Sidecars are essential for ABI lowering, call parameter passing, and type tracking.
+     */
     cloned.call_overflow_args_ = call_overflow_args_;
     cloned.call_abi_layout_words_ = call_abi_layout_words_;
+    cloned.operand_overflow_ = operand_overflow_;
+    cloned.result_ids_ = result_ids_;
+    cloned.result_types_ = result_types_;
+    cloned.node_effects_ = node_effects_;
+    
     return cloned;
 }
 
@@ -699,6 +719,75 @@ void IRStream::set_count(size_t val) noexcept {
         joined_valid = false;
         invalidate_cfg_cache_locked();
     }
+}
+
+bool IRStream::reserve_capacity(size_t requested_capacity) noexcept {
+    std::lock_guard<std::recursive_mutex> guard(stream_mutex);
+    if (requested_capacity <= _capacity) return true;
+
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    size_t new_capacity = requested_capacity;
+    if (_capacity > 0 && _capacity <= max_size / 2u) {
+        new_capacity = std::max(requested_capacity, _capacity * 2u);
+    }
+
+    const auto allocation_size_valid = [max_size](size_t element_count, size_t element_size) noexcept {
+        return element_count <= max_size / element_size;
+    };
+    if (!allocation_size_valid(new_capacity, sizeof(IRAtom)) ||
+        !allocation_size_valid(new_capacity, sizeof(IRCore)) ||
+        !allocation_size_valid(new_capacity, sizeof(IRNode))) {
+        return false;
+    }
+
+    const size_t atom_bytes = new_capacity * sizeof(IRAtom);
+    const size_t core_bytes = new_capacity * sizeof(IRCore);
+    const size_t node_bytes = new_capacity * sizeof(IRNode);
+    IRAtom* new_atoms = static_cast<IRAtom*>(DGTL_aligned_alloc(atom_bytes, 64u));
+    IRCore* new_cores = static_cast<IRCore*>(DGTL_aligned_alloc(core_bytes, 64u));
+    IRAtom* new_shadow_atoms = static_cast<IRAtom*>(DGTL_aligned_alloc(atom_bytes, 64u));
+    IRCore* new_shadow_cores = static_cast<IRCore*>(DGTL_aligned_alloc(core_bytes, 64u));
+    IRNode* new_joined_buffer = static_cast<IRNode*>(DGTL_aligned_alloc(node_bytes, 64u));
+
+    if (!new_atoms || !new_cores || !new_shadow_atoms || !new_shadow_cores || !new_joined_buffer) {
+        DGTL_aligned_free(new_atoms);
+        DGTL_aligned_free(new_cores);
+        DGTL_aligned_free(new_shadow_atoms);
+        DGTL_aligned_free(new_shadow_cores);
+        DGTL_aligned_free(new_joined_buffer);
+        return false;
+    }
+
+    std::fill_n(new_atoms, new_capacity, IRAtom{});
+    std::fill(new_cores, new_cores + new_capacity, IRCore{});
+    std::fill_n(new_shadow_atoms, new_capacity, IRAtom{});
+    std::fill(new_shadow_cores, new_shadow_cores + new_capacity, IRCore{});
+    std::fill_n(new_joined_buffer, new_capacity, IRNode{});
+
+    const size_t committed_count = std::min(count, _capacity);
+    const size_t transactional_count = std::min(shadow_count, _capacity);
+    detail::copy_atom_core_stream(new_atoms, new_cores, atoms, cores, committed_count);
+    detail::copy_atom_core_stream(new_shadow_atoms, new_shadow_cores,
+                                  shadow_atoms, shadow_cores, transactional_count);
+
+    if (owns_aligned_alloc_storage) {
+        DGTL_aligned_free(atoms);
+        DGTL_aligned_free(cores);
+        DGTL_aligned_free(shadow_atoms);
+        DGTL_aligned_free(shadow_cores);
+    }
+    if (owns_joined_buffer) DGTL_aligned_free(joined_buffer);
+
+    atoms = new_atoms;
+    cores = new_cores;
+    shadow_atoms = new_shadow_atoms;
+    shadow_cores = new_shadow_cores;
+    joined_buffer = new_joined_buffer;
+    _capacity = new_capacity;
+    owns_aligned_alloc_storage = true;
+    owns_joined_buffer = true;
+    joined_valid = false;
+    return true;
 }
 
 void IRStream::reset() noexcept {
@@ -782,14 +871,16 @@ void IRStream::push_node(const IRAtom& atom, const IRCore& core) noexcept {
     }
 
     if (in_transaction.load(std::memory_order_acquire)) {
-        if (shadow_count >= _capacity || !shadow_atoms || !shadow_cores) [[unlikely]] return;
+        if (shadow_count >= _capacity && !reserve_capacity(shadow_count + 1u)) [[unlikely]] return;
+        if (!shadow_atoms || !shadow_cores) [[unlikely]] return;
         shadow_atoms[shadow_count] = atom;
         shadow_cores[shadow_count] = { core.result_id, core.op_a, core.op_b, core.op_c,
                                         sync_hash, core.logic_flags, final_aux_flags, core.debug_id, core.epoch };
         ++shadow_count;
         invalidate_cfg_cache_locked();
     } else {
-        if (count >= _capacity || !atoms || !cores) [[unlikely]] return;
+        if (count >= _capacity && !reserve_capacity(count + 1u)) [[unlikely]] return;
+        if (!atoms || !cores) [[unlikely]] return;
         atoms[count] = atom;
         cores[count] = { core.result_id, core.op_a, core.op_b, core.op_c,
                          sync_hash, core.logic_flags, final_aux_flags, core.debug_id, core.epoch };
@@ -817,13 +908,15 @@ void IRStream::push_node(OpCode op,
     const uint32_t phase_c_aux_flags = compute_phase_c_aux_flags(op, fl, c);
 
     if (in_transaction.load(std::memory_order_acquire)) {
-        if (shadow_count >= _capacity || !shadow_atoms || !shadow_cores) [[unlikely]] return;
+        if (shadow_count >= _capacity && !reserve_capacity(shadow_count + 1u)) [[unlikely]] return;
+        if (!shadow_atoms || !shadow_cores) [[unlikely]] return;
         shadow_atoms[shadow_count] = { op, fl };
         shadow_cores[shadow_count] = { res, a, b, c, sync_hash, 0u, phase_c_aux_flags, 0u, 0u };
         ++shadow_count;
         invalidate_cfg_cache_locked();
     } else {
-        if (count >= _capacity || !atoms || !cores) [[unlikely]] return;
+        if (count >= _capacity && !reserve_capacity(count + 1u)) [[unlikely]] return;
+        if (!atoms || !cores) [[unlikely]] return;
         atoms[count] = { op, fl };
         cores[count] = { res, a, b, c, sync_hash, 0u, phase_c_aux_flags, 0u, 0u };
         ++count;
@@ -869,11 +962,8 @@ void IRStream::push_back(const IRNode& node) noexcept {
 
 uint32_t IRStream::reserve_shadow_slot() noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    if (shadow_count >= _capacity || !shadow_atoms) [[unlikely]] {
-        std::cerr << "[DGTL FATAL] IRStream shadow overflow at "
-                  << _capacity << "\n";
-        return INVALID_SLOT;
-    }
+    if (shadow_count >= _capacity && !reserve_capacity(shadow_count + 1u)) [[unlikely]] return INVALID_SLOT;
+    if (!shadow_atoms) [[unlikely]] return INVALID_SLOT;
     return static_cast<uint32_t>(shadow_count++);
 }
 
@@ -1896,12 +1986,12 @@ void IRStream::analyze_speculation_opportunities() noexcept {
 
 void     IRStream::update_shadow_size(size_t s)  noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    shadow_count = s;
+    shadow_count = std::min(s, _capacity);
     invalidate_cfg_cache_locked();
 }
 void     IRStream::set_shadow_count(size_t val) noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    shadow_count = val;
+    shadow_count = std::min(val, _capacity);
     invalidate_cfg_cache_locked();
 }
 uint32_t IRStream::intent_crc()                  const noexcept {

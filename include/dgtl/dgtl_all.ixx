@@ -11,5 +11,7 @@
 
 export module dgtl_all;
 
-// Top-level public umbrella for SDK and integration entry points.
+// Top-level public umbrella module for SDK and external integration entry points.
 export import dgtl.ir_stream;
+export import dgtl.backend.isa.win64_frame_lowering;
+export import dgtl.backend.linker.pe;

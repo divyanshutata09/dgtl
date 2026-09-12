@@ -6,14 +6,6 @@
  *         IR build -> GVN -> macro fusion -> speculative DCE -> ARM64 emission.
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/semantic/Symbol_Table.hpp"
-#include "dgtl/core/Verified_Formal.hpp"
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
-#include "dgtl/analysis/AI_Cost_Model.hpp"
-#include "dgtl/pass/speculative/Speculate_Alias_DCE_Inliner_Temporal_Vector_Fusion.hpp"
-#include "dgtl/isa/emitter/ARM64_Emitter.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -21,6 +13,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+import dgtl.ir_core.stream;
+import dgtl.arena;
+import dgtl.ir_core.semantic;
+import dgtl.ir_core.verified_formal;
+import dgtl.ir_core.transform_scalar_core;
+import dgtl.ir_core.ai_cost_model;
+import dgtl.ir_core.speculate_alias_dce_inliner;
+import dgtl.ir_core.arm64_emitter;
 
 void run_test_t11_pipeline_production_benchmark() {
     std::cout << "[T11] Production Pipeline Benchmark (IR->OPT->CODEGEN)\n";
@@ -110,5 +110,5 @@ void run_test_t11_pipeline_production_benchmark() {
                                  + std::to_string(kMinPipelineMnps));
     }
 
-    std::cout << "[T11] PASS — production pipeline benchmark qualified\n";
+    std::cout << "[T11] PASS - production pipeline benchmark qualified\n";
 }

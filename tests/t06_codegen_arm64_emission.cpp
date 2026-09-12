@@ -7,17 +7,17 @@
  *         This validates the optimizer→emitter pipeline end-to-end.
  */
 
-#include "dgtl/ir/base/IR_Stream.hpp"
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/semantic/Symbol_Table.hpp"
-#include "dgtl/core/Verified_Formal.hpp"
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
-#include "dgtl/isa/emitter/ARM64_Emitter.hpp"
 
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+import dgtl.ir_core.stream;
+import dgtl.arena;  
+import dgtl.ir_core.semantic;
+import dgtl.ir_core.verified_formal;
+import dgtl.ir_core.transform_scalar_core;
+import dgtl.ir_core.arm64_emitter;
 
 void run_test_t06_codegen_arm64_emission() {
     std::cout << "[T06] ARM64 Codegen: End-to-End FMA Emission\n";
@@ -38,7 +38,7 @@ void run_test_t06_codegen_arm64_emission() {
 
     if (stream.get_node(1).opcode != dgtl::ir::OpCode::FMA_F32) {
         throw std::runtime_error(
-            "T06: pre-condition failed — fusion did not produce FMA_F32 before emission");
+            "T06: pre-condition failed - fusion did not produce FMA_F32 before emission");
     }
 
     // Emit ARM64 assembly
@@ -61,5 +61,5 @@ void run_test_t06_codegen_arm64_emission() {
             "Output was:\n" + asm_text);
     }
 
-    std::cout << "[T06] PASS — ARM64 emission produced FMA mnemonic for fused stream\n";
+    std::cout << "[T06] PASS - ARM64 emission produced FMA mnemonic for fused stream\n";
 }

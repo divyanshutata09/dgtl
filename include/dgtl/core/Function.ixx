@@ -12,6 +12,8 @@
 module;
 
 #include <cstdlib>
+#include <new>
+#include <memory>
 
 #include <cstdint>
 #include <optional>
@@ -27,14 +29,8 @@ import dgtl.ir_enums;
 import dgtl.ir_node;
 import dgtl.arena;
 import dgtl.ir_core.stream;
-
 import dgtl.ir_core.semantic;
-
-// HFT FIX: Forward-declare types inside the module scope to eliminate compiler warnings
-// and decouple object footprints from strict top-down file compilation order gates.
-namespace dgtl::ir::debug {
-    class DGTLDebugStore;
-}
+export import dgtl.ir_core.debug;
 
 export namespace dgtl::core {
 
@@ -60,8 +56,7 @@ public:
           name_(name),
           stream_(arena, reserved_nodes),
           symbols_(arena),
-          debug_store_(*reinterpret_cast<dgtl::ir::debug::DGTLDebugStore*>(
-              arena.allocate<char>(256))) { // Match typed allocator signature perfectly
+          debug_store_(std::make_unique<dgtl::ir::debug::DGTLDebugStore>(arena, reserved_nodes)) {
         // Pre-reserve metadata vectors to minimize reallocations during lowering
         slot_type_handles_.reserve(reserved_nodes);
         temp_type_hints_.reserve(reserved_nodes);
@@ -72,8 +67,8 @@ public:
     [[nodiscard]] const ir::IRStream& stream() const noexcept { return stream_; }
     [[nodiscard]] dgtl::semantic::SymbolTable& symbols() noexcept { return symbols_; }
     [[nodiscard]] const dgtl::semantic::SymbolTable& symbols() const noexcept { return symbols_; }
-    [[nodiscard]] dgtl::ir::debug::DGTLDebugStore& debug_store() noexcept { return debug_store_; }
-    [[nodiscard]] const dgtl::ir::debug::DGTLDebugStore& debug_store() const noexcept { return debug_store_; }
+    [[nodiscard]] dgtl::ir::debug::DGTLDebugStore& debug_store() noexcept { return *debug_store_; }
+    [[nodiscard]] const dgtl::ir::debug::DGTLDebugStore& debug_store() const noexcept { return *debug_store_; }
     [[nodiscard]] const std::vector<DGTLFunctionParameter>& parameters() const noexcept { return parameters_; }
 
     [[nodiscard]] uint32_t allocate_slot() noexcept {
@@ -240,7 +235,7 @@ private:
     std::string name_;
     ir::IRStream stream_;
     dgtl::semantic::SymbolTable symbols_;
-    dgtl::ir::debug::DGTLDebugStore& debug_store_; // Managed safely via dynamic reference abstraction mapping
+    std::unique_ptr<dgtl::ir::debug::DGTLDebugStore> debug_store_;
     std::vector<DGTLFunctionParameter> parameters_;
 
     // HFT UPGRADE: Contiguous storage for metadata

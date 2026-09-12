@@ -66,18 +66,33 @@ int handle_api_status(ApiMode mode);
 int handle_prepare_api(ApiMode mode);
 int build_internal_static_library();
 
-fs::path make_obj_path(const fs::path& obj_dir, const fs::path& src_path);
+// Security Utility: Ensures paths with spaces don't break shell commands
+[[nodiscard]] inline std::string quote_path(const fs::path& p) {
+    return "\"" + p.string() + "\"";
+}
+
+[[nodiscard]] inline fs::path make_obj_path(const fs::path& obj_dir, const fs::path& src_path) {
+    fs::path rel;
+    if (src_path.string().find(g_config.src_dir.string()) != std::string::npos) {
+        rel = fs::relative(src_path, g_config.src_dir).lexically_normal();
+    } else {
+        rel = fs::relative(src_path, g_config.root).lexically_normal();
+    }
+    std::string stem = rel.string();
+    std::replace(stem.begin(), stem.end(), '\\', '_');
+    std::replace(stem.begin(), stem.end(), '/', '_');
+    if (stem.size() >= 4 && stem.substr(stem.size() - 4) == ".cpp") {
+        stem = stem.substr(0, stem.size() - 4);
+    }
+    return obj_dir / (stem + ".o");
+}
+
 int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool strict);
 int parallel_compile_objects(const std::vector<fs::path>& sources,
                              const fs::path& obj_dir,
                              std::vector<fs::path>& out_objs,
                              int* out_compiled_count,
                              bool strict);
-
-// Security Utility: Ensures paths with spaces don't break shell commands
-[[nodiscard]] std::string quote_path(const fs::path& p) {
-    return "\"" + p.string() + "\"";
-}
 
 [[nodiscard]] std::uint64_t fnv1a64(std::string_view text) {
     std::uint64_t hash = 1469598103934665603ull;
@@ -197,12 +212,6 @@ int sync_sdk_public_headers() {
     const fs::path sdk_include_ns = sdk_include_root / "dgtl_sdk";
 
     const std::vector<std::string> sdk_headers = {
-        "dgtl_capabilities.h",
-        "dgtl_c_api.h",
-        "dgtl_core.h",
-        "dgtl_gpu.h",
-        "dgtl_session.h",
-        "dgtl_simd.h",
         "dgtl.h"
     };
 
@@ -342,7 +351,6 @@ void parse_module_metadata(ModuleUnit& unit) {
 
     std::string line;
     while (std::getline(file, line)) {
-        // Strip trailing carriage return if parsing on Windows environments
         if (!line.empty() && line.back() == '\r') line.pop_back();
 
         size_t comment_idx = line.find("//");
@@ -376,7 +384,6 @@ void parse_module_metadata(ModuleUnit& unit) {
             size_t semi_idx = token.find(';');
             if (semi_idx != std::string::npos) token = token.substr(0, semi_idx);
             
-            // Clean up any edge spaces or trailing pollution bytes
             while(!token.empty() && (token.back() == ' ' || token.back() == ';')) {
                 token.pop_back();
             }
@@ -403,7 +410,6 @@ void resolve_topological_dfs(const std::string& current_key,
     if (it != module_map.end()) {
         const auto& unit = it->second;
 
-        // Ensure partitions of the same module are sequenced properly before the master interface unit
         if (unit.is_master) {
             for (const auto& [key, potential_partition] : module_map) {
                 if (potential_partition.is_partition && potential_partition.module_name == unit.module_name) {
@@ -417,13 +423,10 @@ void resolve_topological_dfs(const std::string& current_key,
         for (const auto& raw_import : unit.imports) {
             std::string target_key = raw_import;
             
-            // Handle internal short-form partition imports (e.g., ":fwd")
             if (!raw_import.empty() && raw_import.front() == ':') {
                 target_key = unit.module_name + raw_import;
             }
             
-            // Fix: If a file imports a full module name that is actually registered as an interface 
-            // partition inside our database, resolve the dependency mapping cleanly.
             if (!module_map.count(target_key)) {
                 for (const auto& [key, potential_unit] : module_map) {
                     if (potential_unit.is_partition && (potential_unit.module_name + ":" + potential_unit.partition_name == target_key)) {
@@ -551,7 +554,6 @@ int compile_all_modules() {
     std::vector<std::string> scan_roots;
     std::error_code ec_scan;
 
-    // Discover files dynamically from drive configuration footprint
     for (const auto& entry : fs::recursive_directory_iterator(g_config.include_dir, ec_scan)) {
         if (entry.is_regular_file() && entry.path().extension() == ".ixx") {
             ModuleUnit unit;
@@ -572,7 +574,6 @@ int compile_all_modules() {
         }
     }
 
-    // Stabilize iteration metrics via clear lexical ordering sorting
     std::sort(scan_roots.begin(), scan_roots.end());
 
     std::vector<ModuleUnit> deployment_pipeline;
@@ -585,9 +586,18 @@ int compile_all_modules() {
         "dgtl.ir_core.stream",
         "dgtl.op_traits",
         "dgtl.target",
+        "dgtl.ir_core.semantic",
+        "dgtl.ir_core.type_system",
+        "dgtl.ir_core.type_checker",
+        "dgtl.ir_core.borrow_checker",
+        "dgtl.ir_core.name_resolver",
+        "dgtl.ir_core.constant_evaluator",
+        "dgtl.ir_core.semantic_analyzer",
         "dgtl.ir_core.arm32neon_emitter",
         "dgtl.ir_core.riscv64_emitter",
-        "dgtl.ir_core.wasmsimd_fma_emitter"
+        "dgtl.ir_core.wasmsimd_fma_emitter",
+        "dgtl.backend.isa.win64_frame_lowering",
+        "dgtl.backend.linker.pe"
     };
     for (const auto& root_key : bootstrap_roots) {
         if (module_database.count(root_key)) {
@@ -604,8 +614,6 @@ int compile_all_modules() {
         resolve_topological_dfs(root_key, module_database, visited, active_stack, deployment_pipeline);
     }
 
-    // Rebuild full module closure if any module interface changed after previously built module objects.
-    // This avoids stale BMI CRC mismatches when an upstream module changes but dependents are unchanged.
     bool force_rebuild_all = cold_module_cache;
     auto newest_module_src = fs::file_time_type::min();
     auto oldest_module_obj = fs::file_time_type::max();
@@ -634,7 +642,6 @@ int compile_all_modules() {
         std::cout << "[build] Module interface change detected; rebuilding full module closure" << std::endl;
     }
 
-    // Process compiled units deterministically
     for (const auto& module_unit : deployment_pipeline) {
         const fs::path& src = module_unit.path;
         bool force_rebuild = force_rebuild_all;
@@ -664,7 +671,6 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
     const fs::path obj_dir = g_config.build_dir / "obj" / std::string(binary_name);
     ensure_directory(obj_dir);
 
-    // Normalize excludes and always exclude the chosen entrypoint so it is not compiled twice.
     std::vector<fs::path> normalized_excludes;
     normalized_excludes.reserve(exclude_paths.size() + 1);
     normalized_excludes.push_back(fs::absolute(entry_point).lexically_normal());
@@ -674,7 +680,6 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
 
     std::vector<fs::path> cpp_sources;
     std::error_code ec_dir;
-    // Collect all source files from src/ except excluded ones.
     for (const auto& entry : fs::recursive_directory_iterator(g_config.src_dir, ec_dir)) {
         if (!fs::is_regular_file(entry.status()) || entry.path().extension() != ".cpp") continue;
 
@@ -725,7 +730,6 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
 
     std::string final_cmd = cmd;
 #ifdef _WIN32
-    // Windows command-line length can overflow for release links with many objects.
     if (cmd.size() > 7000) {
         const fs::path rsp_path = g_config.build_dir / "obj" / (std::string(binary_name) + "_link.rsp");
         ensure_directory(rsp_path.parent_path());
@@ -869,8 +873,32 @@ int build_test_suite_binary(const fs::path& output,
     }
     cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
 
+    std::string final_cmd = cmd;
+#ifdef _WIN32
+    if (cmd.size() > 7000) {
+        const fs::path rsp_path = g_config.build_dir / "obj" / "dgtl_tests_link.rsp";
+        ensure_directory(rsp_path.parent_path());
+
+        const std::size_t prefix_len = g_config.gpp_path.size();
+        std::string rsp_args = (cmd.size() > prefix_len) ? cmd.substr(prefix_len) : std::string{};
+        if (!rsp_args.empty() && rsp_args.front() == ' ') {
+            rsp_args.erase(rsp_args.begin());
+        }
+
+        std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+        if (!rsp_out.is_open()) {
+            std::cerr << "[build] Failed to write response file: " << rsp_path.string() << std::endl;
+            return 1;
+        }
+        rsp_out << rsp_args;
+        rsp_out.close();
+
+        final_cmd = g_config.gpp_path + " @" + quote_path(rsp_path);
+    }
+#endif
+
     std::cout << "[build] Linking dgtl_tests" << std::endl;
-    ec = run_command(cmd);
+    ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << output.string() << std::endl;
     }
@@ -904,7 +932,6 @@ int ensure_test_suite_binary(const fs::path& output,
     return 0;
 }
 
-// Fixed: Memory optimized line-by-line reading instead of full file buffer load
 [[nodiscard]] bool source_has_main(const fs::path& source) {
     std::ifstream in(source);
     if (!in) return false;
@@ -975,8 +1002,32 @@ int build_standalone_test_binary(const fs::path& output, const fs::path& entry_p
     }
     cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
 
+    std::string final_cmd = cmd;
+#ifdef _WIN32
+    if (cmd.size() > 7000) {
+        const fs::path rsp_path = g_config.build_dir / "obj" / "standalone_test_link.rsp";
+        ensure_directory(rsp_path.parent_path());
+
+        const std::size_t prefix_len = g_config.gpp_path.size();
+        std::string rsp_args = (cmd.size() > prefix_len) ? cmd.substr(prefix_len) : std::string{};
+        if (!rsp_args.empty() && rsp_args.front() == ' ') {
+            rsp_args.erase(rsp_args.begin());
+        }
+
+        std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+        if (!rsp_out.is_open()) {
+            std::cerr << "[build] Failed to write response file: " << rsp_path.string() << std::endl;
+            return 1;
+        }
+        rsp_out << rsp_args;
+        rsp_out.close();
+
+        final_cmd = g_config.gpp_path + " @" + quote_path(rsp_path);
+    }
+#endif
+
     std::cout << "[build] Linking " << output.filename().string() << std::endl;
-    ec = run_command(cmd);
+    ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << output.string() << std::endl;
     }
@@ -1001,23 +1052,7 @@ int ensure_standalone_test_binary(const fs::path& output, const fs::path& entry_
     return 0;
 }
 
-[[nodiscard]] fs::path make_obj_path(const fs::path& obj_dir, const fs::path& src_path) {
-    fs::path rel;
-    if (src_path.string().find(g_config.src_dir.string()) != std::string::npos) {
-        rel = fs::relative(src_path, g_config.src_dir).lexically_normal();
-    } else {
-        rel = fs::relative(src_path, g_config.root).lexically_normal();
-    }
-    std::string stem = rel.string();
-    std::replace(stem.begin(), stem.end(), '\\', '_');
-    std::replace(stem.begin(), stem.end(), '/', '_');
-    if (stem.size() >= 4 && stem.substr(stem.size() - 4) == ".cpp") {
-        stem = stem.substr(0, stem.size() - 4);
-    }
-    return obj_dir / (stem + ".o");
-}
-
-int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool strict = false) {
+int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool strict) {
     const auto src_time = get_file_mtime(src);
     const auto include_time = latest_mtime({g_config.include_dir});
     const auto obj_time = get_file_mtime(obj);
@@ -1036,14 +1071,14 @@ int compile_object_if_needed(const fs::path& src, const fs::path& obj, bool stri
         cmd += " -Wall -Wextra -Wpedantic -Werror";
     }
     cmd += " -c " + quote_path(src) + " -o " + quote_path(obj);
-    return run_command(cmd, false); // Silence raw object commands for cleaner output
+    return run_command(cmd, false);
 }
 
 int parallel_compile_objects(const std::vector<fs::path>& sources,
                              const fs::path& obj_dir,
                              std::vector<fs::path>& out_objs,
-                             int* out_compiled_count = nullptr,
-                             bool strict = false) {
+                             int* out_compiled_count,
+                             bool strict) {
     out_objs.resize(sources.size());
     const unsigned int num_threads = std::max(1u, std::thread::hardware_concurrency());
     std::atomic<bool> compile_failed{false};
@@ -1185,7 +1220,6 @@ int build_tools_optimized(const fs::path& prod_main,
 
         std::string final_cmd = cmd;
 #ifdef _WIN32
-        // Tool links can exceed Windows command-line length when many objects are present.
         if (cmd.size() > 7000) {
             const fs::path rsp_path = g_config.build_dir / "obj" / "build-tools" / (std::string(name) + "_link.rsp");
             ensure_directory(rsp_path.parent_path());
@@ -1224,7 +1258,6 @@ int build_tools_optimized(const fs::path& prod_main,
     ec |= link_tool("dgtl-verify", verify_main, verify_exe);
     if (ec != 0) return ec;
 
-    // Compile standalone DGTL developer tools
     const fs::path rodata_source = g_config.tools_dir / "dgtl_rodata_maker_main.cpp";
     const fs::path rodata_exe = g_config.build_dir / "tools" / "dgtl-rodata-maker.exe";
     ensure_directory(rodata_exe.parent_path());
@@ -1254,9 +1287,6 @@ int build_sdk_static_library() {
         return 1;
     }
 
-    // SDK consumers can import DGTL modules indirectly through public/internal API
-    // facades. Ensure module object units are built and archived so module
-    // initializer symbols resolve without client-side linker hacks.
     if (compile_all_modules() != 0) {
         return 1;
     }
@@ -1542,9 +1572,7 @@ BACKEND & DISTRIBUTION:
                           Output directory: build/out/
   package                 Create SDK distribution package (DGTL_v*.zip)
                           Includes: headers, static library, binaries
-                                                    Public SDK headers: dgtl.h, dgtl_core.h, dgtl_c_api.h,
-                                                                                         dgtl_gpu.h, dgtl_simd.h, dgtl_capabilities.h,
-                                                                                         dgtl_session.h
+                                                    Public SDK headers: dgtl.h
 
 ================================================================================
 COMMAND ALIASES (Backward Compatibility):
@@ -1761,6 +1789,77 @@ int handle_strict() {
     return ensure_binary("dgtl_main_strict", strict_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main}, true);
 }
 
+int handle_test_command(const std::vector<std::string>& args) {
+    if (args.size() > 1 || (args.size() == 1 && args.front() != "full")) {
+        std::cerr << "[test] Supported modes: dgtl test or dgtl test full" << std::endl;
+        return 1;
+    }
+    const fs::path test_exe = g_config.build_dir / "dgtl_tests.exe";
+    const fs::path test_main = g_config.root / "tests" / "test_suite_main.cpp";
+    const std::vector<fs::path> test_sources = {
+        g_config.root / "tests" / "t01_ir_stream_correctness.cpp",
+        g_config.root / "tests" / "t02_ir_transaction_rollback.cpp",
+        g_config.root / "tests" / "t03_optimizer_gvn_const_fold.cpp",
+        g_config.root / "tests" / "t04_optimizer_fusion.cpp",
+        g_config.root / "tests" / "t05_optimizer_volatile_guard.cpp",
+        g_config.root / "tests" / "t06_codegen_arm64_emission.cpp",
+        g_config.root / "tests" / "t07_frontend_pipeline_lowerer.cpp",
+        g_config.root / "tests" / "t08_sdk_c_api_roundtrip.cpp",
+        g_config.root / "tests" / "t09_runtime_mt_arena_isolation.cpp",
+        g_config.root / "tests" / "t10_optimizer_strike_throughput.cpp",
+        g_config.root / "tests" / "t11_pipeline_production_benchmark.cpp",
+        g_config.root / "tests" / "t12_ir_cfg.cpp",
+        g_config.root / "tests" / "t13_sdk_session_capabilities.cpp"
+    };
+    if (ensure_test_suite_binary(test_exe, test_main, test_sources) != 0) return 1;
+    const int ec = run_command(quote_path(test_exe));
+    if (ec != 0) return ec;
+    std::cout << "[DGTL test] Aggregate suite completed" << std::endl;
+    return 0;
+}
+
+int handle_run_backend(const std::vector<std::string>& args) {
+    if (args.size() != 1) {
+        std::cerr << "[run] Usage: dgtl run-backend <backend>" << std::endl;
+        return 1;
+    }
+    const fs::path smoke_exe = g_config.build_dir / "dgtl_main.exe";
+    if (handle_smoke_build() != 0) return 1;
+    return run_command(quote_path(smoke_exe) + " --backend " + args.front());
+}
+
+int handle_bench_backend(const std::vector<std::string>& args) {
+    if (args.empty() || args.size() > 3) {
+        std::cerr << "[bench] Usage: dgtl bench-backend <backend> [profile] [pressure]" << std::endl;
+        return 1;
+    }
+    const fs::path strict_exe = g_config.build_dir / "dgtl_main_strict.exe";
+    if (handle_strict() != 0) return 1;
+    std::string cmd = quote_path(strict_exe) + " --backend " + args[0] + " --benchmark";
+    if (args.size() >= 2) cmd += " --benchmark-profile " + args[1];
+    if (args.size() == 3) cmd += " --pressure-vars " + args[2];
+    return run_command(cmd);
+}
+
+int handle_strict_conformance() {
+    const fs::path strict_exe = g_config.build_dir / "dgtl_main_strict.exe";
+    if (handle_strict() != 0) return 1;
+    const std::vector<std::string> backends = {
+        "arm64", "x64", "nasm", "wasm", "arm32", "riscv64", "cuda", "rocm",
+        "macho", "elfobj", "staticlib", "coffobj", "cofflib"
+    };
+    for (const auto& backend : backends) {
+        std::cout << "[srun] Validating backend " << backend << std::endl;
+        const int ec = run_command(quote_path(strict_exe) + " --backend " + backend);
+        if (ec != 0) {
+            std::cerr << "[srun] Backend conformance failed: " << backend << std::endl;
+            return ec;
+        }
+    }
+    std::cout << "Conformance PASSED for all backends" << std::endl;
+    return 0;
+}
+
 int handle_test() {
     if (invoke_api_policy() != 0) return 1;
     if (invoke_duplication_gate() != 0) return 1;
@@ -1788,7 +1887,8 @@ int handle_test() {
         g_config.root / "tests" / "t09_runtime_mt_arena_isolation.cpp",
         g_config.root / "tests" / "t10_optimizer_strike_throughput.cpp",
         g_config.root / "tests" / "t11_pipeline_production_benchmark.cpp",
-        g_config.root / "tests" / "t12_ir_cfg.cpp"
+        g_config.root / "tests" / "t12_ir_cfg.cpp",
+        g_config.root / "tests" / "t13_sdk_session_capabilities.cpp"
     };
 
     for (const auto& src : aggregate_test_sources) {
@@ -2072,7 +2172,6 @@ int handle_package(bool verify_mode = false) {
         return 1;
     }
 
-
     const std::vector<fs::path> bin_candidates = {
         g_config.build_dir / "dgtl_release.exe",
         g_config.build_dir / "dgtl-opt.exe",
@@ -2151,7 +2250,6 @@ void sync_diagnostic_artifacts(int exit_code) {
 
     const fs::path debugger_exe = g_config.build_dir / "tools" / "dgtl-debugger.exe";
 
-    // Only invoke dgtl-debugger if it was already built by 'dgtl build-tools'
     if (file_exists(debugger_exe)) {
         const std::string exe_str = quote_path(debugger_exe);
         const std::string root_str = quote_path(g_config.root);
@@ -2164,7 +2262,6 @@ void sync_diagnostic_artifacts(int exit_code) {
 
 // Main entry point
 int main(int argc, char** argv) {
-    // Initialize config
     g_config.root = fs::current_path();
     g_config.build_dir = g_config.root / "build";
     g_config.tools_dir = g_config.root / "tools" / "cpp";
@@ -2193,7 +2290,6 @@ int main(int argc, char** argv) {
     auto run_command_handler = [&]() -> int {
         if (command == "help") return handle_help();
 
-        // Auto-compile C++20 modules for build and test commands
         if (command == "build" || command == "build-release" || command == "build-tools" ||
             command == "smoke-build" || command == "build-smoke" || command == "strict" ||
             command == "build-strict" || command == "test" || command == "gen-build") {
@@ -2206,11 +2302,7 @@ int main(int argc, char** argv) {
         if (command == "smoke-build" || command == "build-smoke") return handle_smoke_build();
         if (command == "strict" || command == "build-strict") return handle_strict();
         if (command == "test") {
-            if (!args.empty()) {
-                std::cerr << "[test] Extra arguments are not supported. Use only: dgtl test" << std::endl;
-                return 1;
-            }
-            return handle_test();
+            return args.empty() ? handle_test() : handle_test_command(args);
         }
         if (command == "gen") return handle_gen(args);
         if (command == "gen-validate") return handle_gen_validate(args);
@@ -2245,13 +2337,14 @@ int main(int argc, char** argv) {
             }
             return handle_api_status(*parsed_mode);
         }
+        if (command == "run-backend") {
+            return handle_run_backend(args);
+        }
         if (command == "run" || command == "run-all") {
-            std::cout << "[run] Full conformance not implemented in orchestrator yet" << std::endl;
-            return 0;
+            return handle_strict_conformance();
         }
         if (command == "bench" || command == "bench-backend") {
-            std::cout << "[bench] Backend benchmarking not implemented in orchestrator yet" << std::endl;
-            return 0;
+            return handle_bench_backend(args);
         }
         if (command == "brun") {
             std::cout << "[brun] Performance suite not implemented in orchestrator yet" << std::endl;
@@ -2273,6 +2366,13 @@ int main(int argc, char** argv) {
         if (command == "compile" || command == "compile-all") {
             std::cout << "[compile] Backend compilation not implemented in orchestrator yet" << std::endl;
             return 0;
+        }
+        if (command == "srun" || command == "run-strict-conformance") {
+            if (!args.empty()) {
+                std::cerr << "[srun] No arguments are supported" << std::endl;
+                return 1;
+            }
+            return handle_strict_conformance();
         }
 
         std::cerr << "Unknown command: " << command << std::endl;
@@ -2358,6 +2458,22 @@ int verify_internal_api_artifacts() {
         return 1;
     }
 
+    const std::vector<std::string> required_semantic_gcms = {
+        "dgtl.ir_core.semantic.gcm",
+        "dgtl.ir_core.type_system.gcm",
+        "dgtl.ir_core.type_checker.gcm",
+        "dgtl.ir_core.borrow_checker.gcm",
+        "dgtl.ir_core.name_resolver.gcm",
+        "dgtl.ir_core.constant_evaluator.gcm",
+        "dgtl.ir_core.semantic_analyzer.gcm"
+    };
+    for (const auto& gcm_name : required_semantic_gcms) {
+        if (!file_exists(gcm_cache / gcm_name)) {
+            std::cerr << "[api] Internal API not ready: missing semantic module " << gcm_name << std::endl;
+            return 1;
+        }
+    }
+
     if (!file_exists(internal_lib)) {
         std::cerr << "[api] Internal API not ready: missing internal linkage library "
                   << internal_lib.string() << std::endl;
@@ -2370,40 +2486,10 @@ int verify_internal_api_artifacts() {
 
 int verify_public_api_artifacts() {
     const fs::path sdk_include = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl.h";
-    const fs::path sdk_c_api = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_c_api.h";
-    const fs::path sdk_core = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_core.h";
-    const fs::path sdk_gpu = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_gpu.h";
-    const fs::path sdk_simd = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_simd.h";
-    const fs::path sdk_capabilities = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_capabilities.h";
-    const fs::path sdk_session = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl_session.h";
-    const fs::path sdk_lib = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl.lib";
+    const fs::path sdk_lib     = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl.lib";
 
     if (!file_exists(sdk_include)) {
         std::cerr << "[api] Public SDK not ready: missing namespaced header " << sdk_include.string() << std::endl;
-        return 1;
-    }
-    if (!file_exists(sdk_c_api)) {
-        std::cerr << "[api] Public SDK not ready: missing C ABI header " << sdk_c_api.string() << std::endl;
-        return 1;
-    }
-    if (!file_exists(sdk_core)) {
-        std::cerr << "[api] Public SDK not ready: missing core definitions header " << sdk_core.string() << std::endl;
-        return 1;
-    }
-    if (!file_exists(sdk_gpu)) {
-        std::cerr << "[api] Public SDK not ready: missing GPU header " << sdk_gpu.string() << std::endl;
-        return 1;
-    }
-    if (!file_exists(sdk_simd)) {
-        std::cerr << "[api] Public SDK not ready: missing SIMD header " << sdk_simd.string() << std::endl;
-        return 1;
-    }
-    if (!file_exists(sdk_capabilities)) {
-        std::cerr << "[api] Public SDK not ready: missing capability header " << sdk_capabilities.string() << std::endl;
-        return 1;
-    }
-    if (!file_exists(sdk_session)) {
-        std::cerr << "[api] Public SDK not ready: missing session header " << sdk_session.string() << std::endl;
         return 1;
     }
     if (!file_exists(sdk_lib)) {
@@ -2411,7 +2497,7 @@ int verify_public_api_artifacts() {
         return 1;
     }
 
-    std::cout << "[api] Public SDK ready (headers + static library present)" << std::endl;
+    std::cout << "[api] Public SDK ready (unified header + static library present)" << std::endl;
     return 0;
 }
 

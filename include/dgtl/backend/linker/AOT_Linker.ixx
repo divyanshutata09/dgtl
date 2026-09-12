@@ -182,6 +182,14 @@ namespace coff {
         uint32_t Size;
     };
 
+    struct ImportDescriptor {
+        uint32_t OriginalFirstThunk;
+        uint32_t TimeDateStamp;
+        uint32_t ForwarderChain;
+        uint32_t Name;
+        uint32_t FirstThunk;
+    };
+
     struct ImageOptionalHeader64 {
         uint16_t Magic;
         uint8_t  MajorLinkerVersion;
@@ -229,6 +237,54 @@ namespace coff {
     inline constexpr uint16_t SYM_TYPE_FUNCTION         = 0x20;
     inline constexpr uint16_t REL_AMD64_REL32           = 4;
 } // namespace coff
+
+struct MagicMultiplierS64 {
+    uint64_t M = 0;
+    uint8_t s = 0;
+    bool is_power_of_2 = false;
+    bool valid = false;
+};
+
+inline MagicMultiplierS64 compute_magic_s64(int64_t d) noexcept {
+    MagicMultiplierS64 res{};
+    if (d <= 0) return res;
+    if ((d & (d - 1)) == 0) {
+        res.is_power_of_2 = true;
+        res.s = static_cast<uint8_t>(__builtin_ctzll(static_cast<unsigned long long>(d)));
+        res.valid = true;
+        return res;
+    }
+    unsigned __int128 two_63 = static_cast<unsigned __int128>(1) << 63;
+    unsigned __int128 ud = static_cast<unsigned __int128>(d);
+    unsigned __int128 anc = two_63 - 1 - (two_63 - 1) % ud;
+    uint8_t p = 63;
+    unsigned __int128 q1 = two_63 / anc;
+    unsigned __int128 r1 = two_63 - q1 * anc;
+    unsigned __int128 q2 = two_63 / ud;
+    unsigned __int128 r2 = two_63 - q2 * ud;
+    unsigned __int128 delta = 0;
+    do {
+        p++;
+        q1 = 2 * q1;
+        r1 = 2 * r1;
+        if (r1 >= anc) {
+            q1++;
+            r1 -= anc;
+        }
+        q2 = 2 * q2;
+        r2 = 2 * r2;
+        if (r2 >= ud) {
+            q2++;
+            r2 -= ud;
+        }
+        delta = ud - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+
+    res.M = static_cast<uint64_t>(q2 + 1);
+    res.s = p - 64;
+    res.valid = (res.M < (1ULL << 63));
+    return res;
+}
 
 struct CoffCallReloc {
     uint32_t    text_offset;
@@ -322,7 +378,7 @@ public:
             case MachineForm::StoreStack:       return 14;
             case MachineForm::LoadImmediate:    return 24;
             case MachineForm::IntegerBinary32:
-            case MachineForm::IntegerBinary64:  return 48;
+            case MachineForm::IntegerBinary64:  return 80;
             case MachineForm::FloatBinary32:
             case MachineForm::FloatBinary64:    return 32;
             case MachineForm::FloatTernaryFma32:return 36;
@@ -330,7 +386,7 @@ public:
             case MachineForm::VectorStore512:   return 12;
             case MachineForm::VectorGather512:  return 12;
             case MachineForm::Compare32:        return 20;
-            case MachineForm::Call:             return 64;
+            case MachineForm::Call:             return 96;
             case MachineForm::Goto:             return 5;
             case MachineForm::BranchCond:       return 16;
             case MachineForm::BranchCompare:    return 20;
@@ -352,6 +408,21 @@ public:
         if (dest == nullptr || stream.is_null()) return false;
         clear_fallback_diagnostics();
         const size_t count = stream.size();
+
+        std::unordered_map<uint32_t, uint64_t> known_constants;
+        known_constants.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto& node = stream.get_node(i);
+            if (node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::CONST || node.opcode == ir::OpCode::IMMEDIATE) {
+                uint64_t imm = (static_cast<uint64_t>(node.op_b) << 32u) | (static_cast<uint64_t>(node.op_a) & 0xFFFFFFFFu);
+                if (imm == 0 && node.intent_hash != 0) {
+                    imm = node.intent_hash;
+                }
+                if (node.result_id != ir::INVALID_SLOT) {
+                    known_constants[node.result_id] = imm;
+                }
+            }
+        }
 
         std::unordered_map<uint32_t, size_t> label_map;
         std::unordered_map<uint32_t, int32_t> slot_offsets;
@@ -418,7 +489,7 @@ public:
         };
 
         const uint32_t raw_frame_size = (next_slot_index + 4u) * 8u;
-        const uint32_t frame_size = ((raw_frame_size + 15u) & ~15u) + 8u;
+        const uint32_t frame_size = (raw_frame_size + 15u) & ~15u;
 
         std::vector<size_t> node_offsets(count + 1, 0);
         size_t probe = x64_prologue_size(stream);
@@ -659,28 +730,88 @@ public:
                     }
                     else if (kind == generated::X64IntegerBinary32Kind::Div || 
                              kind == generated::X64IntegerBinary32Kind::Mod) {
-                        emit_mov_rax_from_slot(node.op_a);
-                        emit_mov_rcx_from_slot(node.op_b);
-                        if (is64) {
-                            write_u8(0x48); write_u8(0x85); write_u8(0xC9); // test rcx, rcx
-                            write_u8(0x75); write_u8(0x06);                 // jnz +6
-                            write_u8(0x31); write_u8(0xC0);                 // xor eax, eax
-                            write_u8(0x31); write_u8(0xD2);                 // xor edx, edx
-                            write_u8(0xEB); write_u8(0x05);                 // jmp +5
-                            write_u8(0x48); write_u8(0x99);                 // cqo
-                            write_u8(0x48); write_u8(0xF7); write_u8(0xF9); // idiv rcx
-                        } else {
-                            write_u8(0x85); write_u8(0xC9);                 // test ecx, ecx
-                            write_u8(0x75); write_u8(0x06);                 // jnz +6
-                            write_u8(0x31); write_u8(0xC0);                 // xor eax, eax
-                            write_u8(0x31); write_u8(0xD2);                 // xor edx, edx
-                            write_u8(0xEB); write_u8(0x03);                 // jmp +3
-                            write_u8(0x99);                                 // cdq
-                            write_u8(0xF7); write_u8(0xF9);                 // idiv ecx
+                        auto const_it = (node.op_b != ir::INVALID_SLOT) ? known_constants.find(node.op_b) : known_constants.end();
+                        bool has_const_divisor = (const_it != known_constants.end() && const_it->second > 0);
+                        int64_t divisor = has_const_divisor ? static_cast<int64_t>(const_it->second) : 0;
+                        auto magic = (has_const_divisor && is64) ? compute_magic_s64(divisor) : MagicMultiplierS64{};
+
+                        if (is64 && has_const_divisor && divisor == 1) {
+                            if (kind == generated::X64IntegerBinary32Kind::Div) {
+                                emit_mov_rax_from_slot(node.op_a);
+                                emit_store_rax_to_slot(node.result_id);
+                            } else {
+                                write_u8(0x48); write_u8(0x31); write_u8(0xC0); // xor rax, rax
+                                emit_store_rax_to_slot(node.result_id);
+                            }
                         }
-                        if (kind == generated::X64IntegerBinary32Kind::Div)
-                            emit_store_rax_to_slot(node.result_id);
-                        else emit_store_rdx_to_slot(node.result_id);
+                        else if (is64 && has_const_divisor && magic.valid && !magic.is_power_of_2) {
+                            emit_mov_rax_from_slot(node.op_a);
+                            write_u8(0x48); write_u8(0xB9); write_u64(magic.M);
+                            write_u8(0x48); write_u8(0xF7); write_u8(0xE9);
+                            if (magic.s > 0) {
+                                write_u8(0x48); write_u8(0xC1); write_u8(0xFA); write_u8(magic.s);
+                            }
+                            emit_mov_rax_from_slot(node.op_a);
+                            write_u8(0x48); write_u8(0xC1); write_u8(0xF8); write_u8(0x3F);
+                            write_u8(0x48); write_u8(0x29); write_u8(0xC2);
+                            if (kind == generated::X64IntegerBinary32Kind::Div) {
+                                emit_store_rdx_to_slot(node.result_id);
+                            } else {
+                                write_u8(0x48); write_u8(0x89); write_u8(0xD0);
+                                write_u8(0x48); write_u8(0xB9); write_u64(static_cast<uint64_t>(divisor));
+                                write_u8(0x48); write_u8(0x0F); write_u8(0xAF); write_u8(0xC1);
+                                emit_mov_rdx_from_slot(node.op_a);
+                                write_u8(0x48); write_u8(0x29); write_u8(0xC2);
+                                emit_store_rdx_to_slot(node.result_id);
+                            }
+                        }
+                        else if (is64 && has_const_divisor && magic.is_power_of_2 && divisor > 1) {
+                            emit_mov_rax_from_slot(node.op_a);
+                            write_u8(0x48); write_u8(0x99);
+                            uint8_t k = magic.s;
+                            if (k == 1) {
+                                write_u8(0x48); write_u8(0xC1); write_u8(0xEA); write_u8(0x3F);
+                            } else if (k < 31) {
+                                write_u8(0x48); write_u8(0x81); write_u8(0xE2); write_u32(static_cast<uint32_t>((1ULL << k) - 1));
+                            } else {
+                                write_u8(0x48); write_u8(0xB9); write_u64((1ULL << k) - 1);
+                                write_u8(0x48); write_u8(0x21); write_u8(0xCA);
+                            }
+                            write_u8(0x48); write_u8(0x01); write_u8(0xD0);
+                            write_u8(0x48); write_u8(0xC1); write_u8(0xF8); write_u8(k);
+                            if (kind == generated::X64IntegerBinary32Kind::Div) {
+                                emit_store_rax_to_slot(node.result_id);
+                            } else {
+                                write_u8(0x48); write_u8(0xC1); write_u8(0xE0); write_u8(k);
+                                emit_mov_rdx_from_slot(node.op_a);
+                                write_u8(0x48); write_u8(0x29); write_u8(0xC2);
+                                emit_store_rdx_to_slot(node.result_id);
+                            }
+                        }
+                        else {
+                            emit_mov_rax_from_slot(node.op_a);
+                            emit_mov_rcx_from_slot(node.op_b);
+                            if (is64) {
+                                write_u8(0x48); write_u8(0x85); write_u8(0xC9); // test rcx, rcx
+                                write_u8(0x75); write_u8(0x06);                 // jnz +6
+                                write_u8(0x31); write_u8(0xC0);                 // xor eax, eax
+                                write_u8(0x31); write_u8(0xD2);                 // xor edx, edx
+                                write_u8(0xEB); write_u8(0x05);                 // jmp +5
+                                write_u8(0x48); write_u8(0x99);                 // cqo
+                                write_u8(0x48); write_u8(0xF7); write_u8(0xF9); // idiv rcx
+                            } else {
+                                write_u8(0x85); write_u8(0xC9);                 // test ecx, ecx
+                                write_u8(0x75); write_u8(0x06);                 // jnz +6
+                                write_u8(0x31); write_u8(0xC0);                 // xor eax, eax
+                                write_u8(0x31); write_u8(0xD2);                 // xor edx, edx
+                                write_u8(0xEB); write_u8(0x03);                 // jmp +3
+                                write_u8(0x99);                                 // cdq
+                                write_u8(0xF7); write_u8(0xF9);                 // idiv ecx
+                            }
+                            if (kind == generated::X64IntegerBinary32Kind::Div)
+                                emit_store_rax_to_slot(node.result_id);
+                            else emit_store_rdx_to_slot(node.result_id);
+                        }
                     }
                     else {
                         emit_mov_rax_from_slot(node.op_a);
@@ -852,6 +983,29 @@ public:
                     write_u8(0x48); write_u8(0x81); write_u8(0xC4); write_u32(static_cast<uint32_t>(stack_alloc)); // add rsp, stack_alloc
 
                     if (node.result_id != ir::INVALID_SLOT) {
+                        bool returns_in_xmm0 = false;
+                        auto it_callee = slot_to_callee.find(node.op_a);
+                        if (it_callee != slot_to_callee.end() && !it_callee->second.empty()) {
+                            const std::string& name = it_callee->second;
+                            if (name.find("_bits") != std::string::npos) {
+                                returns_in_xmm0 = false;
+                            } else if (name == "pow" || name == "sqrt" || name == "sin" ||
+                                       name == "cos" || name == "tan" || name == "exp" ||
+                                       name == "log" || name == "fabs" || name == "floor" ||
+                                       name == "ceil") {
+                                returns_in_xmm0 = true;
+                            } else {
+                                const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
+                                returns_in_xmm0 = ir::is_floating_type_code(tc);
+                            }
+                        } else {
+                            const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
+                            returns_in_xmm0 = ir::is_floating_type_code(tc);
+                        }
+
+                        if (returns_in_xmm0) {
+                            write_u8(0x66); write_u8(0x48); write_u8(0x0F); write_u8(0x7E); write_u8(0xC0); // movq rax, xmm0
+                        }
                         emit_store_rax_to_slot(node.result_id);
                     } else {
                         write_u8(0x90);
@@ -1279,18 +1433,95 @@ public:
         return true;
     }
 
-    bool build_pe_executable(std::string_view path, const ir::IRStream& ir_stream) {
+    bool build_pe_executable_buffer(const ir::IRStream& ir_stream, std::vector<uint8_t>& pe_image) {
         using namespace coff;
-        if (path.empty() || ir_stream.is_null()) return false;
+        if (ir_stream.is_null()) return false;
+
+        constexpr uint32_t kFileAlign = 0x200;   // 512
+        constexpr uint32_t kSecAlign  = 0x1000;  // 4096
+        constexpr uint32_t kHeadersSize = 0x400; // 1024
+
+        auto align_up_u32 = [](uint32_t val, uint32_t align) -> uint32_t {
+            return (val + align - 1) & ~(align - 1);
+        };
 
         const size_t raw_code_est = (ir_stream.size() * 64) + 1024;
-        const size_t code_file_size = align_up(raw_code_est, 512);
-        const size_t headers_size = 512;
-        const size_t file_total_size = headers_size + code_file_size;
+        std::vector<uint8_t> machine_code(raw_code_est, 0);
+        size_t emitted_size = 0;
+        const bool ok = emit_aot_machine_code(machine_code.data(),
+                                              machine_code.size(),
+                                              ir_stream,
+                                              &emitted_size);
+        if (!ok) return false;
+        machine_code.resize(emitted_size);
 
-        std::vector<uint8_t> pe_image(file_total_size, 0);
+        // 1. Synthesize .text with Sovereign Entry Trampoline
+        std::vector<uint8_t> text_full;
+        const size_t trampoline_size = 24;
+        text_full.resize(trampoline_size, 0x90);
 
-        // 1. DOS Header
+        text_full[0] = 0x48; text_full[1] = 0x83; text_full[2] = 0xEC; text_full[3] = 0x28; // sub rsp, 40
+        const int32_t call_main_disp = static_cast<int32_t>(trampoline_size - 9);
+        text_full[4] = 0xE8;
+        std::memcpy(&text_full[5], &call_main_disp, 4); // call machine_code
+        text_full[9] = 0x89; text_full[10] = 0xC1; // mov ecx, eax
+        text_full[11] = 0xFF; text_full[12] = 0x15;
+        text_full[13] = 0x00; text_full[14] = 0x00; text_full[15] = 0x00; text_full[16] = 0x00; // placeholder for IAT displacement
+        text_full[17] = 0x48; text_full[18] = 0x83; text_full[19] = 0xC4; text_full[20] = 0x28; // add rsp, 40
+        text_full[21] = 0xC3; // ret
+        text_full[22] = 0x90; text_full[23] = 0x90;
+
+        text_full.insert(text_full.end(), machine_code.begin(), machine_code.end());
+
+        const uint32_t text_vaddr = 0x1000;
+        const uint32_t text_raw_size = align_up_u32(static_cast<uint32_t>(text_full.size()), kFileAlign);
+        const uint32_t rdata_vaddr = text_vaddr + align_up_u32(static_cast<uint32_t>(text_full.size()), kSecAlign);
+
+        // 2. Synthesize .rdata containing KERNEL32.DLL -> ExitProcess IAT
+        std::vector<uint8_t> rdata_full;
+        const uint32_t desc_offset = 0;
+        const uint32_t iat_offset  = desc_offset + sizeof(ImportDescriptor) * 2;
+        const uint32_t ilt_offset  = iat_offset + sizeof(uint64_t) * 2;
+        const uint32_t hint_offset = ilt_offset + sizeof(uint64_t) * 2;
+        const uint32_t dll_offset  = hint_offset + 14;
+
+        const uint32_t desc_rva = rdata_vaddr + desc_offset;
+        const uint32_t iat_rva  = rdata_vaddr + iat_offset;
+        const uint32_t ilt_rva  = rdata_vaddr + ilt_offset;
+        const uint32_t hint_rva = rdata_vaddr + hint_offset;
+        const uint32_t dll_rva  = rdata_vaddr + dll_offset;
+
+        // Backpatch IAT displacement into trampoline
+        const int32_t iat_disp = static_cast<int32_t>(iat_rva - (text_vaddr + 17));
+        std::memcpy(&text_full[13], &iat_disp, 4);
+
+        ImportDescriptor desc[2]{};
+        desc[0].OriginalFirstThunk = ilt_rva;
+        desc[0].TimeDateStamp = 0;
+        desc[0].ForwarderChain = 0;
+        desc[0].Name = dll_rva;
+        desc[0].FirstThunk = iat_rva;
+
+        uint64_t iat_entries[2] = { hint_rva, 0 };
+        uint64_t ilt_entries[2] = { hint_rva, 0 };
+
+        uint8_t hint_name[14] = { 0x00, 0x00, 'E', 'x', 'i', 't', 'P', 'r', 'o', 'c', 'e', 's', 's', '\0' };
+        const char dll_name[] = "KERNEL32.DLL\0";
+
+        const size_t import_total_size = sizeof(desc) + sizeof(iat_entries) + sizeof(ilt_entries) + sizeof(hint_name) + sizeof(dll_name);
+        rdata_full.resize(import_total_size + 16, 0);
+
+        std::memcpy(rdata_full.data() + desc_offset, desc, sizeof(desc));
+        std::memcpy(rdata_full.data() + iat_offset, iat_entries, sizeof(iat_entries));
+        std::memcpy(rdata_full.data() + ilt_offset, ilt_entries, sizeof(ilt_entries));
+        std::memcpy(rdata_full.data() + hint_offset, hint_name, sizeof(hint_name));
+        std::memcpy(rdata_full.data() + dll_offset, dll_name, sizeof(dll_name));
+
+        const uint32_t rdata_raw_size = align_up_u32(static_cast<uint32_t>(rdata_full.size()), kFileAlign);
+
+        // 3. Assemble full PE32+ image
+        pe_image.assign(kHeadersSize + text_raw_size + rdata_raw_size, 0);
+
         auto* dos = reinterpret_cast<ImageDosHeader*>(pe_image.data());
         dos->e_magic = 0x5A4D; // "MZ"
         dos->e_cblp = 0x0090;
@@ -1299,76 +1530,97 @@ public:
         dos->e_maxalloc = 0xFFFF;
         dos->e_sp = 0x00B8;
         dos->e_lfarlc = 0x0040;
-        dos->e_lfanew = 128;
+        dos->e_lfanew = 0x0080; // 128
 
-        // 2. PE Signature
-        *reinterpret_cast<uint32_t*>(pe_image.data() + 128) = 0x00004550; // "PE\0\0"
+        static const uint8_t kDosStub[64] = {
+            0x0e, 0x1f, 0xba, 0x0e, 0x00, 0xb4, 0x09, 0xcd, 0x21, 0xb8, 0x01, 0x4c, 0xcd, 0x21,
+            'T', 'h', 'i', 's', ' ', 'p', 'r', 'o', 'g', 'r', 'a', 'm', ' ',
+            'c', 'a', 'n', 'n', 'o', 't', ' ', 'b', 'e', ' ', 'r', 'u', 'n', ' ',
+            'i', 'n', ' ', 'D', 'O', 'S', ' ', 'm', 'o', 'd', 'e', '.', '\r', '\r', '\n', '$',
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        std::memcpy(pe_image.data() + 0x40, kDosStub, sizeof(kDosStub));
 
-        // 3. File Header
-        auto* fhdr = reinterpret_cast<FileHeader*>(pe_image.data() + 132);
+        *reinterpret_cast<uint32_t*>(pe_image.data() + 0x80) = 0x00004550; // "PE\0\0"
+
+        auto* fhdr = reinterpret_cast<FileHeader*>(pe_image.data() + 0x84);
         fhdr->Machine = MACHINE_AMD64;
-        fhdr->NumberOfSections = 1;
+        fhdr->NumberOfSections = 2;
         fhdr->TimeDateStamp = 0x69A12345;
+        fhdr->PointerToSymbolTable = 0;
+        fhdr->NumberOfSymbols = 0;
         fhdr->SizeOfOptionalHeader = sizeof(ImageOptionalHeader64);
-        fhdr->Characteristics = 0x0022; // EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+        fhdr->Characteristics = 0x0023; // IMAGE_FILE_RELOCS_STRIPPED | IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE
 
-        // 4. Optional Header (PE32+)
-        auto* opt = reinterpret_cast<ImageOptionalHeader64*>(pe_image.data() + 152);
+        auto* opt = reinterpret_cast<ImageOptionalHeader64*>(pe_image.data() + 0x98);
         opt->Magic = 0x020B; // PE32+
         opt->MajorLinkerVersion = 14;
         opt->MinorLinkerVersion = 0;
-        opt->SizeOfCode = static_cast<uint32_t>(code_file_size);
-        opt->AddressOfEntryPoint = 0x1000;
-        opt->BaseOfCode = 0x1000;
+        opt->SizeOfCode = text_raw_size;
+        opt->SizeOfInitializedData = rdata_raw_size;
+        opt->SizeOfUninitializedData = 0;
+        opt->AddressOfEntryPoint = text_vaddr;
+        opt->BaseOfCode = text_vaddr;
         opt->ImageBase = 0x0000000140000000ULL;
-        opt->SectionAlignment = 0x1000;
-        opt->FileAlignment = 0x200;
+        opt->SectionAlignment = kSecAlign;
+        opt->FileAlignment = kFileAlign;
         opt->MajorOperatingSystemVersion = 6;
         opt->MinorOperatingSystemVersion = 0;
         opt->MajorImageVersion = 0;
         opt->MinorImageVersion = 0;
         opt->MajorSubsystemVersion = 6;
         opt->MinorSubsystemVersion = 0;
-        opt->SizeOfImage = static_cast<uint32_t>(0x1000 + align_up(code_file_size, 0x1000));
-        opt->SizeOfHeaders = static_cast<uint32_t>(headers_size);
+        opt->Win32VersionValue = 0;
+        opt->SizeOfImage = rdata_vaddr + align_up_u32(static_cast<uint32_t>(rdata_full.size()), kSecAlign);
+        opt->SizeOfHeaders = kHeadersSize;
+        opt->CheckSum = 0;
         opt->Subsystem = 3; // IMAGE_SUBSYSTEM_WINDOWS_CUI
-        opt->DllCharacteristics = 0x8160;
-        opt->SizeOfStackReserve = 0x4000000; // 64 MB Stack Reserve
+        opt->DllCharacteristics = 0x8100; // IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE
+        opt->SizeOfStackReserve = 0x4000000;
         opt->SizeOfStackCommit = 0x10000;
         opt->SizeOfHeapReserve = 0x4000000;
         opt->SizeOfHeapCommit = 0x10000;
+        opt->LoaderFlags = 0;
         opt->NumberOfRvaAndSizes = 16;
+        opt->DataDirectory[1].VirtualAddress = desc_rva;
+        opt->DataDirectory[1].Size = sizeof(desc);
+        opt->DataDirectory[12].VirtualAddress = iat_rva;
+        opt->DataDirectory[12].Size = sizeof(iat_entries);
 
-        // 5. Section Header (.text)
-        auto* sec = reinterpret_cast<SectionHeader*>(pe_image.data() + 152 + sizeof(ImageOptionalHeader64));
-        std::memcpy(sec->Name, ".text\0\0\0", 8);
-        sec->VirtualAddress = 0x1000;
-        sec->VirtualSize = static_cast<uint32_t>(raw_code_est);
-        sec->PointerToRawData = static_cast<uint32_t>(headers_size);
-        sec->SizeOfRawData = static_cast<uint32_t>(code_file_size);
-        sec->Characteristics = SCN_CNT_CODE | SCN_MEM_EXECUTE | SCN_MEM_READ | SCN_ALIGN_16BYTES;
+        auto* sec_text = reinterpret_cast<SectionHeader*>(pe_image.data() + 0x98 + sizeof(ImageOptionalHeader64));
+        std::memcpy(sec_text->Name, ".text\0\0\0", 8);
+        sec_text->VirtualAddress = text_vaddr;
+        sec_text->VirtualSize = static_cast<uint32_t>(text_full.size());
+        sec_text->PointerToRawData = kHeadersSize;
+        sec_text->SizeOfRawData = text_raw_size;
+        sec_text->PointerToRelocations = 0;
+        sec_text->PointerToLinenumbers = 0;
+        sec_text->NumberOfRelocations = 0;
+        sec_text->NumberOfLinenumbers = 0;
+        sec_text->Characteristics = 0x60000020; // SCN_CNT_CODE | SCN_MEM_EXECUTE | SCN_MEM_READ
 
-        // 6. Emit Entry Wrapper & Raw Machine Code into .text Section
-        static const uint8_t entry_wrapper[] = {
-            0x48, 0x83, 0xEC, 0x28,                         // sub rsp, 40
-            0xE8, 0x07, 0x00, 0x00, 0x00,                   // call kernel (target offset +16 bytes from wrapper start)
-            0x48, 0x83, 0xC4, 0x28,                         // add rsp, 40
-            0xC3,                                           // ret
-            0x90, 0x90                                      // nop alignment
-        };
+        auto* sec_rdata = reinterpret_cast<SectionHeader*>(pe_image.data() + 0x98 + sizeof(ImageOptionalHeader64) + sizeof(SectionHeader));
+        std::memcpy(sec_rdata->Name, ".rdata\0\0", 8);
+        sec_rdata->VirtualAddress = rdata_vaddr;
+        sec_rdata->VirtualSize = static_cast<uint32_t>(rdata_full.size());
+        sec_rdata->PointerToRawData = kHeadersSize + text_raw_size;
+        sec_rdata->SizeOfRawData = rdata_raw_size;
+        sec_rdata->PointerToRelocations = 0;
+        sec_rdata->PointerToLinenumbers = 0;
+        sec_rdata->NumberOfRelocations = 0;
+        sec_rdata->NumberOfLinenumbers = 0;
+        sec_rdata->Characteristics = 0xC0000040; // SCN_CNT_INITIALIZED_DATA | SCN_MEM_READ | SCN_MEM_WRITE
 
-        const size_t wrapper_size = sizeof(entry_wrapper);
-        std::memcpy(pe_image.data() + headers_size, entry_wrapper, wrapper_size);
+        std::memcpy(pe_image.data() + kHeadersSize, text_full.data(), text_full.size());
+        std::memcpy(pe_image.data() + kHeadersSize + text_raw_size, rdata_full.data(), rdata_full.size());
 
-        size_t emitted_size = 0;
-        const bool ok = emit_aot_machine_code(pe_image.data() + headers_size + wrapper_size,
-                                              code_file_size - wrapper_size,
-                                              ir_stream,
-                                              &emitted_size);
-        if (!ok) return false;
+        return true;
+    }
 
-        sec->VirtualSize = static_cast<uint32_t>(wrapper_size + emitted_size);
-
+    bool build_pe_executable(std::string_view path, const ir::IRStream& ir_stream) {
+        if (path.empty() || ir_stream.is_null()) return false;
+        std::vector<uint8_t> pe_image;
+        if (!build_pe_executable_buffer(ir_stream, pe_image)) return false;
         return write_binary_file(path, pe_image);
     }
 

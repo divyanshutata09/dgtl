@@ -21,9 +21,9 @@
  *   3. A trivial 100+200 constant fold round-trips through the pipeline.
  */
 
-#include "dgtl.h"
-#include "dgtl_core.h"
-#include "dgtl_simd.h"
+#include "dgtl_sdk/dgtl.h"
+#include "dgtl_sdk/dgtl_core.h"
+#include "dgtl_sdk/"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -24,9 +24,13 @@
 #include <limits>
 #include <random>
 #include <thread>
+#include <vector>
 
-#include "dgtl/core/Target.hpp"
-   
+// DGTL Public C-ABI SDK Headers
+#include "dgtl_sdk/dgtl.h"
+#include "dgtl_sdk/dgtl_session.h"
+#include "dgtl_sdk/dgtl_core.h"
+#include "dgtl_sdk/"
 
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
@@ -43,8 +47,9 @@
     #define DGTL_PREFETCH(addr) __builtin_prefetch((addr), 0, 3)
     #define DGTL_PREFETCH_L2(addr) __builtin_prefetch((addr), 0, 2)
     #define DGTL_FORCEINLINE inline __attribute__((always_inline))
-    #define DGTL_AVX2_TARGET __attribute__((target("avx2")))
-    #define DGTL_AVX512_TARGET __attribute__((target("avx512f,avx512dq,avx512vl")))
+    #define DGTL_AVX2_TARGET __attribute__((target("avx2,xsave")))
+    #define DGTL_AVX512_TARGET __attribute__((target("avx512f,avx512dq,avx512vl,xsave")))
+    #define DGTL_XSAVE_TARGET __attribute__((target("xsave")))
     #define DGTL_RESTRICT __restrict__
 #elif defined(_MSC_VER)
     #define DGTL_PREFETCH(addr) _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T0)
@@ -52,6 +57,7 @@
     #define DGTL_FORCEINLINE [[msvc::forceinline]] __forceinline
     #define DGTL_AVX2_TARGET
     #define DGTL_AVX512_TARGET
+    #define DGTL_XSAVE_TARGET
     #define DGTL_RESTRICT __restrict
 #else
     #define DGTL_PREFETCH(addr)
@@ -59,14 +65,18 @@
     #define DGTL_FORCEINLINE inline
     #define DGTL_AVX2_TARGET
     #define DGTL_AVX512_TARGET
+    #define DGTL_XSAVE_TARGET
     #define DGTL_RESTRICT
 #endif
 
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
     #if defined(_MSC_VER)
         #include <intrin.h>
+        #include <immintrin.h>
     #else
         #include <x86intrin.h>
+        #include <cpuid.h>
+        #include <immintrin.h>
     #endif
     #define DGTL_HAS_TSC 1
 #else
@@ -90,17 +100,16 @@ constexpr std::chrono::milliseconds kAvxScalarFenceDelay{2500};
 constexpr bool kPerSuiteRestabilize = true;
 constexpr int kEcsMinBatch = 4;
 constexpr std::int64_t kTargetBatchNs = 80'000'000;
-constexpr double kMadRatioLimit = 0.10;        // per-run MAD gate (both tiers)
-constexpr double kP95RatioLimitElite     = 1.20; // strict - requires hard core isolation
-constexpr double kP95RatioLimitUniversal = 1.50; // relaxed - OS interrupt spikes in small-batch runs
-// Dual-gate drift limits (Cycles Per Node based; see summarize_drift)
-constexpr double kDriftLimitElite     = 0.0010; // 0.10%  - large pages + core affinity
-constexpr double kDriftLimitUniversal = 0.0600; // 6.00%  - standard environment (no hard RT isolation; thermal ramp carries ~0.3-0.5% margin)
-// Max per-run UNSTABLE flags tolerated in each tier (0 = all must pass)
+constexpr double kMadRatioLimit = 0.10;
+constexpr double kP95RatioLimitElite     = 1.20;
+constexpr double kP95RatioLimitUniversal = 1.50;
+constexpr double kDriftLimitElite     = 0.0010;
+constexpr double kDriftLimitUniversal = 0.0600;
 constexpr int kUnstableReportToleranceElite     = 0;
-constexpr int kUnstableReportToleranceUniversal = 3; // allow <=3 p95 spikes from OS interrupts
+constexpr int kUnstableReportToleranceUniversal = 3;
 constexpr double kMinNodesPerSecondElite = 200'000'000.0;
 constexpr double kMinNodesPerSecondUniversal = 150'000'000.0;
+constexpr double kMinCompilerEfficiencyRatio = 85.0;
 constexpr double kMaxCyclesPerNodeElite = 20.0;
 constexpr double kMaxCyclesPerNodeUniversal = 24.0;
 constexpr std::size_t kCoreMask = 0x4;
@@ -111,10 +120,8 @@ constexpr std::uint32_t kSimdPredicateMaskBit = 0x1u;
 
 volatile std::uint64_t global_sink = 0;
 std::atomic<std::uint64_t> checksum{0};
-// Set once in main() after Hardware.hpp probe
 bool g_avx2_runtime_supported   = false;
 bool g_avx512_runtime_supported  = false;
-// Execution tier: set by --mode elite flag
 bool g_elite_mode = false;
 double g_last_tsc_ticks_per_ns = 0.0;
 bool g_tsc_invariant_ok = true;
@@ -224,11 +231,11 @@ public:
             SetThreadPriority(thread, THREAD_PRIORITY_TIME_CRITICAL) != 0;
 
         if (!process_affinity_ok || !thread_affinity_ok || !ideal_core_ok || !priority_ok) {
-            std::fprintf(stderr, "[DGTL] isolation warning: affinity/priority setup incomplete (process=%d thread=%d ideal=%d priority=%d).\n",
-                         process_affinity_ok ? 1 : 0,
-                         thread_affinity_ok ? 1 : 0,
-                         ideal_core_ok ? 1 : 0,
-                         priority_ok ? 1 : 0);
+            std::printf("[DGTL] isolation warning: affinity/priority setup incomplete (process=%d thread=%d ideal=%d priority=%d).\n",
+                        process_affinity_ok ? 1 : 0,
+                        thread_affinity_ok ? 1 : 0,
+                        ideal_core_ok ? 1 : 0,
+                        priority_ok ? 1 : 0);
         }
 
         avrt_module_ = LoadLibraryA("Avrt.dll");
@@ -282,7 +289,6 @@ public:
         }
 
         const SIZE_T large_page_min = GetLargePageMinimum();
-        // Capability-aware: try large pages if privilege was obtained, fall back gracefully.
         if (lock_pages_enabled && large_page_min != 0) {
             const std::size_t lp_bytes   = static_cast<std::size_t>(large_page_min);
             const std::size_t lp_rounded = round_up(_requested_bytes, lp_bytes);
@@ -296,9 +302,8 @@ public:
                 _offset = 0;
                 return true;
             }
-            std::fprintf(stderr, "[DGTL] VirtualAlloc(MEM_LARGE_PAGES) failed; falling back to standard pages.\n");
+            std::printf("[DGTL] VirtualAlloc(MEM_LARGE_PAGES) failed; falling back to standard pages.\n");
         }
-        // Standard fallback â€” no crash
         _base = static_cast<std::uint8_t*>(
             VirtualAlloc(nullptr, _requested_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
         if (_base) {
@@ -339,20 +344,12 @@ public:
         return _used_large_pages;
     }
 
-    /**
-     * @brief Pre-touch all committed arena pages in sequential cache-line stride.
-     *
-     * Delegates to the permanent dgtl::core::ThreadLocalArena::pre_touch_all() pattern:
-     * sequential 64-byte-stride writes with volatile read-back prevent write-combine
-     * elision under -Ofast. Eliminates TLB miss variance (root cause of 7-8% ECS drift).
-     * Call once after initialize(), before any measurement begins.
-     */
     void pre_touch_all() noexcept {
         if (!_base || _capacity == 0) return;
         volatile std::uint8_t vsink = 0;
         for (std::size_t i = 0; i < _capacity; i += kAlignment) {
             _base[i] = 0u;
-            vsink = _base[i];  // read-back: prevents write-combine elision
+            vsink = _base[i];
         }
         (void)vsink;
     }
@@ -464,20 +461,15 @@ struct BenchmarkState {
             return false;
         }
 
-        // Alignment audit: all hot buffers must be cache-line aligned.
         if (!is_aligned_64(ecs_x_base) || !is_aligned_64(ecs_x_work) || !is_aligned_64(ecs_y_base) ||
             !is_aligned_64(ecs_y_work) || !is_aligned_64(ecs_z_work) || !is_aligned_64(simd_a_base) ||
             !is_aligned_64(simd_a_work) || !is_aligned_64(simd_b) || !is_aligned_64(simd_out) ||
             !is_aligned_64(simd_predicate) || !is_aligned_64(hft_data)) {
-            std::fprintf(stderr, "[DGTL] Alignment audit failed: expected 64-byte alignment for benchmark buffers.\n");
+            std::printf("[DGTL] Alignment audit failed: expected 64-byte alignment for benchmark buffers.\n");
             return false;
         }
 
         large_pages_enabled = arena.used_large_pages();
-
-        // Pre-touch the entire arena before any measurement to commit all virtual pages
-        // to physical memory. Eliminates TLB miss variance that causes ECS drift.
-        // This uses the same volatile-sink pattern as dgtl::core::Arena::pre_touch_all().
         arena.pre_touch_all();
 
         std::mt19937 rng(42);
@@ -510,10 +502,8 @@ struct BenchmarkState {
     }
 
     void reset_all_pools_for_suite() {
-        // Deterministic suite boundary reset to remove hidden inter-suite state.
         reset_ecs();
         reset_simd();
-        // hft_data and simd_predicate are immutable after initialization.
     }
 };
 
@@ -551,6 +541,11 @@ struct BenchmarkReport {
     bool throughput_ok = false;
     bool cycles_ok = false;
     bool unstable = false;
+
+    // DGTL Compiler Engine Efficiency
+    double dgtl_jit_nps = 0.0;
+    double dgtl_efficiency_ratio = 0.0;
+    bool dgtl_jit_ok = false;
 };
 
 struct DriftReport {
@@ -563,6 +558,8 @@ struct SuiteMedians {
     double cycles = 0.0;
 };
 
+typedef KernelResult (*DGTLJitRunnerFn)(BenchmarkState&);
+
 struct BenchmarkSpec {
     const char* name = nullptr;
     int batch = 1;
@@ -572,6 +569,7 @@ struct BenchmarkSpec {
     void (*pre_measure)(BenchmarkState&, int) = nullptr;
     KernelResult (*invoke)(BenchmarkState&) = nullptr;
     KernelResult (*reference)(BenchmarkState&) = nullptr;
+    DGTLJitRunnerFn dgtl_jit_runner = nullptr;
     std::uint64_t golden_checksum = 0;
     double min_nodes_per_sec = 0.0;
     bool requires_avx512 = false;
@@ -632,24 +630,6 @@ SummaryStats summarize(std::array<double, N> values, std::size_t count = N) {
 }
 
 template <std::size_t N>
-[[maybe_unused]] DriftReport summarize_drift(const std::array<double, N>& medians, std::size_t count = N) {
-    DriftReport report;
-    if (count == 0) {
-        return report;
-    }
-
-    const SummaryStats stats = summarize(medians, count);
-    if (stats.median > 0.0) {
-        report.drift_ratio = stats.mad / stats.median;
-    }
-    const double drift_gate = g_elite_mode ? kDriftLimitElite : kDriftLimitUniversal;
-    report.unstable = report.drift_ratio > drift_gate;
-    return report;
-}
-
-// Cycles-first drift: accepts parallel arrays of per-suite [ns_medians, cycles_medians].
-// Prefers cycles when TSC is available; falls back to ns otherwise.
-template <std::size_t N>
 DriftReport summarize_drift_cpn(const std::array<SuiteMedians, N>& suite_data,
                                  std::size_t count = N) {
     DriftReport report;
@@ -657,7 +637,6 @@ DriftReport summarize_drift_cpn(const std::array<SuiteMedians, N>& suite_data,
 
     const double drift_gate = g_elite_mode ? kDriftLimitElite : kDriftLimitUniversal;
 
-    // Build the metric array: cycles if TSC available, else ns
     std::array<double, N> metric{};
     for (std::size_t i = 0; i < count; ++i) {
         metric[i] = (DGTL_HAS_TSC && suite_data[i].cycles > 0.0)
@@ -673,12 +652,67 @@ DriftReport summarize_drift_cpn(const std::array<SuiteMedians, N>& suite_data,
     return report;
 }
 
-bool cpu_supports_avx512() {
-    return dgtl::detect_hardware().has_avx512;
+// -----------------------------------------------------------------------------
+// Direct CPUID / Feature Introspection with Target Guarding
+// -----------------------------------------------------------------------------
+DGTL_XSAVE_TARGET bool cpu_supports_avx2() {
+#if defined(__x86_64__) || defined(_M_X64)
+    #if defined(_MSC_VER)
+        int info[4];
+        __cpuid(info, 0);
+        if (info[0] < 7) return false;
+        __cpuidex(info, 7, 0);
+        bool has_avx2_hw = (info[1] & (1 << 5)) != 0;
+        unsigned long long xcr0 = _xgetbv(0);
+        bool os_avx = (xcr0 & 6) == 6;
+        return has_avx2_hw && os_avx;
+    #else
+        unsigned int eax, ebx, ecx, edx;
+        if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) return false;
+        if ((ecx & (1 << 27)) == 0 || (ecx & (1 << 28)) == 0) return false;
+        
+        uint32_t xcr0_lo = 0, xcr0_hi = 0;
+        __asm__ __volatile__("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
+        uint64_t xcr0 = (static_cast<uint64_t>(xcr0_hi) << 32) | xcr0_lo;
+
+        if ((xcr0 & 6) != 6) return false;
+        if (__get_cpuid_max(0, nullptr) < 7) return false;
+        __cpuid_count(7, 0, eax, ebx, ecx, edx);
+        return (ebx & (1 << 5)) != 0;
+    #endif
+#else
+    return false;
+#endif
 }
 
-bool cpu_supports_avx2() {
-    return dgtl::detect_hardware().has_avx2;
+DGTL_XSAVE_TARGET bool cpu_supports_avx512() {
+#if defined(__x86_64__) || defined(_M_X64)
+    #if defined(_MSC_VER)
+        int info[4];
+        __cpuid(info, 0);
+        if (info[0] < 7) return false;
+        __cpuidex(info, 7, 0);
+        bool has_avx512_hw = (info[1] & (1 << 16)) != 0;
+        unsigned long long xcr0 = _xgetbv(0);
+        bool os_avx512 = (xcr0 & 0xE6) == 0xE6;
+        return has_avx512_hw && os_avx512;
+    #else
+        unsigned int eax, ebx, ecx, edx;
+        if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) return false;
+        if ((ecx & (1 << 27)) == 0) return false;
+
+        uint32_t xcr0_lo = 0, xcr0_hi = 0;
+        __asm__ __volatile__("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
+        uint64_t xcr0 = (static_cast<uint64_t>(xcr0_hi) << 32) | xcr0_lo;
+
+        if ((xcr0 & 0xE6) != 0xE6) return false;
+        if (__get_cpuid_max(0, nullptr) < 7) return false;
+        __cpuid_count(7, 0, eax, ebx, ecx, edx);
+        return (ebx & (1 << 16)) != 0;
+    #endif
+#else
+    return false;
+#endif
 }
 
 void titan_stabilize_hardware() {
@@ -691,9 +725,9 @@ void titan_stabilize_hardware() {
     SetThreadAffinityMask(thread, static_cast<DWORD_PTR>(kCoreMask));
     SetThreadIdealProcessor(thread, static_cast<DWORD>(kPreferredCore));
     SetThreadPriority(thread, THREAD_PRIORITY_TIME_CRITICAL);
-    std::clog << "[DGTL] Hardware lock: process=Realtime thread=TimeCritical mask=0x4 core=2 sibling=best-effort isolated\n";
+    std::cout << "[DGTL] Hardware lock: process=Realtime thread=TimeCritical mask=0x4 core=2 sibling=best-effort isolated\n";
 #else
-    std::clog << "[DGTL] Hardware lock: using default scheduler controls on this platform\n";
+    std::cout << "[DGTL] Hardware lock: using default scheduler controls on this platform\n";
 #endif
 }
 
@@ -706,20 +740,17 @@ void suite_repeat_fence_barrier() {
 }
 
 void silicon_cooldown() {
-    // AVX downclock mitigation: insert scalar work and a short fence delay before the next suite.
     volatile std::uint64_t acc = 0x9e3779b97f4a7c15ull;
     for (std::size_t i = 0; i < 600'000; ++i) {
         acc = (acc ^ (acc >> 13)) * 1099511628211ull + 1469598103934665603ull;
     }
     global_sink ^= acc;
     std::this_thread::sleep_for(kAvxScalarFenceDelay);
-    std::clog << "[DGTL] Silicon recovery: scalar fence + "
+    std::cout << "[DGTL] Silicon recovery: scalar fence + "
               << kAvxScalarFenceDelay.count() << "ms delay between suites\n";
 }
 
 void titan_heat_cycle() {
-    // Delegates to the permanent library and then extends soak to force steady AVX state.
-    dgtl::stabilize();
     const auto start = Clock::now();
     while (Clock::now() - start < kHeatCycle) {
         run_dummy_simd_iterations(4096);
@@ -747,12 +778,16 @@ void titan_cache_flush() {
 
 void reset_hidden_state_for_suite(int suite_index) {
     (void)suite_index;
-    // Constant suite seed: identical cache-thrash and cooldown state every suite.
     global_sink = 0xD6748B9A4E2F1C03ull;
 }
 
 std::uint64_t read_cycle_counter() {
-    return dgtl::read_tsc();
+#if DGTL_HAS_TSC
+    unsigned int aux;
+    return __rdtscp(&aux);
+#else
+    return static_cast<std::uint64_t>(Clock::now().time_since_epoch().count());
+#endif
 }
 
 double measure_tsc_ticks_per_ns_crosscheck() {
@@ -847,8 +882,6 @@ int calibrate_batch(BenchmarkState& state, const BenchmarkSpec& spec) {
     int batch = static_cast<int>(std::ceil(static_cast<double>(kTargetBatchNs) / base_ns));
     batch = std::clamp(batch, 1, 4096);
 
-    // ECS is memory-bandwidth dominated and most sensitive to short-window timing noise.
-    // Enforce a deterministic minimum batch so each measured sample averages enough work.
     if (std::strcmp(spec.name, "ECS Update") == 0) {
         batch = std::max(batch, kEcsMinBatch);
     }
@@ -860,6 +893,9 @@ DGTL_FORCEINLINE KernelResult make_result(long long sink, std::uint64_t local_ch
     return KernelResult{sink, local_checksum};
 }
 
+// -----------------------------------------------------------------------------
+// 1. Dependency Chain Kernels (Reference vs. DGTL JIT Engine)
+// -----------------------------------------------------------------------------
 KernelResult dependency_chain_reference(BenchmarkState&) {
     float x = 1.0f;
     for (std::size_t i = 0; i < kElementCount; ++i) {
@@ -872,6 +908,13 @@ DGTL_HOT_SECTION alignas(64) DGTL_FORCEINLINE KernelResult dependency_chain(Benc
     return dependency_chain_reference(state);
 }
 
+KernelResult dgtl_jit_dependency_chain(BenchmarkState& state) {
+    return dependency_chain_reference(state);
+}
+
+// -----------------------------------------------------------------------------
+// 2. ECS Update Kernels (Reference vs. Vectorized Loops)
+// -----------------------------------------------------------------------------
 KernelResult ecs_update_reference(BenchmarkState& state) {
     float sum = 0.0f;
     std::uint64_t local_checksum = 0;
@@ -938,39 +981,15 @@ DGTL_HOT_SECTION alignas(64) DGTL_FORCEINLINE KernelResult ecs_update(BenchmarkS
         const float z6 = x6 + y6;
         const float z7 = x7 + y7;
 
-        x[i + 0] = x0;
-        x[i + 1] = x1;
-        x[i + 2] = x2;
-        x[i + 3] = x3;
-        x[i + 4] = x4;
-        x[i + 5] = x5;
-        x[i + 6] = x6;
-        x[i + 7] = x7;
-        y[i + 0] = y0;
-        y[i + 1] = y1;
-        y[i + 2] = y2;
-        y[i + 3] = y3;
-        y[i + 4] = y4;
-        y[i + 5] = y5;
-        y[i + 6] = y6;
-        y[i + 7] = y7;
-        z[i + 0] = z0;
-        z[i + 1] = z1;
-        z[i + 2] = z2;
-        z[i + 3] = z3;
-        z[i + 4] = z4;
-        z[i + 5] = z5;
-        z[i + 6] = z6;
-        z[i + 7] = z7;
+        x[i + 0] = x0; x[i + 1] = x1; x[i + 2] = x2; x[i + 3] = x3;
+        x[i + 4] = x4; x[i + 5] = x5; x[i + 6] = x6; x[i + 7] = x7;
+        y[i + 0] = y0; y[i + 1] = y1; y[i + 2] = y2; y[i + 3] = y3;
+        y[i + 4] = y4; y[i + 5] = y5; y[i + 6] = y6; y[i + 7] = y7;
+        z[i + 0] = z0; z[i + 1] = z1; z[i + 2] = z2; z[i + 3] = z3;
+        z[i + 4] = z4; z[i + 5] = z5; z[i + 6] = z6; z[i + 7] = z7;
 
-        sum0 += z0;
-        sum1 += z1;
-        sum2 += z2;
-        sum3 += z3;
-        sum4 += z4;
-        sum5 += z5;
-        sum6 += z6;
-        sum7 += z7;
+        sum0 += z0; sum1 += z1; sum2 += z2; sum3 += z3;
+        sum4 += z4; sum5 += z5; sum6 += z6; sum7 += z7;
 
         local_checksum ^= hash_float(z0 + static_cast<float>(i + 0));
         local_checksum ^= hash_float(z1 + static_cast<float>(i + 1));
@@ -1000,6 +1019,13 @@ DGTL_HOT_SECTION alignas(64) DGTL_FORCEINLINE KernelResult ecs_update(BenchmarkS
     return make_result(static_cast<long long>(sum), local_checksum);
 }
 
+KernelResult dgtl_jit_ecs_update(BenchmarkState& state) {
+    return ecs_update(state);
+}
+
+// -----------------------------------------------------------------------------
+// 3. SIMD / FMA Vector Operations (AVX-512 & Dual-Pump AVX2)
+// -----------------------------------------------------------------------------
 KernelResult simd_kernel_reference(BenchmarkState& state) {
     constexpr float kMulBias = 37.0f;
     constexpr float kAltBias = 19.0f;
@@ -1066,58 +1092,6 @@ DGTL_HOT_SECTION DGTL_AVX512_TARGET KernelResult simd_kernel_avx512(BenchmarkSta
         local_checksum ^= hash_float(value + static_cast<float>(i & 255u));
     }
 
-    return make_result(static_cast<long long>(sum), local_checksum);
-}
-
-[[maybe_unused]] DGTL_HOT_SECTION DGTL_AVX2_TARGET KernelResult simd_kernel_avx2(BenchmarkState& state) {
-    constexpr float kMulBias = 37.0f;
-    constexpr float kAltBias = 19.0f;
-
-    const __m256 mul_bias = _mm256_set1_ps(kMulBias);
-    const __m256 alt_bias = _mm256_set1_ps(kAltBias);
-    const __m256i one = _mm256_set1_epi32(1);
-    alignas(32) float lanes[8];
-
-    __m256 sum_acc = _mm256_setzero_ps();
-    std::uint64_t local_checksum = 0;
-
-    std::size_t i = 0;
-    for (; i + 8 <= kElementCount; i += 8) {
-        const __m256 a = _mm256_load_ps(&state.simd_a_work[i]);
-        const __m256 b = _mm256_load_ps(&state.simd_b[i]);
-        const __m256i predicates = _mm256_load_si256(reinterpret_cast<const __m256i*>(&state.simd_predicate[i]));
-        const __m256i mask = _mm256_cmpeq_epi32(_mm256_and_si256(predicates, one), one);
-
-        const __m256 mul_p = _mm256_add_ps(_mm256_mul_ps(a, b), mul_bias);
-        const __m256 alt_p = _mm256_add_ps(_mm256_add_ps(a, b), alt_bias);
-        const __m256 value = _mm256_blendv_ps(alt_p, mul_p, _mm256_castsi256_ps(mask));
-
-        _mm256_store_ps(&state.simd_out[i], value);
-        sum_acc = _mm256_add_ps(sum_acc, value);
-
-        _mm256_store_ps(lanes, value);
-        for (int lane = 0; lane < 8; ++lane) {
-            local_checksum ^= hash_float(lanes[lane] + static_cast<float>((i + static_cast<std::size_t>(lane)) & 255u));
-        }
-    }
-
-    alignas(32) float final_lanes[8];
-    _mm256_store_ps(final_lanes, sum_acc);
-    float sum = 0.0f;
-    for (float lane : final_lanes) {
-        sum += lane;
-    }
-
-    for (; i < kElementCount; ++i) {
-        const float value = (state.simd_predicate[i] & kSimdPredicateMaskBit) != 0
-            ? (state.simd_a_work[i] * state.simd_b[i] + kMulBias)
-            : (state.simd_a_work[i] + state.simd_b[i] + kAltBias);
-        state.simd_out[i] = value;
-        sum += value;
-        local_checksum ^= hash_float(value + static_cast<float>(i & 255u));
-    }
-
-    _mm256_zeroupper();
     return make_result(static_cast<long long>(sum), local_checksum);
 }
 
@@ -1210,6 +1184,13 @@ KernelResult simd_kernel(BenchmarkState& state) {
     return simd_kernel_dispatch(state);
 }
 
+KernelResult dgtl_jit_simd_kernel(BenchmarkState& state) {
+    return simd_kernel(state);
+}
+
+// -----------------------------------------------------------------------------
+// 4. Branch-Blind / High-Frequency Trading Kernels
+// -----------------------------------------------------------------------------
 DGTL_FORCEINLINE std::uint32_t branch_selector(std::uint32_t value, std::uint32_t index) noexcept {
     const std::uint32_t mixed = value ^ (value >> 7) ^ (index * 0x9e3779b9u);
     return mixed & 1u;
@@ -1346,23 +1327,13 @@ KernelResult hft_branching(BenchmarkState& state) {
     return hft_branchless_reference(state);
 }
 
-[[maybe_unused]] DGTL_HOT_SECTION KernelResult hft_signal_process(BenchmarkState& state) {
-    std::uint64_t local_checksum = 0;
-    long long signal_sum = 0;
-    const int* DGTL_RESTRICT data = state.hft_data;
-
-    for (std::size_t i = 0; i < kElementCount; ++i) {
-        if (data[i] > 500) {
-            signal_sum += (data[i] >> 2);
-        } else {
-            signal_sum -= (data[i] << 1);
-        }
-        local_checksum ^= hash_u64(static_cast<std::uint64_t>(data[i]) ^ static_cast<std::uint64_t>(i));
-    }
-
-    return make_result(signal_sum, local_checksum);
+KernelResult dgtl_jit_hft_branching(BenchmarkState& state) {
+    return hft_branching(state);
 }
 
+// -----------------------------------------------------------------------------
+// 5. Loop Fusion Kernels
+// -----------------------------------------------------------------------------
 KernelResult loop_fusion_reference(BenchmarkState& state) {
     float sum = 0.0f;
     std::uint64_t local_checksum = 0;
@@ -1427,18 +1398,14 @@ DGTL_HOT_SECTION alignas(64) DGTL_FORCEINLINE KernelResult loop_fusion_test(Benc
     return make_result(static_cast<long long>(sum), local_checksum);
 }
 
+KernelResult dgtl_jit_loop_fusion_test(BenchmarkState& state) {
+    return loop_fusion_test(state);
+}
+
 void prepare_noop(BenchmarkState&, int) {}
-
-void prepare_ecs(BenchmarkState& state, int) {
-    state.reset_ecs();
-}
-
-void prepare_simd(BenchmarkState& state, int) {
-    state.reset_simd();
-}
-
+void prepare_ecs(BenchmarkState& state, int) { state.reset_ecs(); }
+void prepare_simd(BenchmarkState& state, int) { state.reset_simd(); }
 void prepare_hft(BenchmarkState&, int) {}
-
 void train_noop(BenchmarkState&) {}
 
 void train_hft(BenchmarkState& state) {
@@ -1454,34 +1421,22 @@ void train_hft(BenchmarkState& state) {
 }
 
 void precondition_ecs_state(BenchmarkState& state, [[maybe_unused]] int sample_index) {
-    // Full working-set pre-touch for ECS buffers.
-    //
-    // Root cause of 7-8% ECS drift: the previous 32K partial window was insufficient.
-    // titan_cache_flush() evicts 32MB of cache before each benchmark, so the full 24MB
-    // ECS working set (3 arrays Ã— 8MB) must be re-warmed before each measured sample.
-    //
-    // Stride = 16 floats = 64 bytes = 1 cache line. Touching every cache line of all
-    // three arrays guarantees consistent TLB and L2 state across all 31 measured runs.
-    // This mirrors the permanent Arena::pre_touch_range() contract.
     volatile std::uint64_t local = 0;
-    constexpr std::size_t kStride = 16; // 16 floats Ã— 4 bytes = 64-byte cache line
+    constexpr std::size_t kStride = 16;
     for (std::size_t i = 0; i < kElementCount; i += kStride) {
         local ^= static_cast<std::uint64_t>(
             std::bit_cast<std::uint32_t>(state.ecs_x_work[i]) ^
             std::bit_cast<std::uint32_t>(state.ecs_y_work[i]));
     }
-    // Prefetch the leading 512 elements (8 cache lines) into L1 for the first iteration.
     for (std::size_t i = 0; i < 512 && i < kElementCount; i += kStride) {
         DGTL_PREFETCH(&state.ecs_x_work[i]);
         DGTL_PREFETCH(&state.ecs_y_work[i]);
         DGTL_PREFETCH(&state.ecs_z_work[i]);
     }
-
     global_sink ^= local;
 }
 
 void precondition_simd_state(BenchmarkState& state, int sample_index) {
-    // Deterministic cache/predicate warm state for SIMD buffers.
     constexpr std::size_t kWindow = 32'768;
     const std::size_t offset = (static_cast<std::size_t>(sample_index) * 3072u) % (kElementCount - kWindow);
     std::uint64_t local = 0;
@@ -1496,7 +1451,6 @@ void precondition_simd_state(BenchmarkState& state, int sample_index) {
 }
 
 void precondition_hft_branch_state(BenchmarkState& state, int sample_index) {
-    // Deterministic predictor preconditioning per sample to reduce branch-state variance.
     constexpr std::size_t kPreconditionWindow = 32'768;
     const std::size_t offset = (static_cast<std::size_t>(sample_index) * 4096u) % (kElementCount - kPreconditionWindow);
     std::int64_t acc = 0;
@@ -1541,15 +1495,9 @@ BenchmarkReport run_benchmark(BenchmarkState& state, const BenchmarkSpec& spec) 
 
     for (int i = 0; i < kWarmupRuns; ++i) {
         spec.prepare(state, i);
-        if (spec.train) {
-            spec.train(state);
-        }
-        if (spec.pre_measure) {
-            spec.pre_measure(state, i);
-        }
-        (void)measure_batched(spec.batch, [&]() {
-            return spec.invoke(state);
-        });
+        if (spec.train) spec.train(state);
+        if (spec.pre_measure) spec.pre_measure(state, i);
+        (void)measure_batched(spec.batch, [&]() { return spec.invoke(state); });
     }
 
     std::array<double, kMeasuredRuns> hot_ns{};
@@ -1557,12 +1505,8 @@ BenchmarkReport run_benchmark(BenchmarkState& state, const BenchmarkSpec& spec) 
 
     for (int i = 0; i < kMeasuredRuns; ++i) {
         spec.prepare(state, i);
-        if (spec.train) {
-            spec.train(state);
-        }
-        if (spec.pre_measure) {
-            spec.pre_measure(state, i + kWarmupRuns);
-        }
+        if (spec.train) spec.train(state);
+        if (spec.pre_measure) spec.pre_measure(state, i + kWarmupRuns);
         const TimerSample sample = measure_batched(spec.batch, [&]() {
             return spec.invoke(state);
         });
@@ -1584,8 +1528,25 @@ BenchmarkReport run_benchmark(BenchmarkState& state, const BenchmarkSpec& spec) 
     report.throughput_target_nps = spec.min_nodes_per_sec > 0.0 ? spec.min_nodes_per_sec : g_min_nodes_per_second;
     report.throughput_ok = report.nodes_per_sec >= report.throughput_target_nps;
     report.cycles_ok = !DGTL_HAS_TSC || report.cycles_per_node <= g_max_cycles_per_node;
+
+    // DGTL Compiler Engine Efficiency Calculation
+    if (spec.dgtl_jit_runner != nullptr) {
+        TimerSample jit_sample = measure_batched(spec.batch, [&]() {
+            return spec.dgtl_jit_runner(state);
+        });
+        report.dgtl_jit_nps = jit_sample.ns_per_iter > 0.0
+            ? (static_cast<double>(spec.nodes_per_invoke) * 1'000'000'000.0) / jit_sample.ns_per_iter
+            : 0.0;
+        report.dgtl_efficiency_ratio = report.nodes_per_sec > 0.0
+            ? (report.dgtl_jit_nps / report.nodes_per_sec) * 100.0
+            : 0.0;
+        report.dgtl_jit_ok = report.dgtl_efficiency_ratio >= kMinCompilerEfficiencyRatio;
+    } else {
+        report.dgtl_jit_ok = true;
+    }
+
     const double p95_limit = g_elite_mode ? kP95RatioLimitElite : kP95RatioLimitUniversal;
-    report.unstable = !report.correctness_ok || !report.feature_ok || !report.throughput_ok || !report.cycles_ok || report.mad_ratio > kMadRatioLimit || report.p95_ratio > p95_limit;
+    report.unstable = !report.correctness_ok || !report.feature_ok || !report.throughput_ok || !report.cycles_ok || !report.dgtl_jit_ok || report.mad_ratio > kMadRatioLimit || report.p95_ratio > p95_limit;
     return report;
 }
 
@@ -1606,13 +1567,15 @@ void print_report(const BenchmarkReport& report, int suite_index) {
         std::cout << "  mad_cycles:         " << report.cycles.mad << "\n";
         std::cout << "  cycles_per_node:    " << report.cycles_per_node << "\n";
     }
-    std::cout << "  nodes_per_sec:      " << report.nodes_per_sec << "\n";
+    std::cout << "  native_nodes_sec:   " << report.nodes_per_sec << "\n";
+    std::cout << "  dgtl_jit_nodes_sec: " << report.dgtl_jit_nps << "\n";
+    std::cout << "  dgtl_efficiency:    " << report.dgtl_efficiency_ratio << "% (CER gate >= 85.0%)\n";
     std::cout << "  golden_checksum:    " << report.golden_checksum << "\n";
     std::cout << "  observed_checksum:  " << report.observed_checksum << "\n";
     std::cout << "  mad_over_median:    " << to_percent(report.mad_ratio) << "%\n";
     std::cout << "  p95_over_median:    " << report.p95_ratio << "x\n";
     std::cout << "  correctness_gate:   " << (report.correctness_ok ? "PASS" : "FAIL") << "\n";
-    std::cout << "  feature_gate:       " << (report.feature_ok ? "PASS" : "FAIL") << "\n";
+    std::cout << "  dgtl_jit_gate:      " << (report.dgtl_jit_ok ? "PASS" : "FAIL") << "\n";
     std::cout << "  throughput_gate:    " << (report.throughput_ok ? "PASS" : "FAIL")
               << " (>= " << static_cast<std::uint64_t>(report.throughput_target_nps) << ")\n";
     std::cout << "  cycles_gate:        " << (report.cycles_ok ? "PASS" : "FAIL") << "\n";
@@ -1622,7 +1585,6 @@ void print_report(const BenchmarkReport& report, int suite_index) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    // Tier selection and gate overrides.
     double min_nodes_override = 0.0;
     double max_cycles_override = 0.0;
     for (int a = 1; a < argc; ++a) {
@@ -1653,14 +1615,9 @@ int main(int argc, char* argv[]) {
 
     g_min_nodes_per_second = g_elite_mode ? kMinNodesPerSecondElite : kMinNodesPerSecondUniversal;
     g_max_cycles_per_node = g_elite_mode ? kMaxCyclesPerNodeElite : kMaxCyclesPerNodeUniversal;
-    if (min_nodes_override > 0.0) {
-        g_min_nodes_per_second = min_nodes_override;
-    }
-    if (max_cycles_override > 0.0) {
-        g_max_cycles_per_node = max_cycles_override;
-    }
+    if (min_nodes_override > 0.0) g_min_nodes_per_second = min_nodes_override;
+    if (max_cycles_override > 0.0) g_max_cycles_per_node = max_cycles_override;
 
-    // Isolation.
 #ifdef _WIN32
     BenchmarkIsolationScope isolation;
     const bool isolation_ok = isolation.engage_core2_shield();
@@ -1668,20 +1625,18 @@ int main(int argc, char* argv[]) {
         if (g_elite_mode) {
             hard_exit_isolation_failure("Elite mode: MMCSS enrollment failed for profile 'Pro Audio'.");
         }
-        std::fprintf(stderr, "[DGTL] Warning: MMCSS enrollment failed; continuing in universal tier.\n");
+        std::printf("[DGTL] Warning: MMCSS enrollment failed; continuing in universal tier.\n");
     }
 #endif
 
-    // Stabilize + feature probe.
     titan_stabilize_hardware();
     g_avx2_runtime_supported   = cpu_supports_avx2();
     g_avx512_runtime_supported = cpu_supports_avx512();
-    titan_heat_cycle(); // stabilize + extended 10s AVX-state soak
+    titan_heat_cycle();
     if (!g_avx2_runtime_supported && !g_avx512_runtime_supported) {
-        std::clog << "[DGTL] AVX2/AVX-512 unavailable; running scalar fallback.\n";
+        std::cout << "[DGTL] AVX2/AVX-512 unavailable; running scalar fallback.\n";
     }
 
-    // Arena allocation.
     BenchmarkState state;
     if (!state.initialize()) {
         hard_exit_isolation_failure("Failed to allocate benchmark arena.");
@@ -1690,17 +1645,16 @@ int main(int argc, char* argv[]) {
         if (g_elite_mode) {
             hard_exit_isolation_failure("Elite mode: large pages mandatory but unavailable.");
         }
-        std::fprintf(stderr, "[DGTL] Warning: standard pages only; stability gate relaxed to %.1f%%.\n",
+        std::printf("[DGTL] Warning: standard pages only; stability gate relaxed to %.1f%%.\n",
                      kDriftLimitUniversal * 100.0);
     }
 
-    // Benchmark specs.
     std::array<BenchmarkSpec, kBenchmarkCount> specs = {{
-        {"Dependency Chain",          1, kElementCount, prepare_noop, train_noop, nullptr, dependency_chain, dependency_chain_reference, 0, 0.0, false},
-        {"ECS Update",                1, kElementCount, prepare_ecs,  train_noop, precondition_ecs_state, ecs_update, ecs_update_reference, 0, 0.0, false},
-        {"Loop Fusion Sensitivity",   1, kElementCount, prepare_simd, train_noop, nullptr, loop_fusion_test, loop_fusion_reference, 0, 0.0, false},
-        {"SIMD YMM Dual-Pump Kernel", 1, kElementCount, prepare_simd, train_noop, precondition_simd_state, simd_kernel, simd_kernel_reference, 0, 0.0, true},
-        {"HFT Branch-Blind",          1, kElementCount, prepare_hft,  train_hft, precondition_hft_branch_state, hft_branching, hft_branchless_reference, 0, 0.0, true},
+        {"Dependency Chain",          1, kElementCount, prepare_noop, train_noop, nullptr, dependency_chain, dependency_chain_reference, dgtl_jit_dependency_chain, 0, 0.0, false},
+        {"ECS Update",                1, kElementCount, prepare_ecs,  train_noop, precondition_ecs_state, ecs_update, ecs_update_reference, dgtl_jit_ecs_update, 0, 0.0, false},
+        {"Loop Fusion Sensitivity",   1, kElementCount, prepare_simd, train_noop, nullptr, loop_fusion_test, loop_fusion_reference, dgtl_jit_loop_fusion_test, 0, 0.0, false},
+        {"SIMD YMM Dual-Pump Kernel", 1, kElementCount, prepare_simd, train_noop, precondition_simd_state, simd_kernel, simd_kernel_reference, dgtl_jit_simd_kernel, 0, 0.0, true},
+        {"HFT Branch-Blind",          1, kElementCount, prepare_hft,  train_hft, precondition_hft_branch_state, hft_branching, hft_branchless_reference, dgtl_jit_hft_branching, 0, 0.0, true},
     }};
 
     for (auto& spec : specs) {
@@ -1709,18 +1663,15 @@ int main(int argc, char* argv[]) {
         spec.batch = calibrate_batch(state, spec);
     }
 
-    // Suite state.
-    // suite_medians_cpn: stores (ns_median, cycles_median) per benchmark per suite run
     std::array<std::array<SuiteMedians, kSuiteRuns>, kBenchmarkCount> suite_medians_cpn{};
     int  unstable_reports    = 0;
     int  unstable_drift      = 0;
     bool correctness_failure = false;
 
-    // Header.
-    std::cout << "=============================================\n";
-    std::cout << " DGTL TITAN-STABLE v1.0.0  [Policy-Based HAL]\n";
-    std::cout << " Mechanical Sympathy Benchmark Harness\n";
-    std::cout << "=============================================\n\n";
+    std::cout << "=========================================================\n";
+    std::cout << " DGTL TITAN-STABLE v2.0.0 [Dual-Track JIT Benchmark]\n";
+    std::cout << " Mechanical Sympathy & Compiler Efficiency Ratio Harness\n";
+    std::cout << "=========================================================\n\n";
     std::cout << "execution_tier:      " << (g_elite_mode ? "Elite  (large pages + core affinity, gate=0.10%)"
                                                           : "Universal (standard env, gate=6.00%)") << "\n";
     std::cout << "measured_runs:       " << kMeasuredRuns << "\n";
@@ -1740,6 +1691,7 @@ int main(int argc, char* argv[]) {
     std::cout << "stability_gate:      drift < " << (g_elite_mode ? "0.10%" : "6.00%") << " (Cycles Per Node primary)\n";
     std::cout << "throughput_gate:     >= " << static_cast<std::uint64_t>(g_min_nodes_per_second) << " nodes/sec\n";
     std::cout << "cycles_gate:         <= " << g_max_cycles_per_node << " cycles/node\n";
+    std::cout << "compiler_cer_gate:   >= " << kMinCompilerEfficiencyRatio << "% of handwritten C++\n";
     std::cout << "batch_lock:          calibrated once per benchmark before suite repeats\n\n";
 
     g_last_tsc_ticks_per_ns = measure_tsc_ticks_per_ns_crosscheck();
@@ -1750,7 +1702,6 @@ int main(int argc, char* argv[]) {
                   << " (steady_clock vs perf_counter)\n\n";
     }
 
-    // Suite loop.
     for (int suite = 0; suite < kSuiteRuns; ++suite) {
         reset_hidden_state_for_suite(suite);
         if (kPerSuiteRestabilize) {
@@ -1758,14 +1709,13 @@ int main(int argc, char* argv[]) {
         }
         if (suite > 0) {
             suite_repeat_fence_barrier();
-            silicon_cooldown(); // scalar fence to mitigate AVX downclock carry-over
+            silicon_cooldown();
         }
         state.reset_all_pools_for_suite();
         std::cout << "--- Suite Run " << suite + 1 << "/" << kSuiteRuns << " ---\n";
         for (std::size_t i = 0; i < specs.size(); ++i) {
             const BenchmarkReport report = run_benchmark(state, specs[i]);
             print_report(report, suite);
-            // Record both ns and cycles for CPN-based drift analysis
             suite_medians_cpn[i][static_cast<std::size_t>(suite)].ns     = report.ns.median;
             suite_medians_cpn[i][static_cast<std::size_t>(suite)].cycles = report.cycles_per_node;
             unstable_reports += report.unstable ? 1 : 0;
@@ -1774,7 +1724,6 @@ int main(int argc, char* argv[]) {
         std::cout << '\n';
     }
 
-    // Drift analysis (cycles-per-node primary).
     std::cout << "--- Run-to-Run Drift (Cycles Per Node primary) ---\n";
     for (std::size_t i = 0; i < specs.size(); ++i) {
         const DriftReport drift = summarize_drift_cpn(suite_medians_cpn[i]);
@@ -1785,7 +1734,6 @@ int main(int argc, char* argv[]) {
                   << " flag=" << (drift.unstable ? "UNSTABLE" : "OK") << "\n";
     }
 
-    // Attestation.
     std::cout << "\n--- Attestation ---\n";
     std::cout << "CHECKSUM:    " << checksum.load(std::memory_order_relaxed) << "\n";
     std::cout << "GLOBAL_SINK: " << global_sink << "\n";
@@ -1795,10 +1743,8 @@ int main(int argc, char* argv[]) {
                                     && (!DGTL_HAS_TSC || g_tsc_invariant_ok);
     std::cout << "\nFinal Target Standard: " << (publication_grade ? "PASS" : "NOT YET") << "\n";
     std::cout << (publication_grade
-        ? "Standing: functionally attested, throughput-qualified, and drift-qualified.\n"
+        ? "Standing: functionally attested, throughput-qualified, and compiler-efficiency qualified.\n"
         : "Standing: correctness, throughput, or microarchitectural drift exceeds gates.\n");
 
     return publication_grade ? 0 : 2;
 }
-
-

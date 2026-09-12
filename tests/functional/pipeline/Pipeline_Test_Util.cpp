@@ -9,11 +9,13 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-import dgtl_all;
-
 #include <cstdio>
 #include <iostream>
 #include <string>
+
+import dgtl_all;
+import dgtl.ir_core.semantic;
+import dgtl.ir_core.transform_scalar_core;
 
 int main() {
     std::cout << "\033[1;36m--- [DGTL] Pipeline Integration Test ---\033[0m\n";
@@ -61,7 +63,7 @@ int main() {
 
     // 5. RUN GLOBAL VALUE NUMBERING (GVN)
     if (stream.size() > 0) {
-        dgtl::pass::DGTLGVN gvn;
+        dgtl::pass::transform::DGTLGVN gvn;
         gvn.execute(stream); 
     } else {
         std::cout << "[ERROR] Pipeline Stalled: IR Stream is empty.\n";
@@ -74,7 +76,7 @@ int main() {
     
     for(size_t i = 0; i < stream.size(); ++i) {
         // Retrieve unified IRNode view (24-byte alignment)
-        dgtl::ir::IRNode node = stream.get_node(i);
+        const auto node = stream.get_node(i);
         
         bool is_nop = (node.opcode == dgtl::ir::OpCode::NOP);
         bool is_dead = (node.flags & dgtl::ir::Flags::IS_DEAD);
@@ -96,7 +98,7 @@ int main() {
 
     // 7. EMIT NASM ASSEMBLY
     dgtl::isa::DGTLNasmEmitter nasm;
-    dgtl::core::SymbolTable symbols(arena);
+    dgtl::semantic::SymbolTable symbols(arena);
 
     std::cout << "\n--- GENERATING NASM OUTPUT ---\n";
     try {

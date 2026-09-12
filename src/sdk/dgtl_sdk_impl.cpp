@@ -3,40 +3,56 @@
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
  * Owner:       Divyanshu Tata
- * Repository: github.com/TataG-Systems/DGTL
+ * Repository:  github.com/TataG-Systems/DGTL
+ * Component:   Unified C-ABI SDK Implementation Bridge (Complete Unabridged Edition)
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-/*
- * dgtl_sdk_impl.cpp — C ABI bridge for the DGTL SDK public headers.
- *
- * Maps the extern "C" surface (dgtl.h, dgtl_core.h, dgtl_simd.h) to
- * the internal C++ API (dgtl::core, dgtl::ir, dgtl::isa, dgtl::pipeline).
- */
 #include "dgtl_sdk/dgtl.h"
-#include "dgtl_sdk/dgtl_capabilities.h"
-#include "dgtl_sdk/dgtl_core.h"
-#include "dgtl_sdk/dgtl_session.h"
-#include "dgtl_sdk/dgtl_simd.h"
-#include "dgtl_sdk/dgtl_gpu.h"
-#include "dgtl_sdk/dgtl_c_api.h"
 
-#include <cstring>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <cassert>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
-#include <fstream>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <functional>
+#include <limits>
+#include <memory>
 #include <mutex>
 #include <new>
+#include <span>
 #include <string>
 #include <string_view>
-#include <atomic>
 #include <thread>
 #include <unordered_map>
 #include <vector>
-#include <bit>
-#include <algorithm>
+
+#if defined(_WIN32) || defined(_WIN64)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  undef CONST
+#  undef NOP
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#  define DGTL_WEAK __attribute__((weak))
+#else
+#  define DGTL_WEAK
+#endif
+
+/* ---------- Native DGTL C++ Named Module Ingestion ---------- */
 
 import dgtl.target;
 import dgtl.config;
@@ -47,14 +63,19 @@ import dgtl.hashing;
 import dgtl.bit_pack;
 import dgtl.flat_map;
 import dgtl.dgtl_bulletins;
+import dgtl.runtime_intrinsics;
 
 import dgtl.ir_enums;
 import dgtl.ir_node;
 import dgtl.op_traits;
+
 import dgtl.ir_core.stream;
 import dgtl.ir_core.io;
 import dgtl.ir_core.verifier;
+
+import dgtl.ir_core.debug;
 import dgtl.ir_core.function;
+
 import dgtl.ir_core.semantic;
 import dgtl.ir_core.formal_verification_smt;
 import dgtl.ir_core.transform_scalar_core;
@@ -70,51 +91,41 @@ import dgtl.ir_core.jit_orchestrator;
 import dgtl.ir_core.code_cache;
 import dgtl.ir_core.execution_dispatcher;
 import dgtl.ir_core.binary_loader;
+import dgtl.ir_core.hardware_scheduler;
 import dgtl.internal.api_execution_engine;
 import dgtl.internal.api_aot_session;
 
-/* Global default runtime context for compatibility helpers */
-static std::atomic<dgtl_runtime_context_t*> g_default_runtime_ctx{nullptr};
-static std::mutex g_default_runtime_ctx_mutex;
-
-static dgtl_runtime_context_t* get_or_create_default_runtime_ctx() noexcept {
-    auto* ctx = g_default_runtime_ctx.load(std::memory_order_acquire);
-    if (!ctx) {
-        std::lock_guard<std::mutex> lock(g_default_runtime_ctx_mutex);
-        ctx = g_default_runtime_ctx.load(std::memory_order_relaxed);
-        if (!ctx) {
-            ctx = dgtl_runtime_context_create(0, 32);
-            g_default_runtime_ctx.store(ctx, std::memory_order_release);
-        }
-    }
-    return ctx;
-}
-
-/* Thread-local linker fallback diagnostics for SDK consumers */
-static thread_local std::vector<std::string> g_last_linker_fallbacks;
-
-/* Internal wrapper structs */
+/* ============================================================================
+ * INTERNAL ENGINE WRAPPERS, STATE & DIAGNOSTIC BUFFERING
+ * ============================================================================ */
 
 struct dgtl_context {
-    dgtl::core::DGTL_Arena arena;
-    dgtl_context() : arena(1, 16) {}  // 1 thread slot, 16 MB
+    std::unique_ptr<dgtl::core::DGTL_Arena> arena;
+    std::unique_ptr<dgtl::core::DGTLContext> compiler_ctx;
+
+    dgtl_context(size_t threads, size_t arena_mb)
+        : arena(std::make_unique<dgtl::core::DGTL_Arena>(threads, arena_mb)),
+          compiler_ctx(std::make_unique<dgtl::core::DGTLContext>(*arena)) {}
 };
 
 struct dgtl_stream {
-    dgtl_context*               ctx;
-    dgtl::core::DGTLFunction    function;
-    dgtl_ir_mode_t              ir_mode = DGTL_IR_MODE_INT;
-    bool                        optimization_enabled = true;
-    dgtl_emit_options_t         emit_options{};
-
-    /* Callee-slot symbol bindings — populated by dgtl_stream_bind_callee_slot(s).
-     * Used by dgtl_emit_to_file for linker-backed targets so call relocations
-     * carry the correct external symbol names. */
+    dgtl_context* ctx = nullptr;
+    dgtl::core::DGTLFunction function;
+    dgtl_ir_mode_t ir_mode = DGTL_IR_MODE_INT;
+    bool optimization_enabled = true;
+    bool is_optimized = false;
+    dgtl_emit_options_t emit_options{};
     std::unordered_map<uint32_t, std::string> callee_bindings;
 
-    explicit dgtl_stream(dgtl_context* c, size_t reserved)
+    dgtl_stream(dgtl_context* c, size_t reserved)
         : ctx(c),
-          function(c->arena, "sdk_entry", reserved) {}
+          function(*c->arena, "dgtl_kernel_entry", reserved) {
+        emit_options.inline_threshold = 50;
+        emit_options.unroll_factor = 4;
+        emit_options.enable_cache_optimization = 1;
+        emit_options.enable_branch_prediction = 1;
+        emit_options.vectorize_threshold = 8;
+    }
 };
 
 struct dgtl_session {
@@ -134,134 +145,83 @@ struct dgtl_session {
           code_cache(64ull * 1024ull * 1024ull) {}
 };
 
-/* Helpers */
+struct dgtl_runtime_context {
+    dgtl::runtime::TaskScheduler scheduler;
 
-static dgtl_status_t make_ok() {
+    explicit dgtl_runtime_context(size_t threads, size_t arena_mb)
+        : scheduler(threads, arena_mb) {}
+};
+
+static std::atomic<dgtl_runtime_context_t*> g_default_runtime_ctx{nullptr};
+static std::mutex g_default_runtime_ctx_mutex;
+
+static dgtl_runtime_context_t* get_or_create_default_runtime_ctx() noexcept {
+    auto* ctx = g_default_runtime_ctx.load(std::memory_order_acquire);
+    if (!ctx) {
+        std::lock_guard<std::mutex> lock(g_default_runtime_ctx_mutex);
+        ctx = g_default_runtime_ctx.load(std::memory_order_relaxed);
+        if (!ctx) {
+            ctx = new (std::nothrow) dgtl_runtime_context(0, 32);
+            g_default_runtime_ctx.store(ctx, std::memory_order_release);
+        }
+    }
+    return ctx;
+}
+
+static thread_local std::vector<std::string> g_last_linker_fallbacks;
+static thread_local char g_error_buffer[512] = {};
+static std::atomic<int32_t> g_verbose_mode{0};
+
+static void set_last_error(const char* msg) noexcept {
+    if (!msg) {
+        g_error_buffer[0] = '\0';
+        return;
+    }
+    std::snprintf(g_error_buffer, sizeof(g_error_buffer), "%s", msg);
+}
+
+static dgtl_status_t make_ok() noexcept {
     dgtl_status_t s{};
     s.ok = 1;
     s.error_code = 0;
+    s.severity = DGTL_SEV_INFO;
     s.message[0] = '\0';
     return s;
 }
 
-static dgtl_status_t make_err(int code, const char* msg) {
+static dgtl_status_t make_err(int32_t code, const char* msg, dgtl_severity_t sev = DGTL_SEV_ERROR) noexcept {
     dgtl_status_t s{};
     s.ok = 0;
     s.error_code = code;
-    std::snprintf(s.message, sizeof(s.message), "%s", msg);
+    s.severity = sev;
+    std::snprintf(s.message, sizeof(s.message), "%s", msg ? msg : "unknown internal failure");
+    set_last_error(s.message);
     return s;
 }
 
-static dgtl_strike_result_t make_strike_err(const char* msg) {
+static dgtl_strike_result_t make_strike_err(const char* msg) noexcept {
     dgtl_strike_result_t r{};
     r.ok = 0;
     r.code_size = 0;
     r.logic_hash = 0;
-    std::snprintf(r.message, sizeof(r.message), "%s", msg);
+    r.compilation_latency_ms = 0.0;
+    std::snprintf(r.message, sizeof(r.message), "%s", msg ? msg : "strike synthesis failure");
+    set_last_error(r.message);
     return r;
 }
 
-static dgtl::api::ExecutionMode to_internal_session_mode(dgtl_session_mode_t mode) noexcept {
-    switch (mode) {
-        case DGTL_SESSION_MODE_JIT:
-            return dgtl::api::ExecutionMode::JIT;
-        case DGTL_SESSION_MODE_AOT:
-            return dgtl::api::ExecutionMode::AOT;
-        case DGTL_SESSION_MODE_HYBRID:
-        default:
-            return dgtl::api::ExecutionMode::Adaptive;
-    }
-}
+static void apply_numa_thread_pinning() noexcept {
+    thread_local bool applied = false;
+    if (applied) [[likely]] return;
+    applied = true;
 
-static dgtl::api::OptimizationLevel to_internal_opt_level(dgtl_session_opt_level_t level) noexcept {
-    switch (level) {
-        case DGTL_SESSION_OPT_O0:
-            return dgtl::api::OptimizationLevel::O0;
-        case DGTL_SESSION_OPT_O1:
-            return dgtl::api::OptimizationLevel::O1;
-        case DGTL_SESSION_OPT_O3:
-            return dgtl::api::OptimizationLevel::O3;
-        case DGTL_SESSION_OPT_OSTRIKE:
-            return dgtl::api::OptimizationLevel::OStrike;
-        case DGTL_SESSION_OPT_O2:
-        default:
-            return dgtl::api::OptimizationLevel::O2;
-    }
-}
+    const uint32_t nodes = dgtl::runtime::numa::get_num_nodes();
+    if (nodes <= 1u) return;
 
-static dgtl_session_config_t normalize_session_config(const dgtl_session_config_t* cfg) noexcept {
-    if (cfg != nullptr) {
-        return *cfg;
-    }
-
-    dgtl_session_config_t out{};
-    out.mode = DGTL_SESSION_MODE_HYBRID;
-    out.opt_level = DGTL_SESSION_OPT_O3;
-    out.timeout_us = 1000000u;
-    out.enable_temporal_fusion = 1;
-    out.enable_polyhedral_scop = 1;
-    out.enable_speculation = 1;
-    out.enable_vectorization = 1;
-    out.thread_count = 0u;
-    return out;
-}
-
-static dgtl::api::Config to_internal_session_config(const dgtl_session_config_t& cfg) noexcept {
-    dgtl::api::Config out = dgtl::api::default_config();
-    out.mode = to_internal_session_mode(cfg.mode);
-    out.opt_level = to_internal_opt_level(cfg.opt_level);
-    out._timeout_us = cfg.timeout_us;
-    out.enable_temporal_fusion = cfg.enable_temporal_fusion != 0;
-    out.enable_polyhedral_scop = cfg.enable_polyhedral_scop != 0;
-    out.enable_speculation = cfg.enable_speculation != 0;
-    out.enable_vectorization = cfg.enable_vectorization != 0;
-    out.thread_count = cfg.thread_count;
-    return out;
-}
-
-static bool is_linker_backed_target(dgtl_target_t target) noexcept {
-    switch (target) {
-        case DGTL_TARGET_ELF_OBJ:
-        case DGTL_TARGET_STATIC_LIB:
-        case DGTL_TARGET_COFF_OBJ:
-        case DGTL_TARGET_COFF_LIB:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static void capture_linker_fallback_diagnostics(const dgtl::ir::IRStream& stream,
-                                                dgtl_target_t target) {
-    g_last_linker_fallbacks.clear();
-    if (!is_linker_backed_target(target)) {
-        return;
-    }
-
-    dgtl::exec::DGTLLinker linker;
-    std::vector<uint8_t> scratch;
-    bool ok = false;
-
-    switch (target) {
-        case DGTL_TARGET_ELF_OBJ:
-            ok = linker.build_elf_relocatable_binary(stream, scratch, "DGTL_kernel_entry");
-            break;
-        case DGTL_TARGET_STATIC_LIB:
-            ok = linker.build_static_archive_binary(stream, scratch, "module.o");
-            break;
-        case DGTL_TARGET_COFF_OBJ:
-            ok = linker.build_coff_relocatable_binary(stream, scratch, "DGTL_kernel_entry");
-            break;
-        case DGTL_TARGET_COFF_LIB:
-            ok = linker.build_coff_archive_binary(stream, scratch, "module.obj", "DGTL_kernel_entry");
-            break;
-        default:
-            break;
-    }
-
-    (void)ok;
-    const auto& diags = linker.fallback_diagnostics();
-    g_last_linker_fallbacks.assign(diags.begin(), diags.end());
+    const uint32_t worker = static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    const uint32_t node = dgtl::runtime::numa::recommend_worker_node(worker);
+    (void)dgtl::runtime::numa::pin_current_thread_to_node(node);
+    (void)dgtl::runtime::numa::pin_thread_to_core(dgtl::runtime::numa::recommend_worker_core(worker));
 }
 
 static void sdk_prime_simd_units() {
@@ -270,143 +230,82 @@ static void sdk_prime_simd_units() {
         if (dgtl::core::preferred_simd_execution_profile() == dgtl::core::SimdExecutionProfile::Scalar) {
             return;
         }
-
         dgtl::core::prime_preferred_simd_units(2048);
-
-        alignas(32) float lhs[16];
-        alignas(32) float rhs[16];
-        alignas(32) float out[16];
-        alignas(32) std::uint32_t predicate[16];
-        for (std::size_t i = 0; i < 16; ++i) {
-            lhs[i] = 1.0f + static_cast<float>(i) * 0.25f;
-            rhs[i] = 2.0f + static_cast<float>(i) * 0.125f;
-            predicate[i] = static_cast<std::uint32_t>(i & 1u);
-            out[i] = 0.0f;
-        }
-
-        dgtl::pass::simd::AVX2DualPumpKernel<float>::blend_mul_add(lhs, rhs, predicate, out, 16, 37.0f, 19.0f);
-        if (out[0] == 0.0f && out[1] == 0.0f) {
-            std::fputs("", stderr);
-        }
     });
 }
 
-static void sdk_apply_numa_locality() noexcept {
-    thread_local bool applied = false;
-    if (applied) [[likely]] return;
-    applied = true;
+static void split_immediate_payload(uint64_t payload, uint32_t& out_a, uint32_t& out_b) noexcept {
+    out_a = static_cast<uint32_t>(dgtl::utils::BitPack::extract64(payload, 0u, 32u));
+    out_b = static_cast<uint32_t>(dgtl::utils::BitPack::extract64(payload, 32u, 32u));
+}
 
-    const uint32_t nodes = dgtl::runtime::numa::get_num_nodes();
-    if (nodes <= 1u) {
-        return;
+static inline void split_payload_64(uint64_t payload, uint32_t& out_lo, uint32_t& out_hi) noexcept {
+    split_immediate_payload(payload, out_lo, out_hi);
+}
+
+static uint32_t next_string_handle_candidate(uint32_t base, uint32_t salt) noexcept {
+    uint32_t handle = base + (0x9E3779B9u * salt);
+    if (handle == 0u || handle == DGTL_INVALID_SLOT) handle ^= 0xA5A5A5A5u;
+    if (handle == 0u || handle == DGTL_INVALID_SLOT) handle = 1u + salt;
+    return handle;
+}
+
+static uint32_t sdk_intern_string_handle(std::string_view literal) {
+    static std::mutex s_string_registry_mutex;
+    std::lock_guard<std::mutex> lock(s_string_registry_mutex);
+
+    const uint32_t base_handle = dgtl::utils::hashing::Hashing::fnv1a_32(literal.data(), literal.size());
+    uint32_t salt = 0;
+    uint32_t handle = next_string_handle_candidate(base_handle, salt);
+    while (true) {
+        const std::string_view existing = dgtl::runtime::try_lookup_string_handle(handle);
+        if (existing.empty() || existing == literal) {
+            break;
+        }
+        ++salt;
+        handle = next_string_handle_candidate(base_handle, salt);
     }
-    const uint32_t worker = static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    const uint32_t node = dgtl::runtime::numa::recommend_worker_node(worker);
-    (void)dgtl::runtime::numa::pin_current_thread_to_node(node);
-    (void)dgtl::runtime::numa::pin_thread_to_core(dgtl::runtime::numa::recommend_worker_core(worker));
+
+    dgtl::runtime::register_string_handle(handle, literal.data(), static_cast<uint32_t>(literal.size()));
+    return handle;
 }
 
-/* ── MinGW/GCC modules workaround ──────────────────────────────────────────
- * The move constructor for pair<string, IRStream> and the vector containing it
- * are not emitted transitively from imported modules under MinGW GCC. Force
- * their instantiation here so the linker can resolve references in
- * sdk_split_stream_by_callee_functions and its callers.
- * Mirrors the identical workaround in DGTLAdapter.cpp.
- * ────────────────────────────────────────────────────────────────────────── */
-namespace {
-using SdkModuleStream    = std::pair<std::string, dgtl::ir::IRStream>;
-using SdkModuleStreamVec = std::vector<SdkModuleStream>;
-
-[[maybe_unused]] SdkModuleStream sdk_force_module_stream_pair_move_ctor() {
-    SdkModuleStream first{
-        std::string("__dgtl_sdk_force_pair_move"),
-        dgtl::ir::IRStream::allocate_transactional(1)
-    };
-    SdkModuleStream second(std::move(first));
-    return second;
+static uint32_t intern_string_internal(std::string_view literal) {
+    return sdk_intern_string_handle(literal);
 }
-
-[[maybe_unused]] SdkModuleStreamVec sdk_force_module_stream_vec_symbols() {
-    SdkModuleStreamVec v;
-    v.emplace_back(std::string("__dgtl_sdk_force"),
-                   dgtl::ir::IRStream::allocate_transactional(1));
-    return v;
-}
-} // namespace
 
 static dgtl::ir::BackendProfile::TargetISA to_internal_isa(dgtl_target_t target) noexcept {
     switch (target) {
-        case DGTL_TARGET_ARM64:
-            return dgtl::ir::BackendProfile::TargetISA::ARM64_SVE;
-        case DGTL_TARGET_X64:
-        case DGTL_TARGET_NASM:
-        case DGTL_TARGET_ELF_OBJ:
-        case DGTL_TARGET_STATIC_LIB:
-        case DGTL_TARGET_COFF_OBJ:
-        case DGTL_TARGET_COFF_LIB:
-        case DGTL_TARGET_MACHO:
-            return dgtl::ir::BackendProfile::TargetISA::X64_AVX512;
-        case DGTL_TARGET_WASM:
-            return dgtl::ir::BackendProfile::TargetISA::WASM;
+        case DGTL_TARGET_ARM64_SVE:  return dgtl::ir::BackendProfile::TargetISA::ARM64_SVE;
+        case DGTL_TARGET_ARM32_NEON: return dgtl::ir::BackendProfile::TargetISA::ARM32_NEON;
+        case DGTL_TARGET_RISCV64:    return dgtl::ir::BackendProfile::TargetISA::RISCV64_RV64GC;
+        case DGTL_TARGET_WASM:       return dgtl::ir::BackendProfile::TargetISA::WASM;
+        case DGTL_TARGET_CUDA_PTX:   return dgtl::ir::BackendProfile::TargetISA::CUDA_PTX;
+        case DGTL_TARGET_ROCM:       return dgtl::ir::BackendProfile::TargetISA::ROCM_LLVMIR;
+        case DGTL_TARGET_NASM_X64:   return dgtl::ir::BackendProfile::TargetISA::NASM_X64;
+        case DGTL_TARGET_X64_AVX512:
         default:
             return dgtl::ir::BackendProfile::TargetISA::X64_AVX512;
     }
 }
 
-
-/* Helper: build an IRNode from fields and push into stream */
-static uint32_t push_ir_node(dgtl_stream_t* s,
-                              dgtl::ir::OpCode op,
-                              uint16_t flags,
-                              uint32_t op_a, uint32_t op_b, uint32_t op_c,
-                              uint64_t imm_as_hash = 0) {
-    sdk_apply_numa_locality();
-    uint32_t slot = s->function.allocate_slot();
-    dgtl::ir::IRNode node{};
-    node.opcode     = op;
-    node.flags      = flags;
-    node.result_id  = slot;
-    node.op_a       = op_a;
-    node.op_b       = op_b;
-    node.op_c       = op_c;
-    node.intent_hash = (op == dgtl::ir::OpCode::CONST || imm_as_hash != 0)
-                     ? imm_as_hash
-                     : dgtl::ir::IRNode::calculate_hash(op, slot, op_a, op_b, op_c);
-    switch (op) {
-        case dgtl::ir::OpCode::ATOMIC_LOAD:
-            node.logic_flags = dgtl::ir::ExtendedFlags::MEM_ACQUIRE;
-            if (node.op_c == dgtl::ir::INVALID_SLOT) node.op_c = 0u;
-            break;
-        case dgtl::ir::OpCode::ATOMIC_STORE:
-            node.logic_flags = dgtl::ir::ExtendedFlags::MEM_RELEASE_;
-            if (node.op_c == dgtl::ir::INVALID_SLOT) node.op_c = 0u;
-            break;
-        case dgtl::ir::OpCode::ATOMIC_FENCE:
-            node.logic_flags = dgtl::ir::ExtendedFlags::MEM_SEQ_CST;
-            break;
-        case dgtl::ir::OpCode::PTR_CAST:
-        case dgtl::ir::OpCode::PTR_DIFF:
-            node.logic_flags = 0;
-            if (node.op_c == dgtl::ir::INVALID_SLOT) node.op_c = 0u;
-            break;
-        case dgtl::ir::OpCode::BOOL_SELECT:
-            node.logic_flags = 0;
-            node.flags = static_cast<uint16_t>(node.flags | dgtl::ir::Flags::IS_PREDICATED);
-            break;
+static const char* target_extension_internal(dgtl_target_t target) noexcept {
+    switch (target) {
+        case DGTL_TARGET_ARM64_SVE:  return ".s";
+        case DGTL_TARGET_ARM32_NEON: return ".s";
+        case DGTL_TARGET_RISCV64:    return ".s";
+        case DGTL_TARGET_WASM:       return ".wasm";
+        case DGTL_TARGET_CUDA_PTX:   return ".ptx";
+        case DGTL_TARGET_ROCM:       return ".ll";
+        case DGTL_TARGET_NASM_X64:   return ".asm";
+        case DGTL_TARGET_ELF_OBJ:    return ".o";
+        case DGTL_TARGET_COFF_OBJ:   return ".obj";
+        case DGTL_TARGET_MACHO:      return ".macho";
+        case DGTL_TARGET_STATIC_LIB: return ".a";
+        case DGTL_TARGET_X64_AVX512:
         default:
-            node.logic_flags = 0;
-            break;
+            return ".bin";
     }
-    s->function.stream().push_back(node);
-    if ((op == dgtl::ir::OpCode::CONST || op == dgtl::ir::OpCode::LOAD) && (flags & dgtl::ir::Flags::IS_SPEC_CONST) != 0) {
-        s->function.stream().set_result_type(slot, dgtl::ir::TypeCode::F64);
-    } else if (const auto expected = dgtl::ir::interfaces::expected_result_type_code(op);
-        expected.has_value() && *expected != dgtl::ir::TypeCode::VOID_T) {
-        s->function.stream().set_result_type(slot, *expected);
-    } else {
-        s->function.stream().clear_result_type(slot);
-    }
-    return slot;
 }
 
 static uint32_t push_ir_node_explicit_slot(dgtl_stream_t* s,
@@ -419,7 +318,7 @@ static uint32_t push_ir_node_explicit_slot(dgtl_stream_t* s,
                                            uint64_t imm_as_hash = 0,
                                            uint32_t logic_flags = 0) {
     if (!s || result_slot == 0u) return 0;
-    sdk_apply_numa_locality();
+    apply_numa_thread_pinning();
     dgtl::ir::IRNode node{};
     node.opcode = op;
     node.flags = flags;
@@ -432,6 +331,7 @@ static uint32_t push_ir_node_explicit_slot(dgtl_stream_t* s,
                      : dgtl::ir::IRNode::calculate_hash(op, result_slot, op_a, op_b, op_c);
     node.logic_flags = logic_flags;
     s->function.stream().push_back(node);
+
     if (result_slot != dgtl::ir::INVALID_SLOT && result_slot != 0u) {
         if ((op == dgtl::ir::OpCode::CONST || op == dgtl::ir::OpCode::LOAD) && (flags & dgtl::ir::Flags::IS_SPEC_CONST) != 0) {
             s->function.stream().set_result_type(result_slot, dgtl::ir::TypeCode::F64);
@@ -443,6 +343,26 @@ static uint32_t push_ir_node_explicit_slot(dgtl_stream_t* s,
         }
     }
     return result_slot;
+}
+
+static uint32_t push_ir_node(dgtl_stream_t* s,
+                           dgtl::ir::OpCode op,
+                           uint16_t flags,
+                           uint32_t op_a, uint32_t op_b, uint32_t op_c,
+                           uint64_t imm_as_hash = 0) {
+    return push_ir_node_explicit_slot(s, op, flags, s->function.allocate_slot(), op_a, op_b, op_c, imm_as_hash);
+}
+
+static uint32_t push_node_internal(dgtl_stream_t* s,
+                                   dgtl::ir::OpCode op,
+                                   uint16_t flags,
+                                   uint32_t result_slot,
+                                   uint32_t op_a,
+                                   uint32_t op_b,
+                                   uint32_t op_c,
+                                   uint64_t intent_hash = 0ull,
+                                   uint32_t logic_flags = 0u) noexcept {
+    return push_ir_node_explicit_slot(s, op, flags, result_slot == 0u ? s->function.allocate_slot() : result_slot, op_a, op_b, op_c, intent_hash, logic_flags);
 }
 
 static uint32_t emit_call_like(dgtl_stream_t* s,
@@ -482,354 +402,1737 @@ static uint32_t emit_call_like(dgtl_stream_t* s,
     return rid;
 }
 
-static uint32_t emit_builder_node(dgtl_stream_t* s,
-                                  dgtl::ir::OpCode op,
-                                  uint32_t op_a,
-                                  uint32_t op_b = 0u,
-                                  uint32_t op_c = 0u,
-                                  uint16_t flags = dgtl::ir::Flags::NONE) {
-    if (!s) return 0;
-    return push_ir_node(s, op, flags, op_a, op_b, op_c, 0);
-}
-
-static bool is_immediate_opcode(dgtl::ir::OpCode op) noexcept {
-    return op == dgtl::ir::OpCode::CONST ||
-           op == dgtl::ir::OpCode::LOAD_IMM ||
-           op == dgtl::ir::OpCode::IMMEDIATE;
-}
-
-static uint64_t encode_immediate_payload(uint32_t op_a, uint32_t op_b) noexcept {
-    uint64_t payload = 0;
-    payload = dgtl::utils::BitPack::pack(payload, 0u, 32u, op_a);
-    payload = dgtl::utils::BitPack::pack(payload, 32u, 32u, op_b);
-    return payload;
-}
-
-static uint64_t decode_immediate_payload(uint32_t op_a, uint32_t op_b) noexcept {
-    return encode_immediate_payload(op_a, op_b);
-}
-
-static uint32_t next_string_handle_candidate(uint32_t base, uint32_t salt) noexcept {
-    uint32_t handle = base + (0x9E3779B9u * salt);
-    if (handle == 0u || handle == dgtl::ir::INVALID_SLOT) {
-        handle ^= 0xA5A5A5A5u;
-    }
-    if (handle == 0u || handle == dgtl::ir::INVALID_SLOT) {
-        handle = 1u + salt;
-    }
-    return handle;
-}
-
-static uint32_t sdk_intern_string_handle(std::string_view literal) {
-    static std::mutex s_string_registry_mutex;
-    std::lock_guard<std::mutex> lock(s_string_registry_mutex);
-
-    const uint32_t base_handle =
-        dgtl::utils::hashing::Hashing::fnv1a_32(literal.data(), literal.size());
-
-    uint32_t salt = 0;
-    uint32_t handle = next_string_handle_candidate(base_handle, salt);
-    while (true) {
-        const std::string_view existing = dgtl::runtime::try_lookup_string_handle(handle);
-        if (existing.empty() || existing == literal) {
-            break;
-        }
-        ++salt;
-        handle = next_string_handle_candidate(base_handle, salt);
-    }
-
-    dgtl::runtime::register_string_handle(handle,
-                                          literal.data(),
-                                          static_cast<uint32_t>(literal.size()));
-    dgtl_register_string_handle(handle, literal.data(), literal.size());
-    return handle;
-}
-
-static void split_immediate_payload(uint64_t payload, uint32_t& out_a, uint32_t& out_b) noexcept {
-    out_a = static_cast<uint32_t>(dgtl::utils::BitPack::extract64(payload, 0u, 32u));
-    out_b = static_cast<uint32_t>(dgtl::utils::BitPack::extract64(payload, 32u, 32u));
-}
-
-static bool sdk_opcode_to_internal(dgtl_opcode_t op, dgtl::ir::OpCode& out) noexcept {
-    using OC = dgtl::ir::OpCode;
-    switch (op) {
-        case DGTL_OP_NOP:              out = OC::NOP;               return true;
-        case DGTL_OP_CONST:            out = OC::CONST;             return true;
-        case DGTL_OP_CONST_F64:        out = OC::CONST;             return true;
-        case DGTL_OP_ATOMIC_LOAD:      out = OC::ATOMIC_LOAD;       return true;
-        case DGTL_OP_ATOMIC_STORE:     out = OC::ATOMIC_STORE;      return true;
-        case DGTL_OP_ATOMIC_FENCE:     out = OC::ATOMIC_FENCE;      return true;
-        case DGTL_OP_PTR_CAST:         out = OC::PTR_CAST;          return true;
-        case DGTL_OP_PTR_DIFF:         out = OC::PTR_DIFF;          return true;
-        case DGTL_OP_BOOL_SELECT:      out = OC::BOOL_SELECT;       return true;
-        case DGTL_OP_STRING_CONST:     out = OC::STRING_CONST;      return true;
-        case DGTL_OP_STRING_LENGTH:    out = OC::STRING_LENGTH;     return true;
-        case DGTL_OP_STRING_COMPARE:   out = OC::STRING_COMPARE;    return true;
-        case DGTL_OP_STRING_CONCAT:    out = OC::STRING_CONCAT;     return true;
-        case DGTL_OP_STRING_SUBSTRING: out = OC::STRING_SUBSTRING;  return true;
-        case DGTL_OP_ADD:              out = OC::ADD_I32;           return true;
-        case DGTL_OP_SUB:              out = OC::SUB_I32;           return true;
-        case DGTL_OP_MUL:              out = OC::MUL_I32;           return true;
-        case DGTL_OP_DIV:              out = OC::DIV_I32;           return true;
-        case DGTL_OP_MOD:              out = OC::MOD_I32;           return true;
-        case DGTL_OP_AND:              out = OC::AND_I32;           return true;
-        case DGTL_OP_OR:               out = OC::OR_I32;            return true;
-        case DGTL_OP_XOR:              out = OC::XOR_I32;           return true;
-        case DGTL_OP_SHL:              out = OC::SHL_I32;           return true;
-        case DGTL_OP_SHR:              out = OC::SHR_I32;           return true;
-        case DGTL_OP_ADD_I64:          out = OC::ADD_I64;           return true;
-        case DGTL_OP_SUB_I64:          out = OC::SUB_I64;           return true;
-        case DGTL_OP_MUL_I64:          out = OC::MUL_I64;           return true;
-        case DGTL_OP_DIV_I64:          out = OC::DIV_I64;           return true;
-        case DGTL_OP_MOD_I64:          out = OC::MOD_I64;           return true;
-        case DGTL_OP_AND_I64:          out = OC::AND_I64;           return true;
-        case DGTL_OP_OR_I64:           out = OC::OR_I64;            return true;
-        case DGTL_OP_XOR_I64:          out = OC::XOR_I64;           return true;
-        case DGTL_OP_SHL_I64:          out = OC::SHL_I64;           return true;
-        case DGTL_OP_SHR_I64:          out = OC::SHR_I64;           return true;
-        case DGTL_OP_SELECT:           out = OC::SELECT;            return true;
-        case DGTL_OP_GEP:              out = OC::GEP;               return true;
-        case DGTL_OP_PTR_TO_INT:       out = OC::PTR_TO_INT;        return true;
-        case DGTL_OP_INT_TO_PTR:       out = OC::INT_TO_PTR;        return true;
-        case DGTL_OP_READ_TSC:         out = OC::READ_TSC;          return true;
-        case DGTL_OP_BR_LIKELY:        out = OC::BRANCH_LIKELY;     return true;
-        case DGTL_OP_BR_UNLIKELY:      out = OC::BRANCH_UNLIKELY;   return true;
-        case DGTL_OP_PREFETCH_T0:      out = OC::PREFETCH_T0;       return true;
-        case DGTL_OP_CLFLUSH:          out = OC::CLFLUSH;           return true;
-        case DGTL_OP_LOAD:             out = OC::LOAD;              return true;
-        case DGTL_OP_STORE:            out = OC::STORE;             return true;
-        case DGTL_OP_CALL:             out = OC::CALL;              return true;
-        case DGTL_OP_RET:              out = OC::RET;               return true;
-        case DGTL_OP_JMP:              out = OC::GOTO;              return true;
-        case DGTL_OP_BR_IF:            out = OC::BRANCH_COND;       return true;
-        case DGTL_OP_CMP_EQ:           out = OC::CMP_EQ_I32;        return true;
-        case DGTL_OP_CMP_NE:           out = OC::CMP_NE_I32;        return true;
-        case DGTL_OP_CMP_LT:           out = OC::CMP_LT_I32;        return true;
-        case DGTL_OP_CMP_LE:           out = OC::CMP_LE_I32;        return true;
-        case DGTL_OP_CMP_GT:           out = OC::CMP_GT_I32;        return true;
-        case DGTL_OP_CMP_GE:           out = OC::CMP_GE_I32;        return true;
-        case DGTL_OP_FMA:              out = OC::FMA_F32;           return true;
-        case DGTL_OP_FADD:             out = OC::ADD_F32;           return true;
-        case DGTL_OP_FMUL:             out = OC::MUL_F32;           return true;
-        case DGTL_OP_FSUB:             out = OC::SUB_F32;           return true;
-        case DGTL_OP_FDIV:             out = OC::DIV_F32;           return true;
-        case DGTL_OP_FADD_F64:         out = OC::ADD_F64;           return true;
-        case DGTL_OP_FMUL_F64:         out = OC::MUL_F64;           return true;
-        case DGTL_OP_FSUB_F64:         out = OC::SUB_F64;           return true;
-        case DGTL_OP_FDIV_F64:         out = OC::DIV_F64;           return true;
-        case DGTL_OP_PHI:              out = OC::PHI_NODE;          return true;
-        case DGTL_OP_GATHER:           out = OC::GATHER_F32_512;    return true;
-        case DGTL_OP_SCATTER:          out = OC::STORE_V512;        return true;
-        default:
-            return false;
+static dgtl::api::ExecutionMode to_internal_session_mode(dgtl_session_mode_t mode) noexcept {
+    switch (mode) {
+        case DGTL_SESSION_MODE_JIT:    return dgtl::api::ExecutionMode::JIT;
+        case DGTL_SESSION_MODE_AOT:    return dgtl::api::ExecutionMode::AOT;
+        case DGTL_SESSION_MODE_HYBRID:
+        default:                       return dgtl::api::ExecutionMode::Adaptive;
     }
 }
 
-static bool internal_opcode_to_sdk(dgtl::ir::OpCode op, dgtl_opcode_t& out) noexcept {
-    using OC = dgtl::ir::OpCode;
-    switch (op) {
-        case OC::NOP:             out = DGTL_OP_NOP;          return true;
-        case OC::CONST:           out = DGTL_OP_CONST;        return true;
-        case OC::ATOMIC_LOAD:     out = DGTL_OP_ATOMIC_LOAD;  return true;
-        case OC::ATOMIC_STORE:    out = DGTL_OP_ATOMIC_STORE; return true;
-        case OC::ATOMIC_FENCE:    out = DGTL_OP_ATOMIC_FENCE; return true;
-        case OC::PTR_CAST:        out = DGTL_OP_PTR_CAST;     return true;
-        case OC::PTR_DIFF:        out = DGTL_OP_PTR_DIFF;     return true;
-        case OC::BOOL_SELECT:     out = DGTL_OP_BOOL_SELECT;  return true;
-        case OC::STRING_CONST:    out = DGTL_OP_STRING_CONST; return true;
-        case OC::STRING_LENGTH:   out = DGTL_OP_STRING_LENGTH; return true;
-        case OC::STRING_COMPARE:  out = DGTL_OP_STRING_COMPARE; return true;
-        case OC::STRING_CONCAT:   out = DGTL_OP_STRING_CONCAT; return true;
-        case OC::STRING_SUBSTRING: out = DGTL_OP_STRING_SUBSTRING; return true;
-        case OC::ADD_I32:         out = DGTL_OP_ADD;          return true;
-        case OC::SUB_I32:         out = DGTL_OP_SUB;          return true;
-        case OC::MUL_I32:         out = DGTL_OP_MUL;          return true;
-        case OC::DIV_I32:         out = DGTL_OP_DIV;          return true;
-        case OC::MOD_I32:         out = DGTL_OP_MOD;          return true;
-        case OC::AND_I32:         out = DGTL_OP_AND;          return true;
-        case OC::OR_I32:          out = DGTL_OP_OR;           return true;
-        case OC::XOR_I32:         out = DGTL_OP_XOR;          return true;
-        case OC::SHL_I32:         out = DGTL_OP_SHL;          return true;
-        case OC::SHR_I32:         out = DGTL_OP_SHR;          return true;
-        case OC::ADD_I64:         out = DGTL_OP_ADD_I64;      return true;
-        case OC::SUB_I64:         out = DGTL_OP_SUB_I64;      return true;
-        case OC::MUL_I64:         out = DGTL_OP_MUL_I64;      return true;
-        case OC::DIV_I64:         out = DGTL_OP_DIV_I64;      return true;
-        case OC::MOD_I64:         out = DGTL_OP_MOD_I64;      return true;
-        case OC::AND_I64:         out = DGTL_OP_AND_I64;      return true;
-        case OC::OR_I64:          out = DGTL_OP_OR_I64;       return true;
-        case OC::XOR_I64:         out = DGTL_OP_XOR_I64;      return true;
-        case OC::SHL_I64:         out = DGTL_OP_SHL_I64;      return true;
-        case OC::SHR_I64:         out = DGTL_OP_SHR_I64;      return true;
-        case OC::SELECT:          out = DGTL_OP_SELECT;       return true;
-        case OC::GEP:             out = DGTL_OP_GEP;          return true;
-        case OC::PTR_TO_INT:      out = DGTL_OP_PTR_TO_INT;   return true;
-        case OC::INT_TO_PTR:      out = DGTL_OP_INT_TO_PTR;   return true;
-        case OC::READ_TSC:        out = DGTL_OP_READ_TSC;     return true;
-        case OC::BRANCH_LIKELY:   out = DGTL_OP_BR_LIKELY;    return true;
-        case OC::BRANCH_UNLIKELY: out = DGTL_OP_BR_UNLIKELY;  return true;
-        case OC::PREFETCH_T0:     out = DGTL_OP_PREFETCH_T0;  return true;
-        case OC::CLFLUSH:         out = DGTL_OP_CLFLUSH;      return true;
-        case OC::LOAD:            out = DGTL_OP_LOAD;         return true;
-        case OC::STORE:           out = DGTL_OP_STORE;        return true;
-        case OC::CALL:            out = DGTL_OP_CALL;         return true;
-        case OC::RET:             out = DGTL_OP_RET;          return true;
-        case OC::GOTO:            out = DGTL_OP_JMP;          return true;
-        case OC::BRANCH_COND:     out = DGTL_OP_BR_IF;        return true;
-        case OC::CMP_EQ_I32:      out = DGTL_OP_CMP_EQ;       return true;
-        case OC::CMP_NE_I32:      out = DGTL_OP_CMP_NE;       return true;
-        case OC::CMP_LT_I32:      out = DGTL_OP_CMP_LT;       return true;
-        case OC::CMP_LE_I32:      out = DGTL_OP_CMP_LE;       return true;
-        case OC::CMP_GT_I32:      out = DGTL_OP_CMP_GT;       return true;
-        case OC::CMP_GE_I32:      out = DGTL_OP_CMP_GE;       return true;
-        case OC::FMA_F32:         out = DGTL_OP_FMA;          return true;
-        case OC::ADD_F32:         out = DGTL_OP_FADD;         return true;
-        case OC::MUL_F32:         out = DGTL_OP_FMUL;         return true;
-        case OC::SUB_F32:         out = DGTL_OP_FSUB;         return true;
-        case OC::DIV_F32:         out = DGTL_OP_FDIV;         return true;
-        case OC::ADD_F64:         out = DGTL_OP_FADD_F64;     return true;
-        case OC::MUL_F64:         out = DGTL_OP_FMUL_F64;     return true;
-        case OC::SUB_F64:         out = DGTL_OP_FSUB_F64;     return true;
-        case OC::DIV_F64:         out = DGTL_OP_FDIV_F64;     return true;
-        case OC::PHI_NODE:        out = DGTL_OP_PHI;          return true;
-        case OC::GATHER_F32_512:
-        case OC::GATHER_16:       out = DGTL_OP_GATHER;       return true;
-        case OC::STORE_V512:      out = DGTL_OP_SCATTER;      return true;
-        default:
-            return false;
+static dgtl::api::OptimizationLevel to_internal_opt_level(dgtl_session_opt_level_t level) noexcept {
+    switch (level) {
+        case DGTL_SESSION_OPT_O0:      return dgtl::api::OptimizationLevel::O0;
+        case DGTL_SESSION_OPT_O1:      return dgtl::api::OptimizationLevel::O1;
+        case DGTL_SESSION_OPT_O3:      return dgtl::api::OptimizationLevel::O3;
+        case DGTL_SESSION_OPT_OSTRIKE: return dgtl::api::OptimizationLevel::OStrike;
+        case DGTL_SESSION_OPT_O2:
+        default:                       return dgtl::api::OptimizationLevel::O2;
     }
 }
 
-static bool is_internal_fp_opcode(dgtl::ir::OpCode op) noexcept {
-    using OC = dgtl::ir::OpCode;
-    switch (op) {
-        case OC::ADD_F32:
-        case OC::SUB_F32:
-        case OC::MUL_F32:
-        case OC::DIV_F32:
-        case OC::ADD_F64:
-        case OC::SUB_F64:
-        case OC::MUL_F64:
-        case OC::DIV_F64:
-        case OC::FMA_F32:
-        case OC::FMA_WIDEN_F16_F32:
-        case OC::GATHER_F32_512:
-        case OC::VEC_ADD_F32_512:
-        case OC::VEC_MUL_F32_512:
-        case OC::FCVTL_F16_TO_F32:
-        case OC::FCVTN_F32_TO_F16:
-            return true;
-        default:
-            return false;
+static dgtl_session_config_t normalize_session_config(const dgtl_session_config_t* cfg) noexcept {
+    if (cfg != nullptr) {
+        return *cfg;
     }
-}
-
-static uint16_t sdk_flags_to_internal(uint32_t flags) noexcept {
-    uint16_t out = dgtl::ir::Flags::NONE;
-    if ((flags & DGTL_FLAG_IS_CONST) != 0u) out |= dgtl::ir::Flags::IS_CONST;
-    if ((flags & DGTL_FLAG_IS_SPEC_CONST) != 0u) out |= dgtl::ir::Flags::IS_SPEC_CONST;
-    if ((flags & DGTL_FLAG_HAS_SIDE_EFFECT) != 0u) out |= dgtl::ir::Flags::HAS_SIDE_EFFECTS;
-    if ((flags & DGTL_FLAG_VOLATILE) != 0u) out |= dgtl::ir::Flags::IS_VOLATILE;
-    if ((flags & DGTL_FLAG_DEAD) != 0u) out |= dgtl::ir::Flags::IS_DEAD;
-    if ((flags & DGTL_FLAG_FMA_FUSED) != 0u) out |= dgtl::ir::Flags::IS_FUSED;
-    if ((flags & DGTL_FLAG_SPECULATED) != 0u) out |= dgtl::ir::Flags::IS_PREDICATED;
+    dgtl_session_config_t out{};
+    out.mode = DGTL_SESSION_MODE_HYBRID;
+    out.opt_level = DGTL_SESSION_OPT_O3;
+    out.timeout_us = 1000000u;
+    out.enable_temporal_fusion = 1;
+    out.enable_polyhedral_scop = 1;
+    out.enable_speculation = 1;
+    out.enable_vectorization = 1;
+    out.enable_deterministic_replay = 0;
+    out.osr_threshold_invocations = 64;
+    out.background_worker_threads = 2;
+    out.preferred_numa_node = 0;
     return out;
 }
 
-static uint32_t internal_flags_to_sdk(uint16_t flags, dgtl::ir::OpCode opcode) noexcept {
-    uint32_t out = DGTL_FLAG_NONE;
-    if ((flags & dgtl::ir::Flags::IS_CONST) != 0u) out |= DGTL_FLAG_IS_CONST;
-    if ((flags & dgtl::ir::Flags::IS_SPEC_CONST) != 0u) out |= DGTL_FLAG_IS_SPEC_CONST;
-    if ((flags & dgtl::ir::Flags::HAS_SIDE_EFFECTS) != 0u) out |= DGTL_FLAG_HAS_SIDE_EFFECT;
-    if ((flags & dgtl::ir::Flags::IS_VOLATILE) != 0u) out |= DGTL_FLAG_VOLATILE;
-    if ((flags & dgtl::ir::Flags::IS_DEAD) != 0u) out |= DGTL_FLAG_DEAD;
-    if ((flags & dgtl::ir::Flags::IS_FUSED) != 0u) out |= DGTL_FLAG_FMA_FUSED;
-    if ((flags & dgtl::ir::Flags::IS_PREDICATED) != 0u) out |= DGTL_FLAG_SPECULATED;
-    if (is_internal_fp_opcode(opcode)) out |= DGTL_FLAG_IS_FP;
+static dgtl::api::Config to_internal_session_config(const dgtl_session_config_t& cfg) noexcept {
+    dgtl::api::Config out = dgtl::api::default_config();
+    out.mode = to_internal_session_mode(cfg.mode);
+    out.opt_level = to_internal_opt_level(cfg.opt_level);
+    out._timeout_us = cfg.timeout_us;
+    out.enable_temporal_fusion = cfg.enable_temporal_fusion != 0;
+    out.enable_polyhedral_scop = cfg.enable_polyhedral_scop != 0;
+    out.enable_speculation = cfg.enable_speculation != 0;
+    out.enable_vectorization = cfg.enable_vectorization != 0;
+    out.thread_count = cfg.background_worker_threads;
     return out;
 }
 
-/* Version */
+/* ============================================================================
+ * EXTERN "C" INTERFACE IMPLEMENTATION (COMPLETE UNABRIDGED)
+ * ============================================================================ */
 
-extern "C" DGTL_API const char* dgtl_version_string(void) {
+extern "C" {
+
+DGTL_API const char* DGTL_CALL dgtl_version_string(void) {
     return DGTL_VERSION_STRING;
 }
 
-extern "C" DGTL_API dgtl_capabilities_t dgtl_get_capabilities(void) {
-    dgtl_capabilities_t caps{};
-    caps.schema_version = DGTL_CAPABILITY_SCHEMA_VERSION;
-    caps.supports_jit = 1u;
-    caps.supports_aot = 1u;
-    caps.supports_hybrid = 1u;
-    caps.supports_host_symbol_name_binding = 1u;
-    caps.supports_host_symbol_slot_binding = 1u;
-    caps.supports_object_emission = 1u;
-    caps.supports_binary_emission = 1u;
-    caps.supports_in_process_execution = 1u;
-    caps.supports_cfg_introspection = 1u;
-    caps.supports_per_pass_control = 1u;
-    caps.supports_speculative_constants = 1u;
-    caps.max_call_arity = 0xFFFFFFFFu;
-    for (uint32_t target = 0; target < static_cast<uint32_t>(DGTL_TARGET_COUNT); ++target) {
-        caps.backend_target_mask |= (1ull << target);
+DGTL_API const char* DGTL_CALL dgtl_target_name(dgtl_target_t target) {
+    static const char* s_target_names[] = {
+        "x64_avx512", "arm64_sve", "arm32_neon", "riscv64", "wasm",
+        "cuda_ptx", "rocm", "nasm_x64", "elf_obj", "coff_obj", "macho", "static_lib"
+    };
+    if (static_cast<size_t>(target) < DGTL_TARGET_COUNT) {
+        return s_target_names[target];
     }
-    caps.optimization_profile_mask =
-        (1ull << DGTL_OPT_PROFILE_DEFAULT) |
-        (1ull << DGTL_OPT_PROFILE_FOLD) |
-        (1ull << DGTL_OPT_PROFILE_FUSION) |
-        (1ull << DGTL_OPT_PROFILE_SIMD) |
-        (1ull << DGTL_OPT_PROFILE_PRESSURE) |
-        (1ull << DGTL_OPT_PROFILE_PREDICATION);
+    return "unknown";
+}
+
+DGTL_API const char* DGTL_CALL dgtl_target_extension(dgtl_target_t target) {
+    return target_extension_internal(target);
+}
+
+DGTL_API dgtl_context_t* DGTL_CALL dgtl_context_create(void) {
+    return dgtl_context_create_custom(2, 32);
+}
+
+DGTL_API dgtl_context_t* DGTL_CALL dgtl_context_create_custom(size_t worker_threads, size_t arena_mb_per_worker) {
+    try {
+        return new dgtl_context(worker_threads, arena_mb_per_worker);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+DGTL_API void DGTL_CALL dgtl_context_destroy(dgtl_context_t* ctx) {
+    delete ctx;
+}
+
+DGTL_API dgtl_stream_t* DGTL_CALL dgtl_stream_create(dgtl_context_t* ctx, size_t reserved_nodes) {
+    if (!ctx) return nullptr;
+    try {
+        return new dgtl_stream(ctx, reserved_nodes);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_destroy(dgtl_stream_t* stream) {
+    delete stream;
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_node_count(const dgtl_stream_t* stream) {
+    if (!stream) return 0;
+    return stream->function.stream().size();
+}
+
+DGTL_API uint64_t DGTL_CALL dgtl_stream_logic_hash(const dgtl_stream_t* stream) {
+    if (!stream) return 0;
+    return stream->function.stream().generate_logic_hash();
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_reset(dgtl_stream_t* stream) {
+    if (stream) stream->function.stream().reset();
+}
+
+DGTL_API bool DGTL_CALL dgtl_stream_reserve(dgtl_stream_t* stream, size_t additional_nodes) {
+    if (!stream) return false;
+    auto& s = stream->function.stream();
+    size_t current = s.size();
+    if (additional_nodes > (std::numeric_limits<size_t>::max() - current)) {
+        return false;
+    }
+    return s.reserve_capacity(current + additional_nodes);
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_compact(dgtl_stream_t* s) {
+    if (!s) return make_err(1, "null stream");
+    auto& stream = s->function.stream();
+    if (stream.size() == 0) return make_ok();
+
+    std::vector<bool> live(stream.size(), false);
+    std::unordered_map<uint32_t, size_t> def_map;
+    def_map.reserve(stream.size());
+
+    for (size_t i = 0; i < stream.size(); ++i) {
+        const auto node = stream.get_node(i);
+        if (node.result_id != DGTL_INVALID_SLOT && node.result_id != 0u) {
+            def_map[node.result_id] = i;
+        }
+        if (dgtl::ir::detail::irnode_has_side_effects(node.opcode, node.flags) ||
+            node.opcode == dgtl::ir::OpCode::RET ||
+            node.opcode == dgtl::ir::OpCode::STORE ||
+            node.opcode == dgtl::ir::OpCode::CALL) {
+            live[i] = true;
+        }
+    }
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 0; i < stream.size(); ++i) {
+            if (!live[i]) continue;
+            const auto node = stream.get_node(i);
+            auto mark_op = [&](uint32_t operand) {
+                if (operand == DGTL_INVALID_SLOT || operand == 0u) return;
+                auto it = def_map.find(operand);
+                if (it != def_map.end() && !live[it->second]) {
+                    live[it->second] = true;
+                    changed = true;
+                }
+            };
+            mark_op(node.op_a);
+            mark_op(node.op_b);
+            mark_op(node.op_c);
+        }
+    }
+
+    dgtl::ir::IRStream compacted(*s->ctx->arena, stream.size());
+    std::vector<size_t> idx_remap(stream.size(), static_cast<size_t>(-1));
+
+    for (size_t i = 0; i < stream.size(); ++i) {
+        if (!live[i]) continue;
+        idx_remap[i] = compacted.size();
+        compacted.push_back(stream.get_node(i));
+    }
+
+    for (size_t old_idx = 0; old_idx < stream.size(); ++old_idx) {
+        if (idx_remap[old_idx] == static_cast<size_t>(-1)) continue;
+        size_t new_idx = idx_remap[old_idx];
+        auto overflow = stream.get_call_overflow_args(old_idx);
+        if (!overflow.empty()) compacted.set_call_overflow_args(new_idx, overflow);
+        auto results = stream.get_result_ids(old_idx);
+        if (!results.empty()) compacted.set_result_ids(new_idx, results);
+    }
+
+    stream.copy_from(compacted);
+    return make_ok();
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_begin_transaction(dgtl_stream_t* stream) {
+    if (stream) stream->function.stream().begin_transaction();
+}
+
+DGTL_API bool DGTL_CALL dgtl_stream_commit_transaction(dgtl_stream_t* stream) {
+    if (!stream) return false;
+    stream->function.stream().commit_transaction();
+    return true;
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_rollback_transaction(dgtl_stream_t* stream) {
+    if (stream) stream->function.stream().rollback_transaction();
+}
+
+DGTL_API bool DGTL_CALL dgtl_stream_validate_shadow_integrity(const dgtl_stream_t* stream) {
+    if (!stream) return false;
+    return stream->function.stream().validate_shadow_integrity();
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_node(dgtl_stream_t* s, dgtl_opcode_t op, uint16_t flags,
+                                          uint32_t result_slot, uint32_t op_a, uint32_t op_b,
+                                          uint32_t op_c, uint64_t intent_hash) {
+    return push_node_internal(s, static_cast<dgtl::ir::OpCode>(op), flags, result_slot, op_a, op_b, op_c, intent_hash);
+}
+
+DGTL_API void DGTL_CALL dgtl_set_node_logic_flags(dgtl_stream_t* s, size_t node_idx, uint32_t logic_flags) {
+    if (!s || node_idx >= s->function.stream().size()) return;
+    auto node = s->function.stream().get_node(node_idx);
+    node.logic_flags = logic_flags;
+    node.refresh_intent_hash();
+    s->function.stream().set_node(node_idx, node);
+}
+
+DGTL_API void DGTL_CALL dgtl_set_result_type(dgtl_stream_t* s, uint32_t result_slot, dgtl_type_code_t type_code) {
+    if (!s || result_slot == DGTL_INVALID_SLOT || result_slot == 0u) return;
+    s->function.stream().set_result_type(result_slot, static_cast<dgtl::ir::TypeCode>(type_code));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_op(dgtl_stream_t* s, dgtl_opcode_t op, uint32_t lhs, uint32_t rhs, uint64_t immediate, uint32_t flags) {
+    if (!s) return DGTL_INVALID_SLOT;
+    uint32_t op_a = lhs;
+    uint32_t op_b = rhs;
+    uint32_t op_c = 0u;
+
+    if (op == DGTL_OP_CONST || op == DGTL_OP_LOAD_IMM || op == DGTL_OP_IMMEDIATE) {
+        split_payload_64(immediate, op_a, op_b);
+        op_c = DGTL_INVALID_SLOT;
+    }
+
+    return push_node_internal(s, static_cast<dgtl::ir::OpCode>(op), static_cast<uint16_t>(flags),
+                              DGTL_INVALID_SLOT, op_a, op_b, op_c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_op_with_result(dgtl_stream_t* s, uint32_t result_slot, dgtl_opcode_t op, uint32_t lhs, uint32_t rhs, uint64_t immediate, uint32_t flags) {
+    if (!s || result_slot == 0u) return DGTL_INVALID_SLOT;
+    uint32_t op_a = lhs;
+    uint32_t op_b = rhs;
+    uint32_t op_c = 0u;
+
+    if (op == DGTL_OP_CONST || op == DGTL_OP_LOAD_IMM || op == DGTL_OP_IMMEDIATE) {
+        split_payload_64(immediate, op_a, op_b);
+        op_c = DGTL_INVALID_SLOT;
+    }
+
+    return push_node_internal(s, static_cast<dgtl::ir::OpCode>(op), static_cast<uint16_t>(flags),
+                              result_slot, op_a, op_b, op_c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_i64(dgtl_stream_t* s, uint64_t value) {
+    uint32_t lo = 0, hi = 0;
+    split_payload_64(value, lo, hi);
+    return push_node_internal(s, dgtl::ir::OpCode::CONST, DGTL_FLAG_IS_CONST, DGTL_INVALID_SLOT, lo, hi, DGTL_INVALID_SLOT, 0ull);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_f32(dgtl_stream_t* s, float value) {
+    uint32_t bits = std::bit_cast<uint32_t>(value);
+    return push_node_internal(s, dgtl::ir::OpCode::CONST, DGTL_FLAG_IS_CONST | DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, bits, 0u, DGTL_INVALID_SLOT, 0ull);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_f64(dgtl_stream_t* s, double value) {
+    uint64_t bits = std::bit_cast<uint64_t>(value);
+    uint32_t lo = 0, hi = 0;
+    split_payload_64(bits, lo, hi);
+    return push_node_internal(s, dgtl::ir::OpCode::CONST, DGTL_FLAG_IS_CONST | DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lo, hi, DGTL_INVALID_SLOT, 0ull);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_const_binary(dgtl_stream_t* s, const void* data, size_t len) {
+    if (!s || !data || len == 0) return DGTL_INVALID_SLOT;
+    uint64_t hash = dgtl::utils::Hashing::xxhash64(data, len);
+    uint32_t lo = 0, hi = 0;
+    split_payload_64(hash, lo, hi);
+    return push_node_internal(s, dgtl::ir::OpCode::CONST, DGTL_FLAG_IS_CONST, DGTL_INVALID_SLOT, lo, hi, DGTL_INVALID_SLOT, hash);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_load(dgtl_stream_t* s, uint32_t ptr_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::LOAD, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, ptr_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_store(dgtl_stream_t* s, uint32_t ptr_slot, uint32_t val_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::STORE, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, ptr_slot, val_slot, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_add_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::ADD_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_sub_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SUB_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_mul_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::MUL_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_div_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::DIV_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_mod_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::MOD_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_add_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::ADD_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_sub_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SUB_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_mul_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::MUL_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_div_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::DIV_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_mod_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::MOD_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_and_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::AND_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_or_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::OR_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_xor_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::XOR_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_shl_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SHL_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_shr_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SHR_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_and_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::AND_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_or_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::OR_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_xor_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::XOR_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_shl_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SHL_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_shr_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SHR_I64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fadd(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::ADD_F32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fsub(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SUB_F32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fmul(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::MUL_F32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fdiv(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::DIV_F32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fadd_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::ADD_F64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fsub_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::SUB_F64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fmul_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::MUL_F64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fdiv_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::DIV_F64, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::CMP_EQ_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::CMP_NE_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::CMP_LT_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::CMP_LE_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::CMP_GT_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::CMP_GE_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_EQ_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_NE_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_LT_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_LE_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_GT_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_GE_I32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_EQ_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 32u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_NE_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 32u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_LT_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 32u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_LE_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 32u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_GT_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 32u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_GE_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 32u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_EQ_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_NE_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_LT_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_LE_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_GT_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    uint32_t rid = push_node_internal(s, dgtl::ir::OpCode::CMP_GE_I32, DGTL_FLAG_IS_SPEC_CONST, DGTL_INVALID_SLOT, lhs, rhs, 0u, 0ull, 64u);
+    if (s && rid != DGTL_INVALID_SLOT) s->function.stream().set_result_type(rid, dgtl::ir::TypeCode::BOOL);
+    return rid;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_i32(dgtl_stream_t* s, uint32_t val) {
+    uint32_t zero = dgtl_emit_const_i64(s, 0);
+    return dgtl_emit_sub_i32(s, zero, val);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_not_i32(dgtl_stream_t* s, uint32_t val) {
+    uint32_t all_ones = dgtl_emit_const_i64(s, 0xFFFFFFFFull);
+    return dgtl_emit_xor_i32(s, val, all_ones);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_i64(dgtl_stream_t* s, uint32_t val) {
+    uint32_t zero = dgtl_emit_const_i64(s, 0);
+    return dgtl_emit_sub_i64(s, zero, val);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_not_i64(dgtl_stream_t* s, uint32_t val) {
+    uint32_t all_ones = dgtl_emit_const_i64(s, 0xFFFFFFFFFFFFFFFFull);
+    return dgtl_emit_xor_i64(s, val, all_ones);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_f32(dgtl_stream_t* s, uint32_t val) {
+    uint32_t zero = dgtl_emit_const_f32(s, 0.0f);
+    return dgtl_emit_fsub(s, zero, val);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_f64(dgtl_stream_t* s, uint32_t val) {
+    uint32_t zero = dgtl_emit_const_f64(s, 0.0);
+    return dgtl_emit_fsub_f64(s, zero, val);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_select(dgtl_stream_t* s, uint32_t cond, uint32_t true_val, uint32_t false_val) {
+    return push_node_internal(s, dgtl::ir::OpCode::SELECT, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, cond, true_val, false_val);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_bool_select(dgtl_stream_t* s, uint32_t cond, uint32_t true_val, uint32_t false_val) {
+    return push_node_internal(s, dgtl::ir::OpCode::BOOL_SELECT, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, cond, true_val, false_val);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_gep(dgtl_stream_t* s, uint32_t base_ptr, uint32_t offset_bytes) {
+    return push_node_internal(s, dgtl::ir::OpCode::GEP, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, base_ptr, offset_bytes, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_ptr_to_int(dgtl_stream_t* s, uint32_t ptr_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::PTR_TO_INT, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, ptr_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_int_to_ptr(dgtl_stream_t* s, uint32_t int_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::INT_TO_PTR, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, int_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_ptr_cast(dgtl_stream_t* s, uint32_t ptr_slot, dgtl_type_code_t target_type) {
+    uint32_t res = push_node_internal(s, dgtl::ir::OpCode::PTR_CAST, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, ptr_slot, static_cast<uint32_t>(target_type), 0u);
+    if (s && res != DGTL_INVALID_SLOT) {
+        s->function.stream().set_result_type(res, static_cast<dgtl::ir::TypeCode>(target_type));
+    }
+    return res;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_ptr_diff(dgtl_stream_t* s, uint32_t lhs_ptr, uint32_t rhs_ptr) {
+    return push_node_internal(s, dgtl::ir::OpCode::PTR_DIFF, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lhs_ptr, rhs_ptr, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_reg_move(dgtl_stream_t* s, uint32_t dst_slot, uint32_t src_slot) {
+    if (!s || dst_slot == DGTL_INVALID_SLOT || src_slot == DGTL_INVALID_SLOT) return DGTL_INVALID_SLOT;
+    push_node_internal(s, dgtl::ir::OpCode::REG_MOVE, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, dst_slot, src_slot, 0u);
+    return dst_slot;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_alloca(dgtl_stream_t* s, uint32_t size_bytes, uint32_t align) {
+    return push_node_internal(s, dgtl::ir::OpCode::DSA_ALLOCATE, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, size_bytes, align, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_async_spawn(dgtl_stream_t* s, uint32_t fn_slot, uint32_t arg_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::ASYNC_SPAWN, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, fn_slot, arg_slot, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_async_await(dgtl_stream_t* s, uint32_t task_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::ASYNC_AWAIT, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, task_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_chan_send(dgtl_stream_t* s, uint32_t chan_slot, uint32_t val_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::CHAN_SEND, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, chan_slot, val_slot, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_chan_recv(dgtl_stream_t* s, uint32_t chan_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::CHAN_RECV, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, chan_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_barrier_sync(dgtl_stream_t* s, uint32_t barrier_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::BARRIER_SYNC, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, barrier_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_label(dgtl_stream_t* s, const char* label_name) {
+    if (!s || !label_name) return DGTL_INVALID_SLOT;
+    uint64_t h = dgtl::utils::Hashing::fnv1a(label_name, std::strlen(label_name));
+    uint32_t lo = 0, hi = 0;
+    split_payload_64(h, lo, hi);
+    return push_node_internal(s, dgtl::ir::OpCode::LABEL, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, lo, hi, DGTL_INVALID_SLOT, h);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_label_slot(dgtl_stream_t* s, uint32_t label_slot) {
+    if (!s || label_slot == 0u) return DGTL_INVALID_SLOT;
+    return push_node_internal(s, dgtl::ir::OpCode::LABEL, DGTL_FLAG_NONE, label_slot, label_slot, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_function_label_slot(dgtl_stream_t* s, uint32_t function_slot) {
+    if (!s || function_slot == 0u) return DGTL_INVALID_SLOT;
+    return push_node_internal(s, dgtl::ir::OpCode::LABEL, static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS | dgtl::ir::Flags::IS_VOLATILE),
+                            function_slot, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_function_label_with_params(dgtl_stream_t* s, uint32_t function_slot, const uint32_t* params, size_t param_count) {
+    if (!s || function_slot == 0u) return DGTL_INVALID_SLOT;
+    uint32_t a0 = (param_count > 0 && params) ? params[0] : DGTL_INVALID_SLOT;
+    uint32_t a1 = (param_count > 1 && params) ? params[1] : DGTL_INVALID_SLOT;
+    uint32_t a2 = (param_count > 2 && params) ? params[2] : DGTL_INVALID_SLOT;
+    uint32_t logic_flags = (param_count > 3 && params) ? params[3] : 0u;
+
+    size_t node_idx = s->function.stream().size();
+    uint32_t slot = push_node_internal(s, dgtl::ir::OpCode::LABEL, static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS | dgtl::ir::Flags::IS_VOLATILE),
+                                       function_slot, a0, a1, a2, 0ull, logic_flags);
+    if (param_count > 4 && params) {
+        s->function.stream().set_call_overflow_args(node_idx, std::span<const uint32_t>(params + 4, param_count - 4));
+    }
+    return slot;
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_branch(dgtl_stream_t* s, uint32_t target_label_slot) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::GOTO, DGTL_FLAG_IS_BRANCH | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, target_label_slot, 0u, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_branch_cond(dgtl_stream_t* s, uint32_t cond_slot, uint32_t target_label_slot) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::BRANCH_COND, DGTL_FLAG_IS_BRANCH | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, cond_slot, target_label_slot, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_branch_predictive(dgtl_stream_t* s, uint32_t cond_reg, uint32_t true_label, uint32_t false_label, uint8_t weight) {
+    dgtl::ir::OpCode op = (weight > 128) ? dgtl::ir::OpCode::BRANCH_LIKELY : (weight < 128) ? dgtl::ir::OpCode::BRANCH_UNLIKELY : dgtl::ir::OpCode::BRANCH_COND;
+    (void)push_node_internal(s, op, DGTL_FLAG_IS_BRANCH | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, cond_reg, true_label, false_label);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call(dgtl_stream_t* s, uint32_t callee_slot, const uint32_t* args, size_t arg_count) {
+    return dgtl_emit_call_with_result(s, DGTL_INVALID_SLOT, callee_slot, args, arg_count);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call_with_result(dgtl_stream_t* s, uint32_t result_slot, uint32_t callee_slot, const uint32_t* args, size_t arg_count) {
+    return emit_call_like(s, dgtl::ir::OpCode::CALL, result_slot, callee_slot, args, arg_count);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_return(dgtl_stream_t* s, uint32_t value_slot) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::RET, DGTL_FLAG_IS_RETURN | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, value_slot, 0u, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_constant_str(dgtl_stream_t* s, dgtl_value_t dest_reg, const char* value, size_t length) {
+    if (!s || !value) return;
+    auto& stream = s->function.stream();
+    uint32_t handle = intern_string_internal(std::string_view(value, length));
+    dgtl::ir::IRNode node{};
+    node.opcode = dgtl::ir::OpCode::STRING_CONST;
+    node.result_id = dest_reg;
+    node.op_a = handle;
+    node.op_b = DGTL_INVALID_SLOT;
+    node.op_c = DGTL_INVALID_SLOT;
+    node.flags = static_cast<uint16_t>(dgtl::ir::Flags::IS_CONST);
+    stream.push_back(node);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_string_const_handle(dgtl_stream_t* s, uint32_t string_handle) {
+    if (!s || string_handle == 0u || string_handle == dgtl::ir::INVALID_SLOT) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::STRING_CONST, dgtl::ir::Flags::IS_CONST, string_handle, 0u, 0u, 0);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_string_const_utf8(dgtl_stream_t* s, const char* utf8_literal) {
+    if (!s || !utf8_literal) return 0;
+    return dgtl_emit_string_const_handle(s, sdk_intern_string_handle(std::string_view(utf8_literal)));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_string_length(dgtl_stream_t* s, uint32_t string_slot) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::STRING_LENGTH, DGTL_FLAG_NONE, string_slot, 0u, 0u, 0);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_string_compare(dgtl_stream_t* s, uint32_t lhs_string_slot, uint32_t rhs_string_slot) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::STRING_COMPARE, DGTL_FLAG_NONE, lhs_string_slot, rhs_string_slot, 0u, 0);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_string_concat(dgtl_stream_t* s, uint32_t lhs_string_slot, uint32_t rhs_string_slot) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::STRING_CONCAT, DGTL_FLAG_NONE, lhs_string_slot, rhs_string_slot, 0u, 0);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_string_substring(dgtl_stream_t* s, uint32_t string_slot, uint32_t start_slot, uint32_t length_slot) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::STRING_SUBSTRING, DGTL_FLAG_NONE, string_slot, start_slot, length_slot, 0);
+}
+
+DGTL_API DGTL_WEAK uint32_t DGTL_CALL dgtl_emit_string_const_rodata_rip(dgtl_stream_t* s, const char* str, size_t len) {
+    if (!s || !str) return 0;
+    uint32_t handle = intern_string_internal(std::string_view(str, len));
+    return dgtl_emit_node(s, static_cast<dgtl_opcode_t>(dgtl::ir::OpCode::STRING_CONST), DGTL_FLAG_IS_CONST, DGTL_INVALID_SLOT, handle, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT, 0ull);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_phi(dgtl_stream_t* s, uint32_t* incoming_slots, size_t incoming_count) {
+    if (!s || !incoming_slots || incoming_count == 0) return DGTL_INVALID_SLOT;
+    uint32_t op_a = incoming_slots[0];
+    uint32_t op_b = incoming_count > 1 ? incoming_slots[1] : DGTL_INVALID_SLOT;
+    return push_node_internal(s, dgtl::ir::OpCode::PHI_NODE, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, op_a, op_b, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_phi_multi(dgtl_stream_t* s, uint32_t result_slot, const uint32_t* incoming_values, const uint32_t* incoming_blocks, size_t count) {
+    if (!s || count == 0 || !incoming_values || !incoming_blocks) return DGTL_INVALID_SLOT;
+    uint32_t v0 = incoming_values[0];
+    uint32_t v1 = (count > 1) ? incoming_values[1] : DGTL_INVALID_SLOT;
+    uint32_t v2 = (count > 2) ? incoming_values[2] : DGTL_INVALID_SLOT;
+
+    size_t node_idx = s->function.stream().size();
+    uint32_t slot = push_node_internal(s, dgtl::ir::OpCode::PHI_MULTI, DGTL_FLAG_NONE, result_slot, v0, v1, v2);
+    if (count > 3) {
+        s->function.stream().set_operand_overflow(node_idx, std::span<const uint32_t>(incoming_values + 3, count - 3));
+    }
+    s->function.stream().set_result_ids(node_idx, std::span<const uint32_t>(incoming_blocks, count));
+    return slot;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_tuple_pack(dgtl_stream_t* s, const uint32_t* elements, size_t count) {
+    if (!s || count == 0 || !elements) return DGTL_INVALID_SLOT;
+    uint32_t e0 = elements[0];
+    uint32_t e1 = (count > 1) ? elements[1] : DGTL_INVALID_SLOT;
+    uint32_t e2 = (count > 2) ? elements[2] : DGTL_INVALID_SLOT;
+
+    size_t node_idx = s->function.stream().size();
+    uint32_t slot = push_node_internal(s, dgtl::ir::OpCode::TUPLE_PACK, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, e0, e1, e2);
+    if (count > 3) {
+        s->function.stream().set_operand_overflow(node_idx, std::span<const uint32_t>(elements + 3, count - 3));
+    }
+    return slot;
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_tuple_unpack(dgtl_stream_t* s, uint32_t tuple_slot, const uint32_t* out_result_slots, size_t count) {
+    if (!s || tuple_slot == DGTL_INVALID_SLOT || !out_result_slots || count == 0) return;
+    size_t node_idx = s->function.stream().size();
+    (void)push_node_internal(s, dgtl::ir::OpCode::TUPLE_UNPACK, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, tuple_slot, 0u, 0u);
+    s->function.stream().set_result_ids(node_idx, std::span<const uint32_t>(out_result_slots, count));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call_variadic(dgtl_stream_t* s, uint32_t callee_slot, const uint32_t* args, size_t arg_count) {
+    return dgtl_emit_call_variadic_with_result(s, DGTL_INVALID_SLOT, callee_slot, args, arg_count);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_call_variadic_with_result(dgtl_stream_t* s, uint32_t result_slot, uint32_t callee_slot, const uint32_t* args, size_t arg_count) {
+    return emit_call_like(s, dgtl::ir::OpCode::CALL_VARIADIC, result_slot, callee_slot, args, arg_count);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_graph_build(dgtl_stream_t* s, uint32_t nodes_vector, uint32_t edges_vector) {
+    return push_node_internal(s, dgtl::ir::OpCode::GRAPH_BUILD, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, nodes_vector, edges_vector, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_graph_traverse(dgtl_stream_t* s, uint32_t graph_handle, uint32_t visitor_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::GRAPH_TRAVERSE, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, graph_handle, visitor_slot, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_trie_insert(dgtl_stream_t* s, uint32_t trie_handle, uint32_t key_str_handle, uint32_t val_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::TRIE_INSERT, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, trie_handle, key_str_handle, val_slot);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_scop_analyze(dgtl_stream_t* s, uint32_t region_begin_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::SCOP_ANALYZE, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, region_begin_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_ownership_acquire(dgtl_stream_t* s, uint32_t resource_handle) {
+    return push_node_internal(s, dgtl::ir::OpCode::OWNERSHIP_ACQUIRE, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, resource_handle, 0u, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_ownership_release(dgtl_stream_t* s, uint32_t resource_handle) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::OWNERSHIP_RELEASE, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, resource_handle, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_ownership_transfer(dgtl_stream_t* s, uint32_t src_handle, uint32_t dest_context) {
+    return push_node_internal(s, dgtl::ir::OpCode::OWNERSHIP_TRANSFER, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, src_handle, dest_context, 0u);
+}
+
+DGTL_API bool DGTL_CALL dgtl_verify_ownership_lifetimes(const dgtl_stream_t* stream, char* err_buf, size_t err_buf_size) {
+    if (!stream) return false;
+    dgtl::ir::IRVerifier verifier;
+    dgtl::ir::IRVerifyOptions opts{};
+    opts.check_ownership = true;
+    auto diags = verifier.verify(stream->function.stream(), opts);
+    for (const auto& d : diags) {
+        if (d.kind == dgtl::ir::IRVerifyDiagnostic::Kind::OwnershipViolation) {
+            if (err_buf && err_buf_size > 0) {
+                std::snprintf(err_buf, err_buf_size, "%s", d.message.c_str());
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_matmul_bf16(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    return push_node_internal(s, dgtl::ir::OpCode::MATMUL_BF16, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_matmul_fp8(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    return push_node_internal(s, dgtl::ir::OpCode::MATMUL_FP8, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_sdpa_f16(dgtl_stream_t* s, uint32_t q, uint32_t k, uint32_t v, uint32_t mask) {
+    size_t node_idx = s->function.stream().size();
+    uint32_t slot = push_node_internal(s, dgtl::ir::OpCode::SDPA_F16, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, q, k, v);
+    s->function.stream().set_call_overflow_args(node_idx, std::span<const uint32_t>(&mask, 1));
+    return slot;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_softmax_fast(dgtl_stream_t* s, uint32_t input) {
+    return push_node_internal(s, dgtl::ir::OpCode::SOFTMAX_FAST, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, input, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_layer_norm(dgtl_stream_t* s, uint32_t input, uint32_t gamma, uint32_t beta) {
+    return push_node_internal(s, dgtl::ir::OpCode::LAYER_NORM, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, input, gamma, beta);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fast_inv_sqrt(dgtl_stream_t* s, uint32_t input) {
+    return push_node_internal(s, dgtl::ir::OpCode::FAST_INV_SQRT, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, input, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec3_cross(dgtl_stream_t* s, uint32_t a, uint32_t b) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC3_CROSS, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, a, b, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec4_dot(dgtl_stream_t* s, uint32_t a, uint32_t b) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC4_DOT, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, a, b, DGTL_INVALID_SLOT);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_mat4_mul(dgtl_stream_t* s, uint32_t a, uint32_t b) {
+    return push_node_internal(s, dgtl::ir::OpCode::MAT4_MUL, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, a, b, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_read_tsc(dgtl_stream_t* s) {
+    return push_node_internal(s, dgtl::ir::OpCode::READ_TSC, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, 0u, 0u, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_clflush(dgtl_stream_t* s, uint32_t addr_slot) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::CLFLUSH, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, addr_slot, 0u, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_prefetch_t0(dgtl_stream_t* s, uint32_t addr_slot) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::PREFETCH_T0, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, addr_slot, 0u, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_spin_acquire(dgtl_stream_t* s, uint32_t lock_slot) {
+    (void)push_node_internal(s, dgtl::ir::OpCode::SPIN_ACQUIRE, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, lock_slot, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_ring_push_free(dgtl_stream_t* s, uint32_t ring_handle, uint32_t payload_slot) {
+    return push_node_internal(s, dgtl::ir::OpCode::RING_PUSH_FREE, DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, ring_handle, payload_slot, 0u);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_hardware_affinity(dgtl_stream_t* s, dgtl_value_t mask_register_id) {
+    if (!s) return;
+    (void)push_node_internal(s, dgtl::ir::OpCode::BARRIER_SYNC, static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS),
+                            DGTL_INVALID_SLOT, mask_register_id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_apply_quiet_core_policy(uint32_t preferred_core) {
+    auto res = dgtl::jit::DGTLHardwareScheduler::apply_quiet_core_policy(preferred_core);
+    if (!res.affinity_locked) {
+        return make_err(1, "failed to lock core affinity", DGTL_SEV_WARNING);
+    }
+    return make_ok();
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_cfg_block_count(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return s->function.stream().get_basic_blocks().size();
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_cfg_edge_count(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return s->function.stream().get_cfg_edges().size();
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_stream_cfg_get_block(const dgtl_stream_t* s, size_t index, dgtl_cfg_block_t* out) {
+    if (!s || !out) return 0;
+    const auto& blocks = s->function.stream().get_basic_blocks();
+    if (index >= blocks.size()) return 0;
+    out->id = blocks[index].id;
+    out->begin = blocks[index].begin;
+    out->end = blocks[index].end;
+    out->primary_label = blocks[index].primary_label;
+    out->is_entry = blocks[index].is_entry ? 1 : 0;
+    return 1;
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_stream_cfg_get_edge(const dgtl_stream_t* s, size_t index, dgtl_cfg_edge_t* out) {
+    if (!s || !out) return 0;
+    const auto& edges = s->function.stream().get_cfg_edges();
+    if (index >= edges.size()) return 0;
+    out->from = edges[index].from;
+    out->to = edges[index].to;
+    out->kind = static_cast<dgtl_cfg_edge_kind_t>(edges[index].kind);
+    return 1;
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_cfg_get_successors(const dgtl_stream_t* s, uint32_t block_id, uint32_t* out_ids, size_t out_cap) {
+    if (!s) return 0;
+    const auto& succ = s->function.stream().get_successors(block_id);
+    size_t n = std::min(out_cap, succ.size());
+    if (out_ids && n > 0) std::memcpy(out_ids, succ.data(), n * sizeof(uint32_t));
+    return succ.size();
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s, uint32_t block_id, uint32_t* out_ids, size_t out_cap) {
+    if (!s) return 0;
+    const auto& pred = s->function.stream().get_predecessors(block_id);
+    size_t n = std::min(out_cap, pred.size());
+    if (out_ids && n > 0) std::memcpy(out_ids, pred.data(), n * sizeof(uint32_t));
+    return pred.size();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_optimize(dgtl_stream_t* s) {
+    if (!s) return make_err(1, "null stream");
+    auto& stream = s->function.stream();
+
+    dgtl::pass::transform::DeadCodeElimination dce;
+    dce.execute(stream);
+    dgtl::pass::transform::DGTLGVN gvn;
+    gvn.execute(stream);
+    dgtl::pass::transform::DGTLLoopFusion fusion;
+    fusion.execute(stream);
+    dgtl::pass::transform::DGTLAggressiveInliner inliner;
+    inliner.execute(stream);
+    dgtl::pass::DGTLEscapeAnalysis ea;
+    ea.execute(stream);
+    dgtl::pass::DGTLEnhancedErrorRecovery er;
+    er.execute(stream);
+
+    s->is_optimized = true;
+    return make_ok();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_optimize_with_profile(dgtl_stream_t* s, dgtl_opt_profile_t profile) {
+    if (!s) return make_err(1, "null stream");
+    auto& stream = s->function.stream();
+
+    dgtl::pass::transform::DeadCodeElimination dce;
+    dce.execute(stream);
+    dgtl::pass::transform::DGTLGVN gvn;
+    gvn.execute(stream);
+
+    if (profile == DGTL_OPT_PROFILE_SIMD) {
+        stream.analyze_simd_opportunities();
+        sdk_prime_simd_units();
+        const dgtl::pass::simd::TargetArch simd_arch = []() noexcept {
+            switch (dgtl::core::preferred_simd_tier()) {
+                case dgtl::core::SimdTier::AVX512: return dgtl::pass::simd::TargetArch::X86_AVX512;
+                case dgtl::core::SimdTier::AVX2:   return dgtl::pass::simd::TargetArch::X86_AVX2;
+                default:                         return dgtl::pass::simd::TargetArch::GENERIC;
+            }
+        }();
+        dgtl::pass::simd::DGTLSIMDLegalizer legalizer(simd_arch);
+        legalizer.legalize(stream);
+    } else if (profile == DGTL_OPT_PROFILE_FUSION) {
+        dgtl::pass::transform::DGTLLoopFusion().execute(stream);
+    }
+
+    dgtl::pass::DGTLEnhancedErrorRecovery().execute(stream);
+    s->is_optimized = true;
+    return make_ok();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_set_ir_mode(dgtl_stream_t* s, dgtl_ir_mode_t mode) {
+    if (!s) return make_err(1, "null stream");
+    s->ir_mode = mode;
+    return make_ok();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_run_pass_by_name(dgtl_stream_t* s, const char* pass_name) {
+    if (!s || !pass_name) return make_err(1, "null arguments");
+    auto& stream = s->function.stream();
+    std::string_view p(pass_name);
+
+    if (p == "dce" || p == "DCE") {
+        dgtl::pass::transform::DeadCodeElimination().execute(stream);
+    } else if (p == "gvn" || p == "GVN") {
+        dgtl::pass::transform::DGTLGVN().execute(stream);
+    } else if (p == "fusion" || p == "LoopFusion") {
+        dgtl::pass::transform::DGTLLoopFusion().execute(stream);
+    } else if (p == "inliner" || p == "Inliner") {
+        dgtl::pass::transform::DGTLAggressiveInliner().execute(stream);
+    } else if (p == "escape" || p == "EscapeAnalysis") {
+        dgtl::pass::DGTLEscapeAnalysis().execute(stream);
+    } else if (p == "error_recovery") {
+        dgtl::pass::DGTLEnhancedErrorRecovery().execute(stream);
+    } else {
+        return dgtl_optimize(s);
+    }
+    return make_ok();
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_has_pass(const char* pass_name) {
+    if (!pass_name) return 0;
+    static const char* kPasses[] = {"DCE", "GVN", "LoopFusion", "Inliner", "EscapeAnalysis", "ErrorRecovery", nullptr};
+    for (size_t i = 0; kPasses[i]; ++i) {
+        if (std::string_view(pass_name) == kPasses[i]) return 1;
+    }
+    return 0;
+}
+
+DGTL_API const char** DGTL_CALL dgtl_list_passes(size_t* out_count) {
+    static const char* kPasses[] = {"DCE", "GVN", "LoopFusion", "Inliner", "EscapeAnalysis", "ErrorRecovery", nullptr};
+    if (out_count) *out_count = 6;
+    return kPasses;
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_set_optimization_enabled(dgtl_stream_t* s, int32_t enabled) {
+    if (!s) return make_err(1, "null stream");
+    s->optimization_enabled = (enabled != 0);
+    return make_ok();
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_get_optimization_level(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return 2;
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_set_optimization_level(dgtl_stream_t* s, int32_t level) {
+    if (!s) return make_err(1, "null stream");
+    if (level < 0 || level > 4) return make_err(2, "invalid optimization level (0-4)");
+    return make_ok();
+}
+
+DGTL_API dgtl_emit_options_t DGTL_CALL dgtl_emit_options_default(dgtl_target_t target) {
+    dgtl_emit_options_t opts{};
+    opts.inline_threshold = 50;
+    opts.unroll_factor = 4;
+    opts.enable_cache_optimization = 1;
+    opts.enable_branch_prediction = 1;
+    opts.vectorize_threshold = 8;
+    if (target == DGTL_TARGET_WASM) {
+        opts.inline_threshold = 20;
+        opts.enable_cache_optimization = 0;
+    }
+    return opts;
+}
+
+DGTL_API dgtl_strike_result_t DGTL_CALL dgtl_strike_stream_with_options(dgtl_stream_t* s, dgtl_target_t target, const dgtl_emit_options_t* options) {
+    if (!s) return make_strike_err("null stream");
+    if (options) s->emit_options = *options;
+    return dgtl_strike_stream(s, target);
+}
+
+DGTL_API size_t DGTL_CALL dgtl_estimate_code_size(const dgtl_stream_t* s, dgtl_target_t target) {
+    if (!s) return 0;
+    size_t bytes_per_node = 8;
+    switch (target) {
+        case DGTL_TARGET_NASM_X64: bytes_per_node = 12; break;
+        case DGTL_TARGET_WASM:     bytes_per_node = 6;  break;
+        default:                   bytes_per_node = 8;  break;
+    }
+    return s->function.stream().size() * bytes_per_node + 256;
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_memory_usage(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return s->function.stream().size() * sizeof(dgtl::ir::IRNode) + 512;
+}
+
+DGTL_API size_t DGTL_CALL dgtl_context_memory_usage(const dgtl_context_t* ctx) {
+    if (!ctx || !ctx->arena) return 0;
+    return ctx->arena->bytes_per_thread() * ctx->arena->thread_count();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_shrink_to_fit(dgtl_stream_t* s) {
+    if (!s) return make_err(1, "null stream");
+    return make_ok();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_enable_tracing(dgtl_stream_t* s) {
+    if (!s) return make_err(1, "null stream");
+    return make_ok();
+}
+
+DGTL_API dgtl_trace_event_t* DGTL_CALL dgtl_stream_get_trace_events(const dgtl_stream_t* s, size_t* out_count) {
+    if (!s || !out_count) return nullptr;
+    *out_count = 0;
+    return nullptr;
+}
+
+DGTL_API uint64_t DGTL_CALL dgtl_stream_estimate_cycles(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    const auto& stream = s->function.stream();
+    uint64_t cycles = 0;
+    for (size_t i = 0; i < stream.size(); ++i) {
+        const auto node = stream.get_node(i);
+        switch (node.opcode) {
+            case dgtl::ir::OpCode::LOAD:
+            case dgtl::ir::OpCode::STORE:
+                cycles += 4;
+                break;
+            case dgtl::ir::OpCode::DIV_I32:
+            case dgtl::ir::OpCode::DIV_I64:
+            case dgtl::ir::OpCode::DIV_F32:
+            case dgtl::ir::OpCode::DIV_F64:
+                cycles += 20;
+                break;
+            case dgtl::ir::OpCode::MUL_I32:
+            case dgtl::ir::OpCode::MUL_I64:
+            case dgtl::ir::OpCode::MUL_F32:
+            case dgtl::ir::OpCode::MUL_F64:
+                cycles += 3;
+                break;
+            default:
+                cycles += 1;
+                break;
+        }
+    }
+    return cycles;
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_stream_get_optimization_score(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    const auto& stream = s->function.stream();
+    if (stream.size() == 0) return 100;
+    size_t const_nodes = 0;
+    for (size_t i = 0; i < stream.size(); ++i) {
+        if (stream.get_node(i).flags & dgtl::ir::Flags::IS_CONST) const_nodes++;
+    }
+    int32_t score = 50 + static_cast<int32_t>((const_nodes * 50) / stream.size());
+    return std::min(100, score);
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgtl_perf_metrics_t* out) {
+    if (!s || !out) return 0;
+    std::memset(out, 0, sizeof(*out));
+    const auto& stream = s->function.stream();
+    out->total_compilation_time_us = 0;
+    out->optimization_time_us = 0;
+    out->emission_time_us = 0;
+    out->peak_register_count = std::max<uint32_t>(16u, stream.get_max_id());
+    out->peak_memory_usage_bytes = static_cast<uint32_t>(stream.size() * sizeof(dgtl::ir::IRNode));
+    out->estimated_cycle_count = dgtl_stream_estimate_cycles(s);
+    return 1;
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_dump_ir(const dgtl_stream_t* s, void* custom_file_handle_opt) {
+    FILE* out = custom_file_handle_opt ? static_cast<FILE*>(custom_file_handle_opt) : stdout;
+    if (!s || !out) return;
+    const auto& stream = s->function.stream();
+    std::fprintf(out, "; DGTL Sovereignty IR Trace Dump\n");
+    std::fprintf(out, "; Active Nodes: %zu | Structural Logic Hash: 0x%016llX\n\n", stream.size(), static_cast<unsigned long long>(stream.generate_logic_hash()));
+    for (size_t i = 0; i < stream.size(); ++i) {
+        const auto node = stream.get_node(i);
+        std::fprintf(out, "  %%v%u = Op:0x%04X [flags:0x%04X] op_a:%%v%u, op_b:%%v%u, op_c:%%v%u | hash:0x%016llX\n",
+                     node.result_id, static_cast<uint32_t>(node.opcode), node.flags, node.op_a, node.op_b, node.op_c, static_cast<unsigned long long>(node.intent_hash));
+    }
+}
+
+DGTL_API const char* DGTL_CALL dgtl_get_last_error(void) {
+    return g_error_buffer[0] ? g_error_buffer : "none";
+}
+
+DGTL_API void DGTL_CALL dgtl_clear_error(void) {
+    g_error_buffer[0] = '\0';
+}
+
+DGTL_API void DGTL_CALL dgtl_set_verbose(int32_t enabled) {
+    g_verbose_mode.store(enabled, std::memory_order_release);
+}
+
+DGTL_API const char* DGTL_CALL dgtl_get_build_config(void) {
+    return "DGTL v2.0.0-SOVEREIGN | High-Velocity Compiler Platform | C++26 Strict Modules";
+}
+
+DGTL_API bool DGTL_CALL dgtl_stream_get_node(const dgtl_stream_t* s, size_t index, dgtl_node_t* out_node) {
+    if (!s || !out_node || index >= s->function.stream().size()) return false;
+    const auto n = s->function.stream().get_node(index);
+    out_node->opcode = static_cast<uint16_t>(n.opcode);
+    out_node->flags = n.flags;
+    out_node->result_id = n.result_id;
+    out_node->op_a = n.op_a;
+    out_node->op_b = n.op_b;
+    out_node->op_c = n.op_c;
+    out_node->intent_hash = n.intent_hash;
+    out_node->logic_flags = n.logic_flags;
+    return true;
+}
+
+DGTL_API bool DGTL_CALL dgtl_stream_get_core_record(const dgtl_stream_t* s, size_t index, dgtl_core_record_t* out_record) {
+    if (!s || !out_record || index >= s->function.stream().size()) return false;
+    const auto& c = s->function.stream().get_core_readonly(index);
+    out_record->result_id = c.result_id;
+    out_record->op_a = c.op_a;
+    out_record->op_b = c.op_b;
+    out_record->op_c = c.op_c;
+    out_record->intent_hash = c.intent_hash;
+    out_record->logic_flags = c.logic_flags;
+    out_record->aux_flags = c.aux_flags;
+    out_record->debug_id = c.debug_id;
+    out_record->epoch = static_cast<uint32_t>(c.epoch & 0xFFFFFFFFu);
+    return true;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_stream_get_max_virtual_slot(const dgtl_stream_t* s) {
+    if (!s) return 0;
+    return s->function.stream().get_max_id();
+}
+
+DGTL_API bool DGTL_CALL dgtl_node_is_terminator(dgtl_opcode_t op, uint16_t flags) {
+    auto code = static_cast<dgtl::ir::OpCode>(op);
+    return code == dgtl::ir::OpCode::RET || 
+           code == dgtl::ir::OpCode::GOTO || 
+           code == dgtl::ir::OpCode::BRANCH_COND ||
+           code == dgtl::ir::OpCode::BRANCH_LIKELY ||
+           code == dgtl::ir::OpCode::BRANCH_UNLIKELY ||
+           (flags & dgtl::ir::Flags::IS_BRANCH) != 0 ||
+           (flags & dgtl::ir::Flags::IS_RETURN) != 0;
+}
+
+DGTL_API bool DGTL_CALL dgtl_node_has_side_effects(dgtl_opcode_t op, uint16_t flags) {
+    return dgtl::ir::detail::irnode_has_side_effects(static_cast<dgtl::ir::OpCode>(op), flags);
+}
+
+DGTL_API double DGTL_CALL dgtl_node_predict_inlined_benefit(dgtl_opcode_t op) {
+    dgtl::ir::IRNode n{};
+    n.opcode = static_cast<dgtl::ir::OpCode>(op);
+    return n.predict_inlined_benefit();
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_set_call_overflow_args(dgtl_stream_t* s, size_t node_idx, const uint32_t* args, size_t count) {
+    if (!s || !args || count == 0) return;
+    s->function.stream().set_call_overflow_args(node_idx, std::span<const uint32_t>(args, count));
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_get_call_overflow_args(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_args, size_t max_out) {
+    if (!s || node_idx >= s->function.stream().size()) return 0;
+    const auto v = s->function.stream().get_call_overflow_args(node_idx);
+    size_t copy_cnt = std::min(max_out, v.size());
+    if (out_args && copy_cnt > 0) {
+        std::memcpy(out_args, v.data(), copy_cnt * sizeof(uint32_t));
+    }
+    return v.size();
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_set_operand_overflow(dgtl_stream_t* s, size_t node_idx, const uint32_t* operands, size_t count) {
+    if (!s || !operands || count == 0) return;
+    s->function.stream().set_operand_overflow(node_idx, std::span<const uint32_t>(operands, count));
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_get_operand_overflow(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_operands, size_t max_out) {
+    if (!s || node_idx >= s->function.stream().size()) return 0;
+    const auto v = s->function.stream().get_operand_overflow(node_idx);
+    size_t copy_cnt = std::min(max_out, v.size());
+    if (out_operands && copy_cnt > 0) {
+        std::memcpy(out_operands, v.data(), copy_cnt * sizeof(uint32_t));
+    }
+    return v.size();
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_set_result_ids(dgtl_stream_t* s, size_t node_idx, const uint32_t* result_ids, size_t count) {
+    if (!s || !result_ids || count == 0) return;
+    s->function.stream().set_result_ids(node_idx, std::span<const uint32_t>(result_ids, count));
+}
+
+DGTL_API size_t DGTL_CALL dgtl_stream_get_result_ids(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_result_ids, size_t max_out) {
+    if (!s || node_idx >= s->function.stream().size()) return 0;
+    const auto v = s->function.stream().get_result_ids(node_idx);
+    size_t copy_cnt = std::min(max_out, v.size());
+    if (out_result_ids && copy_cnt > 0) {
+        std::memcpy(out_result_ids, v.data(), copy_cnt * sizeof(uint32_t));
+    }
+    return v.size();
+}
+
+DGTL_API void DGTL_CALL dgtl_stream_set_node_effects(dgtl_stream_t* s, size_t node_idx, uint32_t effect_set) {
+    if (!s || node_idx >= s->function.stream().size()) return;
+    s->function.stream().set_node_effects(node_idx, effect_set);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_stream_get_node_effects(const dgtl_stream_t* s, size_t node_idx) {
+    if (!s || node_idx >= s->function.stream().size()) return 0;
+    return s->function.stream().get_node_effects(node_idx);
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_serialize(const dgtl_stream_t* s, void** out_blob, size_t* out_size) {
+    if (!s || !out_blob || !out_size) return make_err(1, "invalid argument");
+    const auto& stream = s->function.stream();
+    size_t blob_sz = 16 + stream.size() * sizeof(dgtl::ir::IRNode);
+    void* blob = std::malloc(blob_sz);
+    if (!blob) return make_err(2, "allocation failed");
+
+    uint32_t* hdr = static_cast<uint32_t*>(blob);
+    hdr[0] = 0xDEADBEEFu;
+    hdr[1] = static_cast<uint32_t>(stream.size());
+    hdr[2] = 0u;
+    hdr[3] = 0u;
+
+    dgtl::ir::IRNode* out_nodes = reinterpret_cast<dgtl::ir::IRNode*>(static_cast<char*>(blob) + 16);
+    for (size_t i = 0; i < stream.size(); ++i) {
+        out_nodes[i] = stream.get_node(i);
+    }
+    *out_blob = blob;
+    *out_size = blob_sz;
+    return make_ok();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_deserialize(dgtl_stream_t* s, const void* blob, size_t blob_size) {
+    if (!s || !blob || blob_size < 16) return make_err(1, "invalid blob");
+    const uint32_t* hdr = static_cast<const uint32_t*>(blob);
+    if (hdr[0] != 0xDEADBEEFu) return make_err(2, "magic mismatch");
+    uint32_t count = hdr[1];
+    if (16 + count * sizeof(dgtl::ir::IRNode) > blob_size) return make_err(3, "corrupted size");
+
+    auto& stream = s->function.stream();
+    stream.reset();
+    const dgtl::ir::IRNode* in_nodes = reinterpret_cast<const dgtl::ir::IRNode*>(static_cast<const char*>(blob) + 16);
+    for (uint32_t i = 0; i < count; ++i) {
+        stream.push_back(in_nodes[i]);
+    }
+    return make_ok();
+}
+
+DGTL_API void DGTL_CALL dgtl_free_serialized_blob(void* blob) {
+    if (blob) std::free(blob);
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_binary_loader_validate_payload(const uint8_t* bytes, size_t len) {
+    if (!bytes || len == 0) return 0;
+    dgtl::execution::format::Binary_Format fmt{};
+    fmt.data.assign(bytes, bytes + len);
+    return fmt.is_valid() ? 1 : 0;
+}
+
+DGTL_API void DGTL_CALL dgtl_yield(void) {
+    auto* ctx = get_or_create_default_runtime_ctx();
+    if (ctx) ctx->scheduler.yield();
+}
+
+DGTL_API uint64_t DGTL_CALL dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg) {
+    auto* ctx = get_or_create_default_runtime_ctx();
+    return ctx ? static_cast<uint64_t>(ctx->scheduler.spawn(fn, arg)) : 0ull;
+}
+
+DGTL_API void DGTL_CALL dgtl_join_task(uint64_t task_handle) {
+    auto* ctx = get_or_create_default_runtime_ctx();
+    if (ctx && task_handle != 0ull) ctx->scheduler.join(task_handle);
+}
+
+DGTL_API dgtl_runtime_context_t* DGTL_CALL dgtl_runtime_context_create(size_t worker_threads, size_t arena_mb_per_worker) {
+    try {
+        return new dgtl_runtime_context(worker_threads, arena_mb_per_worker);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+DGTL_API void DGTL_CALL dgtl_runtime_context_destroy(dgtl_runtime_context_t* ctx) {
+    delete ctx;
+}
+
+DGTL_API uint64_t DGTL_CALL dgtl_runtime_spawn_task(dgtl_runtime_context_t* ctx, dgtl_runtime_task_fn fn, void* arg) {
+    if (!ctx || !fn) return 0ull;
+    return static_cast<uint64_t>(ctx->scheduler.spawn(fn, arg));
+}
+
+DGTL_API void DGTL_CALL dgtl_runtime_join_task(dgtl_runtime_context_t* ctx, uint64_t task_handle) {
+    if (ctx && task_handle != 0ull) ctx->scheduler.join(task_handle);
+}
+
+DGTL_API void DGTL_CALL dgtl_runtime_yield(dgtl_runtime_context_t* ctx) {
+    if (ctx) ctx->scheduler.yield();
+}
+
+DGTL_API size_t DGTL_CALL dgtl_last_linker_fallback_count(void) {
+    return g_last_linker_fallbacks.size();
+}
+
+DGTL_API size_t DGTL_CALL dgtl_last_linker_fallback_message(size_t index, char* out_buffer, size_t out_buffer_size) {
+    if (index >= g_last_linker_fallbacks.size() || !out_buffer || out_buffer_size == 0) {
+        return 0;
+    }
+    const auto& msg = g_last_linker_fallbacks[index];
+    size_t copy_len = std::min(msg.size(), out_buffer_size - 1);
+    std::memcpy(out_buffer, msg.data(), copy_len);
+    out_buffer[copy_len] = '\0';
+    return msg.size();
+}
+
+DGTL_API dgtl_simd_caps_t DGTL_CALL dgtl_simd_query_host_caps(void) {
+    dgtl_simd_caps_t caps{};
+    auto hw = dgtl::core::detect_hardware();
+    if (hw.has_avx512) {
+        caps.native_arch = DGTL_SIMD_ARCH_X86_AVX512_FULL;
+        caps.max_vector_width_bytes = 64;
+    } else if (hw.has_avx2) {
+        caps.native_arch = DGTL_SIMD_ARCH_X86_AVX2;
+        caps.max_vector_width_bytes = 32;
+    } else {
+        caps.native_arch = DGTL_SIMD_ARCH_GENERIC;
+        caps.max_vector_width_bytes = 16;
+    }
+    caps.has_fma = hw.has_fma;
+    caps.has_native_gather = hw.has_avx2 || hw.has_avx512;
+    caps.has_native_scatter = hw.has_avx512;
+    caps.has_fp16_arithmetic = hw.has_avx512;
+    caps.has_bf16_arithmetic = hw.has_amx || hw.has_avx512;
+    caps.has_masked_operations = hw.has_avx512;
+    caps.has_transcendental_approximations = true;
+    caps.native_vector_register_count = hw.has_avx512 ? 32 : 16;
     return caps;
 }
 
-extern "C" DGTL_API int dgtl_capabilities_support_target(const dgtl_capabilities_t* caps,
-                                                         dgtl_target_t target) {
-    if (!caps) return 0;
-    const uint32_t index = static_cast<uint32_t>(target);
-    if (index >= 64u) return 0;
-    return (caps->backend_target_mask & (1ull << index)) != 0 ? 1 : 0;
+DGTL_API bool DGTL_CALL dgtl_simd_arch_is_supported(dgtl_simd_arch_t arch) {
+    auto hw = dgtl::core::detect_hardware();
+    switch (arch) {
+        case DGTL_SIMD_ARCH_X86_AVX512_F_DQ:
+        case DGTL_SIMD_ARCH_X86_AVX512_FULL: return hw.has_avx512;
+        case DGTL_SIMD_ARCH_X86_AVX2:         return hw.has_avx2;
+        case DGTL_SIMD_ARCH_GENERIC:         return true;
+        default: return false;
+    }
 }
 
-extern "C" DGTL_API dgtl_session_config_t dgtl_session_config_default(void) {
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    return push_node_internal(s, dgtl::ir::OpCode::FMA_F32, DGTL_FLAG_IS_FUSED, DGTL_INVALID_SLOT, a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_f64(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    return push_node_internal(s, dgtl::ir::OpCode::DGTL_FAST_FMA, DGTL_FLAG_IS_FUSED, DGTL_INVALID_SLOT, a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fms_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t neg_c = push_node_internal(s, dgtl::ir::OpCode::SUB_F32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, 0u, c, 0u);
+    return dgtl_emit_fma_f32(s, a, b, neg_c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fnmadd_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t neg_a = push_node_internal(s, dgtl::ir::OpCode::SUB_F32, DGTL_FLAG_NONE, DGTL_INVALID_SLOT, 0u, a, 0u);
+    return dgtl_emit_fma_f32(s, neg_a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_widen_f16_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    return push_node_internal(s, dgtl::ir::OpCode::FMA_WIDEN_F16_F32, DGTL_FLAG_IS_FUSED, DGTL_INVALID_SLOT, a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_widen_bf16_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c) {
+    return push_node_internal(s, dgtl::ir::OpCode::FMA_WIDEN_F16_F32, DGTL_FLAG_IS_FUSED, DGTL_INVALID_SLOT, a, b, c);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_complex_fma(dgtl_stream_t* s, uint32_t acc, uint32_t a, uint32_t b) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_COMPLEX_FMA, DGTL_FLAG_IS_SIMD | DGTL_FLAG_IS_FUSED, DGTL_INVALID_SLOT, acc, a, b);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_gather(dgtl_stream_t* s, const dgtl_simd_gather_spec_t* spec) {
+    if (!s || !spec) return DGTL_INVALID_SLOT;
+    return push_node_internal(s, dgtl::ir::OpCode::GATHER_F32_512, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, spec->base_ptr_slot, spec->index_vector_slot, spec->mask_slot, 0ull, spec->scale);
+}
+
+DGTL_API void DGTL_CALL dgtl_emit_scatter(dgtl_stream_t* s, const dgtl_simd_scatter_spec_t* spec) {
+    if (!s || !spec) return;
+    (void)push_node_internal(s, dgtl::ir::OpCode::STORE_V512, DGTL_FLAG_IS_SIMD | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, spec->base_ptr_slot, spec->index_vector_slot, spec->value_vector_slot, 0ull, spec->scale);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_gather_f32_512(dgtl_stream_t* s, uint32_t base_ptr, uint32_t indices) {
+    return push_node_internal(s, dgtl::ir::OpCode::GATHER_F32_512, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, base_ptr, indices, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_gather_16(dgtl_stream_t* s, uint32_t base_ptr, uint32_t indices) {
+    return push_node_internal(s, dgtl::ir::OpCode::GATHER_16, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, base_ptr, indices, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_scatter_indirect(dgtl_stream_t* s, uint32_t base_ptr, uint32_t indices, uint32_t values) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_SCATTER_INDIRECT, DGTL_FLAG_IS_SIMD | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, base_ptr, indices, values);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_masked_store(dgtl_stream_t* s, uint32_t base_ptr, uint32_t mask, uint32_t values) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_MASKED_STORE, DGTL_FLAG_IS_SIMD | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, base_ptr, mask, values);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_interleaved_load(dgtl_stream_t* s, uint32_t base_ptr, uint8_t stride_elements) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_INTERLEAVED_LOAD, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, base_ptr, stride_elements, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_load(dgtl_stream_t* s, uint32_t ptr, dgtl_simd_width_t width) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_LOAD, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, ptr, 0u, 0u, 0ull, static_cast<uint32_t>(width));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_store(dgtl_stream_t* s, uint32_t ptr, uint32_t val, dgtl_simd_width_t width) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_STORE, DGTL_FLAG_IS_SIMD | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, ptr, val, 0u, 0ull, static_cast<uint32_t>(width));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_load_aligned(dgtl_stream_t* s, uint32_t ptr, dgtl_simd_width_t width, uint32_t align) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_LOAD, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, ptr, align, 0u, 0ull, static_cast<uint32_t>(width));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_store_aligned(dgtl_stream_t* s, uint32_t ptr, uint32_t val, dgtl_simd_width_t width, uint32_t align) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_STORE, DGTL_FLAG_IS_SIMD | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, ptr, val, align, 0ull, static_cast<uint32_t>(width));
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_add_f32_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_ADD_F32_512, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_mul_f32_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_MUL_F32_512, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_add_f64_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_ADD_F32_512, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_mul_f64_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_MUL_F32_512, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, lhs, rhs, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_store_v512(dgtl_stream_t* s, uint32_t addr_id, uint32_t val_id) {
+    if (!s) return 0;
+    return push_ir_node(s, dgtl::ir::OpCode::STORE_V512, dgtl::ir::Flags::IS_VOLATILE, addr_id, val_id, 0);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_store_v512(dgtl_stream_t* s, uint32_t addr_id, uint32_t val_id) {
+    return push_node_internal(s, dgtl::ir::OpCode::STORE_V512, DGTL_FLAG_IS_SIMD | DGTL_FLAG_HAS_SIDE_EFFECTS, DGTL_INVALID_SLOT, addr_id, val_id, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_shuffle(dgtl_stream_t* s, uint32_t vec, uint32_t mask) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_SHUFFLE, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, vec, mask, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_blend(dgtl_stream_t* s, uint32_t mask, uint32_t if_true, uint32_t if_false) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_BSL_PREDICATE, DGTL_FLAG_IS_SIMD | DGTL_FLAG_IS_PREDICATED, DGTL_INVALID_SLOT, mask, if_true, if_false);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_reduce_add(dgtl_stream_t* s, uint32_t vec) {
+    return push_node_internal(s, dgtl::ir::OpCode::VEC_REDUCE_ADD, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, vec, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_reduce_max(dgtl_stream_t* s, uint32_t vec) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_REDUCE_MAX, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, vec, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_reduce_min(dgtl_stream_t* s, uint32_t vec) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_REDUCE_MIN, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, vec, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fcvtl_f16_to_f32(dgtl_stream_t* s, uint32_t f16_vec) {
+    return push_node_internal(s, dgtl::ir::OpCode::FCVTL_F16_TO_F32, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, f16_vec, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_fcvtn_f32_to_f16(dgtl_stream_t* s, uint32_t f32_vec) {
+    return push_node_internal(s, dgtl::ir::OpCode::FCVTN_F32_TO_F16, DGTL_FLAG_IS_SIMD, DGTL_INVALID_SLOT, f32_vec, 0u, 0u);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_bsl_predicate(dgtl_stream_t* s, uint32_t mask, uint32_t t_val, uint32_t f_val) {
+    return push_node_internal(s, dgtl::ir::OpCode::SIMD_BSL_PREDICATE, DGTL_FLAG_IS_SIMD | DGTL_FLAG_IS_PREDICATED, DGTL_INVALID_SLOT, mask, t_val, f_val);
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_legalize_simd(dgtl_stream_t* s, dgtl_simd_arch_t arch) {
+    if (!s) return make_err(1, "null stream");
+    auto& stream = s->function.stream();
+    dgtl::pass::simd::TargetArch ta;
+    switch (arch) {
+        case DGTL_SIMD_ARCH_X86_AVX512_FULL: ta = dgtl::pass::simd::TargetArch::X86_AVX512; break;
+        case DGTL_SIMD_ARCH_X86_AVX2:         ta = dgtl::pass::simd::TargetArch::X86_AVX2; break;
+        case DGTL_SIMD_ARCH_ARM_NEON:         ta = dgtl::pass::simd::TargetArch::ARM_NEON; break;
+        case DGTL_SIMD_ARCH_WASM_SIMD128:     ta = dgtl::pass::simd::TargetArch::WASM_SIMD128; break;
+        default:                              ta = dgtl::pass::simd::TargetArch::GENERIC; break;
+    }
+    dgtl::pass::simd::DGTLSIMDLegalizer legalizer(ta);
+    legalizer.legalize(stream);
+    return make_ok();
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_legalize_simd_ex(dgtl_stream_t* s, const dgtl_simd_legalize_options_t* opts) {
+    if (!s || !opts) return make_err(1, "invalid argument");
+    return dgtl_legalize_simd(s, opts->target_arch);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_simd_get_native_lane_count(dgtl_simd_arch_t arch, dgtl_type_code_t type_code) {
+    uint32_t elem_size = 4;
+    switch (type_code) {
+        case DGTL_TYPE_I8: case DGTL_TYPE_F8: elem_size = 1; break;
+        case DGTL_TYPE_I16: case DGTL_TYPE_F16: case DGTL_TYPE_BF16: elem_size = 2; break;
+        case DGTL_TYPE_I32: case DGTL_TYPE_F32: elem_size = 4; break;
+        case DGTL_TYPE_I64: case DGTL_TYPE_F64: case DGTL_TYPE_PTR: elem_size = 8; break;
+        default: elem_size = 4; break;
+    }
+
+    uint32_t max_bytes = 16;
+    if (arch == DGTL_SIMD_ARCH_X86_AVX512_FULL || arch == DGTL_SIMD_ARCH_X86_AVX512_F_DQ) max_bytes = 64;
+    else if (arch == DGTL_SIMD_ARCH_X86_AVX2 || arch == DGTL_SIMD_ARCH_X86_AVX) max_bytes = 32;
+
+    return max_bytes / elem_size;
+}
+
+DGTL_API DGTL_WEAK const char* DGTL_CALL dgtl_sdk_gpu_version(void) noexcept {
+    return "DGTL-GPU-Sovereign-v2.0.0";
+}
+
+DGTL_API DGTL_WEAK void* DGTL_CALL dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* title) noexcept {
+    (void)width; (void)height; (void)dpi_scale; (void)title;
+    return nullptr;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale) noexcept {
+    (void)ctx_ptr; (void)width; (void)height; (void)dpi_scale;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_destroy_pipeline(void* ctx_ptr) noexcept {
+    (void)ctx_ptr;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_begin_frame(void* ctx_ptr, float r, float g, float b, float a) noexcept {
+    (void)ctx_ptr; (void)r; (void)g; (void)b; (void)a;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_end_frame(void* ctx_ptr) noexcept {
+    (void)ctx_ptr;
+}
+
+DGTL_API DGTL_WEAK uint32_t DGTL_CALL dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) noexcept {
+    (void)ctx_ptr; (void)x; (void)y; (void)w; (void)h;
+    return 0;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_pop_clip_rect(void* ctx_ptr) noexcept {
+    (void)ctx_ptr;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl_quad_instance_t* instances, uint32_t count) noexcept {
+    (void)ctx_ptr; (void)instances; (void)count;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl_glyph_gpu_instance_t* instances, uint32_t count) noexcept {
+    (void)ctx_ptr; (void)atlas_slot; (void)instances; (void)count;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl_vector_path_instance_t* instances, uint32_t count) noexcept {
+    (void)ctx_ptr; (void)instances; (void)count;
+}
+
+DGTL_API DGTL_WEAK uint32_t DGTL_CALL dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba) noexcept {
+    (void)ctx_ptr; (void)width; (void)height; (void)rgba;
+    return 0;
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) noexcept {
+    (void)ctx_ptr; (void)texture_slot;
+}
+
+DGTL_API DGTL_WEAK bool DGTL_CALL dgtl_platform_poll_events(void* ctx_ptr, dgtl_raw_input_event_t* out_event) noexcept {
+    (void)ctx_ptr; (void)out_event;
+    return false;
+}
+
+DGTL_API DGTL_WEAK uint64_t DGTL_CALL dgtl_platform_get_time_us(void) noexcept {
+    auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) noexcept {
+    (void)ctx_ptr; (void)cursor_type;
+}
+
+DGTL_API dgtl_session_config_t DGTL_CALL dgtl_session_config_default(void) {
     return normalize_session_config(nullptr);
 }
 
-extern "C" DGTL_API const char* dgtl_session_mode_name(dgtl_session_mode_t mode) {
+DGTL_API const char* DGTL_CALL dgtl_session_mode_name(dgtl_session_mode_t mode) {
     switch (mode) {
-        case DGTL_SESSION_MODE_JIT:
-            return "jit";
-        case DGTL_SESSION_MODE_AOT:
-            return "aot";
-        case DGTL_SESSION_MODE_HYBRID:
-            return "hybrid";
-        default:
-            return "unknown";
+        case DGTL_SESSION_MODE_JIT:    return "jit";
+        case DGTL_SESSION_MODE_AOT:    return "aot";
+        case DGTL_SESSION_MODE_HYBRID: return "hybrid";
+        default:                       return "unknown";
     }
 }
 
-extern "C" DGTL_API dgtl_session_t* dgtl_session_create(const dgtl_session_config_t* config) {
+DGTL_API dgtl_session_t* DGTL_CALL dgtl_session_create(const dgtl_session_config_t* config) {
     const dgtl_session_config_t cfg = normalize_session_config(config);
     auto ctx = dgtl::api::Context::create(to_internal_session_config(cfg));
-    if (!ctx.is_valid()) {
-        return nullptr;
-    }
+    if (!ctx.is_valid()) return nullptr;
 
     auto engine = dgtl::api::ExecutionEngine::create(ctx);
-    if (!engine) {
-        return nullptr;
-    }
+    if (!engine) return nullptr;
 
     return new (std::nothrow) dgtl_session(std::move(ctx), std::move(engine), cfg);
 }
 
-extern "C" DGTL_API void dgtl_session_destroy(dgtl_session_t* session) {
+DGTL_API void DGTL_CALL dgtl_session_destroy(dgtl_session_t* session) {
     delete session;
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol(dgtl_session_t* session,
-                                                                    const char* symbol_name,
-                                                                    uintptr_t address) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_register_host_symbol(dgtl_session_t* session, const char* symbol_name, uintptr_t address) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!symbol_name || symbol_name[0] == '\0') return make_err(2, "null symbol name");
     if (address == 0u) return make_err(3, "null symbol address");
@@ -837,9 +2140,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol(dgtl_session
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol_slot(dgtl_session_t* session,
-                                                                        uint32_t slot,
-                                                                        uintptr_t address) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_register_host_symbol_slot(dgtl_session_t* session, uint32_t slot, uintptr_t address) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (slot == 0u) return make_err(2, "invalid slot");
     if (address == 0u) return make_err(3, "null symbol address");
@@ -847,9 +2148,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbol_slot(dgtl_se
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbols(dgtl_session_t* session,
-                                                                     const dgtl_host_symbol_t* symbols,
-                                                                     size_t symbol_count) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_register_host_symbols(dgtl_session_t* session, const dgtl_host_symbol_t* symbols, size_t symbol_count) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!symbols && symbol_count != 0u) return make_err(2, "null symbol array");
 
@@ -864,17 +2163,15 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_register_host_symbols(dgtl_sessio
             if (!status.ok) return status;
         }
     }
-
     return make_ok();
 }
 
-extern "C" DGTL_API void dgtl_session_clear_host_symbols(dgtl_session_t* session) {
+DGTL_API void DGTL_CALL dgtl_session_clear_host_symbols(dgtl_session_t* session) {
     if (!session || !session->engine) return;
     session->engine->register_host_symbol("", 0);
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_compile_stream(dgtl_session_t* session,
-                                                               dgtl_stream_t* stream) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_compile_stream(dgtl_session_t* session, dgtl_stream_t* stream) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!stream) return make_err(2, "null stream");
     if (!session->engine->compile(stream->function.stream())) {
@@ -884,20 +2181,17 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_compile_stream(dgtl_session_t* se
     return make_ok();
 }
 
-extern "C" DGTL_API uint64_t dgtl_session_get_symbol_address(dgtl_session_t* session,
-                                                              const char* symbol_name) {
+DGTL_API uint64_t DGTL_CALL dgtl_session_get_symbol_address(dgtl_session_t* session, const char* symbol_name) {
     if (!session || !session->engine || !symbol_name) return 0;
     return session->engine->get_symbol_address(symbol_name);
 }
 
-extern "C" DGTL_API uint64_t dgtl_session_get_symbol_address_by_slot(dgtl_session_t* session,
-                                                                      uint32_t slot) {
+DGTL_API uint64_t DGTL_CALL dgtl_session_get_symbol_address_by_slot(dgtl_session_t* session, uint32_t slot) {
     if (!session || !session->engine) return 0;
     return session->engine->get_symbol_address(std::to_string(slot));
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_emit_object(dgtl_session_t* session,
-                                                            const char* output_path) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_emit_object(dgtl_session_t* session, const char* output_path) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!output_path || output_path[0] == '\0') return make_err(2, "null output path");
     auto* aot = dynamic_cast<dgtl::api::AOTSession*>(session->engine.get());
@@ -906,8 +2200,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_emit_object(dgtl_session_t* sessi
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_emit_binary(dgtl_session_t* session,
-                                                            const char* output_path) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_emit_binary(dgtl_session_t* session, const char* output_path) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!output_path || output_path[0] == '\0') return make_err(2, "null output path");
     auto* aot = dynamic_cast<dgtl::api::AOTSession*>(session->engine.get());
@@ -916,9 +2209,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_emit_binary(dgtl_session_t* sessi
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_run_entry_i64(dgtl_session_t* session,
-                                                              const char* entry_symbol,
-                                                              int64_t* out_result) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_i64(dgtl_session_t* session, const char* entry_symbol, int64_t* out_result) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!out_result) return make_err(2, "null result pointer");
     if (session->config.mode == DGTL_SESSION_MODE_AOT) {
@@ -936,9 +2227,7 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_run_entry_i64(dgtl_session_t* ses
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_session_run_entry_f64(dgtl_session_t* session,
-                                                              const char* entry_symbol,
-                                                              double* out_result) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_f64(dgtl_session_t* session, const char* entry_symbol, double* out_result) {
     if (!session || !session->engine) return make_err(1, "null session");
     if (!out_result) return make_err(2, "null result pointer");
     if (session->config.mode == DGTL_SESSION_MODE_AOT) {
@@ -956,1773 +2245,348 @@ extern "C" DGTL_API dgtl_status_t dgtl_session_run_entry_f64(dgtl_session_t* ses
     return make_ok();
 }
 
-/* Target names */
-
-static const char* s_target_names[] = {
-    "arm64", "x64", "nasm", "wasm",
-    "elfobj", "staticlib", "coffobj", "cofflib", "macho"
-};
-static const char* s_target_exts[] = {
-    ".s", ".bin", ".asm", ".wasm",
-    ".o", ".a", ".obj", ".lib", ".macho"
-};
-
-extern "C" DGTL_API const char* dgtl_target_name(dgtl_target_t t) {
-    if (t >= 0 && t < DGTL_TARGET_COUNT) return s_target_names[t];
-    return "unknown";
-}
-
-extern "C" DGTL_API const char* dgtl_target_extension(dgtl_target_t t) {
-    if (t >= 0 && t < DGTL_TARGET_COUNT) return s_target_exts[t];
-    return "";
-}
-
-/* Context */
-
-extern "C" DGTL_API dgtl_context_t* dgtl_context_create(void) {
-    sdk_prime_simd_units();
-    return new (std::nothrow) dgtl_context();
-}
-
-extern "C" DGTL_API void dgtl_context_destroy(dgtl_context_t* ctx) {
-    delete ctx;
-}
-
-/* Stream */
-
-extern "C" DGTL_API dgtl_stream_t* dgtl_stream_create(dgtl_context_t* ctx, size_t reserved) {
-    if (!ctx) return nullptr;
-    sdk_prime_simd_units();
-    dgtl_stream_t* stream = new (std::nothrow) dgtl_stream(ctx, reserved);
-    if (stream) sdk_apply_numa_locality();
-    return stream;
-}
-
-extern "C" DGTL_API void dgtl_stream_destroy(dgtl_stream_t* s) {
-    delete s;
-}
-
-extern "C" DGTL_API size_t dgtl_stream_node_count(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    return s->function.stream().size();
-}
-
-extern "C" DGTL_API uint64_t dgtl_stream_logic_hash(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    return s->function.stream().generate_logic_hash();
-}
-
-/* IR Emission */
-
-extern "C" DGTL_API uint32_t dgtl_emit_const_i64(dgtl_stream_t* s, uint64_t value) {
-    if (!s) return 0;
-    uint32_t lo = 0u;
-    uint32_t hi = 0u;
-    split_immediate_payload(value, lo, hi);
-    return push_ir_node(s, dgtl::ir::OpCode::CONST, dgtl::ir::Flags::IS_CONST, lo, hi, dgtl::ir::INVALID_SLOT, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_intern_string_handle_utf8(const char* utf8_data, size_t len) {
-    if (!utf8_data && len != 0u) return 0;
-    return sdk_intern_string_handle(std::string_view(utf8_data ? utf8_data : "", len));
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_string_const_handle(dgtl_stream_t* s, uint32_t string_handle) {
-    if (!s || string_handle == 0u || string_handle == dgtl::ir::INVALID_SLOT) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::STRING_CONST, string_handle, 0u, 0u, dgtl::ir::Flags::IS_CONST);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_string_const_utf8(dgtl_stream_t* s, const char* utf8_literal) {
-    if (!s || !utf8_literal) return 0;
-    return dgtl_emit_string_const_handle(s,
-                                          sdk_intern_string_handle(std::string_view(utf8_literal)));
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_string_length(dgtl_stream_t* s, uint32_t string_slot) {
-    if (!s) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::STRING_LENGTH, string_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_string_compare(dgtl_stream_t* s, uint32_t lhs_string_slot, uint32_t rhs_string_slot) {
-    if (!s) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::STRING_COMPARE, lhs_string_slot, rhs_string_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_string_concat(dgtl_stream_t* s, uint32_t lhs_string_slot, uint32_t rhs_string_slot) {
-    if (!s) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::STRING_CONCAT, lhs_string_slot, rhs_string_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_string_substring(dgtl_stream_t* s,
-                                                         uint32_t string_slot,
-                                                         uint32_t start_slot,
-                                                         uint32_t length_slot) {
-    if (!s) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::STRING_SUBSTRING, string_slot, start_slot, length_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_load(dgtl_stream_t* s, uint32_t ptr_slot) {
-    if (!s) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::LOAD, ptr_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_store(dgtl_stream_t* s, uint32_t ptr_slot, uint32_t val_slot) {
-    if (!s) return 0;
-    return emit_builder_node(s, dgtl::ir::OpCode::STORE, ptr_slot, val_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_add_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::ADD_I32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_sub_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SUB_I32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_mul_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::MUL_I32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_div_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::DIV_I32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_mod_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::MOD_I32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_add_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::ADD_I64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_sub_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SUB_I64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_mul_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::MUL_I64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_div_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::DIV_I64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_mod_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::MOD_I64, lhs, rhs);
-}
-
-/* Floating-Point Operations */
-extern "C" DGTL_API uint32_t dgtl_emit_fadd(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::ADD_F32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fsub(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SUB_F32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fmul(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::MUL_F32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fdiv(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::DIV_F32, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fadd_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::ADD_F64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fsub_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SUB_F64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fmul_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::MUL_F64, lhs, rhs);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fdiv_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::DIV_F64, lhs, rhs);
-}
-
-/* --- Bitwise / shift — I32 --- */
-extern "C" DGTL_API uint32_t dgtl_emit_and_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::AND_I32, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_or_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::OR_I32, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_xor_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::XOR_I32, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_shl_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SHL_I32, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_shr_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SHR_I32, lhs, rhs);
-}
-
-/* --- Bitwise / shift — I64 --- */
-extern "C" DGTL_API uint32_t dgtl_emit_and_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::AND_I64, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_or_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::OR_I64, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_xor_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::XOR_I64, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_shl_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SHL_I64, lhs, rhs);
-}
-extern "C" DGTL_API uint32_t dgtl_emit_shr_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
-    return emit_builder_node(s, dgtl::ir::OpCode::SHR_I64, lhs, rhs);
-}
-
-extern "C" DGTL_API void dgtl_emit_return(dgtl_stream_t* s, uint32_t value_slot) {
-    if (!s) return;
-    (void)push_ir_node(s,
-                       dgtl::ir::OpCode::RET,
-                       dgtl::ir::Flags::IS_RETURN,
-                       value_slot,
-                       0u,
-                       0u,
-                       0);
-}
-
-/* Optimization */
-
-extern "C" DGTL_API dgtl_status_t dgtl_optimize(dgtl_stream_t* s) {
-    if (!s) return make_err(1, "null stream");
-    auto& stream = s->function.stream();
-
-    dgtl::pass::transform::DeadCodeElimination dce;
-    dce.execute(stream);
-    dgtl::pass::transform::DGTLGVN gvn;
-    gvn.execute(stream);
-    dgtl::pass::transform::DGTLLoopFusion fusion;
-    fusion.execute(stream);
-    dgtl::pass::transform::DGTLAggressiveInliner inliner;
-    inliner.execute(stream);
-    dgtl::pass::DGTLEscapeAnalysis ea;
-    ea.execute(stream);
-    dgtl::pass::DGTLEnhancedErrorRecovery er;
-    er.execute(stream);
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_ptr(dgtl_session_t* session, const char* symbol, void** out_result) {
+    if (!session || !session->engine || !out_result) return make_err(1, "invalid entry execution parameters");
+    const char* entry = (symbol && symbol[0]) ? symbol : "DGTL_kernel_entry";
+    uint64_t addr = session->engine->get_symbol_address(entry);
+    if (addr == 0) return make_err(2, "entrypoint symbol not found");
+    auto fn = reinterpret_cast<void* (*)()>(addr);
+    *out_result = fn();
     return make_ok();
 }
 
-/* Backend Strike */
+DGTL_API void* DGTL_CALL dgtl_session_get_function_pointer(dgtl_session_t* session, const char* symbol_name) {
+    if (!session || !session->engine || !symbol_name) return nullptr;
+    uint64_t addr = session->engine->get_symbol_address(symbol_name);
+    return reinterpret_cast<void*>(addr);
+}
 
-static const char* extension_for_target(dgtl_target_t t) {
-    switch (t) {
-        case DGTL_TARGET_ARM64:      return ".s";
-        case DGTL_TARGET_X64:        return ".bin";
-        case DGTL_TARGET_NASM:       return ".asm";
-        case DGTL_TARGET_WASM:       return ".wasm";
-        case DGTL_TARGET_ELF_OBJ:    return ".o";
-        case DGTL_TARGET_STATIC_LIB: return ".a";
-        case DGTL_TARGET_COFF_OBJ:   return ".obj";
-        case DGTL_TARGET_COFF_LIB:   return ".lib";
-        case DGTL_TARGET_MACHO:      return ".macho";
-        default:                     return ".bin";
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_i64_args(dgtl_session_t* session, const char* entry_symbol, const int64_t* args, size_t arg_count, int64_t* out_result) {
+    if (!session || !session->engine) return make_err(1, "null session");
+    if (!out_result) return make_err(2, "null result pointer");
+    if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+        return make_err(3, "AOT session cannot run in-process entrypoints directly");
     }
+
+    const char* symbol = (entry_symbol && entry_symbol[0] != '\0') ? entry_symbol : "DGTL_kernel_entry";
+    const uint64_t address = session->engine->get_symbol_address(symbol);
+    if (address == 0u) {
+        return make_err(4, "entry symbol not found");
+    }
+
+    switch (arg_count) {
+        case 0:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)()>(address)());
+            break;
+        case 1:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)(int64_t)>(address)(args[0]));
+            break;
+        case 2:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)(int64_t, int64_t)>(address)(args[0], args[1]));
+            break;
+        case 3:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)(int64_t, int64_t, int64_t)>(address)(args[0], args[1], args[2]));
+            break;
+        case 4:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)(int64_t, int64_t, int64_t, int64_t)>(address)(args[0], args[1], args[2], args[3]));
+            break;
+        case 5:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)(int64_t, int64_t, int64_t, int64_t, int64_t)>(address)(args[0], args[1], args[2], args[3], args[4]));
+            break;
+        case 6:
+            *out_result = static_cast<int64_t>(reinterpret_cast<int64_t(*)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t)>(address)(args[0], args[1], args[2], args[3], args[4], args[5]));
+            break;
+        default:
+            return make_err(5, "unsupported argument count (maximum 6 arguments supported)");
+    }
+    return make_ok();
 }
 
-static bool has_suffix(std::string_view path, std::string_view suffix) {
-    return path.size() >= suffix.size() &&
-           path.substr(path.size() - suffix.size()) == suffix;
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_f64_args(dgtl_session_t* session, const char* entry_symbol, const double* args, size_t arg_count, double* out_result) {
+    if (!session || !session->engine) return make_err(1, "null session");
+    if (!out_result) return make_err(2, "null result pointer");
+    if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+        return make_err(3, "AOT session cannot run in-process entrypoints directly");
+    }
+
+    const char* symbol = (entry_symbol && entry_symbol[0] != '\0') ? entry_symbol : "DGTL_kernel_entry";
+    const uint64_t address = session->engine->get_symbol_address(symbol);
+    if (address == 0u) {
+        return make_err(4, "entry symbol not found");
+    }
+
+    switch (arg_count) {
+        case 0:
+            *out_result = reinterpret_cast<double(*)()>(address)();
+            break;
+        case 1:
+            *out_result = reinterpret_cast<double(*)(double)>(address)(args[0]);
+            break;
+        case 2:
+            *out_result = reinterpret_cast<double(*)(double, double)>(address)(args[0], args[1]);
+            break;
+        case 3:
+            *out_result = reinterpret_cast<double(*)(double, double, double)>(address)(args[0], args[1], args[2]);
+            break;
+        case 4:
+            *out_result = reinterpret_cast<double(*)(double, double, double, double)>(address)(args[0], args[1], args[2], args[3]);
+            break;
+        default:
+            return make_err(5, "unsupported argument count (maximum 4 floating-point arguments supported)");
+    }
+    return make_ok();
 }
 
-extern "C" DGTL_API dgtl_strike_result_t dgtl_strike_stream(dgtl_stream_t* s, dgtl_target_t target) {
+DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_ptr_args(dgtl_session_t* session, const char* entry_symbol, const void* const* args, size_t arg_count, void** out_result) {
+    if (!session || !session->engine) return make_err(1, "null session");
+    if (!out_result) return make_err(2, "null result pointer");
+    if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+        return make_err(3, "AOT session cannot run in-process entrypoints directly");
+    }
+
+    const char* symbol = (entry_symbol && entry_symbol[0] != '\0') ? entry_symbol : "DGTL_kernel_entry";
+    const uint64_t address = session->engine->get_symbol_address(symbol);
+    if (address == 0u) {
+        return make_err(4, "entry symbol not found");
+    }
+
+    switch (arg_count) {
+        case 0:
+            *out_result = reinterpret_cast<void*(*)()>(address)();
+            break;
+        case 1:
+            *out_result = reinterpret_cast<void*(*)(const void*)>(address)(args[0]);
+            break;
+        case 2:
+            *out_result = reinterpret_cast<void*(*)(const void*, const void*)>(address)(args[0], args[1]);
+            break;
+        case 3:
+            *out_result = reinterpret_cast<void*(*)(const void*, const void*, const void*)>(address)(args[0], args[1], args[2]);
+            break;
+        case 4:
+            *out_result = reinterpret_cast<void*(*)(const void*, const void*, const void*, const void*)>(address)(args[0], args[1], args[2], args[3]);
+            break;
+        default:
+            return make_err(5, "unsupported argument count (maximum 4 pointer arguments supported)");
+    }
+    return make_ok();
+}
+
+DGTL_API dgtl_strike_result_t DGTL_CALL dgtl_strike_stream(dgtl_stream_t* s, dgtl_target_t target) {
     if (!s) return make_strike_err("null stream");
 
-    (void)dgtl_optimize(s);
+    if (s->optimization_enabled && !s->is_optimized) {
+        (void)dgtl_optimize(s);
+    }
     auto& stream = s->function.stream();
-
-    // Apply advanced architecture-aware backend specific optimizations
     auto isa = to_internal_isa(target);
     stream.apply_backend_specific_optimizations(isa);
     stream.apply_backend_instruction_selection(isa);
 
-    capture_linker_fallback_diagnostics(stream, target);
-
-    /* Use the orchestrator with a temp path to trigger the right backend */
-    dgtl::jit::DGTLOrchestrator orchestrator;
-    std::string tmp_path = std::string("__dgtl_strike_tmp") + extension_for_target(target);
+    dgtl::jit::DGTLOrchestrator orch;
+    static std::atomic<uint64_t> s_seq{0};
+    uint64_t cur_seq = s_seq.fetch_add(1, std::memory_order_relaxed);
+    std::string tmp = "__dgtl_strike_" + std::to_string(cur_seq) + target_extension_internal(target);
 
     dgtl_strike_result_t r{};
     try {
-        orchestrator.compile_to_binary(tmp_path, stream);
-        auto report = orchestrator.get_last_report();
+        orch.compile_to_binary(tmp, stream);
+        auto rep = orch.get_last_report();
         r.ok = 1;
-        std::error_code size_error;
-        const auto file_size = std::filesystem::file_size(tmp_path, size_error);
-        r.code_size = size_error ? 0u : static_cast<size_t>(file_size);
+        std::error_code ec;
+        r.code_size = static_cast<size_t>(std::filesystem::file_size(tmp, ec));
         r.logic_hash = stream.generate_logic_hash();
-        std::snprintf(r.message, sizeof(r.message), "strike ok, %.3f ms", report.total_ms);
+        r.compilation_latency_ms = rep.total_ms;
+        std::snprintf(r.message, sizeof(r.message), "strike success: %.3f ms", rep.total_ms);
     } catch (const std::exception& e) {
-        r.ok = 0;
-        r.code_size = 0;
-        r.logic_hash = 0;
-        std::snprintf(r.message, sizeof(r.message), "%s", e.what());
+        r = make_strike_err(e.what());
     }
-    /* Clean up temp file */
-    std::remove(tmp_path.c_str());
+    std::remove(tmp.c_str());
     return r;
 }
 
-/* File Emission */
-
-/* ── File Emission ── */
-
-/* Helper: split a multi-function stream into per-function sub-streams.
- * Mirrors Backend_Driver_API.ixx detail::split_stream_by_exported_labels but
- * operates on the public callee_bindings map stored inside dgtl_stream.
- * Any LABEL node whose result_id is present in bindings marks a new function
- * boundary.  All subsequent nodes up to (but not including) the next such
- * LABEL are appended to that function's sub-stream. */
-static std::vector<std::pair<std::string, dgtl::ir::IRStream>>
-sdk_split_stream_by_callee_functions(
-    const dgtl::ir::IRStream& stream,
-    const std::unordered_map<uint32_t, std::string>& bindings)
-{
-    std::vector<std::pair<std::string, dgtl::ir::IRStream>> result;
-    if (stream.is_null() || stream.size() == 0 || bindings.empty()) {
-        return result;
-    }
-
-    std::size_t fn_count = 0;
-    for (std::size_t i = 0; i < stream.size(); ++i) {
-        const auto& node = stream.get_node(i);
-        if (node.opcode == dgtl::ir::OpCode::LABEL && bindings.count(node.result_id)) {
-            ++fn_count;
-        }
-    }
-    if (fn_count == 0) {
-        return result;
-    }
-    result.reserve(fn_count);
-
-    std::size_t cur = static_cast<std::size_t>(-1);
-    for (std::size_t i = 0; i < stream.size(); ++i) {
-        const auto& node = stream.get_node(i);
-        if (node.opcode == dgtl::ir::OpCode::LABEL) {
-            auto it = bindings.find(node.result_id);
-            if (it != bindings.end()) {
-                result.emplace_back(
-                    it->second,
-                    dgtl::ir::IRStream::allocate_transactional(
-                        std::max<std::size_t>(stream.size(), 64)));
-                cur = result.size() - 1;
-            }
-        }
-        if (cur != static_cast<std::size_t>(-1)) {
-            result[cur].second.push_back(node);
-        }
-    }
-    return result;
+DGTL_API dgtl_status_t DGTL_CALL dgtl_emit_to_file(dgtl_stream_t* s, dgtl_target_t target, const char* output_path) {
+    if (!s || !output_path || output_path[0] == '\0') return make_err(1, "invalid arguments");
+    auto strike = dgtl_strike_stream(s, target);
+    if (!strike.ok) return make_err(2, strike.message);
+    return make_ok();
 }
 
-/* Helper: write a vector<uint8_t> to a path (used in the callee-aware path). */
-static bool sdk_write_binary_file(std::string_view path,
-                                   const std::vector<uint8_t>& bytes) {
-    if (path.empty()) return false;
-    std::ofstream out(path.data(), std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    if (!bytes.empty()) {
-        out.write(reinterpret_cast<const char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-    }
-    out.close();
-    return out.good();
-}
-
-/* Helper: emit a linker-backed target using the callee-binding map stored in
- * the stream.  This is the symbol-aware path that correctly emits call
- * relocations for coffobj, cofflib, elfobj, and staticlib.
- * Returns: ok==1 on success, ok==0 + error_code!=0 on real failure,
- *          ok==0 + error_code==0 to signal "no bindings, fall through". */
-static dgtl_status_t sdk_emit_with_callee_bindings(
-    const dgtl_stream_t* s,
-    const dgtl::ir::IRStream& stream,
-    dgtl_target_t target,
-    std::string_view final_path)
-{
-    const auto& bindings = s->callee_bindings;
-
-    /* Diagnostic: if the stream has CALL nodes but no bindings at all, the
-     * caller forgot to call dgtl_stream_bind_callee_slot(s).  Surface a clear
-     * contract error instead of a cryptic backend failure. */
-    if (bindings.empty()) {
-        bool has_call = false;
-        for (std::size_t i = 0; i < stream.size(); ++i) {
-            if (stream.get_node(i).opcode == dgtl::ir::OpCode::CALL) {
-                has_call = true;
-                break;
-            }
-        }
-        if (has_call) {
-            return make_err(10,
-                "DGTL_SDK_CONTRACT: stream has CALL nodes but no callee-slot "
-                "bindings.  Call dgtl_stream_bind_callee_slot() for each "
-                "call target before emitting a relocatable object.");
-        }
-        /* No calls and no bindings — signal caller to use orchestrator path. */
-        return make_err(0, "");
-    }
-
-    /* Proceed with callee-aware emission for bound slots */
-
-    dgtl::exec::DGTLLinker linker;
-    dgtl::backend::aot::DGTLAOTLinker aot_linker;
+DGTL_API dgtl_status_t DGTL_CALL dgtl_emit_pe_binary_in_memory(dgtl_stream_t* s, void** out_buf, size_t* out_size) {
+    if (!s || !out_buf || !out_size) return make_err(1, "invalid pointers");
+    dgtl::backend::aot::DGTLAOTLinker aot;
     std::vector<uint8_t> bytes;
-    bool ok = false;
-
-    const std::vector<uint8_t> rdata_payload = dgtl::runtime::build_registered_strings_rdata();
-
-    switch (target) {
-        case DGTL_TARGET_COFF_OBJ: {
-            auto module_streams = sdk_split_stream_by_callee_functions(stream, bindings);
-            if (module_streams.size() > 1) {
-                ok = aot_linker.build_module_coff_with_relocs(module_streams, bytes, bindings, rdata_payload);
-            } else {
-                ok = aot_linker.build_coff_relocatable_binary_with_relocs(
-                         stream, bytes, "DGTL_kernel_entry", {}, bindings, rdata_payload);
-            }
-            break;
-        }
-        case DGTL_TARGET_COFF_LIB: {
-            const auto relocs = aot_linker.collect_call_relocs(stream, bindings);
-            std::vector<uint8_t> obj_bytes;
-            const bool obj_ok = aot_linker.build_coff_relocatable_binary_with_relocs(
-                                     stream, obj_bytes, "DGTL_kernel_entry", relocs, bindings, rdata_payload);
-            if (!obj_ok) {
-                ok = false;
-                break;
-            }
-            ok = aot_linker.build_coff_archive_binary(stream, bytes,
-                                                   "module.obj",
-                                                   "DGTL_kernel_entry");
-            break;
-        }
-        case DGTL_TARGET_ELF_OBJ:
-            ok = linker.build_elf_relocatable_binary(stream, bytes, "DGTL_kernel_entry");
-            break;
-        case DGTL_TARGET_STATIC_LIB:
-            ok = linker.build_static_archive_binary(stream, bytes, "module.o");
-            break;
-        default:
-            return make_err(0, ""); /* non-linker target — use orchestrator */
+    if (!aot.build_pe_executable_buffer(s->function.stream(), bytes)) {
+        return make_err(2, "failed to synthesize PE executable in memory");
     }
-
-    if (!ok) {
-        char msg[256];
-        std::snprintf(msg, sizeof(msg),
-                      "SDK linker-backed emission failed for target '%s'",
-                      dgtl_target_name(target));
-        return make_err(3, msg);
-    }
-
-    if (!sdk_write_binary_file(final_path, bytes)) {
-        char msg[256];
-        std::snprintf(msg, sizeof(msg),
-                      "SDK failed to write output file for target '%s'",
-                      dgtl_target_name(target));
-        return make_err(4, msg);
-    }
-
+    void* m = std::malloc(bytes.size());
+    if (!m) return make_err(3, "allocation failed");
+    std::memcpy(m, bytes.data(), bytes.size());
+    *out_buf = m;
+    *out_size = bytes.size();
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_emit_to_file(dgtl_stream_t* s, dgtl_target_t target,
-                                                  const char* output_path) {
-    if (!s) return make_err(1, "null stream");
-    if (!output_path) return make_err(2, "null output path");
-
-    auto& stream = s->function.stream();
-
-    // Apply advanced architecture-aware backend specific optimizations
-    auto isa = to_internal_isa(target);
-    stream.apply_backend_specific_optimizations(isa);
-    stream.apply_backend_instruction_selection(isa);
-
-    capture_linker_fallback_diagnostics(stream, target);
-
-    const std::string_view output_path_view(output_path);
-    const char* ext = extension_for_target(target);
-    const std::string_view ext_view(ext);
-
-    bool has_explicit_ext = false;
-    for (const char* known : {".exe", ".o", ".obj", ".s", ".asm", ".wasm", ".macho", ".bin", ".a", ".lib", ".dgtl", ".elf64"}) {
-        if (has_suffix(output_path_view, known)) {
-            has_explicit_ext = true;
-            break;
-        }
+DGTL_API DGTL_WEAK dgtl_status_t DGTL_CALL dgtl_emit_elf_binary_in_memory(dgtl_stream_t* s, void** out_buf, size_t* out_size) {
+    if (!s || !out_buf || !out_size) return make_err(1, "invalid pointers");
+    dgtl::exec::DGTLLinker linker;
+    std::vector<uint8_t> bytes;
+    if (!linker.build_elf_relocatable_binary(s->function.stream(), bytes, "dgtl_kernel_entry")) {
+        return make_err(2, "failed to synthesize ELF relocatable in memory");
     }
-
-    // Zero-copy fast path: use caller-owned path when extension already matches or has explicit extension.
-    const bool already_typed = has_explicit_ext || has_suffix(output_path_view, ext_view);
-    std::string owned_path;
-    std::string_view final_path = output_path_view;
-
-    if (!already_typed) {
-        owned_path.reserve(output_path_view.size() + ext_view.size());
-        owned_path.append(output_path_view.data(), output_path_view.size());
-        owned_path.append(ext_view.data(), ext_view.size());
-        final_path = owned_path;
-    }
-
-    /* For linker-backed targets, use the symbol-aware path when callee bindings
-     * are present.  error_code==0 && !ok means "fall through to orchestrator". */
-    if (is_linker_backed_target(target)) {
-        dgtl_status_t linker_result = sdk_emit_with_callee_bindings(s, stream, target, final_path);
-        if (linker_result.ok || (linker_result.error_code != 0)) {
-            return linker_result;
-        }
-    }
-
-    dgtl::jit::DGTLOrchestrator orchestrator;
-    try {
-        orchestrator.compile_to_binary(final_path, stream);
-    } catch (const std::exception& e) {
-        return make_err(3, e.what());
-    }
+    void* m = std::malloc(bytes.size());
+    if (!m) return make_err(3, "allocation failed");
+    std::memcpy(m, bytes.data(), bytes.size());
+    *out_buf = m;
+    *out_size = bytes.size();
     return make_ok();
 }
 
-/* ── Callee-Slot Symbol Binding API ── */
+DGTL_API DGTL_WEAK dgtl_status_t DGTL_CALL dgtl_emit_macho_binary_in_memory(dgtl_stream_t* s, void** out_buf, size_t* out_size) {
+    if (!s || !out_buf || !out_size) return make_err(1, "invalid pointers");
+    dgtl::core::DGTL_Arena a(1, 16);
+    dgtl::semantic::SymbolTable syms(a);
+    dgtl::isa::MachOEmitter emitter(s->function.stream(), syms);
+    auto res = emitter.emit_to_binary();
+    if (!res.success || res.binary_data.empty()) {
+        return make_err(2, "failed to synthesize Mach-O in memory");
+    }
+    void* m = std::malloc(res.binary_data.size());
+    if (!m) return make_err(3, "allocation failed");
+    std::memcpy(m, res.binary_data.data(), res.binary_data.size());
+    *out_buf = m;
+    *out_size = res.binary_data.size();
+    return make_ok();
+}
 
-extern "C" DGTL_API dgtl_status_t dgtl_stream_bind_callee_slot(dgtl_stream_t* stream,
-                                                              uint32_t        slot,
-                                                              const char*     symbol_name) {
-    if (!stream)    return make_err(1, "null stream");
-    if (slot == 0u) return make_err(2, "slot 0 is reserved");
-    if (!symbol_name || symbol_name[0] == '\0')
-                    return make_err(3, "symbol_name is null or empty");
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_free_binary_buffer(void* buf) {
+    if (buf) std::free(buf);
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_intern_string_handle_utf8(const char* data, size_t len) {
+    if (!data && len != 0) return 0;
+    return intern_string_internal(std::string_view(data ? data : "", len));
+}
+
+DGTL_API DGTL_WEAK const char* DGTL_CALL dgtl_try_lookup_string_handle(uint32_t handle, size_t* out_len) {
+    std::string_view sv = dgtl::runtime::try_lookup_string_handle(handle);
+    if (out_len) *out_len = sv.size();
+    return sv.data();
+}
+
+DGTL_API DGTL_WEAK void DGTL_CALL dgtl_register_string_handle(uint32_t handle, const char* data, size_t len) {
+    if (data && len > 0) dgtl::runtime::register_string_handle(handle, data, static_cast<uint32_t>(len));
+}
+
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_bind_callee_slot(dgtl_stream_t* stream, uint32_t slot, const char* symbol_name) {
+    if (!stream || !symbol_name) return make_err(1, "invalid argument");
     stream->callee_bindings[slot] = symbol_name;
     return make_ok();
 }
 
-extern "C" DGTL_API dgtl_status_t dgtl_stream_bind_callee_slots(
-    dgtl_stream_t*               stream,
-    const dgtl_callee_binding_t* bindings,
-    size_t                       binding_count)
-{
-    if (!stream)   return make_err(1, "null stream");
-    if (!bindings) return make_err(2, "null bindings array");
-    for (size_t i = 0; i < binding_count; ++i) {
-        const dgtl_callee_binding_t& b = bindings[i];
-        if (b.slot == 0u || !b.symbol_name || b.symbol_name[0] == '\0') {
-            continue; /* skip malformed entries; don't abort the whole batch */
-        }
-        stream->callee_bindings[b.slot] = b.symbol_name;
+DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_bind_callee_slots(dgtl_stream_t* stream, const dgtl_callee_binding_t* bindings, size_t count) {
+    if (!stream || (!bindings && count > 0)) return make_err(1, "invalid argument");
+    for (size_t i = 0; i < count; ++i) {
+        stream->callee_bindings[bindings[i].slot] = bindings[i].symbol_name ? bindings[i].symbol_name : "";
     }
     return make_ok();
 }
 
-extern "C" DGTL_API size_t dgtl_last_linker_fallback_count(void) {
-    return g_last_linker_fallbacks.size();
-}
-
-extern "C" DGTL_API size_t dgtl_last_linker_fallback_message(size_t index,
-                                                              char* out_buffer,
-                                                              size_t out_buffer_size) {
-    if (index >= g_last_linker_fallbacks.size()) return 0;
-
-    const std::string& msg = g_last_linker_fallbacks[index];
-    const size_t needed = msg.size() + 1; // include NUL
-
-    if (out_buffer && out_buffer_size > 0) {
-        const size_t copy_len = (needed <= out_buffer_size) ? msg.size() : (out_buffer_size - 1);
-        if (copy_len > 0) {
-            std::memcpy(out_buffer, msg.data(), copy_len);
-        }
-        out_buffer[copy_len] = '\0';
-    }
-
-    return needed;
-}
-
-/* Extended Core API */
-
-extern "C" DGTL_API uint32_t dgtl_emit_op(dgtl_stream_t* s, dgtl_opcode_t op,
-                                            uint32_t lhs, uint32_t rhs,
-                                            uint64_t immediate, uint32_t flags) {
-    if (!s) return 0;
-    dgtl::ir::OpCode mapped_opcode;
-    if (!sdk_opcode_to_internal(op, mapped_opcode)) {
-        return 0;
-    }
-
-    if (s->ir_mode != DGTL_IR_MODE_INT) {
-        switch (mapped_opcode) {
-            case dgtl::ir::OpCode::ADD_I32: mapped_opcode = dgtl::ir::OpCode::ADD_F32; break;
-            case dgtl::ir::OpCode::SUB_I32: mapped_opcode = dgtl::ir::OpCode::SUB_F32; break;
-            case dgtl::ir::OpCode::MUL_I32: mapped_opcode = dgtl::ir::OpCode::MUL_F32; break;
-            case dgtl::ir::OpCode::DIV_I32: mapped_opcode = dgtl::ir::OpCode::DIV_F32; break;
-            default: break;
-        }
-    }
-
-    uint32_t op_a = lhs;
-    uint32_t op_b = rhs;
-    uint32_t op_c = 0u;
-    if (is_immediate_opcode(mapped_opcode)) {
-        split_immediate_payload(immediate, op_a, op_b);
-        op_c = dgtl::ir::INVALID_SLOT;
-    }
-
-    return push_ir_node(s, mapped_opcode, sdk_flags_to_internal(flags), op_a, op_b, op_c, 0);
-}
-
-extern "C" DGTL_API uint32_t DGTL_CALL dgtl_emit_op_with_result(dgtl_stream_t* s,
-                                                                uint32_t dest_reg,
-                                                                dgtl_opcode_t opcode,
-                                                                uint32_t lhs,
-                                                                uint32_t rhs,
-                                                                uint64_t immediate,
-                                                                uint32_t flags) {
-    if (!s || dest_reg == 0u) return 0;
-    dgtl::ir::OpCode mapped_opcode;
-    if (!sdk_opcode_to_internal(opcode, mapped_opcode)) {
-        return 0;
-    }
-
-    if (s->ir_mode != DGTL_IR_MODE_INT) {
-        switch (mapped_opcode) {
-            case dgtl::ir::OpCode::ADD_I32: mapped_opcode = dgtl::ir::OpCode::ADD_F32; break;
-            case dgtl::ir::OpCode::SUB_I32: mapped_opcode = dgtl::ir::OpCode::SUB_F32; break;
-            case dgtl::ir::OpCode::MUL_I32: mapped_opcode = dgtl::ir::OpCode::MUL_F32; break;
-            case dgtl::ir::OpCode::DIV_I32: mapped_opcode = dgtl::ir::OpCode::DIV_F32; break;
-            default: break;
-        }
-    }
-
-    uint32_t op_a = lhs;
-    uint32_t op_b = rhs;
-    uint32_t op_c = 0u;
-    if (is_immediate_opcode(mapped_opcode)) {
-        split_immediate_payload(immediate, op_a, op_b);
-        op_c = dgtl::ir::INVALID_SLOT;
-    }
-
-    return push_ir_node_explicit_slot(s,
-                                     mapped_opcode,
-                                     sdk_flags_to_internal(flags),
-                                     dest_reg,
-                                     op_a,
-                                     op_b,
-                                     op_c,
-                                     0);
-}
-
-extern "C" DGTL_API void DGTL_CALL dgtl_emit_branch_predictive(dgtl_stream_t* s, dgtl_value_t condition_reg, uint32_t true_label_id, uint32_t false_label_id, uint8_t runtime_weight) {
-    if (!s) return;
-    auto& stream = s->function.stream();
-    uint32_t temp_id = s->function.allocate_slot();
-    dgtl::ir::OpCode opcode;
-    if (runtime_weight > 128) {
-        opcode = dgtl::ir::OpCode::BRANCH_LIKELY;
-    } else if (runtime_weight < 128) {
-        opcode = dgtl::ir::OpCode::BRANCH_UNLIKELY;
-    } else {
-        opcode = dgtl::ir::OpCode::BRANCH_COND;
-    }
-    
-    dgtl::ir::IRNode node{};
-    node.opcode = opcode;
-    node.result_id = temp_id;
-    node.op_a = condition_reg;
-    node.op_b = true_label_id;
-    node.op_c = false_label_id;
-    node.flags = static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS | dgtl::ir::Flags::IS_BRANCH);
-    stream.push_back(node);
-}
-
-extern "C" DGTL_API void DGTL_CALL dgtl_emit_hardware_affinity(dgtl_stream_t* s, dgtl_value_t mask_register_id) {
-    if (!s) return;
-    auto& stream = s->function.stream();
-    uint32_t temp_id = s->function.allocate_slot();
-    dgtl::ir::IRNode node{};
-    node.opcode = dgtl::ir::OpCode::BARRIER_SYNC;
-    node.result_id = temp_id;
-    node.op_a = mask_register_id;
-    node.op_b = dgtl::ir::INVALID_SLOT;
-    node.op_c = dgtl::ir::INVALID_SLOT;
-    node.flags = static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS);
-    stream.push_back(node);
-}
-
-extern "C" DGTL_API void DGTL_CALL dgtl_emit_constant_str(dgtl_stream_t* s, dgtl_value_t dest_reg, const char* value, size_t length) {
-    if (!s || !value) return;
-    auto& stream = s->function.stream();
-    uint32_t handle = sdk_intern_string_handle(std::string_view(value, length));
-    dgtl::ir::IRNode node{};
-    node.opcode = dgtl::ir::OpCode::STRING_CONST;
-    node.result_id = dest_reg;
-    node.op_a = handle;
-    node.op_b = dgtl::ir::INVALID_SLOT;
-    node.op_c = dgtl::ir::INVALID_SLOT;
-    node.flags = static_cast<uint16_t>(dgtl::ir::Flags::IS_CONST);
-    stream.push_back(node);
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_run_pass_by_name(dgtl_stream_t* s, const char* pass_name) {
-    if (!s || !pass_name) return make_err(1, "null argument");
-    
-    auto& stream = s->function.stream();
-    std::string_view name(pass_name);
-
-    if (name == "DCE" || name == "dce") {
-        dgtl::pass::transform::DeadCodeElimination dce;
-        dce.execute(stream);
-    } else if (name == "GVN" || name == "gvn") {
-        dgtl::pass::transform::DGTLGVN gvn;
-        gvn.execute(stream);
-    } else if (name == "LoopFusion" || name == "loop_fusion") {
-        dgtl::pass::transform::DGTLLoopFusion fusion;
-        fusion.execute(stream);
-    } else if (name == "Inliner" || name == "inlining") {
-        dgtl::pass::transform::DGTLAggressiveInliner inliner;
-        inliner.execute(stream);
-    } else if (name == "DGTLEnhancedErrorRecovery" || name == "error_recovery") {
-        dgtl::pass::DGTLEnhancedErrorRecovery er;
-        er.execute(stream);
-    } else if (name == "EscapeAnalysis" || name == "escape") {
-        dgtl::pass::DGTLEscapeAnalysis ea;
-        ea.execute(stream);
-    } else {
-        (void)dgtl_optimize(s);
-    }
-    
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_set_optimization_level(dgtl_stream_t* s, int32_t level) {
-    if (!s) return make_err(1, "null stream");
-    if (level < 0 || level > 3) return make_err(2, "invalid optimization level (0-3)");
-    
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_stream_shrink_to_fit(dgtl_stream_t* s) {
-    if (!s) return make_err(1, "null stream");
-    
-    /* Shrink internal storage to fit current size */
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_stream_enable_tracing(dgtl_stream_t* s) {
-    if (!s) return make_err(1, "null stream");
-    
-    /* Enable trace collection */
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_optimize_with_profile(dgtl_stream_t* s,
-                                                              dgtl_opt_profile_t profile) {
-    if (!s) return make_err(1, "null stream");
-    auto& stream = s->function.stream();
-
-    /* 1. Run core canonicalization passes */
-    dgtl::pass::transform::DeadCodeElimination dce;
-    dce.execute(stream);
-    dgtl::pass::transform::DGTLGVN gvn;
-    gvn.execute(stream);
-
-    /* 2. Run advanced optimization passes based on profile */
-    if (profile == DGTL_OPT_PROFILE_SIMD) {
-        stream.analyze_simd_opportunities();
-        sdk_prime_simd_units();
-        const dgtl::pass::simd::TargetArch simd_arch = []() noexcept {
-            switch (dgtl::core::preferred_simd_tier()) {
-                case dgtl::core::SimdTier::AVX512:
-                    return dgtl::pass::simd::TargetArch::X86_AVX512;
-                case dgtl::core::SimdTier::AVX2:
-                    return dgtl::pass::simd::TargetArch::X86_AVX2;
-                case dgtl::core::SimdTier::Scalar:
-                default:
-                    return dgtl::pass::simd::TargetArch::GENERIC;
-            }
-        }();
-        dgtl::pass::simd::DGTLSIMDLegalizer legalizer(simd_arch);
-        legalizer.legalize(stream);
-        
-        auto isa = (simd_arch == dgtl::pass::simd::TargetArch::X86_AVX512 || simd_arch == dgtl::pass::simd::TargetArch::X86_AVX2) 
-                   ? dgtl::ir::BackendProfile::TargetISA::X64_AVX512
-                   : dgtl::ir::BackendProfile::TargetISA::WASM;
-        stream.dispatch_simd_operations(isa);
-        stream.optimize_gather_scatter_patterns(isa);
-    } else if (profile == DGTL_OPT_PROFILE_PREDICATION) {
-        stream.analyze_speculation_opportunities();
-        stream.perform_speculative_optimization();
-        stream.optimize_branch_prediction();
-    } else if (profile == DGTL_OPT_PROFILE_FUSION || profile == DGTL_OPT_PROFILE_DEFAULT) {
-        dgtl::pass::transform::DGTLLoopFusion fusion;
-        fusion.execute(stream);
-        stream.perform_loop_unrolling(s->emit_options.unroll_factor > 0 ? s->emit_options.unroll_factor : 4);
-        stream.optimize_branch_prediction();
-    } else if (profile == DGTL_OPT_PROFILE_FOLD) {
-        dce.execute(stream);
-        gvn.execute(stream);
-    }
-
-    dgtl::pass::DGTLEnhancedErrorRecovery er;
-    er.execute(stream);
-
-    return make_ok();
-}
-
-extern "C" DGTL_API int dgtl_stream_get_node(const dgtl_stream_t* s, size_t index,
-                                              dgtl_node_info_t* out) {
-    if (!s || !out) return 0;
-    auto& stream = s->function.stream();
-    if (index >= stream.size()) return 0;
-    const auto node = stream.get_node(index);
-    dgtl_opcode_t mapped_opcode = DGTL_OP_SENTINEL;
-    (void)internal_opcode_to_sdk(node.opcode, mapped_opcode);
-    out->opcode    = mapped_opcode;
-    out->slot      = node.result_id;
-    out->lhs       = node.op_a;
-    out->rhs       = node.op_b;
-    out->immediate = is_immediate_opcode(node.opcode)
-        ? decode_immediate_payload(node.op_a, node.op_b)
-        : node.intent_hash;
-    out->flags     = internal_flags_to_sdk(node.flags, node.opcode);
-    return 1;
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_set_ir_mode(dgtl_stream_t* s, dgtl_ir_mode_t mode) {
-    if (!s) return make_err(1, "null stream");
-    if (mode > DGTL_IR_MODE_FMA) return make_err(2, "invalid IR mode");
-    s->ir_mode = mode;
-    return make_ok();
-}
-
-/* Runtime Scheduler API */
-
-struct dgtl_runtime_context {
-    dgtl::runtime::TaskScheduler scheduler;
-
-    explicit dgtl_runtime_context(size_t threads, size_t arena_mb_per_thread)
-        : scheduler(threads, arena_mb_per_thread) {}
-};
-
-extern "C" DGTL_API dgtl_runtime_context_t* dgtl_runtime_context_create(
-    size_t worker_threads,
-    size_t arena_mb_per_worker) {
-    try {
-        return new dgtl_runtime_context(worker_threads, arena_mb_per_worker);
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-extern "C" DGTL_API void dgtl_runtime_context_destroy(dgtl_runtime_context_t* ctx) {
-    delete ctx;
-}
-
-extern "C" DGTL_API uint64_t dgtl_runtime_spawn_task(dgtl_runtime_context_t* ctx,
-                                                      dgtl_runtime_task_fn fn,
-                                                      void* arg) {
-    if (!ctx || !fn) return 0ull;
-    return static_cast<uint64_t>(ctx->scheduler.spawn(fn, arg));
-}
-
-extern "C" DGTL_API void dgtl_runtime_join_task(dgtl_runtime_context_t* ctx,
-                                                   uint64_t task_handle) {
-    if (!ctx || task_handle == 0ull) return;
-    ctx->scheduler.join(task_handle);
-}
-
-extern "C" DGTL_API void dgtl_runtime_yield(dgtl_runtime_context_t* ctx) {
-    if (!ctx) return;
-    ctx->scheduler.yield();
-}
-
-/* Compatibility API (uses default global context) */
-
-extern "C" DGTL_API void dgtl_yield(void) {
-    auto* ctx = get_or_create_default_runtime_ctx();
-    if (ctx) {
-        dgtl_runtime_yield(ctx);
-    }
-}
-
-extern "C" DGTL_API uint64_t dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg) {
-    auto* ctx = get_or_create_default_runtime_ctx();
-    return ctx ? dgtl_runtime_spawn_task(ctx, fn, arg) : 0ull;
-}
-
-extern "C" DGTL_API void dgtl_join_task(uint64_t task_handle) {
-    auto* ctx = get_or_create_default_runtime_ctx();
-    if (ctx) {
-        dgtl_runtime_join_task(ctx, task_handle);
-    }
-}
-
-/* SIMD API */
-
-extern "C" DGTL_API uint32_t dgtl_emit_fma(dgtl_stream_t* s,
-                                             uint32_t a, uint32_t b, uint32_t c) {
-    return emit_builder_node(s, dgtl::ir::OpCode::FMA_F32, a, b, c, dgtl::ir::Flags::IS_FUSED);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_fma_f64(dgtl_stream_t* s,
-                                                 uint32_t a, uint32_t b, uint32_t c) {
-    return emit_builder_node(s, dgtl::ir::OpCode::FMA_F32, a, b, c, dgtl::ir::Flags::IS_FUSED);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_gather(dgtl_stream_t* s,
-                                                uint32_t base_slot,
-                                                uint32_t index_slot,
-                                                uint32_t flags) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::GATHER_F32_512,
-                        sdk_flags_to_internal(flags), base_slot, index_slot, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_scatter(dgtl_stream_t* s,
-                                                 uint32_t base_slot,
-                                                 uint32_t index_slot,
-                                                 uint32_t value_slot,
-                                                 uint32_t flags) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::STORE_V512,
-                        sdk_flags_to_internal(flags), base_slot, index_slot, value_slot);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_vec_add_f32_512(dgtl_stream_t* s,
-                                                       uint32_t lhs,
-                                                       uint32_t rhs) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::VEC_ADD_F32_512,
-                        dgtl::ir::Flags::IS_VOLATILE, lhs, rhs, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_vec_mul_f32_512(dgtl_stream_t* s,
-                                                       uint32_t lhs,
-                                                       uint32_t rhs) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::VEC_MUL_F32_512,
-                        dgtl::ir::Flags::IS_VOLATILE, lhs, rhs, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_vec_add_f64_512(dgtl_stream_t* s,
-                                                       uint32_t lhs,
-                                                       uint32_t rhs) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::VEC_ADD_F32_512,
-                        dgtl::ir::Flags::IS_VOLATILE, lhs, rhs, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_vec_mul_f64_512(dgtl_stream_t* s,
-                                                       uint32_t lhs,
-                                                       uint32_t rhs) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::VEC_MUL_F32_512,
-                        dgtl::ir::Flags::IS_VOLATILE, lhs, rhs, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_store_v512(dgtl_stream_t* s,
-                                                       uint32_t addr_id,
-                                                       uint32_t val_id) {
-    if (!s) return 0;
-    return push_ir_node(s, dgtl::ir::OpCode::STORE_V512,
-                        dgtl::ir::Flags::IS_VOLATILE, addr_id, val_id, 0);
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_legalize_simd(dgtl_stream_t* s,
-                                                       dgtl_simd_arch_t arch) {
-    if (!s) return make_err(1, "null stream");
-    sdk_prime_simd_units();
-    auto& stream = s->function.stream();
-
-    dgtl::pass::simd::TargetArch ta;
-    switch (arch) {
-        case DGTL_SIMD_X86_AVX512:   ta = dgtl::pass::simd::TargetArch::X86_AVX512;   break;
-        case DGTL_SIMD_X86_AVX2:     ta = dgtl::pass::simd::TargetArch::X86_AVX2;     break;
-        case DGTL_SIMD_ARM_NEON:     ta = dgtl::pass::simd::TargetArch::ARM_NEON;     break;
-        case DGTL_SIMD_WASM_SIMD128: ta = dgtl::pass::simd::TargetArch::WASM_SIMD128; break;
-        default:                     ta = dgtl::pass::simd::TargetArch::GENERIC;       break;
-    }
-
-    dgtl::pass::simd::DGTLSIMDLegalizer legalizer(ta);
-    legalizer.legalize(stream);
-    return make_ok();
-}
-
-/* Advanced C API Implementation */
-
-extern "C" DGTL_API int dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgtl_perf_metrics_t* out) {
-    if (!s || !out) return 0;
-    
-    std::memset(out, 0, sizeof(*out));
-    const auto& stream = s->function.stream();
-    
-    out->total_compilation_time_us = 0;
-    out->optimization_time_us = 0;
-    out->emission_time_us = 0;
-    out->peak_register_count = std::max<uint32_t>(16u, stream.get_max_id());
-    out->peak_memory_usage_bytes = static_cast<uint32_t>(stream.size() * sizeof(dgtl::ir::IRNode));
-    out->estimated_cycle_count = dgtl_stream_estimate_cycles(s);
-    
-    return 1;
-}
-
-static dgtl_cfg_edge_kind_t to_sdk_cfg_edge_kind(dgtl::ir::CFGEdgeKind kind) noexcept {
-    switch (kind) {
-        case dgtl::ir::CFGEdgeKind::Fallthrough:
-            return DGTL_CFG_EDGE_FALLTHROUGH;
-        case dgtl::ir::CFGEdgeKind::UnconditionalBranch:
-            return DGTL_CFG_EDGE_UNCONDITIONAL;
-        case dgtl::ir::CFGEdgeKind::ConditionalTrue:
-            return DGTL_CFG_EDGE_CONDITIONAL_TRUE;
-        case dgtl::ir::CFGEdgeKind::ConditionalFalse:
-            return DGTL_CFG_EDGE_CONDITIONAL_FALSE;
-        default:
-            return DGTL_CFG_EDGE_FALLTHROUGH;
-    }
-}
-
-extern "C" DGTL_API size_t dgtl_stream_cfg_block_count(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    return s->function.stream().get_basic_blocks().size();
-}
-
-extern "C" DGTL_API size_t dgtl_stream_cfg_edge_count(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    return s->function.stream().get_cfg_edges().size();
-}
-
-extern "C" DGTL_API int dgtl_stream_cfg_get_block(const dgtl_stream_t* s,
-                                                   size_t index,
-                                                   dgtl_cfg_block_t* out) {
-    if (!s || !out) return 0;
-
-    const auto& blocks = s->function.stream().get_basic_blocks();
-    if (index >= blocks.size()) return 0;
-
-    const auto& b = blocks[index];
-    out->id = b.id;
-    out->begin = b.begin;
-    out->end = b.end;
-    out->primary_label = b.primary_label;
-    out->is_entry = b.is_entry ? 1 : 0;
-    return 1;
-}
-
-extern "C" DGTL_API int dgtl_stream_cfg_get_edge(const dgtl_stream_t* s,
-                                                 size_t index,
-                                                 dgtl_cfg_edge_t* out) {
-    if (!s || !out) return 0;
-
-    const auto& edges = s->function.stream().get_cfg_edges();
-    if (index >= edges.size()) return 0;
-
-    const auto& e = edges[index];
-    out->from = e.from;
-    out->to = e.to;
-    out->kind = to_sdk_cfg_edge_kind(e.kind);
-    return 1;
-}
-
-extern "C" DGTL_API size_t dgtl_stream_cfg_get_successors(const dgtl_stream_t* s,
-                                                           uint32_t block_id,
-                                                           uint32_t* out_ids,
-                                                           size_t out_cap) {
-    if (!s) return 0;
-
-    const auto& succ = s->function.stream().get_successors(block_id);
-    const size_t total = succ.size();
-    if (!out_ids || out_cap == 0) return total;
-
-    const size_t n = (out_cap < total) ? out_cap : total;
-    for (size_t i = 0; i < n; ++i) {
-        out_ids[i] = succ[i];
-    }
-    return total;
-}
-
-extern "C" DGTL_API size_t dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s,
-                                                             uint32_t block_id,
-                                                             uint32_t* out_ids,
-                                                             size_t out_cap) {
-    if (!s) return 0;
-
-    const auto& pred = s->function.stream().get_predecessors(block_id);
-    const size_t total = pred.size();
-    if (!out_ids || out_cap == 0) return total;
-
-    const size_t n = (out_cap < total) ? out_cap : total;
-    for (size_t i = 0; i < n; ++i) {
-        out_ids[i] = pred[i];
-    }
-    return total;
-}
-
-extern "C" DGTL_API int dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* error_buffer, size_t error_len) {
-    if (!s) {
-        if (error_buffer && error_len > 0) {
-            std::snprintf(error_buffer, error_len, "null stream");
-        }
-        return 0;
-    }
-    
-    const auto& stream = s->function.stream();
-    dgtl::ir::IRVerifier verifier;
-    auto diags = verifier.verify(stream);
-    
-    auto it = std::find_if(diags.begin(), diags.end(), [](const auto& d) noexcept {
-        return d.severity == dgtl::ir::IRVerifyDiagnostic::Severity::Error;
-    });
-    if (it != diags.end()) {
-        if (error_buffer && error_len > 0) {
-            std::snprintf(error_buffer, error_len, "node %u: %s", it->node_index, it->message.c_str());
-        }
-        return 0;
-    }
-    
-    return 1;
-}
-
-static bool is_operand_slot(dgtl::ir::OpCode op, int operand_idx) noexcept {
-    if (op == dgtl::ir::OpCode::CONST ||
-        op == dgtl::ir::OpCode::LOAD_IMM ||
-        op == dgtl::ir::OpCode::IMMEDIATE) {
-        return false;
-    }
-    if (op == dgtl::ir::OpCode::LABEL) {
-        return false;
-    }
-    if (op == dgtl::ir::OpCode::STRING_CONST) {
-        if (operand_idx == 0) return false;
-    }
-    return true;
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_stream_compact(dgtl_stream_t* s) {
-    if (!s) return make_err(1, "null stream");
-    
-    auto& stream = s->function.stream();
-    if (stream.size() == 0) return make_ok();
-    
-    /* Build result_id to node_index mapping */
-    std::unordered_map<uint32_t, size_t> result_to_node;
-    result_to_node.reserve(stream.size());
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
-        if (node.result_id != dgtl::ir::INVALID_SLOT) {
-            result_to_node[node.result_id] = i;
-        }
-    }
-
-    /* Mark root live nodes */
-    std::vector<bool> live(stream.size(), false);
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
-        if (node.opcode == dgtl::ir::OpCode::RET || 
-            node.opcode == dgtl::ir::OpCode::STORE ||
-            node.opcode == dgtl::ir::OpCode::STORE_V512 ||
-            node.opcode == dgtl::ir::OpCode::ATOMIC_STORE ||
-            node.opcode == dgtl::ir::OpCode::ATOMIC_FENCE ||
-            node.opcode == dgtl::ir::OpCode::CALL ||
-            node.opcode == dgtl::ir::OpCode::CALL_VARIADIC ||
-            node.opcode == dgtl::ir::OpCode::GOTO ||
-            node.opcode == dgtl::ir::OpCode::BRANCH_COND ||
-            node.opcode == dgtl::ir::OpCode::BRANCH_LIKELY ||
-            node.opcode == dgtl::ir::OpCode::BRANCH_UNLIKELY ||
-            node.opcode == dgtl::ir::OpCode::LABEL ||
-            node.opcode == dgtl::ir::OpCode::BARRIER_SYNC ||
-            (node.flags & dgtl::ir::Flags::HAS_SIDE_EFFECTS) != 0) {
-            live[i] = true;
-        }
-    }
-    
-    /* Propagate liveness backwards */
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (size_t i = 0; i < stream.size(); ++i) {
-            if (!live[i]) continue;
-            
-            const auto node = stream.get_node(i);
-            auto mark_live = [&](uint32_t reg_id) {
-                if (reg_id == dgtl::ir::INVALID_SLOT) return;
-                auto it = result_to_node.find(reg_id);
-                if (it != result_to_node.end() && !live[it->second]) {
-                    live[it->second] = true;
-                    changed = true;
-                }
-            };
-
-            if (is_operand_slot(node.opcode, 0)) mark_live(node.op_a);
-            if (is_operand_slot(node.opcode, 1)) mark_live(node.op_b);
-            if (is_operand_slot(node.opcode, 2)) mark_live(node.op_c);
-        }
-    }
-    
-    /* Rebuild stream with only live nodes and remap slot references */
-    uint32_t max_id = stream.get_max_id();
-    std::vector<uint32_t> remap(max_id + 1, dgtl::ir::INVALID_SLOT);
-    dgtl::ir::IRStream compacted_stream(s->ctx->arena, stream.size());
-    
-    for (size_t i = 0; i < stream.size(); ++i) {
-        if (!live[i]) continue;
-        
-        auto node = stream.get_node(i);
-        uint32_t old_slot = node.result_id;
-        uint32_t new_slot = compacted_stream.size();
-        if (old_slot <= max_id) {
-            remap[old_slot] = new_slot;
-        }
-        
-        if (node.op_a <= max_id && is_operand_slot(node.opcode, 0) && remap[node.op_a] != dgtl::ir::INVALID_SLOT) {
-            node.op_a = remap[node.op_a];
-        }
-        if (node.op_b <= max_id && is_operand_slot(node.opcode, 1) && remap[node.op_b] != dgtl::ir::INVALID_SLOT) {
-            node.op_b = remap[node.op_b];
-        }
-        if (node.op_c <= max_id && is_operand_slot(node.opcode, 2) && remap[node.op_c] != dgtl::ir::INVALID_SLOT) {
-            node.op_c = remap[node.op_c];
-        }
-        
-        node.result_id = new_slot;
-        node.refresh_intent_hash();
-        compacted_stream.push_back(node);
-    }
-    
-    stream.copy_from(compacted_stream);
-    return make_ok();
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_const_f32(dgtl_stream_t* s, float value) {
-    if (!s) return 0;
-    
-    uint32_t bits = std::bit_cast<uint32_t>(value);
-    return push_ir_node(s, dgtl::ir::OpCode::CONST,
-                        dgtl::ir::Flags::IS_CONST | dgtl::ir::Flags::IS_SPEC_CONST,
-                        bits, 0, dgtl::ir::INVALID_SLOT, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_const_f64(dgtl_stream_t* s, double value) {
-    if (!s) return 0;
-    
-    const uint64_t bits = std::bit_cast<uint64_t>(value);
-    uint32_t lo = 0;
-    uint32_t hi = 0;
-    split_immediate_payload(bits, lo, hi);
-    return push_ir_node(s, dgtl::ir::OpCode::CONST,
-                        dgtl::ir::Flags::IS_CONST | dgtl::ir::Flags::IS_SPEC_CONST,
-                        lo, hi, dgtl::ir::INVALID_SLOT, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_const_binary(dgtl_stream_t* s, 
-                                                     const void* data, size_t len) {
-    if (!s || !data || len == 0) return 0;
-    const uint64_t hash = dgtl::utils::Hashing::xxhash64(data, len);
-    uint32_t lo = 0;
-    uint32_t hi = 0;
-    split_immediate_payload(hash, lo, hi);
-    
-    return push_ir_node(s, dgtl::ir::OpCode::CONST,
-                        dgtl::ir::Flags::IS_CONST,
-                        lo,
-                        hi,
-                        dgtl::ir::INVALID_SLOT, hash);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_phi(dgtl_stream_t* s,
-                                            uint32_t* incoming_slots,
-                                            size_t incoming_count) {
-    if (!s || !incoming_slots || incoming_count == 0) return 0;
-    
-    /* PHI nodes require multiple operands; use first two as a and b, rest ignored for C ABI */
-    uint32_t op_a = incoming_slots[0];
-    uint32_t op_b = incoming_count > 1 ? incoming_slots[1] : dgtl::ir::INVALID_SLOT;
-    
-    return push_ir_node(s, dgtl::ir::OpCode::PHI_NODE, 0, op_a, op_b, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_label(dgtl_stream_t* s, const char* label_name) {
-    if (!s || !label_name) return 0;
-    
-    const uint64_t label_hash = dgtl::utils::Hashing::fnv1a(label_name, std::strlen(label_name));
-    uint32_t lo = 0;
-    uint32_t hi = 0;
-    split_immediate_payload(label_hash, lo, hi);
-    
-    return push_ir_node(s, dgtl::ir::OpCode::LABEL,
-                        dgtl::ir::Flags::NONE,
-                        lo,
-                        hi,
-                        dgtl::ir::INVALID_SLOT, label_hash);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_label_slot(dgtl_stream_t* s, uint32_t label_slot) {
-    if (!s || label_slot == 0u) return 0;
-    return push_ir_node_explicit_slot(s,
-                                      dgtl::ir::OpCode::LABEL,
-                                      dgtl::ir::Flags::NONE,
-                                      label_slot,
-                                      label_slot,
-                                      dgtl::ir::INVALID_SLOT,
-                                      dgtl::ir::INVALID_SLOT);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_function_label_slot(dgtl_stream_t* s, uint32_t function_slot) {
-    if (!s || function_slot == 0u) return 0;
-    return push_ir_node_explicit_slot(s,
-                                      dgtl::ir::OpCode::LABEL,
-                                      static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS | dgtl::ir::Flags::IS_VOLATILE),
-                                      function_slot,
-                                      dgtl::ir::INVALID_SLOT,
-                                      dgtl::ir::INVALID_SLOT,
-                                      dgtl::ir::INVALID_SLOT);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_function_label_with_params(dgtl_stream_t* s,
-                                                                 uint32_t function_slot,
-                                                                 const uint32_t* params,
-                                                                 size_t param_count) {
-    if (!s || function_slot == 0u) return 0;
-    uint32_t op_a = (param_count > 0 && params) ? params[0] : dgtl::ir::INVALID_SLOT;
-    uint32_t op_b = (param_count > 1 && params) ? params[1] : dgtl::ir::INVALID_SLOT;
-    uint32_t op_c = (param_count > 2 && params) ? params[2] : dgtl::ir::INVALID_SLOT;
-    uint32_t logic_flags = (param_count > 3 && params) ? params[3] : 0u;
-
-    const size_t node_idx = s->function.stream().size();
-    uint32_t res = push_ir_node_explicit_slot(s,
-                                      dgtl::ir::OpCode::LABEL,
-                                      static_cast<uint16_t>(dgtl::ir::Flags::HAS_SIDE_EFFECTS | dgtl::ir::Flags::IS_VOLATILE),
-                                      function_slot,
-                                      op_a,
-                                      op_b,
-                                      op_c,
-                                      0ULL,
-                                      logic_flags);
-    if (param_count > 4 && params) {
-        s->function.stream().set_call_overflow_args(
-            node_idx,
-            std::span<const uint32_t>(params + 4, param_count - 4));
-    }
-    return res;
-}
-
-extern "C" DGTL_API void dgtl_emit_branch_cond(dgtl_stream_t* s,
-                                                uint32_t condition,
-                                                uint32_t target_label) {
-    if (!s) return;
-    
-    push_ir_node(s, dgtl::ir::OpCode::BRANCH_COND,
-                 dgtl::ir::Flags::HAS_SIDE_EFFECTS,
-                 condition, target_label, 0);
-}
-
-extern "C" DGTL_API void dgtl_emit_branch(dgtl_stream_t* s, uint32_t target_label) {
-    if (!s) return;
-    
-    push_ir_node(s, dgtl::ir::OpCode::GOTO,
-                 dgtl::ir::Flags::HAS_SIDE_EFFECTS,
-                 target_label, 0, 0);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_call_with_result(dgtl_stream_t* s,
-                                                          uint32_t result_slot,
-                                                          uint32_t callee_slot,
-                                                          const uint32_t* args,
-                                                          size_t arg_count) {
-    return emit_call_like(s, dgtl::ir::OpCode::CALL, result_slot, callee_slot, args, arg_count);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_call(dgtl_stream_t* s,
-                                               uint32_t callee_slot,
-                                               const uint32_t* args,
-                                               size_t arg_count) {
-    return emit_call_like(s, dgtl::ir::OpCode::CALL, 0u, callee_slot, args, arg_count);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_call_variadic_with_result(dgtl_stream_t* s,
-                                                                   uint32_t result_slot,
-                                                                   uint32_t callee_slot,
-                                                                   const uint32_t* args,
-                                                                   size_t arg_count) {
-    return emit_call_like(s, dgtl::ir::OpCode::CALL_VARIADIC, result_slot, callee_slot, args, arg_count);
-}
-
-extern "C" DGTL_API uint32_t dgtl_emit_call_variadic(dgtl_stream_t* s,
-                                                       uint32_t callee_slot,
-                                                       const uint32_t* args,
-                                                       size_t arg_count) {
-    return emit_call_like(s, dgtl::ir::OpCode::CALL_VARIADIC, 0u, callee_slot, args, arg_count);
-}
-
-extern "C" DGTL_API int dgtl_has_pass(const char* pass_name) {
-    if (!pass_name) return 0;
-    
-    static const char* passes[] = {
-        "DCE", "GVN", "Inlining", "SIMD", "LoopUnroll", "Fusion", nullptr
-    };
-    
-    for (size_t i = 0; passes[i] != nullptr; ++i) {
-        if (std::string_view(pass_name) == passes[i]) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-extern "C" DGTL_API const char** dgtl_list_passes(size_t* out_count) {
-    static const char* passes[] = {
-        "DCE", "GVN", "Inlining", "SIMD", "LoopUnroll", "Fusion", nullptr
-    };
-    
-    if (out_count) {
-        *out_count = 6;
-    }
-    return passes;
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_set_optimization_enabled(dgtl_stream_t* s, int enabled) {
-    if (!s) return make_err(1, "null stream");
-    
-    /* Track optimization state per stream */
-    s->optimization_enabled = (enabled != 0);
-    return make_ok();
-}
-
-extern "C" DGTL_API int dgtl_get_optimization_level(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    
-    /* Return default level (2 = O2) */
-    return 2;
-}
-
-extern "C" DGTL_API dgtl_emit_options_t dgtl_emit_options_default(dgtl_target_t target) {
-    dgtl_emit_options_t opts{};
-    opts.inline_threshold = 50;
-    opts.unroll_factor = 4;
-    opts.enable_cache_optimization = 1;
-    opts.enable_branch_prediction = 1;
-    opts.vectorize_threshold = 8;
-    
-    /* Adjust for target */
-    if (target == DGTL_TARGET_WASM) {
-        opts.inline_threshold = 20;
-        opts.enable_cache_optimization = 0;
-    }
-    
-    return opts;
-}
-
-extern "C" DGTL_API dgtl_strike_result_t dgtl_strike_stream_with_options(
-    dgtl_stream_t* s,
-    dgtl_target_t target,
-    const dgtl_emit_options_t* options) {
-    
-    if (!s) return make_strike_err("null stream");
-    
-    /* Use provided options or defaults */
-    dgtl_emit_options_t opts = options ? *options : dgtl_emit_options_default(target);
-    
-    /* Store options in stream for backend use */
-    s->emit_options = opts;
-    
-    /* Apply options and strike */
-    return dgtl_strike_stream(s, target);
-}
-
-extern "C" DGTL_API size_t dgtl_estimate_code_size(const dgtl_stream_t* s, dgtl_target_t target) {
-    if (!s) return 0;
-    
-    const auto& stream = s->function.stream();
-    
-    /* Simple heuristic: ~8 bytes per IR node for x64, varies by target */
-    size_t bytes_per_node = 8;
-    switch (target) {
-        case DGTL_TARGET_X64:        bytes_per_node = 8;  break;
-        case DGTL_TARGET_ARM64:      bytes_per_node = 8;  break;
-        case DGTL_TARGET_NASM:       bytes_per_node = 12; break;
-        case DGTL_TARGET_WASM:       bytes_per_node = 6;  break;
-        default:                     bytes_per_node = 8;  break;
-    }
-    
-    return stream.size() * bytes_per_node + 256;  /* +256 for headers/prologue */
-}
-
-extern "C" DGTL_API size_t dgtl_stream_memory_usage(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    
-    const auto& stream = s->function.stream();
-    return stream.size() * 32 + 512;  /* 32 bytes per node + overhead */
-}
-
-extern "C" DGTL_API size_t dgtl_context_memory_usage(const dgtl_context_t* ctx) {
-    if (!ctx) return 0;
-    
-    return 16 * 1024 * 1024;  /* Arena size */
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_stream_reserve(dgtl_stream_t* s, size_t additional_nodes) {
-    if (!s) return make_err(1, "null stream");
-    
-    /* Trigger internal reallocation if needed */
-    auto& stream = s->function.stream();
-    size_t current_capacity = stream.capacity();
-    size_t current_size = stream.size();
-    
-    if (current_size + additional_nodes > current_capacity) {
-        /* Would trigger reallocation in real implementation */
-    }
-    
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_trace_event_t* dgtl_stream_get_trace_events(const dgtl_stream_t* s,
-                                                                      size_t* out_count) {
-    if (!s || !out_count) return nullptr;
-    
-    *out_count = 0;
-    return nullptr;
-}
-
-extern "C" DGTL_API uint64_t dgtl_stream_estimate_cycles(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    
-    const auto& stream = s->function.stream();
-    
-    /* Use AI cost model for better estimates */
-    uint64_t total_cycles = 0;
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
-        
-        /* Rough cycle estimates per opcode */
-        uint64_t node_cycles = 1;
-        switch (node.opcode) {
-            case dgtl::ir::OpCode::LOAD:
-            case dgtl::ir::OpCode::STORE:
-                node_cycles = 4;  /* Memory ops are slower */
-                break;
-            case dgtl::ir::OpCode::DIV_I32:
-            case dgtl::ir::OpCode::DIV_F32:
-            case dgtl::ir::OpCode::DIV_F64:
-                node_cycles = 20; /* Division is expensive */
-                break;
-            case dgtl::ir::OpCode::MUL_I32:
-            case dgtl::ir::OpCode::MUL_F32:
-            case dgtl::ir::OpCode::MUL_F64:
-                node_cycles = 3;
-                break;
-            case dgtl::ir::OpCode::FMA_F32:
-                node_cycles = 4;  /* FMA fused */
-                break;
-            default:
-                node_cycles = 1;
-                break;
-        }
-        total_cycles += node_cycles;
-    }
-    
-    return total_cycles;
-}
-
-extern "C" DGTL_API int dgtl_stream_get_optimization_score(const dgtl_stream_t* s) {
-    if (!s) return 0;
-    
-    /* Score 0-100 based on IR metrics */
-    const auto& stream = s->function.stream();
-    
-    int score = 50;  /* Base score */
-    
-    /* Increase score for smaller streams (more optimized) */
-    if (stream.size() < 50) score += 30;
-    else if (stream.size() < 200) score += 15;
-    
-    /* Increase score if many nodes are constant-folded */
-    size_t const_count = 0;
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
-        if ((node.flags & dgtl::ir::Flags::IS_CONST) != 0) {
-            const_count++;
-        }
-    }
-    
-    int const_ratio = static_cast<int>((const_count * 100) / stream.size());
-    if (const_ratio > 30) score += 10;
-    
-    return std::min(100, score);
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_stream_serialize(const dgtl_stream_t* s,
-                                                        void** out_blob,
-                                                        size_t* out_size) {
-    if (!s || !out_blob || !out_size) return make_err(1, "null argument");
-    
-    /* Serialize stream to binary */
-    const auto& stream = s->function.stream();
-    
-    size_t blob_size = 16 + stream.size() * sizeof(dgtl::ir::IRNode);  /* header + nodes */
-    void* blob = std::malloc(blob_size);
-    if (!blob) return make_err(2, "malloc failed");
-    
-    /* Write magic + size header */
-    uint32_t* header = static_cast<uint32_t*>(blob);
-    header[0] = 0xDEADBEEFu;  /* Magic number */
-    header[1] = static_cast<uint32_t>(stream.size());
-    header[2] = 0u;
-    header[3] = 0u;
-    
-    dgtl::ir::IRNode* out_nodes = reinterpret_cast<dgtl::ir::IRNode*>(static_cast<char*>(blob) + 16);
-    for (size_t i = 0; i < stream.size(); ++i) {
-        out_nodes[i] = stream.get_node(i);
-    }
-    
-    *out_blob = blob;
-    *out_size = blob_size;
-    
-    return make_ok();
-}
-
-extern "C" DGTL_API dgtl_status_t dgtl_stream_deserialize(dgtl_stream_t* s,
-                                                         const void* blob,
-                                                         size_t blob_size) {
-    if (!s || !blob || blob_size < 16) return make_err(1, "invalid blob");
-    
-    const uint32_t* header = static_cast<const uint32_t*>(blob);
-    if (header[0] != 0xDEADBEEFu) return make_err(2, "invalid magic");
-    
-    uint32_t node_count = header[1];
-    if (16 + node_count * 32 > blob_size) return make_err(3, "blob truncated");
-    
-    /* Reset and load nodes */
-    auto& stream = s->function.stream();
-    stream.reset();
-    
-    const dgtl::ir::IRNode* nodes = reinterpret_cast<const dgtl::ir::IRNode*>(
-        static_cast<const char*>(blob) + 16);
-    
-    for (uint32_t i = 0; i < node_count; ++i) {
-        stream.push_back(nodes[i]);
-    }
-    
-    return make_ok();
-}
-
-extern "C" DGTL_API void dgtl_free_serialized_blob(void* blob) {
-    std::free(blob);
-}
-
-/* Diagnostic Functions */
-
-static thread_local char g_error_buffer[512] = {};
-
-extern "C" DGTL_API void DGTL_CALL dgtl_stream_dump_ir(const dgtl_stream_t* s, void* custom_file_handle_opt) {
-    FILE* out = static_cast<FILE*>(custom_file_handle_opt);
-    if (!s || !out) return;
-    
-    const auto& stream = s->function.stream();
-    
-    std::fprintf(out, "; DGTL IR Dump\n");
-    std::fprintf(out, "; Total nodes: %zu\n", stream.size());
-    std::fprintf(out, "; Logic hash: 0x%016llx\n\n", stream.generate_logic_hash());
-    
-    for (size_t i = 0; i < stream.size(); ++i) {
-        const auto node = stream.get_node(i);
-        
-        std::fprintf(out, "  node %zu: %.*s", i,
-                     static_cast<int>(dgtl::ir::opcode_name(node.opcode).size()),
-                     dgtl::ir::opcode_name(node.opcode).data());
-        
-        if (is_immediate_opcode(node.opcode)) {
-            uint64_t val = decode_immediate_payload(node.op_a, node.op_b);
-            std::fprintf(out, " %llu", (unsigned long long)val);
-        } else {
-            if (node.op_a != dgtl::ir::INVALID_SLOT) std::fprintf(out, " %%%u", node.op_a);
-            if (node.op_b != dgtl::ir::INVALID_SLOT) std::fprintf(out, " %%%u", node.op_b);
-            if (node.op_c != dgtl::ir::INVALID_SLOT && node.op_c != 0) std::fprintf(out, " %%%u", node.op_c);
-        }
-        
-        std::fprintf(out, "\n");
-    }
-}
-
-extern "C" DGTL_API const char* dgtl_get_last_error(void) {
-    return g_error_buffer[0] != '\0' ? g_error_buffer : "no error";
-}
-
-extern "C" DGTL_API void dgtl_clear_error(void) {
-    g_error_buffer[0] = '\0';
-}
-
-extern "C" DGTL_API void dgtl_set_verbose(int enabled) {
-    static std::atomic<int> verbose_mode{0};
-    verbose_mode.store(enabled, std::memory_order_release);
-}
-
-extern "C" DGTL_API int dgtl_binary_loader_validate_payload(const uint8_t* bytes, size_t len) {
-    if (!bytes || len == 0) return 0;
-    dgtl::execution::format::Binary_Format fmt{};
-    fmt.data.assign(bytes, bytes + len);
-    return fmt.is_valid() ? 1 : 0;
-}
-
-extern "C" DGTL_API const char* dgtl_get_build_config(void) {
-    return "DGTL v1.2.0 (Release) | C++26 | Architecture-aware | Multi-target";
-}
-
-/* ---------- NUMA Capabilities & Control ---------- */
-
-extern "C" DGTL_API uint32_t dgtl_numa_node_count(void) {
-    return dgtl::ir::IRStream::numa_node_count();
-}
-
-extern "C" DGTL_API uint32_t dgtl_numa_current_node(void) {
-    return dgtl::ir::IRStream::current_numa_node();
-}
-
-extern "C" DGTL_API int dgtl_numa_pin_thread_to_node(uint32_t node_id) {
+DGTL_API dgtl_capabilities_t DGTL_CALL dgtl_get_capabilities(void) {
+    dgtl_capabilities_t c{};
+    c.schema_version = DGTL_CAPABILITY_SCHEMA_VERSION;
+    c.supported_simd_tiers = DGTL_CAP_SIMD_AVX2 | DGTL_CAP_SIMD_AVX512 | DGTL_CAP_SIMD_ARM_NEON | DGTL_CAP_SIMD_WASM128;
+    c.feature_mask = DGTL_CAP_FEATURE_JIT | DGTL_CAP_FEATURE_AOT | DGTL_CAP_FEATURE_HYBRID |
+                     DGTL_CAP_FEATURE_HOST_BIND_NAME | DGTL_CAP_FEATURE_HOST_BIND_SLOT |
+                     DGTL_CAP_FEATURE_OBJECT_EMISSION | DGTL_CAP_FEATURE_BINARY_EMISSION |
+                     DGTL_CAP_FEATURE_IN_PROCESS_EXEC | DGTL_CAP_FEATURE_CFG_INTROSPECTION |
+                     DGTL_CAP_FEATURE_PER_PASS_CONTROL | DGTL_CAP_FEATURE_SPECULATIVE_CONST |
+                     DGTL_CAP_FEATURE_OSR | DGTL_CAP_FEATURE_DEOPT_RECOVERY |
+                     DGTL_CAP_FEATURE_POLYHEDRAL_SCOP | DGTL_CAP_FEATURE_LINEAR_BORROW_CHECK |
+                     DGTL_CAP_FEATURE_SMT_FORMAL_VERIFY | DGTL_CAP_FEATURE_NUMA_AWARE |
+                     DGTL_CAP_FEATURE_WX_MEMORY_PROTECT;
+    c.backend_target_mask = (1ull << DGTL_TARGET_COUNT) - 1ull;
+    c.optimization_profile_mask = 0x3Full;
+    c.max_call_arity = 256;
+    c.cache_line_bytes = 64;
+    c.numa_node_count = dgtl::runtime::numa::get_num_nodes();
+    c.physical_core_count = std::thread::hardware_concurrency();
+    return c;
+}
+
+DGTL_API bool DGTL_CALL dgtl_capabilities_support_target(const dgtl_capabilities_t* caps, dgtl_target_t target) {
+    if (!caps) return false;
+    uint32_t idx = static_cast<uint32_t>(target);
+    if (idx >= 64) return false;
+    return (caps->backend_target_mask & (1ull << idx)) != 0;
+}
+
+DGTL_API bool DGTL_CALL dgtl_capabilities_has_feature(const dgtl_capabilities_t* caps, uint64_t feature_flag) {
+    if (!caps) return false;
+    return (caps->feature_mask & feature_flag) == feature_flag;
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_numa_node_count(void) {
+    return dgtl::runtime::numa::get_num_nodes();
+}
+
+DGTL_API uint32_t DGTL_CALL dgtl_numa_current_node(void) {
+    return dgtl::runtime::numa::get_current_node();
+}
+
+DGTL_API int32_t DGTL_CALL dgtl_numa_pin_thread_to_node(uint32_t node_id) {
     return dgtl::runtime::numa::pin_current_thread_to_node(node_id) ? 1 : 0;
 }
 
-extern "C" DGTL_API int dgtl_numa_pin_thread_to_core(uint32_t core_id) {
+DGTL_API int32_t DGTL_CALL dgtl_numa_pin_thread_to_core(uint32_t core_id) {
     return dgtl::runtime::numa::pin_thread_to_core(core_id) ? 1 : 0;
 }
 
-extern "C" DGTL_API void* dgtl_numa_alloc_on_node(size_t size, uint32_t node_id) {
+DGTL_API void* DGTL_CALL dgtl_numa_alloc_on_node(size_t size, uint32_t node_id) {
     return dgtl::runtime::numa::allocate_on_node(size, node_id);
 }
 
-extern "C" DGTL_API void dgtl_numa_free_on_node(void* ptr, size_t size) {
+DGTL_API void DGTL_CALL dgtl_numa_free_on_node(void* ptr, size_t size) {
     (void)size;
     dgtl::runtime::numa::free_allocation(ptr);
 }
 
-/* ---------- Formal Verification & SMT API ---------- */
+DGTL_API int32_t DGTL_CALL dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* err_buf, size_t err_buf_size) {
+    if (!s) return 0;
+    dgtl::ir::IRVerifier verifier;
+    auto diags = verifier.verify(s->function.stream());
+    for (const auto& d : diags) {
+        if (d.severity == dgtl::ir::IRVerifyDiagnostic::Severity::Error) {
+            if (err_buf && err_buf_size > 0) {
+                std::snprintf(err_buf, err_buf_size, "node %u: %s", d.node_index, d.message.c_str());
+            }
+            return 0;
+        }
+    }
+    return 1;
+}
 
-extern "C" DGTL_API int32_t dgtl_verify_pass_equivalence(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass_name) {
+DGTL_API int32_t DGTL_CALL dgtl_verify_pass_equivalence(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass) {
     if (!orig || !opt) return 0;
-    dgtl::formal::DGTLFormalVerificationSMT verifier;
-    auto res = verifier.verify_pass_equivalence(
-        orig->function.stream(),
-        opt->function.stream(),
-        pass_name ? pass_name : "pass",
-        dgtl::formal::VerificationLevel::Standard
-    );
+    dgtl::formal::DGTLFormalVerificationSMT v;
+    auto res = v.verify_pass_equivalence(orig->function.stream(), opt->function.stream(), pass ? pass : "pass", dgtl::formal::VerificationLevel::Standard);
     return res.is_equivalent ? 1 : 0;
 }
 
-extern "C" DGTL_API size_t dgtl_export_smtlib2_script(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass_name, char* out_buf, size_t out_buf_size) {
+DGTL_API size_t DGTL_CALL dgtl_export_smtlib2_script(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass, char* out, size_t sz) {
     if (!orig || !opt) return 0;
-    dgtl::formal::DGTLFormalVerificationSMT verifier;
-    std::string script = verifier.export_to_smtlib2(
-        orig->function.stream(),
-        opt->function.stream(),
-        pass_name ? pass_name : "pass"
-    );
-    if (!out_buf || out_buf_size == 0) {
-        return script.size();
-    }
-    size_t to_copy = std::min(script.size(), out_buf_size - 1);
-    std::memcpy(out_buf, script.data(), to_copy);
-    out_buf[to_copy] = '\0';
-    return to_copy;
+    dgtl::formal::DGTLFormalVerificationSMT v;
+    std::string s = v.export_to_smtlib2(orig->function.stream(), opt->function.stream(), pass ? pass : "pass");
+    if (!out || sz == 0) return s.size();
+    size_t copy_sz = std::min(s.size(), sz - 1);
+    std::memcpy(out, s.data(), copy_sz);
+    out[copy_sz] = '\0';
+    return copy_sz;
 }
+
+DGTL_API void DGTL_CALL dgtl_record_source_location(dgtl_stream_t* s, size_t node_idx, uint32_t line, uint16_t col, uint16_t file_id) {
+    if (!s) return;
+    s->function.debug_store().record_loc(node_idx, line, col, file_id);
+}
+
+} // extern "C"

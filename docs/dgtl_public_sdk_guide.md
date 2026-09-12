@@ -13,11 +13,11 @@ DGTL_SDK/
 ├── include/
 │   └── dgtl_sdk/
 │       ├── dgtl.h              <-- Umbrella Header (Include this for C/C++)
-│       ├── dgtl_c_api.h        <-- Pure C ABI & Stream Introspection
+│       ├──         <-- Pure C ABI & Stream Introspection
 │       ├── dgtl_capabilities.h <-- Capability Matrix Queries
 │       ├── dgtl_core.h         <-- Core Types & Emitters
 │       ├── dgtl_session.h      <-- JIT/AOT Session Execution
-│       └── dgtl_simd.h         <-- Vector/SIMD Emitters
+│       └──          <-- Vector/SIMD Emitters
 └── lib/
     └── x64/
         └── dgtl.lib            <-- Ingestion Link Library (Windows)
@@ -884,9 +884,9 @@ DGTL_API dgtl_status_t DGTL_CALL dgtl_legalize_simd(dgtl_stream_t* s, dgtl_simd_
 
 /* ---------- Contract Policy Verification ---------- */
 #include "dgtl_core.h"
-#include "dgtl_c_api.h"
+#include ""
 #include "dgtl_capabilities.h"
 #include "dgtl_session.h"
-#include "dgtl_simd.h"
+#include ""
 
 #endif /* DGTL_SDK_H */

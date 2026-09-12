@@ -47,8 +47,9 @@ $latestMd = Join-Path $debugLogsDir 'latest-error.md'
 $latestTxt = Join-Path $debugLogsDir 'latest-error.txt'
 $latestJson = Join-Path $debugLogsDir 'latest-error.json'
 
-$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$lastSessionLog = Join-Path $sessionLogDir 'last-session.log'
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$sessionToken = "{0}-{1}" -f $timestamp, $PID
+$lastSessionLog = Join-Path $sessionLogDir ("active-session-{0}.log" -f $sessionToken)
 $lastNonDebugLog = Join-Path $sessionLogDir 'last-nondebug-session.log'
 $timestampedLog = Join-Path $sessionLogDir ("dgtl-session-{0}.log" -f $timestamp)
 $commandText = if ($Args.Count -gt 0) { "dgtl " + ($Args -join ' ') } else { 'dgtl' }
@@ -59,6 +60,7 @@ Set-Content -Path (Join-Path $sessionLogDir 'last-command.txt') -Value $commandT
 # Forward all arguments to the C++ orchestrator while teeing output into canonical debugger logs
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
+$exitCode = 1
 Push-Location $root
 try {
     & $cppOrchestratorExe @Args 2>&1 | Tee-Object -FilePath $lastSessionLog | Tee-Object -FilePath $timestampedLog
@@ -68,6 +70,8 @@ finally {
     Pop-Location
 }
 $ErrorActionPreference = $previousErrorActionPreference
+
+Copy-Item -Path $lastSessionLog -Destination (Join-Path $sessionLogDir 'last-session.log') -Force
 
 Set-Content -Path (Join-Path $sessionLogDir 'last-exit-code.txt') -Value ([string]$exitCode) -Encoding UTF8
 if (-not $isDebugCommand) {

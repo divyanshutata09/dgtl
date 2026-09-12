@@ -48,21 +48,6 @@ export import dgtl.flat_map; // 🚀 Natively import your high-performance flat 
 export import dgtl.sync;     // 🚀 Natively import your ultra-low latency sync primitives
 export import dgtl.target;
 
-export namespace dgtl::ir::gen {
-    struct OpDefMetadata {
-        [[maybe_unused]] std::string_view name{};
-        dgtl::ir::OpCode opcode = dgtl::ir::OpCode::NOP;
-        [[maybe_unused]] std::string_view dialect{};
-        uint64_t trait_bits = 0;
-        uint64_t interface_bits = 0;
-        uint64_t attribute_bits = 0;
-        uint8_t operand_count = 0;
-        [[maybe_unused]] std::string_view result_type{};
-        [[maybe_unused]] std::string_view description{};
-        bool has_result = false;
-    };
-}
-
 export namespace dgtl::ir {
 
 // ============================================================================
@@ -329,6 +314,7 @@ public:
 
     void set_count(size_t v) noexcept;
     void reset() noexcept;
+    [[nodiscard]] bool reserve_capacity(size_t requested_capacity) noexcept;
     void update_shadow_size(size_t s) noexcept;
     void set_shadow_count(size_t v) noexcept;
 

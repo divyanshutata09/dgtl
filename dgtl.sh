@@ -37,7 +37,7 @@ SDK_LIB="$SDK_DIR/lib/x64/dgtl.lib"
 GEN_TOOL_SRC="$ROOT/tools/cpp/dgtl_gen_main.cpp"
 GEN_TOOL_EXE="$BUILD_DIR/tools/dgtl-gen"
 DEF_FILE="$INCLUDE_DIR/dgtl/ir/gen/defs/phase1_core_ops.dgtl_def"
-GEN_HEADER="$INCLUDE_DIR/dgtl/ir/gen/DGTL_Gen_Ops.hpp"
+GEN_HEADER="$INCLUDE_DIR/dgtl/ir/gen/DGTL_Gen_Ops.ixx"
 
 # Main entry points
 PROD_MAIN="$SRC_DIR/main.cpp"
@@ -74,8 +74,7 @@ Categories (recommended):
 
 1) SDK & Infrastructure
   dgtl build-sdk                                  -> build/DGTL_SDK/ (For Myzon Linking)
-                     ships dgtl.h, dgtl_core.h, dgtl_c_api.h,
-                       dgtl_simd.h, dgtl_capabilities.h, dgtl_session.h
+                                      ships dgtl.h
     dgtl api-status --api <internal|public|both>   -> verifies DGTL API lane readiness
   dgtl gen                                        -> Generates DGTL_Gen_Ops.hpp
 
@@ -208,22 +207,45 @@ compile_all_dgtl_modules() {
 
   local cflags=("-std=c++26" "-fmodules-ts" "-O2" "-pipe" "-I$INCLUDE_DIR")
 
-  # Macro partitioned structure avoids metadata collision in Global_IR
+  # Macro partitioned structure matches dgtl_main.cpp topological resolution
   local module_files=(
-    # --- Tier 1: dgtl.ir_core Leaf Partitions ---
+    # --- 1. Foundational Utilities & Base Runtime ---
+    "utils/assert/Assertions.ixx"
+    "utils/bit/Bit_Pack.ixx"
+    "utils/hashing/Hashing.ixx"
+    "utils/container/Flat_Map.ixx"
+    "core/Arena.ixx"
+    "core/Target.ixx"
+    "runtime/NUMA_Runtime.ixx"
+    "core/NUMA.ixx"
+    "runtime/dgtl_bulletins.ixx"
+    "api/Config.ixx"
+
+    # --- 2. IR Base Types, Enums & Traits ---
+    "ir/base/IR_Enums.ixx"
+    "ir/base/IR_Node.ixx"
+    "ir/interfaces/Op_Traits.ixx"
+    "core/ABI.ixx"
+    "ir/base/IR_Traits_Static.ixx"
     "ir/base/IR_Forward.ixx"
     "ir/base/IR_Stream.ixx"
-    "ir/base/IR_SSA.ixx"
     "ir/base/IR_PrintSerialDumper.ixx"
-    "ir/debug/debug_Metadata.ixx"
-    "core/ABI.ixx"
-    "core/ControlFlow.ixx"
-    "semantic/Symbol_Table.ixx"
-    "graph/IR_GraphEdgeClusterRegion.ixx"
-    "core/Function.ixx"
     "ir/base/IR_Verifier.ixx"
-    "ir/evolver/IR_Evolver_Mutation.ixx"
-    "ir/rewrite/Pattern_Rewriter.ixx"
+    "ir/base/IR_SSA.ixx"
+
+    # --- 3. The Complete Semantic Suite ---
+    "semantic/Symbol_Table.ixx"
+    "semantic/Type_System.ixx"
+    "semantic/Type_Checker.ixx"
+    "semantic/Borrow_Checker.ixx"
+    "semantic/Name_Resolver.ixx"
+    "semantic/Constant_Evaluator.ixx"
+    "semantic/Semantic_Analyzer.ixx"
+
+    # --- 4. Core Modules & Formal Verification ---
+    "ir/debug/debug_Metadata.ixx"
+    "core/ControlFlow.ixx"
+    "core/Function.ixx"
     "core/Verified_Formal.ixx"
     "formal/Formal_Verification_SMT.ixx"
     "analysis/Analysis_Interface.ixx"
@@ -232,12 +254,16 @@ compile_all_dgtl_modules() {
     "pass/analysis/Escape_Analysis.ixx"
     "analysis/Speculative_Value_Profiler.ixx"
     "analysis/Liveness_Memory_Dependency_Unified.ixx"
+    "core/Compiler_Context.ixx"
+    "graph/IR_GraphEdgeClusterRegion.ixx"
+    "ir/evolver/IR_Evolver_Mutation.ixx"
+    "ir/rewrite/Pattern_Rewriter.ixx"
     "ir/interop/IR_Analysis_Bridge.ixx"
     
-    # [NEW SUB-MODULE AGGREGATOR 1] Build Core macro interface unit
+    # [SUB-MODULE AGGREGATOR 1] Build Core macro interface unit
     "ir/ir_core_module.ixx"
 
-    # --- Tier 2: dgtl.ir_core Leaf Partitions ---
+    # --- 5. Pipeline Management & Analysis ---
     "pipeline/Pass_Manager_Config.ixx"
     "pipeline/Pass_Manager_Analysis.ixx"
     "pipeline/Pass_Manager_Orchestrator.ixx"
@@ -245,6 +271,8 @@ compile_all_dgtl_modules() {
     "pipeline/GPU_Scheduling.ixx"
     "pipeline/Performance_Probes.ixx"
     "pipeline/Pipeline_Probes.ixx"
+
+    # --- 6. Middle-End Passes ---
     "pass/simd/SimdGScatter_LegalVecRecognizer.ixx"
     "pass/speculative/SpecAliasDCE_InlineVecFusion.ixx"
     "pass/transform/Transform_Control_Predication.ixx"
@@ -256,35 +284,40 @@ compile_all_dgtl_modules() {
     "pass/tuning/Tuning_Optimize.ixx"
     "pass/error_handling/Enhanced_Error_Recovery.ixx"
     
-    # [NEW SUB-MODULE AGGREGATOR 2] Build Passes macro interface unit
+    # [SUB-MODULE AGGREGATOR 2] Build Passes macro interface unit
     "ir/ir_passes_module.ixx"
 
-    # --- Tier 3: dgtl.ir_core Leaf Partitions ---
+    # --- 7. ISA Lowering, Register Allocation & Linker Backend ---
     "ir/gen/DGTL_Gen_Ops.ixx"
-    "backend/lowering/ABI_Lowering.ixx"
-    "backend/lowering/Stack_Spiller.ixx"
-    "isa/target/Wasm_Encoder.ixx"
-    "isa/target/Wasm_Target.ixx"
-    "isa/emitter/NASM_Emitter.ixx"
-    "isa/emitter/MachO_Emitter.ixx"
-    "isa/emitter/ARM32NEON_Emitter.ixx"
-    "isa/emitter/ARM64_Emitter.ixx"
-    "isa/emitter/RiscV64_Emitter.ixx"
-    "isa/emitter/WasmSIMD_FMA_Emitter.ixx"
-    "isa/lowering/Backend_Runtime_Contract.ixx"
-    "isa/lowering/Instruction_Selector.ixx"
-    "isa/lowering/Legalizer.ixx"
-    "isa/lowering/Runtime_Legalization_Policy.ixx"
-    "isa/lowering/X64_Machine_Form_Lowering.ixx"
-    "isa/lowering/gen/X64_ISel_Generated.ixx"
-    "isa/lowering/gen/X64_ISel_Rules_Generated.ixx"
-    "isa/regalloc/X64_Reg_Map.ixx"
+    "backend/codegen/ABI_Lowering.ixx"
+    "backend/codegen/Stack_Spiller.ixx"
+    "isa/wasm/Wasm_Encoder.ixx"
+    "isa/wasm/Wasm_Target.ixx"
+    "isa/x64/NASM_Emitter.ixx"
+    "isa/macho/MachO_Emitter.ixx"
+    "isa/arm32/ARM32_Emitter.ixx"
+    "isa/arm64/ARM64_Emitter.ixx"
+    "isa/riscv64/RiscV64_Emitter.ixx"
+    "isa/wasm/Wasm_SIMD_Emitter.ixx"
+    "isa/common/Backend_Runtime_Contract.ixx"
+    "isa/common/Instruction_Selector.ixx"
+    "isa/common/Legalizer.ixx"
+    "isa/common/Runtime_Legalization_Policy.ixx"
+    "isa/x64/X64_Machine_Form_Lowering.ixx"
+    "isa/x64/Win64_Frame_Lowering.ixx"
+    "isa/x64/X64_ISel_Generated.ixx"
+    "isa/x64/X64_ISel_Rules_Generated.ixx"
+    "isa/x64/X64_Reg_Map.ixx"
     "isa/regalloc/Strike_Live_Manager.ixx"
-    "isa/regalloc/X64_GraphColoring_RegAlloc.ixx"
-    "isa/regalloc/ARM64_RegAlloc.ixx"
+    "isa/x64/X64_GraphColoring_RegAlloc.ixx"
+    "isa/arm64/ARM64_RegAlloc.ixx"
     "ir/runtime/TLS_Flush_Merge.ixx"
     "backend/driver/Backend_Driver_Shared_Utils.ixx"
     "backend/driver/Backend_Driver_API.ixx"
+    "backend/linker/AOT_Linker.ixx"
+    "backend/linker/Sovereign_PE_Linker.ixx"
+    "backend/linker/dgtl_pe_elf_macho_assembler.ixx"
+    "backend/orchestrator/AOT_Orchestrator.ixx"
     "jit/Async_Dopt_Tiered.ixx"
     "jit/Hardware_Scheduler.ixx"
     "jit/JIT_Executor.ixx"
@@ -293,6 +326,8 @@ compile_all_dgtl_modules() {
     "execution/dispatcher/Execution_Dispatcher.ixx"
     "execution/format/Binary_Loader_object.ixx"
     "backend/linker/Linker_Backend.ixx"
+
+    # --- 8. Public & Internal API Translation Facades ---
     "api/Backend_Driver_Shared_Utils.ixx"
     "api/Backend_Driver_API.ixx"
     "api/ABI.ixx"
@@ -305,28 +340,13 @@ compile_all_dgtl_modules() {
     "api/HybridSession.ixx"
     "api/Api_all.ixx"
     
-    # [NEW SUB-MODULE AGGREGATOR 3] Build Backend macro interface unit
+    # [SUB-MODULE AGGREGATOR 3] Build Backend macro interface unit
     "ir/ir_backend_module.ixx"
 
-    # --- Standalone Primitives & Aggregators ---
+    # --- 9. Memory & Task Runtime Extensions ---
     "core/VirtualMemory.ixx"
     "core/MemoryCapability.ixx"
     "core/MemoryManager.ixx"
-    "core/Arena.ixx"
-    "utils/assert/Assertions.ixx"
-    "utils/bit/Bit_Pack.ixx"
-    "api/Config.ixx"
-    "ir/base/IR_Enums.ixx"
-    "core/Compiler_Context.ixx"
-    "utils/hashing/Hashing.ixx"
-    "utils/container/Flat_Map.ixx"
-    "runtime/dgtl_bulletins.ixx"
-    "ir/base/IR_Node.ixx"
-    "core/NUMA.ixx"
-    "runtime/NUMA_Runtime.ixx"
-    "ir/base/IR_Traits_Static.ixx"
-    "core/Target.ixx"
-    "ir/interfaces/Op_Traits.ixx"
     "runtime/TaskScheduler.ixx"
     "runtime/Runtime_Intrinsics.ixx"
     "runtime/Runtime_Context.ixx"
@@ -334,7 +354,7 @@ compile_all_dgtl_modules() {
     "testing/FileCheck.ixx"
     "utils/automata/LUT_FSM_Matcher.ixx"
     
-    # --- Final Aggregation Interfaces ---
+    # --- 10. Global Aggregators ---
     "ir/Global_IR.ixx"
     "dgtl_all.ixx"
   )
@@ -343,7 +363,10 @@ compile_all_dgtl_modules() {
     local src="$INCLUDE_DIR/dgtl/$file"
     [[ "$file" == "dgtl_all.ixx" ]] && src="$INCLUDE_DIR/$file"
     
-    # Compute clear name variants mapping cleanly into object cache structures
+    if [[ ! -f "$src" ]]; then
+      continue
+    fi
+
     local stem="${file//\//_}"
     stem="${stem%.ixx}"
     local obj="$OBJ_DIR/${stem}.o"
@@ -364,7 +387,7 @@ build_sdk() {
 
   echo "[dgtl] Building DGTL Static Library (SDK)..."
   mkdir -p "$SDK_DIR/lib/x64"
-  mkdir -p "$SDK_DIR/include"
+  mkdir -p "$SDK_DIR/include/dgtl_sdk"
   local OBJ_DIR="$BUILD_DIR/obj_sdk"
   mkdir -p "$OBJ_DIR"
 
@@ -372,7 +395,8 @@ build_sdk() {
   g_plusplus=$(find_g_plusplus)
 
   local cflags=("-std=c++26" "-fmodules-ts" "-O3" "-march=native" "-Wall" "-Wextra" "-I$INCLUDE_DIR")
-  local sources=$(find "$SRC_DIR" -name "*.cpp" ! -path "*/apps/*" ! -name "main.cpp" ! -path "*/tools/*")
+  local sources
+  sources=$(find "$SRC_DIR" -name "*.cpp" ! -path "*/apps/*" ! -name "main.cpp" ! -path "*/tools/*")
 
   local objects=()
   for src in $sources; do
@@ -394,8 +418,7 @@ build_sdk() {
   ar rcs "$SDK_LIB" "${objects[@]}"
 
   echo "[dgtl] Packaging Public Headers..."
-  mkdir -p "$SDK_DIR/include/dgtl_sdk"
-  for sdk_header in dgtl.h dgtl_core.h dgtl_c_api.h dgtl_simd.h dgtl_capabilities.h dgtl_session.h; do
+  for sdk_header in dgtl.h; do
     if [[ -f "$INCLUDE_DIR/dgtl_sdk/$sdk_header" ]]; then
       cp "$INCLUDE_DIR/dgtl_sdk/$sdk_header" "$SDK_DIR/include/dgtl_sdk/$sdk_header"
     else
@@ -406,7 +429,7 @@ build_sdk() {
 
   # Programmatically clean up legacy non-namespaced root headers and internal subdirectories
   rm -rf "$SDK_DIR/include/dgtl"
-  for sdk_header in dgtl.h dgtl_core.h dgtl_c_api.h dgtl_simd.h dgtl_capabilities.h dgtl_session.h; do
+  for sdk_header in dgtl.h; do
     rm -f "$SDK_DIR/include/$sdk_header"
   done
   
@@ -669,4 +692,4 @@ case "$command" in
     show_usage
     exit 1
     ;;
-case
+esac

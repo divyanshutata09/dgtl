@@ -57,6 +57,7 @@ import dgtl.ir_core.lowering;
 import dgtl.ir_core.nasm_emitter;
 import dgtl.target;
 import dgtl.ir_core.transform_scalar_core;
+import dgtl.ir_core.linker_backend;
 
 export namespace dgtl::jit {
 
@@ -480,47 +481,22 @@ private:
 
     /**
      * @brief Generates machine code for the optimized speculative branch.
-     * Uses direct binary emission to produce minimal, validated x64 code.
+     * Uses direct-to-binary x64 lowering to synthesize validated native machine code.
      */
     static std::vector<uint8_t> emit_speculative_code(const ir::IRStream& stream) {
-        if (!dgtl::ir::bridge_validation::is_stream_ready(stream)) [[unlikely]] {
-            // Empty stream: return minimal valid function
+        if (!dgtl::ir::bridge_validation::is_stream_ready(stream) || stream.size() == 0) [[unlikely]] {
+            // Minimal valid callable function: push rbp; mov rbp, rsp; nop; pop rbp; ret
             return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 };
         }
 
         std::vector<uint8_t> code;
-        code.reserve(256);  // Typical speculative code is <256 bytes
-        
-        // PROLOGUE: push rbp; mov rbp, rsp (setup frame)
-        code.push_back(0x55);                       // push rbp
-        code.push_back(0x48); code.push_back(0x89);    // mov
-        code.push_back(0xE5);                        // rbp, rsp
-        
-        // BODY: Direct IR emission for speculative nodes
-        for (size_t i = 0; i < stream.size(); ++i) {
-            const ir::IRNode node = stream.get_node(i);
-            
-            if (node.opcode == ir::OpCode::NOP) {
-                code.push_back(0x90);
-            }
-            else if (node.opcode == ir::OpCode::RETURN) {
-                break;
-            }
-            else {
-                code.push_back(0x90);
-            }
+        dgtl::backend::linker::DGTLLinker linker;
+        if (linker.build_raw_x64_machine_code(stream, code) && !code.empty()) {
+            return code;
         }
-        
-        // Ensure we have at least one instruction to prevent empty code
-        if (code.size() <= 3) {
-            code.push_back(0x90);  // Add NOP if too short
-        }
-        
-        // EPILOGUE: pop rbp; ret (cleanup frame + return)
-        code.push_back(0x5D);           // pop rbp
-        code.push_back(0xC3);           // ret
-        
-        return code;
+
+        // Direct fallback: valid minimal x64 callable function
+        return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 };
     }
 };
 

@@ -107,5 +107,7 @@
 [FILE]: D:\TataG\DGTL\include\dgtl\ir\base\IR_Storage.ixx -> [MODULE]: dgtl.ir_storage
 [FILE]: D:\TataG\DGTL\include\dgtl\testing\FileCheck.ixx -> [MODULE]: dgtl.testing.filecheck
 [FILE]: D:\TataG\DGTL\include\dgtl\utils\automata\LUT_FSM_Matcher.ixx -> [MODULE]: dgtl.lut_fsm
+[FILE]: D:\TataG\DGTL\include\dgtl\isa\lowering\Win64_Frame_Lowering.ixx -> [MODULE]: dgtl.backend.isa.win64_frame_lowering
+[FILE]: D:\TataG\DGTL\include\dgtl\backend\linker\Sovereign_PE_Linker.ixx -> [MODULE]: dgtl.backend.linker.pe
 [FILE]: D:\TataG\DGTL\include\dgtl\dgtl_all.ixx -> [MODULE]: dgtl_all
 [FILE]: D:\TataG\DGTL\include\dgtl\runtime\dgtl_gpu.ixx -> [MODULE]: dgtl.runtime.gpu

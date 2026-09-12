@@ -1,24 +1,22 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
- * Repository: github.com/TataG-Systems/DGTL
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
+ * Repository:  github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.2 : THE COMPILER SPEC
- * STEP 38: ESCAPE ANALYSIS (INTER-PROCEDURAL ALIAS RESOLUTION)
- * PILLAR 2: TRANSACTIONAL INTERPROCEDURAL ANALYSIS (SHADOW-BUFFERED)
- * PILLAR 3: THE SENTINEL (GRAPH INTEGRITY VALIDATION)
+/**
+ * @file Escape_Analysis.ixx
+ * @brief DGTL Compiler Spec - Step 38: Escape Analysis (Inter-Procedural Alias Resolution)
  */
 
 module;
 
 #include <cstdlib>
-
 #include <cstdint>
 #include <cstddef>
 #include <vector>
@@ -30,29 +28,18 @@ module;
 
 export module dgtl.ir_core.escape_analysis;
 
+// FIXED: Replaced umbrella 'dgtl.ir_core' import with precise leaf modules
 import dgtl.ir_node;
 import dgtl.ir_enums;
-import dgtl.ir_core;
+import dgtl.ir_core.stream;
 import dgtl.ir_core.pass_manager_config;
-
-// FIXED: Removed the manual forward declarations entirely since they are 
-// fully visible and cleanly integrated directly via dgtl.ir_core!
+import dgtl.ir_core.gen;
 
 export namespace dgtl::pass {
 
 /**
  * @class DGTLEscapeAnalysis
  * @brief Determines which values/pointers escape function scope.
- * * ALGORITHM:
- * 1. For each function in IR, build value dependency graph
- * 2. Trace where each value flows (assignments, function calls, returns)
- * 3. Mark as "escaped" if:
- * - Stored to memory accessible outside function
- * - Passed to external function
- * - Returned from function
- * - Stored to global/static storage
- * 4. Mark as "local" if confined to function scope
- * 5. Annotate IR nodes with escape status for downstream passes
  */
 class DGTLEscapeAnalysis : public dgtl::pipeline::DGTLOptimizationPass {
 private:
@@ -88,7 +75,7 @@ public:
         }
 
         // Phase 2: Propagate escape status through dependency edges
-        propagate_escape_status(value_map);
+        propagate_escape_status(value_map, stream);
 
         // Phase 3: Annotate IR nodes with escape information in shadow tier
         bool modified = annotate_ir_nodes(stream, value_map);
@@ -138,8 +125,9 @@ private:
                 info.value_id = node.result_id;
                 info.definitions.push_back(i);
                 
-                // FIXED: Qualified explicitly to reference the imported dgtl::ir::gen space
-                const bool is_memory_op = dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::Memory);
+                const bool is_memory_op = dgtl::ir::gen::op_implements_interface(
+                    node.opcode, dgtl::ir::gen::GenInterface::Memory
+                );
                 if (is_memory_op) {
                     info.escape_status = EscapeStatus::NoEscape;
                 } else {
@@ -162,11 +150,11 @@ private:
         return map;
     }
 
-    void propagate_escape_status(ValueMap& value_map) {
-        // Fixed-point iteration: propagate escape status until convergence
+    void propagate_escape_status(ValueMap& value_map, const dgtl::ir::IRStream& stream) {
         bool changed = true;
         size_t iterations = 0;
         const size_t MAX_ITERATIONS = 5;
+        const uint32_t actual_stream_size = static_cast<uint32_t>(stream.size());
 
         while (changed && iterations < MAX_ITERATIONS) {
             changed = false;
@@ -177,8 +165,7 @@ private:
 
                 // If any use escapes, value escapes
                 for (uint32_t use_idx : info.uses) {
-                    if (use_idx < stream_size) {
-                        // Simplified: if used in external call, escapes
+                    if (use_idx < actual_stream_size) {
                         if (should_escape_via_use(use_idx)) {
                             info.escape_status = EscapeStatus::GlobalEscape;
                         }
@@ -239,8 +226,6 @@ private:
 
         return modified;
     }
-
-    static constexpr uint32_t stream_size = 10000;
 };
 
 } // namespace dgtl::pass

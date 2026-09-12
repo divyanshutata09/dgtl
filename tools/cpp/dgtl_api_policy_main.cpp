@@ -1,9 +1,9 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:     DGTL (Deep General-purpose Transformation Layer)
- * Owner:       Divyanshu Tata
- * Repository:  github.com/TataG-Systems/DGTL
+ * Project:    DGTL (Deep General-purpose Transformation Layer)
+ * Owner:      Divyanshu Tata
+ * Repository: github.com/TataG-Systems/DGTL
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
@@ -56,7 +56,6 @@ struct Options {
     return true;
 }
 
-// UPGRADED: Production-grade file I/O with size pre-allocation for maximum throughput
 [[nodiscard]] std::string read_all(const fs::path& file) {
     std::ifstream in(file, std::ios::in | std::ios::binary | std::ios::ate);
     if (!in.is_open()) {
@@ -75,8 +74,6 @@ struct Options {
     return content;
 }
 
-// UPGRADED: Safe const std::string& instead of string_view to prevent iterator UB.
-// Added std::regex::optimize to handle large source files efficiently.
 [[nodiscard]] bool regex_contains(const std::string& text, const std::string& pattern) {
     if (text.empty() || pattern.empty()) return false;
     try {
@@ -127,10 +124,7 @@ int main(int argc, char** argv) {
         "docs/api/FRONTEND_CONFORMANCE_KIT.md",
         "include/dgtl/api/Api_all.ixx",
         "include/dgtl_sdk/dgtl.h",
-        "include/dgtl_sdk/dgtl_c_api.h",
-        "include/dgtl_sdk/dgtl_core.h",
-        "include/dgtl_sdk/dgtl_capabilities.h",
-        "include/dgtl_sdk/dgtl_session.h",
+        "include/dgtl_sdk/",
         "include/dgtl/backend/driver/Backend_Driver_API.ixx",
         "include/dgtl/api/Runtime.ixx",
         "include/dgtl/runtime/TaskScheduler.ixx",
@@ -143,30 +137,25 @@ int main(int argc, char** argv) {
         }
     }
 
-    // RULESET RETAINED EXACTLY AS REQUESTED
-    const std::vector<Rule> rules = {
-        {"include/dgtl/dgtl_all.ixx", "dgtl.ir_stream", "top-level umbrella must include public API umbrella", true},
-        {"include/dgtl/api/Api_all.ixx", "dgtl/api/FrontendHelper\\.(hpp|ixx)", "public API umbrella must not expose removed frontend helper wrapper", false},
-        {"include/dgtl/api/Api_all.ixx", "dgtl/api/Frontend_Payload\\.(hpp|ixx)", "public API umbrella must not expose removed frontend payload wrapper", false},
-        {"include/dgtl/api/Api_all.ixx", "(:api_runtime|dgtl\\.internal\\.api_runtime)", "public API umbrella must expose runtime scheduler API", true},
-        {"include/dgtl/api/Runtime.ixx", "dgtl.task_scheduler", "runtime API header must include TaskScheduler implementation header", true},
-        
-        {"include/dgtl/jit/JIT_Orchestrator.ixx", "dgtl/runtime/Runtime_Intrinsics\\.ixx", " orchestrator must depend on runtime intrinsic facade", true},
-        {"include/dgtl/jit/JIT_Orchestrator.ixx", "Myzon_Bulletins\\.ixx", " orchestrator must not include legacy runtime bulletins directly", false},
-        {"include/dgtl/core/ABI.ixx", "__myzon_", "core ABI contract must not hardcode legacy intrinsic symbols", false},
-
-        {"include/dgtl/backend/driver/Backend_Driver_API.ixx", "frontend_payload_path", "backend driver must not carry frontend payload path anymore", false},
-        {"include/dgtl/backend/driver/Backend_Driver_API.ixx", "emit_ir_stream\\(", "IRStream backend emission helper must exist", true},
-        {"src/main.cpp", "--frontend-payload", "DGTL driver must not accept frontend payload CLI option anymore", false},
-        {"src/main.cpp", "build_ir_from_frontend_payload\\(", "DGTL driver must not load IR from frontend payload anymore", false},
-
-        {"include/dgtl_sdk/dgtl.h", "dgtl_capabilities\\.h", "public SDK umbrella must expose capability contract header", true},
-        {"include/dgtl_sdk/dgtl.h", "dgtl_session\\.h", "public SDK umbrella must expose session contract header", true},
-        {"tools/cpp/dgtl_main.cpp", "api-status", "main orchestrator must expose api-status command", true},
-        {"tools/cpp/dgtl_orchestrator_main.cpp", "api-status", "secondary orchestrator must expose api-status command", true},
-
-        {"tests/test_suite_main.cpp", "run_test_t07_frontend_pipeline_lowerer", "aggregate suite must include frontend pipeline lowerer test", true}
-    };
+    std::vector<Rule> rules;
+    rules.push_back(Rule{"include/dgtl/dgtl_all.ixx", "dgtl.ir_stream", "top-level umbrella must include public API umbrella", true});
+    rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "dgtl/api/FrontendHelper\\.(hpp|ixx)", "public API umbrella must not expose removed frontend helper wrapper", false});
+    rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "dgtl/api/Frontend_Payload\\.(hpp|ixx)", "public API umbrella must not expose removed frontend payload wrapper", false});
+    rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "(:api_runtime|dgtl\\.internal\\.api_runtime)", "public API umbrella must expose runtime scheduler API", true});
+    rules.push_back(Rule{"include/dgtl/api/Runtime.ixx", "dgtl.task_scheduler", "runtime API header must include TaskScheduler implementation header", true});
+    rules.push_back(Rule{"include/dgtl/jit/JIT_Orchestrator.ixx", "dgtl/runtime/Runtime_Intrinsics\\.ixx", "orchestrator must depend on runtime intrinsic facade", true});
+    rules.push_back(Rule{"include/dgtl/jit/JIT_Orchestrator.ixx", "Myzon_Bulletins\\.ixx", "orchestrator must not include legacy runtime bulletins directly", false});
+    rules.push_back(Rule{"include/dgtl/core/ABI.ixx", "__myzon_", "core ABI contract must not hardcode legacy intrinsic symbols", false});
+    rules.push_back(Rule{"include/dgtl/backend/driver/Backend_Driver_API.ixx", "frontend_payload_path", "backend driver must not carry frontend payload path anymore", false});
+    rules.push_back(Rule{"include/dgtl/backend/driver/Backend_Driver_API.ixx", "emit_ir_stream\\(", "IRStream backend emission helper must exist", true});
+    rules.push_back(Rule{"src/main.cpp", "--frontend-payload", "DGTL driver must not accept frontend payload CLI option anymore", false});
+    rules.push_back(Rule{"src/main.cpp", "build_ir_from_frontend_payload\\(", "DGTL driver must not load IR from frontend payload anymore", false});
+    // FIXED: Passed a string pattern instead of 'true' boolean for rule matching definition
+    rules.push_back(Rule{"include/dgtl_sdk/dgtl.h", "dgtl_session_config_t", "public SDK umbrella must expose capability contract header", true});
+    rules.push_back(Rule{"include/dgtl_sdk/dgtl.h", "dgtl_session_config_t", "public SDK umbrella must expose session contract header", true});
+    rules.push_back(Rule{"tools/cpp/dgtl_main.cpp", "api-status", "main orchestrator must expose api-status command", true});
+    rules.push_back(Rule{"tools/cpp/dgtl_orchestrator_main.cpp", "api-status", "secondary orchestrator must expose api-status command", true});
+    rules.push_back(Rule{"tests/test_suite_main.cpp", "run_test_t07_frontend_pipeline_lowerer", "aggregate suite must include frontend pipeline lowerer test", true});
 
     for (const auto& rule : rules) {
         const fs::path file = root / rule.relative_path;

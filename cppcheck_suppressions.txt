@@ -1,3 +1,0 @@
-// Production Cppcheck suppressions for DGTL C++20 repository
-missingIncludeSystem
-unusedFunction

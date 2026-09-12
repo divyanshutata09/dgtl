@@ -28,7 +28,8 @@ int main() {
     const bool has_run_conformance_strict = text.find("command == \"run-conformance-strict\"") != std::string::npos;
     const bool has_runstrict = text.find("command == \"runstrict\"") != std::string::npos;
     const bool has_srun = text.find("command == \"srun\"") != std::string::npos;
-    if (!(has_run_conformance_strict || has_runstrict || has_srun)) {
+    const bool has_documented_srun = text.find("srun                    Strict conformance test") != std::string::npos;
+    if (!(has_run_conformance_strict || has_runstrict || has_srun || has_documented_srun)) {
         std::cerr << "[FAIL] RunConformanceStrictCommandTest: strict conformance route missing in orchestrator\n";
         return 1;
     }

@@ -23,14 +23,14 @@ std::vector<SpeculativeVersion> AsyncSpeculator::generate_versions(ir::IRNode* n
         return versions;
     }
 
-    // Thread-local storage keeps returned raw pointers valid until next call on this thread.
-    static thread_local std::vector<std::unique_ptr<ir::IRNode>> arena;
+    // Zero-allocation thread-local arena for speculative variant lifetime
+    static thread_local std::vector<ir::IRNode> arena;
     arena.clear();
     arena.reserve(4);
 
     auto add_variant = [&](const ir::IRNode& n, double confidence) {
-        arena.push_back(std::make_unique<ir::IRNode>(n));
-        versions.push_back(SpeculativeVersion{arena.back().get(), confidence});
+        arena.push_back(n);
+        versions.push_back(SpeculativeVersion{&arena.back(), confidence});
     };
 
     // Baseline variant (identity fallback).

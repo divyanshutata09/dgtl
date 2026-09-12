@@ -38,7 +38,7 @@ void run_named_test(const char* name, void (*fn)()) {
     try {
         fn();
     } catch (const std::exception& ex) {
-        std::cerr << "[DGTL] FAIL  " << name << " — " << ex.what() << "\n";
+        std::cerr << "[DGTL] FAIL  " << name << " - " << ex.what() << "\n";
         throw; // propagate so main returns 1
     }
     std::cout << "[DGTL] PASS  " << name << "\n";

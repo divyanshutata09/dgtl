@@ -37,5 +37,5 @@ void run_test_t07_frontend_pipeline_lowerer() {
             "T07: frontend compatibility file does not export run_test_t07_frontend_pipeline_lowerer");
     }
 
-    std::cout << "[T07] PASS — frontend lowerer compatibility artifact and symbol are present\n";
+    std::cout << "[T07] PASS - frontend lowerer compatibility artifact and symbol are present\n";
 }
