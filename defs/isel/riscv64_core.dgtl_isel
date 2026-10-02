@@ -1,0 +1,33 @@
+# ============================================================================
+# DGTL version 2.2.0  |  riscv64_core.dgtl_isel  (RISC-V 64-bit)
+# Architecture:  RV64GC â€” IMAFDC + Vector Extension RVV 1.0
+# ABI:           LP64D (Standard 64-bit Hardware Floating Point)
+# ============================================================================
+
+include "common_runtime_forms.dgtl_isel"
+include "core_base.dgtl_isel"
+
+# ----------------------------------------------------------------------------
+# RISC-V PEEPHOLE REWRITE & FUSION RULES
+# ----------------------------------------------------------------------------
+
+# FMADD.S / FMADD.D native instructions (RV64F + RV64D)
+rule rv64_fma_f32_standard:       AddF32(MulF32($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=riscv64|rv64, benefit=90, require_fma=true]
+rule rv64_fma_f32_commutative:    AddF32($c, MulF32($a, $b)) -> FMA_F32($a, $b, $c) [targets=riscv64|rv64, benefit=90, require_fma=true]
+rule rv64_fma_f64_standard:       AddF64(MulF64($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=riscv64|rv64, benefit=90, require_fma=true]
+rule rv64_fma_f64_commutative:    AddF64($c, MulF64($a, $b)) -> FMA_F32($a, $b, $c) [targets=riscv64|rv64, benefit=90, require_fma=true]
+
+# Branch fusion (BEQ, BNE, BLT, BGE â€” RV64 encodes compare+branch in one instruction)
+rule rv64_fuse_branch_eq:         BranchCond(CmpEqI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=riscv64|rv64, benefit=25]
+rule rv64_fuse_branch_ne:         BranchCond(CmpNeI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=riscv64|rv64, benefit=25]
+rule rv64_fuse_branch_lt:         BranchCond(CmpLtI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=riscv64|rv64, benefit=25]
+rule rv64_fuse_branch_le:         BranchCond(CmpLeI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=riscv64|rv64, benefit=25]
+rule rv64_fuse_branch_gt:         BranchCond(CmpGtI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=riscv64|rv64, benefit=25]
+rule rv64_fuse_branch_ge:         BranchCond(CmpGeI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=riscv64|rv64, benefit=25]
+
+# ----------------------------------------------------------------------------
+# RISC-V form override
+# RV64F / RV64D provide native FMADD.S and FMADD.D.
+# ----------------------------------------------------------------------------
+
+form fma_f32:                     opcode=FMA_F32,               machine_form=FloatTernaryFma32

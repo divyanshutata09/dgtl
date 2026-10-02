@@ -41,10 +41,11 @@
 import dgtl.arena;
 import dgtl.ir_enums;
 import dgtl.ir_node;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.io;
-import dgtl.ir_core.gen;
-import dgtl.ir_core.formal_verification_smt;
+import dgtl.ir.stream;
+import dgtl.ir.io;
+import dgtl.ir.gen;
+import dgtl.ir_schema;
+import dgtl.formal;
 
 namespace dgtl_verify {
 

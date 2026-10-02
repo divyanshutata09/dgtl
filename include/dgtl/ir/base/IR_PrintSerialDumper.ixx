@@ -33,13 +33,14 @@ module;
 #include <iomanip>
 #include <cstring>   // std::memcpy in IRSerializer I/O helpers
 
-export module dgtl.ir_core.io;
+export module dgtl.ir.io;
 
 // FIXED CYCLIC LOOP: Import parent partitions natively via short-form
 import dgtl.ir_node;
 import dgtl.ir_enums;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.ssa;
+import dgtl.ir_schema;
+import dgtl.ir.stream;
+import dgtl.ir.ssa;
 
 // Imports the external types, standalone modules, and static structural trait models
 
@@ -57,218 +58,10 @@ export namespace dgtl::ir {
 // resolve to the primary name â€” C++ switch forbids duplicate case labels.
 // ============================================================================
 
-[[nodiscard]] inline std::string_view opcode_name(OpCode op) noexcept {
-    switch (op) {
-        // Memory
-        case OpCode::NOP:                   return "NOP";
-        case OpCode::LOAD:                  return "LOAD";
-        case OpCode::STORE:                 return "STORE";
-        case OpCode::REG_MOVE:              return "REG_MOVE";     // alias: MOV
-        case OpCode::LOAD_IMM:              return "LOAD_IMM";     // alias: CONST
-        case OpCode::LEA:                   return "LEA";
-        case OpCode::PREFETCH:              return "PREFETCH";
-        case OpCode::ATOMIC_LOAD:           return "ATOMIC_LOAD";
-        case OpCode::ATOMIC_STORE:          return "ATOMIC_STORE";
-        case OpCode::ATOMIC_FENCE:          return "ATOMIC_FENCE";
-        case OpCode::IMMEDIATE:             return "IMMEDIATE";
-        case OpCode::UNDEF:                 return "UNDEF";
-        case OpCode::PTR_CAST:              return "PTR_CAST";
-        case OpCode::PTR_DIFF:              return "PTR_DIFF";
-        case OpCode::BOOL_SELECT:           return "BOOL_SELECT";
-        case OpCode::GEP:                   return "GEP";
-        case OpCode::PTR_TO_INT:            return "PTR_TO_INT";
-        case OpCode::INT_TO_PTR:            return "INT_TO_PTR";
-        case OpCode::STRING_CONST:          return "STRING_CONST";
-        case OpCode::STRING_LENGTH:         return "STRING_LENGTH";
-        case OpCode::STRING_COMPARE:        return "STRING_COMPARE";
-        case OpCode::STRING_CONCAT:         return "STRING_CONCAT";
-        case OpCode::STRING_SUBSTRING:      return "STRING_SUBSTRING";
-        // Integer i32
-        case OpCode::ADD_I8:                return "ADD_I8";
-        case OpCode::ADD_I32:               return "ADD_I32";
-        case OpCode::SUB_I32:               return "SUB_I32";
-        case OpCode::MUL_I32:               return "MUL_I32";
-        case OpCode::DIV_I32:               return "DIV_I32";
-        case OpCode::SHL_I32:               return "SHL_I32";
-        case OpCode::AND_I32:               return "AND_I32";
-        case OpCode::OR_I32:                return "OR_I32";
-        case OpCode::XOR_I32:               return "XOR_I32";
-        case OpCode::MOD_I32:               return "MOD_I32";
-        case OpCode::SHR_I32:               return "SHR_I32";
-        // Integer i64
-        case OpCode::ADD_I64:               return "ADD_I64";
-        case OpCode::SUB_I64:               return "SUB_I64";
-        case OpCode::MUL_I64:               return "MUL_I64";
-        case OpCode::DIV_I64:               return "DIV_I64";
-        case OpCode::MOD_I64:               return "MOD_I64";
-        case OpCode::AND_I64:               return "AND_I64";
-        case OpCode::OR_I64:                return "OR_I64";
-        case OpCode::XOR_I64:               return "XOR_I64";
-        case OpCode::SHL_I64:               return "SHL_I64";
-        case OpCode::SHR_I64:               return "SHR_I64";
-        case OpCode::ADD_I128:              return "ADD_I128";
-        case OpCode::ADD_I256:              return "ADD_I256";
-        // Float f32
-        case OpCode::ADD_F8:                return "ADD_F8";
-        case OpCode::ADD_BF16:              return "ADD_BF16";
-        case OpCode::ADD_F32:               return "ADD_F32";
-        case OpCode::SUB_F32:               return "SUB_F32";
-        case OpCode::MUL_F32:               return "MUL_F32";
-        case OpCode::DIV_F32:               return "DIV_F32";
-        case OpCode::FMA_F32:               return "FMA_F32";
-        case OpCode::FMA_WIDEN_F16_F32:     return "FMA_WIDEN_F16_F32";
-        // Float f64
-        case OpCode::ADD_F64:               return "ADD_F64";
-        case OpCode::SUB_F64:               return "SUB_F64";
-        case OpCode::MUL_F64:               return "MUL_F64";
-        case OpCode::DIV_F64:               return "DIV_F64";
-        // Compare
-        case OpCode::CMP_EQ_I32:            return "CMP_EQ_I32";
-        case OpCode::CMP_NE_I32:            return "CMP_NE_I32";
-        case OpCode::CMP_LT_I32:            return "CMP_LT_I32";
-        case OpCode::CMP_LE_I32:            return "CMP_LE_I32";
-        case OpCode::CMP_GT_I32:            return "CMP_GT_I32";
-        case OpCode::CMP_GE_I32:            return "CMP_GE_I32";
-        // Bitfield
-        case OpCode::BIT_FIELD_INSERT:      return "BIT_FIELD_INSERT";
-        case OpCode::BIT_FIELD_EXTRACT:     return "BIT_FIELD_EXTRACT";
-        // SIMD
-        case OpCode::GATHER_F32_512:        return "GATHER_F32_512";
-        case OpCode::GATHER_16:             return "GATHER_16";
-        case OpCode::STORE_V512:            return "STORE_V512";
-        case OpCode::VEC_ADD_F32_512:       return "VEC_ADD_F32_512";
-        case OpCode::VEC_MUL_F32_512:       return "VEC_MUL_F32_512";
-        case OpCode::SIMD_BSL_PREDICATE:    return "SIMD_BSL_PREDICATE";
-        case OpCode::FCVTL_F16_TO_F32:      return "FCVTL_F16_TO_F32";
-        case OpCode::FCVTN_F32_TO_F16:      return "FCVTN_F32_TO_F16";
-        case OpCode::VEC_LOAD:              return "VEC_LOAD";
-        case OpCode::VEC_STORE:             return "VEC_STORE";
-        case OpCode::VEC_SHUFFLE:           return "VEC_SHUFFLE";
-        case OpCode::VEC_REDUCE_ADD:        return "VEC_REDUCE_ADD";
-        // Control flow
-        case OpCode::LABEL:                 return "LABEL";
-        case OpCode::GOTO:                  return "GOTO";
-        case OpCode::BRANCH:                return "BRANCH";
-        case OpCode::RET:                   return "RET";          // alias: RETURN
-        case OpCode::BRANCH_COND:           return "BRANCH_COND";
-        case OpCode::BRANCH_COMPARE_FUSED:  return "BRANCH_COMPARE_FUSED";
-        case OpCode::CALL:                  return "CALL";
-        case OpCode::SYSCALL:               return "SYSCALL";
-        case OpCode::GUARD_ALIAS:           return "GUARD_ALIAS";
-        // SSA / speculation
-        case OpCode::GUARD_VALUE:           return "GUARD_VALUE";
-        case OpCode::DEOPT_TRIGGER:         return "DEOPT_TRIGGER";
-        case OpCode::PHI_NODE:              return "PHI_NODE";
-        case OpCode::ASSUME:                return "ASSUME";
-        case OpCode::SELECT:                return "SELECT";
-        case OpCode::PHI_MULTI:             return "PHI_MULTI";
-        case OpCode::TUPLE_PACK:            return "TUPLE_PACK";
-        case OpCode::TUPLE_UNPACK:          return "TUPLE_UNPACK";
-        case OpCode::SELECT_MULTI:          return "SELECT_MULTI";
-        case OpCode::CALL_VARIADIC:         return "CALL_VARIADIC";
-        case OpCode::SWITCH_DISPATCH:       return "SWITCH_DISPATCH";
-        case OpCode::VOLATILE_LOAD:         return "VOLATILE_LOAD";
-        case OpCode::VOLATILE_STORE:        return "VOLATILE_STORE";
-        case OpCode::ACQUIRE_FENCE:         return "ACQUIRE_FENCE";
-        case OpCode::RELEASE_FENCE:         return "RELEASE_FENCE";
-        // Legacy async (deprecated)
-        case OpCode::ASYNC_LAUNCH:          return "ASYNC_LAUNCH";
-        case OpCode::SYNC_BARRIER:          return "SYNC_BARRIER";
-        // GPU
-        case OpCode::GPU_LAUNCH:            return "GPU_LAUNCH";
-        // AI
-        case OpCode::MATMUL_BF16:           return "MATMUL_BF16";
-        case OpCode::MATMUL_FP8:            return "MATMUL_FP8";
-        case OpCode::SDPA_F16:              return "SDPA_F16";
-        case OpCode::SOFTMAX_FAST:          return "SOFTMAX_FAST";
-        case OpCode::LAYER_NORM:            return "LAYER_NORM";
-        case OpCode::ROPE_EMBED:            return "ROPE_EMBED";
-        // HFT
-        case OpCode::READ_TSC:              return "READ_TSC";
-        case OpCode::BRANCH_LIKELY:         return "BRANCH_LIKELY";
-        case OpCode::BRANCH_UNLIKELY:       return "BRANCH_UNLIKELY";
-        case OpCode::CLFLUSH:               return "CLFLUSH";
-        case OpCode::PREFETCH_T0:           return "PREFETCH_T0";
-        case OpCode::SPIN_ACQUIRE:          return "SPIN_ACQUIRE";
-        case OpCode::RING_PUSH_FREE:        return "RING_PUSH_FREE";
-        // Game / spatial math
-        case OpCode::FAST_INV_SQRT:         return "FAST_INV_SQRT";
-        case OpCode::VEC3_CROSS:            return "VEC3_CROSS";
-        case OpCode::VEC4_DOT:              return "VEC4_DOT";
-        case OpCode::MAT4_MUL:              return "MAT4_MUL";
-        case OpCode::QUAT_SLERP:            return "QUAT_SLERP";
-        case OpCode::RAY_AABB_ISECT:        return "RAY_AABB_ISECT";
-        // Ownership
-        case OpCode::OWNERSHIP_ACQUIRE:     return "OWNERSHIP_ACQUIRE";
-        case OpCode::OWNERSHIP_RELEASE:     return "OWNERSHIP_RELEASE";
-        case OpCode::OWNERSHIP_TRANSFER:    return "OWNERSHIP_TRANSFER";
-        case OpCode::ATOMIC_SNAPSHOT:       return "ATOMIC_SNAPSHOT";
-        // Concurrency
-        case OpCode::ASYNC_SPAWN:           return "ASYNC_SPAWN";
-        case OpCode::ASYNC_AWAIT:           return "ASYNC_AWAIT";
-        case OpCode::FIBER_YIELD:           return "FIBER_YIELD";
-        case OpCode::BARRIER_SYNC:          return "BARRIER_SYNC";
-        case OpCode::CHAN_SEND:             return "CHAN_SEND";
-        case OpCode::CHAN_RECV:             return "CHAN_RECV";
-        case OpCode::LOCK_ACQUIRE:          return "LOCK_ACQUIRE";
-        case OpCode::LOCK_RELEASE:          return "LOCK_RELEASE";
-        case OpCode::MEMORY_FENCE:          return "MEMORY_FENCE";
-        case OpCode::THREAD_SPAWN:          return "THREAD_SPAWN";
-        case OpCode::WASM_INVOKE:           return "WASM_INVOKE";
-        case OpCode::FIBER_YIELD_LOOP:      return "FIBER_YIELD_LOOP";
-        case OpCode::SUSPEND_CTX:           return "SUSPEND_CTX";
-        case OpCode::RESUME_CTX:            return "RESUME_CTX";
-        case OpCode::NEON_VADD_Q:           return "NEON_VADD_Q";
-        // DSA
-        case OpCode::GRAPH_BUILD:           return "GRAPH_BUILD";
-        case OpCode::GRAPH_TRAVERSE:        return "GRAPH_TRAVERSE";
-        case OpCode::TREE_BUILD:            return "TREE_BUILD";
-        case OpCode::TREE_TRAVERSE:         return "TREE_TRAVERSE";
-        case OpCode::TRIE_BUILD:            return "TRIE_BUILD";
-        case OpCode::TRIE_LOOKUP:           return "TRIE_LOOKUP";
-        case OpCode::TRIE_INSERT:           return "TRIE_INSERT";
-        case OpCode::DSA_ALLOCATE:          return "DSA_ALLOCATE";
-        case OpCode::DSA_DEALLOCATE:        return "DSA_DEALLOCATE";
-        case OpCode::SCOP_ANALYZE:          return "SCOP_ANALYZE";
-        // Tensor / ML
-        case OpCode::TENSOR_RESHAPE:        return "TENSOR_RESHAPE";
-        case OpCode::TENSOR_REDUCE:         return "TENSOR_REDUCE";
-        case OpCode::TENSOR_TRANSPOSE:      return "TENSOR_TRANSPOSE";
-        case OpCode::TENSOR_SLICE:          return "TENSOR_SLICE";
-        case OpCode::TENSOR_CONCAT:         return "TENSOR_CONCAT";
-        case OpCode::TENSOR_BROADCAST:      return "TENSOR_BROADCAST";
-        case OpCode::TENSOR_GEMM:           return "TENSOR_GEMM";
-        case OpCode::TENSOR_CONV:           return "TENSOR_CONV";
-        case OpCode::TENSOR_POOL:           return "TENSOR_POOL";
-        case OpCode::TENSOR_SOFTMAX:        return "TENSOR_SOFTMAX";
-        // Pipeline / fusion
-        case OpCode::REGION_BEGIN:          return "REGION_BEGIN";
-        case OpCode::REGION_END:            return "REGION_END";
-        case OpCode::FUSION_GROUP:          return "FUSION_GROUP";
-        // Custom dialect ops (non-core ranges)
-        case OpCode::DGTL_FAST_ADD:          return "DGTL_FAST_ADD";
-        case OpCode::DGTL_FAST_FMA:          return "DGTL_FAST_FMA";
-        case OpCode::SIMD_REDUCE_MAX:        return "SIMD_REDUCE_MAX";
-        case OpCode::SIMD_REDUCE_MIN:        return "SIMD_REDUCE_MIN";
-        case OpCode::SIMD_SCATTER_INDIRECT:  return "SIMD_SCATTER_INDIRECT";
-        case OpCode::SIMD_MASKED_STORE:      return "SIMD_MASKED_STORE";
-        case OpCode::SIMD_INTERLEAVED_LOAD:  return "SIMD_INTERLEAVED_LOAD";
-        case OpCode::SIMD_COMPLEX_FMA:       return "SIMD_COMPLEX_FMA";
-        case OpCode::GPU_MEM_TRANSFER:       return "GPU_MEM_TRANSFER";
-        case OpCode::GPU_BARRIER:            return "GPU_BARRIER";
-        case OpCode::GPU_SYNC_POINT:         return "GPU_SYNC_POINT";
-        case OpCode::GPU_KERNEL_FUSE:        return "GPU_KERNEL_FUSE";
-        case OpCode::GPU_ANNOTATE_DEVICE:    return "GPU_ANNOTATE_DEVICE";
-        case OpCode::TENSOR_RELU:            return "TENSOR_RELU";
-        case OpCode::TENSOR_BATCHNORM:       return "TENSOR_BATCHNORM";
-        case OpCode::TENSOR_GATHER:          return "TENSOR_GATHER";
-        case OpCode::TENSOR_SCATTER_D:       return "TENSOR_SCATTER_D";
-        case OpCode::CPP_TEMPLATE_SPEC:      return "CPP_TEMPLATE_SPEC";
-        case OpCode::RUST_BORROW_MUT:        return "RUST_BORROW_MUT";
-        default:
-            return "CUSTOM_DIALECT";
-    }
-}
+// [[nodiscard]] inline std::string_view opcode_name(OpCode op) noexcept {
+//     return schema::name(op);
+// } // this is already in ir_schema.ixx
+
 
 // ============================================================================
 // INTERNAL HELPERS (flag decoders â€” used by both printer and MIR dumper)
@@ -873,3 +666,7 @@ static_assert(IRSerializer::kHeaderBytes == 16u,
     "IRSerializer: header must be 16 bytes");
 
 } // namespace dgtl::ir
+
+
+
+

@@ -27,7 +27,7 @@ module;
 #include <iterator>
 #include <limits>
 
-// Defang legacy environment macros before entering named module scope
+// Normalize compiler-environment macros before entering named module scope
 #ifdef CONST
 #   undef CONST
 #endif
@@ -35,15 +35,17 @@ module;
 #   undef PHI
 #endif
 
-export module dgtl.ir_core.ssa;
+export module dgtl.ir.ssa;
 
 // FIXED: Removed the fwd module import to kill the type ambiguity loop completely
-import dgtl.ir_core.stream;
-import dgtl.ir_core.gen;
+import dgtl.ir.stream;
+import dgtl.ir.gen;
 import dgtl.ir_node;
 import dgtl.ir_enums;
-import dgtl.flat_map; // Natively import your ultra-low latency flat map layers
-import dgtl.sync;     // Natively import your progressive backoff spin synchronization primitives
+import dgtl.ir_schema;
+import dgtl.ir_contracts;
+import dgtl.flat_map;
+import dgtl.sync;
 
 export namespace dgtl::ir::ssa {
 
@@ -1458,3 +1460,7 @@ static_assert(sizeof(BlockId) == 4u, "BlockId must be 4 bytes");
 static_assert(sizeof(NodeId)  == 4u, "NodeId must be 4 bytes");
 
 } // namespace dgtl::ir::ssa
+
+
+
+

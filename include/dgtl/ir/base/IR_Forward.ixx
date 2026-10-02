@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -16,22 +16,12 @@ module;
 // Global Module Fragment
 #include <cstdint>
 
-export module dgtl.ir_core.fwd;
+export module dgtl.ir.fwd;
 
-export namespace dgtl::ir {
+// Re-export canonical stream and CFG primitives from dgtl.ir.stream to avoid
+// conflicting module-linkage forward declarations across named modules.
+export import dgtl.ir.stream;
 
-    // Core IR interfaces
-    class IRStream;
 
-    // Profiling and backend metadata
-    struct BackendProfile;
-    struct ProfilingData;
 
-    // CFG primitives
-    struct IRBasicBlock;
-    struct CFGEdge;
 
-    // Stable enum ABI
-    enum class CFGEdgeKind : std::uint8_t;
-
-}

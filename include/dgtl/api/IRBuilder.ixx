@@ -17,7 +17,6 @@ module;
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -26,19 +25,21 @@ module;
 #include <utility>
 #include <vector>
 
-export module dgtl.internal.api_ir_builder;
+export module dgtl.api.ir_builder;
 
 // Import native compiler base interfaces and consolidated parent modules
-import dgtl.ir_core;
+import dgtl.ir;
 import dgtl.op_traits;
 import dgtl.compiler_context;
-import dgtl.numa_runtime;
-import dgtl.dgtl_bulletins;
+import dgtl.runtime.numa;
+import dgtl.runtime.bulletins;
 import dgtl.hashing;
 
 // Native import of the verified semantic layer
-import dgtl.ir_core.semantic;
-import dgtl.ir_core.type_system;
+import dgtl.hir.semantic;
+import dgtl.hir.type_system;
+import dgtl.ir_core.abi;
+import dgtl.formal;
 
 export namespace dgtl {
 namespace api {
@@ -144,11 +145,14 @@ public:
     };
 
     struct EmitOutcome {
+        static constexpr size_t npos = static_cast<size_t>(-1);
+
         EmitStatus status = EmitStatus::Ok;
         uint32_t result_id = ir::INVALID_SLOT;
-        size_t node_index = static_cast<size_t>(-1);
+        size_t node_index = npos;
 
         [[nodiscard]] bool ok() const noexcept { return status == EmitStatus::Ok; }
+        [[nodiscard]] explicit operator bool() const noexcept { return ok(); }
     };
 
     /**
@@ -220,6 +224,66 @@ public:
         return active_stream_ != nullptr && !active_stream_->is_null();
     }
 
+    /**
+     * @brief RAII guard for insertion-point state.
+     *
+     * Restores the exact stream that was active when the guard was created.
+     * Stream-local constant caches are invalidated by set_insertion_point(),
+     * so nested builder operations cannot leak insertion-point state.
+     */
+    class InsertionPointGuard final {
+    public:
+        explicit InsertionPointGuard(IRBuilder& builder) noexcept
+            : builder_(builder), saved_stream_(builder.active_stream_) {}
+
+        ~InsertionPointGuard() noexcept {
+            builder_.set_insertion_point(saved_stream_);
+        }
+
+        InsertionPointGuard(const InsertionPointGuard&) = delete;
+        InsertionPointGuard& operator=(const InsertionPointGuard&) = delete;
+
+    private:
+        IRBuilder& builder_;
+        ir::IRStream* saved_stream_;
+    };
+
+    [[nodiscard]] InsertionPointGuard save_insertion_point() noexcept {
+        return InsertionPointGuard(*this);
+    }
+
+    /**
+     * @brief Canonical construction path for a raw IR node.
+     *
+     * This is intentionally shared by low-level ABI bridges so they cannot
+     * drift from IRBuilder's generated-node construction semantics.
+     */
+    [[nodiscard]] static ir::IRNode make_raw_node(
+        ir::OpCode opcode,
+        uint32_t result_id = ir::INVALID_SLOT,
+        uint32_t op_a = ir::INVALID_SLOT,
+        uint32_t op_b = ir::INVALID_SLOT,
+        uint32_t op_c = ir::INVALID_SLOT,
+        uint16_t flags = ir::Flags::NONE,
+        uint32_t logic_flags = 0) noexcept {
+        ir::IRNode node = ir::gen::make_generated_node(
+            opcode, result_id, op_a, op_b, op_c, flags);
+        node.logic_flags = logic_flags;
+        node.refresh_intent_hash();
+        return node;
+    }
+
+    /**
+     * @brief Clear the active insertion point and all stream-local caches.
+     *
+     * The builder remains usable and can later be attached to another
+     * stream with set_insertion_point().  Stream-local constant caches are
+     * never allowed to leak across insertion-point boundaries.
+     */
+    void clear_insertion_point() noexcept {
+        set_insertion_point(nullptr);
+    }
+
     void set_semantic_context(dgtl::semantic::SymbolTable* sym_tab, dgtl::semantic::TypeSystem* type_sys) noexcept {
         active_symbol_table_ = sym_tab;
         active_type_system_ = type_sys;
@@ -269,17 +333,21 @@ public:
                                              std::span<const uint32_t> extra_result_ids = {},
                                              uint32_t effect_set = 0) noexcept {
         if (!has_insertion_point()) {
-            return EmitOutcome{EmitStatus::MissingInsertionPoint, ir::INVALID_SLOT, static_cast<size_t>(-1)};
+            return EmitOutcome{EmitStatus::MissingInsertionPoint, ir::INVALID_SLOT, EmitOutcome::npos};
         }
         pre_emit_numa_();
 
         const ir::gen::OpDefMetadata* meta = lookup_generated_op_def_(op_name);
         if (meta == nullptr) {
-            return EmitOutcome{EmitStatus::UnknownOperation, ir::INVALID_SLOT, static_cast<size_t>(-1)};
+            return EmitOutcome{EmitStatus::UnknownOperation, ir::INVALID_SLOT, EmitOutcome::npos};
         }
 
-        if (operands.size() < meta->operand_count && meta->operand_count != static_cast<uint8_t>(-1)) {
-            return EmitOutcome{EmitStatus::OperandArityMismatch, ir::INVALID_SLOT, static_cast<size_t>(-1)};
+        // operand_count == UINT8_MAX is the generated metadata convention
+        // for variadic operations. Fixed-arity operations must match exactly;
+        // silently accepting extra operands can corrupt sidecar semantics.
+        if (meta->operand_count != static_cast<uint8_t>(-1) &&
+            operands.size() != static_cast<size_t>(meta->operand_count)) {
+            return EmitOutcome{EmitStatus::OperandArityMismatch, ir::INVALID_SLOT, EmitOutcome::npos};
         }
 
         const uint32_t rid = meta->has_result
@@ -290,13 +358,15 @@ public:
         const uint32_t b = operands.size() > 1 ? operands[1] : ir::INVALID_SLOT;
         const uint32_t c = operands.size() > 2 ? operands[2] : ir::INVALID_SLOT;
 
-        const size_t node_idx = active_stream_->size();
         ir::IRNode node = ir::gen::make_generated_node(meta->opcode, rid, a, b, c, flags);
         if (operands.size() > 3) {
             node.logic_flags = operands[3];
             node.refresh_intent_hash();
         }
-        active_stream_->push_back(node);
+        const size_t node_idx = append_active_node_(node);
+        if (node_idx == static_cast<size_t>(-1)) {
+            return EmitOutcome{EmitStatus::MissingInsertionPoint, ir::INVALID_SLOT, node_idx};
+        }
         annotate_result_type_(*active_stream_, meta->opcode, rid);
         try_annotate_debug_and_type_(*active_stream_, node_idx);
 
@@ -417,7 +487,7 @@ public:
                                              uint32_t effect_set = 0) noexcept {
         const ir::gen::OpDefMetadata* meta = lookup_generated_op_def_(opcode);
         if (meta == nullptr) {
-            return EmitOutcome{EmitStatus::UnknownOperation, ir::INVALID_SLOT, static_cast<size_t>(-1)};
+            return EmitOutcome{EmitStatus::UnknownOperation, ir::INVALID_SLOT, EmitOutcome::npos};
         }
         return emit_generated(meta->name, operands, result_id, flags, extra_result_ids, effect_set);
     }
@@ -432,7 +502,7 @@ public:
             return node;
         }
         node.intent_hash = ir::IRNode::calculate_hash(node.opcode, node.result_id, node.op_a, node.op_b, node.op_c);
-        active_stream_->push_back(node);
+        (void)append_node_(*active_stream_, node);
         annotate_result_type_(*active_stream_, node.opcode, node.result_id);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return node;
@@ -446,9 +516,9 @@ public:
                                          uint32_t op_c = ir::INVALID_SLOT,
                                          uint16_t flags = ir::Flags::NONE) {
         pre_emit_numa_();
-        ir::IRNode node = ir::gen::make_generated_node(opcode, result_id, op_a, op_b, op_c, flags);
+        ir::IRNode node = make_raw_node(opcode, result_id, op_a, op_b, op_c, flags);
         if (active_stream_ != nullptr && !active_stream_->is_null()) {
-            active_stream_->push_back(node);
+            (void)append_node_(*active_stream_, node);
             annotate_result_type_(*active_stream_, opcode, result_id);
             try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         }
@@ -467,7 +537,7 @@ public:
     [[nodiscard]] uint32_t create_mul(ir::IRStream& stream, uint32_t result_id,
                                       uint32_t lhs_id, uint32_t rhs_id,
                                       ir::OpCode opcode = ir::OpCode::MUL_I32) noexcept {
-        stream.push_back(ir::gen::make_generated_node(opcode, result_id, lhs_id, rhs_id));
+        (void)append_node_(stream, ir::gen::make_generated_node(opcode, result_id, lhs_id, rhs_id));
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
     }
@@ -483,7 +553,7 @@ public:
      */
     [[nodiscard]] uint32_t create_fma(ir::IRStream& stream, uint32_t result_id,
                                       uint32_t a_id, uint32_t b_id, uint32_t c_id) noexcept {
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::FMA_F32, result_id, a_id, b_id, c_id));
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::FMA_F32, result_id, a_id, b_id, c_id));
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
     }
@@ -499,7 +569,7 @@ public:
                                            uint64_t value) noexcept {
         const uint32_t hi = static_cast<uint32_t>(value >> 32u);
         const uint32_t lo = static_cast<uint32_t>(value & 0xFFFFFFFFu);
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::LOAD_IMM, result_id, hi, lo));
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::LOAD_IMM, result_id, hi, lo));
         annotate_result_type_(stream, ir::OpCode::LOAD_IMM, result_id);
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
@@ -508,7 +578,7 @@ public:
     [[nodiscard]] uint32_t create_string_const(ir::IRStream& stream,
                                                uint32_t result_id,
                                                uint32_t string_handle) noexcept {
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::STRING_CONST, result_id, string_handle));
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::STRING_CONST, result_id, string_handle));
         annotate_result_type_(stream, ir::OpCode::STRING_CONST, result_id);
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
@@ -523,7 +593,7 @@ public:
     [[nodiscard]] uint32_t create_string_length(ir::IRStream& stream,
                                                 uint32_t result_id,
                                                 uint32_t string_id) noexcept {
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::STRING_LENGTH, result_id, string_id));
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::STRING_LENGTH, result_id, string_id));
         annotate_result_type_(stream, ir::OpCode::STRING_LENGTH, result_id);
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
@@ -533,7 +603,7 @@ public:
                                                  uint32_t result_id,
                                                  uint32_t lhs_string_id,
                                                  uint32_t rhs_string_id) noexcept {
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::STRING_COMPARE, result_id, lhs_string_id, rhs_string_id));
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::STRING_COMPARE, result_id, lhs_string_id, rhs_string_id));
         annotate_result_type_(stream, ir::OpCode::STRING_COMPARE, result_id);
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
@@ -543,7 +613,7 @@ public:
                                                 uint32_t result_id,
                                                 uint32_t lhs_string_id,
                                                 uint32_t rhs_string_id) noexcept {
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::STRING_CONCAT, result_id, lhs_string_id, rhs_string_id));
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::STRING_CONCAT, result_id, lhs_string_id, rhs_string_id));
         annotate_result_type_(stream, ir::OpCode::STRING_CONCAT, result_id);
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
@@ -554,7 +624,7 @@ public:
                                                    uint32_t string_id,
                                                    uint32_t start_id,
                                                    uint32_t length_id) noexcept {
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::STRING_SUBSTRING,
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::STRING_SUBSTRING,
                                                       result_id,
                                                       string_id,
                                                       start_id,
@@ -702,7 +772,7 @@ public:
             automatic_flags |= (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE);
         }
 
-        stream.push_back(ir::gen::make_generated_node(ir::OpCode::LABEL, fn_id, fn_id,
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::LABEL, fn_id, fn_id,
                                                       ir::INVALID_SLOT, ir::INVALID_SLOT,
                                                       automatic_flags));
         if (active_symbol_table_ && function_name) {
@@ -716,7 +786,7 @@ public:
 
         const uint16_t automatic_flags = ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE;
 
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::LABEL, fn_slot, fn_slot,
                                          ir::INVALID_SLOT, ir::INVALID_SLOT,
                                          automatic_flags));
@@ -728,7 +798,7 @@ public:
 
     void emit_label(uint32_t label_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::LABEL,
                                          static_cast<uint32_t>(label_id)));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
@@ -739,7 +809,7 @@ public:
 
     void emit_goto(uint32_t target_label_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::GOTO,
                                          allocate_temp_id(),
                                          target_label_id,
@@ -753,7 +823,7 @@ public:
                           uint32_t then_label_id,
                           uint32_t else_label_id = ir::INVALID_SLOT) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::BRANCH_COND,
                                          allocate_temp_id(),
                                          cond_id,
@@ -786,7 +856,7 @@ public:
                                                             call_flags);
         call_node.logic_flags = arg2;
         call_node.refresh_intent_hash();
-        active_stream_->push_back(call_node);
+        (void)append_node_(*active_stream_, call_node);
         annotate_result_type_(*active_stream_, ir::OpCode::CALL, rid);
         try_annotate_debug_and_type_(*active_stream_, node_idx);
         if (args.size() > 3 && active_stream_->size() > node_idx) {
@@ -820,7 +890,7 @@ public:
                                                             call_flags);
         call_node.logic_flags = arg2;
         call_node.refresh_intent_hash();
-        active_stream_->push_back(call_node);
+        (void)append_node_(*active_stream_, call_node);
         annotate_result_type_(*active_stream_, ir::OpCode::CALL_VARIADIC, rid);
         try_annotate_debug_and_type_(*active_stream_, node_idx);
         if (args.size() > 3 && active_stream_->size() > node_idx) {
@@ -833,7 +903,7 @@ public:
     
     void emit_ret(uint32_t value_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::RET,
                                          allocate_temp_id(),
                                          value_id,
@@ -1007,7 +1077,7 @@ public:
                          uint32_t node_id = ir::INVALID_SLOT) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
         const uint32_t nid = (node_id == ir::INVALID_SLOT) ? allocate_temp_id() : node_id;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::STORE_V512, nid, addr_id, val_id));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
@@ -1022,7 +1092,7 @@ public:
         const uint32_t rid = (result_id == ir::INVALID_SLOT)
                                  ? allocate_temp_id()
                                  : result_id;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::LOAD, rid, addr_id));
         annotate_result_type_(*active_stream_, ir::OpCode::LOAD, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
@@ -1035,7 +1105,7 @@ public:
         const uint32_t nid = (node_id == ir::INVALID_SLOT)
                                  ? allocate_temp_id()
                                  : node_id;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::STORE, nid, addr_id, val_id));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
@@ -1050,7 +1120,7 @@ public:
                            uint32_t node_id = ir::INVALID_SLOT) noexcept {
         if (!has_insertion_point()) return;
         const uint32_t nid = (node_id == ir::INVALID_SLOT) ? allocate_temp_id() : node_id;
-        active_stream_->push_back(ir::gen::make_generated_node(ir::OpCode::ATOMIC_STORE,
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(ir::OpCode::ATOMIC_STORE,
                                                                 nid,
                                                                 addr_id,
                                                                 value_id,
@@ -1229,7 +1299,7 @@ public:
         if (!has_insertion_point() || dst_slot == ir::INVALID_SLOT || src_slot == ir::INVALID_SLOT) {
             return ir::INVALID_SLOT;
         }
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::REG_MOVE,
                                          ir::INVALID_SLOT,
                                          dst_slot,
@@ -1254,7 +1324,7 @@ public:
             return ir::INVALID_SLOT;
         }
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(ir::OpCode::SELECT, rid, cond_id, true_id, false_id));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(ir::OpCode::SELECT, rid, cond_id, true_id, false_id));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
     }
@@ -1271,7 +1341,7 @@ public:
             return ir::INVALID_SLOT;
         }
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(ir::OpCode::PTR_TO_INT, rid, ptr_id));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(ir::OpCode::PTR_TO_INT, rid, ptr_id));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
     }
@@ -1287,7 +1357,7 @@ public:
             return ir::INVALID_SLOT;
         }
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(ir::OpCode::INT_TO_PTR, rid, value_id));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(ir::OpCode::INT_TO_PTR, rid, value_id));
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
     }
@@ -1309,7 +1379,7 @@ public:
             return ir::INVALID_SLOT;
         }
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(opcode, rid, a, b, c, flags));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(opcode, rid, a, b, c, flags));
         annotate_result_type_(*active_stream_, opcode, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
@@ -1373,7 +1443,7 @@ public:
         ir::IRNode n = ir::gen::make_generated_node(ir::OpCode::SDPA_F16, rid, q, k, v);
         n.logic_flags = mask; // Pack 4th operand into logic_flags
         n.refresh_intent_hash();
-        active_stream_->push_back(n);
+        (void)append_node_(*active_stream_, n);
         annotate_result_type_(*active_stream_, ir::OpCode::SDPA_F16, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
@@ -1537,7 +1607,7 @@ public:
 
     void emit_execution_boundary(uint32_t mask_register_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
-        active_stream_->push_back(
+        (void)append_node_(*active_stream_, 
             ir::gen::make_generated_node(ir::OpCode::BARRIER_SYNC,
                                          allocate_temp_id(),
                                          mask_register_id,
@@ -1584,6 +1654,40 @@ private:
     uint16_t current_nullability_flags_ = 0;
     uint16_t current_aux_flags_ = 0;
     bool has_type_info_ = false;
+
+    /**
+     * @brief Single low-level insertion primitive used by the builder facade.
+     *
+     * All builder paths converge here before touching IRStream.  This keeps
+     * the invariants centralized: NUMA preparation, canonical IR-node hash,
+     * insertion, and the exact node index used by sidecars/debug metadata.
+     *
+     * This is intentionally private: callers must use typed/generated
+     * builder APIs rather than mutating IRStream directly.
+     */
+    [[nodiscard]] size_t append_node_(ir::IRStream& stream, ir::IRNode node) noexcept {
+        pre_emit_numa_();
+
+        // The canonical IR node owns its structural hash. Recompute at the
+        // final insertion boundary so nodes modified immediately before
+        // insertion cannot carry stale integrity metadata.
+        node.refresh_intent_hash();
+
+        const size_t node_idx = stream.size();
+        stream.push_back(node);
+        return node_idx;
+    }
+
+    /**
+     * @brief Append a node to the active insertion point.
+     * @return inserted node index, or npos when no insertion point exists.
+     */
+    [[nodiscard]] size_t append_active_node_(ir::IRNode node) noexcept {
+        if (!has_insertion_point()) {
+            return static_cast<size_t>(-1);
+        }
+        return append_node_(*active_stream_, node);
+    }
 
     void try_annotate_debug_and_type_(ir::IRStream& stream, size_t node_idx) noexcept {
         if (&stream == active_stream_ && active_debug_store_) {
@@ -1632,7 +1736,7 @@ private:
         const uint32_t rid = (result_id == ir::INVALID_SLOT)
                                  ? allocate_temp_id()
                                  : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(op, rid, lhs, rhs));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(op, rid, lhs, rhs));
         annotate_result_type_(*active_stream_, op, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
@@ -1648,7 +1752,7 @@ private:
         const uint32_t rid = (result_id == ir::INVALID_SLOT)
                                  ? allocate_temp_id()
                                  : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(op, rid, lhs, rhs));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(op, rid, lhs, rhs));
         annotate_result_type_(*active_stream_, op, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
@@ -1662,7 +1766,7 @@ private:
             return ir::INVALID_SLOT;
         }
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(op, rid, value));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(op, rid, value));
         annotate_result_type_(*active_stream_, op, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
@@ -1678,7 +1782,7 @@ private:
             return ir::INVALID_SLOT;
         }
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
-        active_stream_->push_back(ir::gen::make_generated_node(op, rid, a, b, c));
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(op, rid, a, b, c));
         annotate_result_type_(*active_stream_, op, rid);
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return rid;
@@ -1687,7 +1791,7 @@ private:
     void emit_side_effect_op0_(ir::OpCode op) noexcept {
         pre_emit_numa_();
         if (!has_insertion_point()) return;
-        active_stream_->push_back(ir::gen::make_generated_node(op,
+        (void)append_node_(*active_stream_, ir::gen::make_generated_node(op,
                                                                allocate_temp_id(),
                                                                ir::INVALID_SLOT,
                                                                ir::INVALID_SLOT,

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -78,20 +78,20 @@ public:
         if (base_) [[likely]] {
             size_ = aligned;
             mode_ = PageMode::Standard;
-            standard_malloc_backing_ = false;
+            standard_allocation_backing_ = false;
             return true;
         }
 
-        // Preserve fallback semantics for unprivileged or constrained systems.
-        const std::size_t fallback_aligned = virtual_memory::align_up(aligned, 64u);
-        if (fallback_aligned < aligned || fallback_aligned == 0u) [[unlikely]] {
+        // Standard aligned allocation strategy for systems where page-backed reservation is unavailable.
+        const std::size_t aligned_malloc_size = virtual_memory::align_up(aligned, 64u);
+        if (aligned_malloc_size < aligned || aligned_malloc_size == 0u) [[unlikely]] {
             return false;
         }
-        base_ = static_cast<std::uint8_t*>(std::aligned_alloc(64u, fallback_aligned));
+        base_ = static_cast<std::uint8_t*>(std::aligned_alloc(64u, aligned_malloc_size));
         if (base_) [[likely]] {
-            size_ = fallback_aligned;
+            size_ = aligned_malloc_size;
             mode_ = PageMode::Standard;
-            standard_malloc_backing_ = true;
+            standard_allocation_backing_ = true;
             return true;
         }
 #endif
@@ -113,12 +113,12 @@ private:
         // Fixed: Synced to support unified two-parameter custom layout signature 
         virtual_memory::release_pages(base_, size_);
 #else
-        if (standard_malloc_backing_) {
+        if (standard_allocation_backing_) {
             std::free(base_);
         } else {
             virtual_memory::release_pages(base_, size_);
         }
-        standard_malloc_backing_ = false;
+        standard_allocation_backing_ = false;
 #endif
 
         base_ = nullptr;
@@ -130,8 +130,9 @@ private:
     std::size_t size_ = 0u;
     PageMode mode_ = PageMode::Unknown;
 #if !defined(_WIN32)
-    bool standard_malloc_backing_ = false;
+    bool standard_allocation_backing_ = false;
 #endif
 };
 
 } // namespace dgtl::core
+

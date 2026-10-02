@@ -339,3 +339,4 @@ public:
 };
 
 } // namespace dgtl::core
+

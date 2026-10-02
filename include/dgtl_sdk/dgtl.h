@@ -1,439 +1,581 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Project:     DGTL â€” Deep General-purpose Transformation Layer
  * Owner:       Divyanshu Tata
  * Repository:  github.com/TataG-Systems/DGTL
  *
- * This software is the proprietary property of TataG Systems.
- * Unauthorized copying, modification, or distribution is strictly prohibited.
+ * DGTL is a high-velocity, frontend-agnostic compiler IR and execution SDK.
+ * This header defines the authoritative, production-grade C17 ABI surface
+ * and provides an ergonomic C++20 zero-overhead RAII abstraction layer.
+ *
+ * ABI Version: 4 (Upgraded to true Graph SSA & Universal ABI Marshalling)
  */
 
 #ifndef DGTL_SDK_H
 #define DGTL_SDK_H
 
+/* ============================================================================
+ * SECTION 0 â€” PLATFORM DETECTION, VISIBILITY & ATTRIBUTE MACROS
+ * ========================================================================== */
+
+#if defined(_WIN32) || defined(_WIN64)
+#  if defined(DGTL_BUILD_SHARED)
+#    define DGTL_API   __declspec(dllexport)
+#  elif defined(DGTL_IMPORT_SHARED)
+#    define DGTL_API   __declspec(dllimport)
+#  else
+#    define DGTL_API
+#  endif
+#  define DGTL_CALL    __cdecl
+#  define DGTL_WEAK
+#elif defined(__GNUC__) || defined(__clang__)
+#  define DGTL_API     __attribute__((visibility("default")))
+#  define DGTL_CALL
+#  define DGTL_WEAK    __attribute__((weak))
+#else
+#  define DGTL_API
+#  define DGTL_CALL
+#  define DGTL_WEAK
+#endif
+
+/* Compiler-portable safety attributes */
+#if defined(__GNUC__) || defined(__clang__)
+#  define DGTL_WARN_UNUSED     __attribute__((warn_unused_result))
+#  define DGTL_DEPRECATED(m)   __attribute__((deprecated(m)))
+#  define DGTL_NONNULL(...)    
+#  define DGTL_PURE            __attribute__((pure))
+#  define DGTL_CONST_FN        __attribute__((const))
+#  define DGTL_LIKELY(x)       __builtin_expect(!!(x), 1)
+#  define DGTL_UNLIKELY(x)     __builtin_expect(!!(x), 0)
+#  define DGTL_RETURNS_NONNULL __attribute__((returns_nonnull))
+#elif defined(_MSC_VER)
+#  define DGTL_WARN_UNUSED     _Check_return_
+#  define DGTL_DEPRECATED(m)   __declspec(deprecated(m))
+#  define DGTL_NONNULL(...)
+#  define DGTL_PURE
+#  define DGTL_CONST_FN
+#  define DGTL_LIKELY(x)       (x)
+#  define DGTL_UNLIKELY(x)     (x)
+#  define DGTL_RETURNS_NONNULL
+#else
+#  define DGTL_WARN_UNUSED
+#  define DGTL_DEPRECATED(m)
+#  define DGTL_NONNULL(...)
+#  define DGTL_PURE
+#  define DGTL_CONST_FN
+#  define DGTL_LIKELY(x)       (x)
+#  define DGTL_UNLIKELY(x)     (x)
+#  define DGTL_RETURNS_NONNULL
+#endif
+
+#ifdef __cplusplus
+#  define DGTL_NOEXCEPT    noexcept
+#  define DGTL_NODISCARD   [[nodiscard]]
+#else
+#  define DGTL_NOEXCEPT
+#  define DGTL_NODISCARD   DGTL_WARN_UNUSED
+#endif
+
+/* ============================================================================
+ * SECTION 1 â€” C STANDARD INCLUDES
+ * ========================================================================== */
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* ============================================================================
- * SECTION 1: SYSTEM ANCHORS, VISIBILITY & CALLING CONVENTIONS
- * ============================================================================ */
+ * SECTION 2 â€” ABI VERSIONING & SENTINELS
+ * ========================================================================== */
 
-#if defined(DGTL_SHARED_BUILD)
-  #if defined(_WIN32) || defined(_WIN64)
-    #define DGTL_API __declspec(dllexport)
-  #else
-    #define DGTL_API __attribute__((visibility("default")))
-  #endif
-#elif defined(DGTL_SHARED_IMPORT)
-  #if defined(_WIN32) || defined(_WIN64)
-    #define DGTL_API __declspec(dllimport)
-  #else
-    #define DGTL_API
-  #endif
-#else
-  #define DGTL_API
-#endif
+#define DGTL_VERSION_MAJOR      2u
+#define DGTL_VERSION_MINOR      1u
+#define DGTL_VERSION_PATCH      0u
+#define DGTL_VERSION_SUFFIX     "-SOVEREIGN"
+#define DGTL_VERSION_STRING     "2.1.0-SOVEREIGN"
+#define DGTL_ABI_VERSION        4u
+#define DGTL_ABI_MIN_COMPAT     3u
 
-#if defined(_WIN32) || defined(_WIN64)
-  #define DGTL_CALL __cdecl
-#else
-  #define DGTL_CALL
-#endif
+#define DGTL_INVALID_SLOT       (0xFFFFFFFFu)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ---------- Global Identity & Versioning ---------- */
-#define DGTL_VERSION_MAJOR   2
-#define DGTL_VERSION_MINOR   0
-#define DGTL_VERSION_PATCH   0
-#define DGTL_VERSION_STRING  "2.0.0-SOVEREIGN"
-
-DGTL_API const char* DGTL_CALL dgtl_version_string(void);
-
-/* ---------- System Constants & Sentinels ---------- */
-#define DGTL_INVALID_SLOT    0xFFFFFFFFu
-#define DGTL_NULL_REGISTER   0x00000000u
-#define DGTL_MAX_DIAGNOSTICS 512u
-
-/* ---------- Opaque Engine Handles ---------- */
-typedef struct dgtl_context           dgtl_context_t;
-typedef struct dgtl_stream            dgtl_stream_t;
-typedef struct dgtl_session           dgtl_session_t;
-typedef struct dgtl_runtime_context   dgtl_runtime_context_t;
-typedef struct dgtl_type_descriptor   dgtl_type_descriptor_t;
-
-typedef uint16_t dgtl_op_t;
-typedef uint32_t dgtl_value_t;
-
-/* ---------- Runtime Task Function Pointer Definition ---------- */
-typedef void (DGTL_CALL *dgtl_runtime_task_fn)(void* arg);
-
 /* ============================================================================
- * SECTION 2: CANONICAL OPCODES (FULL 178 BIR SPECIFICATION)
- * ============================================================================ */
+ * SECTION 3 â€” TYPE-SAFE OPAQUE HANDLES
+ * ========================================================================== */
 
-#ifndef DGTL_OPCODE_DEFINED
-#define DGTL_OPCODE_DEFINED
-typedef enum dgtl_opcode {
-    /* --- Core Dataflow & Memory --- */
-    DGTL_OP_NOP                   = 0,
-    DGTL_OP_LOAD                  = 10,
-    DGTL_OP_STORE                 = 11,
-    DGTL_OP_REG_MOVE              = 12,
-    DGTL_OP_MOV                   = 12,
-    DGTL_OP_LOAD_IMM              = 13,
-    DGTL_OP_CONST                 = 13,
-    DGTL_OP_LEA                   = 14,
-    DGTL_OP_PREFETCH              = 15,
-    DGTL_OP_ATOMIC_LOAD           = 16,
-    DGTL_OP_ATOMIC_STORE          = 17,
-    DGTL_OP_ATOMIC_FENCE          = 18,
-    DGTL_OP_IMMEDIATE             = 80,
-    DGTL_OP_PTR_CAST              = 81,
-    DGTL_OP_PTR_DIFF              = 82,
-    DGTL_OP_BOOL_SELECT           = 83,
-    DGTL_OP_STRING_CONST          = 84,
-    DGTL_OP_STRING_LENGTH         = 85,
-    DGTL_OP_STRING_COMPARE        = 86,
-    DGTL_OP_STRING_CONCAT         = 87,
-    DGTL_OP_STRING_SUBSTRING      = 88,
-    DGTL_OP_UNDEF                 = 89,
-    DGTL_OP_GEP                   = 90,
-    DGTL_OP_PTR_TO_INT            = 91,
-    DGTL_OP_INT_TO_PTR            = 92,
-    DGTL_OP_LABEL                 = 98,
-    DGTL_OP_GOTO                  = 99,
-    DGTL_OP_BRANCH                = 100,
-    DGTL_OP_RET                   = 101,
-    DGTL_OP_RETURN                = 101,
-    DGTL_OP_BRANCH_COND           = 102,
-    DGTL_OP_BRANCH_COMPARE_FUSED  = 103,
-    DGTL_OP_CALL                  = 110,
-    DGTL_OP_SYSCALL               = 111,
-    DGTL_OP_GUARD_ALIAS           = 120,
+typedef struct { uint32_t id; } dgtl_value_t;
+typedef struct { uint32_t id; } dgtl_block_t;
+typedef struct { uint32_t id; } dgtl_type_t;
+typedef struct { uint32_t id; } dgtl_func_t;
+typedef struct { uint32_t id; } dgtl_str_t;
+typedef struct { uint32_t id; } dgtl_pass_t;
 
-    /* --- Integer Arithmetic --- */
-    DGTL_OP_ADD_I8                = 19,
-    DGTL_OP_ADD_I32               = 20,
-    DGTL_OP_SUB_I32               = 21,
-    DGTL_OP_MUL_I32               = 22,
-    DGTL_OP_DIV_I32               = 23,
-    DGTL_OP_SHL_I32               = 24,
-    DGTL_OP_AND_I32               = 25,
-    DGTL_OP_OR_I32                = 26,
-    DGTL_OP_XOR_I32               = 27,
-    DGTL_OP_MOD_I32               = 28,
-    DGTL_OP_SHR_I32               = 29,
-    DGTL_OP_ADD_I64               = 60,
-    DGTL_OP_SUB_I64               = 61,
-    DGTL_OP_MUL_I64               = 62,
-    DGTL_OP_DIV_I64               = 63,
-    DGTL_OP_MOD_I64               = 64,
-    DGTL_OP_AND_I64               = 65,
-    DGTL_OP_OR_I64                = 66,
-    DGTL_OP_XOR_I64               = 67,
-    DGTL_OP_SHL_I64               = 68,
-    DGTL_OP_SHR_I64               = 69,
-    DGTL_OP_ADD_I128              = 130,
-    DGTL_OP_ADD_I256              = 131,
-
-    /* --- Floating Point Arithmetic --- */
-    DGTL_OP_ADD_F8                = 132,
-    DGTL_OP_ADD_BF16              = 133,
-    DGTL_OP_ADD_F32               = 30,
-    DGTL_OP_SUB_F32               = 31,
-    DGTL_OP_MUL_F32               = 32,
-    DGTL_OP_DIV_F32               = 33,
-    DGTL_OP_FMA_F32               = 35,
-    DGTL_OP_FMA_WIDEN_F16_F32     = 36,
-    DGTL_OP_ADD_F64               = 70,
-    DGTL_OP_SUB_F64               = 71,
-    DGTL_OP_MUL_F64               = 72,
-    DGTL_OP_DIV_F64               = 73,
-
-    /* --- Comparisons & Bit Manipulation --- */
-    DGTL_OP_CMP_EQ_I32            = 40,
-    DGTL_OP_CMP_NE_I32            = 41,
-    DGTL_OP_CMP_LT_I32            = 42,
-    DGTL_OP_CMP_LE_I32            = 43,
-    DGTL_OP_CMP_GT_I32            = 44,
-    DGTL_OP_CMP_GE_I32            = 45,
-    DGTL_OP_BIT_FIELD_INSERT      = 50,
-    DGTL_OP_BIT_FIELD_EXTRACT     = 51,
-
-    /* --- Speculative SSA Operations --- */
-    DGTL_OP_GUARD_VALUE           = 200,
-    DGTL_OP_DEOPT_TRIGGER         = 201,
-    DGTL_OP_PHI_NODE              = 202,
-    DGTL_OP_ASSUME                = 203,
-    DGTL_OP_SELECT                = 204,
-
-    /* --- Phase D: Multi-Result & Variadic Operations --- */
-    DGTL_OP_PHI_MULTI             = 0x0200,
-    DGTL_OP_TUPLE_PACK            = 0x0201,
-    DGTL_OP_TUPLE_UNPACK          = 0x0202,
-    DGTL_OP_SELECT_MULTI          = 0x0203,
-    DGTL_OP_CALL_VARIADIC         = 0x0204,
-    DGTL_OP_SWITCH_DISPATCH       = 0x0205,
-    DGTL_OP_VOLATILE_LOAD         = 0x0206,
-    DGTL_OP_VOLATILE_STORE        = 0x0207,
-    DGTL_OP_ACQUIRE_FENCE         = 0x0208,
-    DGTL_OP_RELEASE_FENCE         = 0x0209,
-
-    /* --- Acceleration & Concurrency --- */
-    DGTL_OP_ASYNC_LAUNCH          = 300,
-    DGTL_OP_SYNC_BARRIER          = 301,
-    DGTL_OP_GPU_LAUNCH            = 400,
-    DGTL_OP_OWNERSHIP_ACQUIRE     = 410,
-    DGTL_OP_OWNERSHIP_RELEASE     = 411,
-    DGTL_OP_OWNERSHIP_TRANSFER    = 412,
-    DGTL_OP_ATOMIC_SNAPSHOT       = 413,
-    DGTL_OP_ASYNC_SPAWN           = 420,
-    DGTL_OP_ASYNC_AWAIT           = 421,
-    DGTL_OP_FIBER_YIELD           = 422,
-    DGTL_OP_BARRIER_SYNC          = 423,
-    DGTL_OP_CHAN_SEND             = 424,
-    DGTL_OP_CHAN_RECV             = 425,
-    DGTL_OP_LOCK_ACQUIRE          = 426,
-    DGTL_OP_LOCK_RELEASE          = 427,
-    DGTL_OP_MEMORY_FENCE          = 428,
-    DGTL_OP_THREAD_SPAWN          = 429,
-    DGTL_OP_WASM_INVOKE           = 0x410,
-    DGTL_OP_FIBER_YIELD_LOOP      = 0x411,
-    DGTL_OP_SUSPEND_CTX           = 0x412,
-    DGTL_OP_RESUME_CTX            = 0x413,
-    DGTL_OP_NEON_VADD_Q           = 0x414,
-
-    /* --- Structural DSA & SCoP Transforms --- */
-    DGTL_OP_GRAPH_BUILD           = 440,
-    DGTL_OP_GRAPH_TRAVERSE        = 441,
-    DGTL_OP_TREE_BUILD            = 442,
-    DGTL_OP_TREE_TRAVERSE         = 443,
-    DGTL_OP_TRIE_BUILD            = 444,
-    DGTL_OP_TRIE_LOOKUP           = 445,
-    DGTL_OP_TRIE_INSERT           = 446,
-    DGTL_OP_DSA_ALLOCATE          = 447,
-    DGTL_OP_DSA_DEALLOCATE        = 448,
-    DGTL_OP_SCOP_ANALYZE          = 449,
-
-    /* --- Tensors & Neural Operators --- */
-    DGTL_OP_TENSOR_RESHAPE        = 460,
-    DGTL_OP_TENSOR_REDUCE         = 461,
-    DGTL_OP_TENSOR_TRANSPOSE      = 462,
-    DGTL_OP_TENSOR_SLICE          = 463,
-    DGTL_OP_TENSOR_CONCAT         = 464,
-    DGTL_OP_TENSOR_BROADCAST      = 465,
-    DGTL_OP_TENSOR_GEMM           = 466,
-    DGTL_OP_TENSOR_CONV           = 467,
-    DGTL_OP_TENSOR_POOL           = 468,
-    DGTL_OP_TENSOR_SOFTMAX        = 469,
-    DGTL_OP_MATMUL_BF16           = 0x480,
-    DGTL_OP_MATMUL_FP8            = 0x481,
-    DGTL_OP_SDPA_F16              = 0x482,
-    DGTL_OP_SOFTMAX_FAST          = 0x483,
-    DGTL_OP_LAYER_NORM            = 0x484,
-    DGTL_OP_ROPE_EMBED            = 0x485,
-
-    /* --- SIMD Vector Operations --- */
-    DGTL_OP_GATHER_F32_512        = 0x500,
-    DGTL_OP_GATHER_16             = 0x501,
-    DGTL_OP_STORE_V512            = 0x502,
-    DGTL_OP_VEC_ADD_F32_512       = 0x503,
-    DGTL_OP_VEC_MUL_F32_512       = 0x504,
-    DGTL_OP_SIMD_BSL_PREDICATE    = 0x507,
-    DGTL_OP_FCVTL_F16_TO_F32      = 0x508,
-    DGTL_OP_FCVTN_F32_TO_F16      = 0x509,
-    DGTL_OP_VEC_LOAD              = 0x510,
-    DGTL_OP_VEC_STORE             = 0x511,
-    DGTL_OP_VEC_SHUFFLE           = 0x512,
-    DGTL_OP_VEC_REDUCE_ADD        = 0x513,
-
-    /* --- HFT Low-Latency Hardware Primitives --- */
-    DGTL_OP_READ_TSC              = 0x600,
-    DGTL_OP_BRANCH_LIKELY         = 0x601,
-    DGTL_OP_BRANCH_UNLIKELY       = 0x602,
-    DGTL_OP_CLFLUSH               = 0x603,
-    DGTL_OP_PREFETCH_T0           = 0x604,
-    DGTL_OP_SPIN_ACQUIRE          = 0x605,
-    DGTL_OP_RING_PUSH_FREE        = 0x606,
-
-    /* --- Spatial Game Mathematics --- */
-    DGTL_OP_FAST_INV_SQRT         = 0x700,
-    DGTL_OP_VEC3_CROSS            = 0x701,
-    DGTL_OP_VEC4_DOT              = 0x702,
-    DGTL_OP_MAT4_MUL              = 0x703,
-    DGTL_OP_QUAT_SLERP            = 0x704,
-    DGTL_OP_RAY_AABB_ISECT        = 0x705,
-
-    /* --- Pipeline Regions & Fusion --- */
-    DGTL_OP_REGION_BEGIN          = 600,
-    DGTL_OP_REGION_END            = 601,
-    DGTL_OP_FUSION_GROUP          = 602,
-
-    /* --- Custom Extensible Dialects --- */
-    DGTL_OP_CUSTOM_DIALECT_START  = 0x8000,
-    DGTL_OP_DGTL_FAST_ADD         = 0x8001,
-    DGTL_OP_DGTL_FAST_FMA         = 0x8002,
-    DGTL_OP_SIMD_REDUCE_MAX       = 0x8010,
-    DGTL_OP_SIMD_REDUCE_MIN       = 0x8011,
-    DGTL_OP_SIMD_SCATTER_INDIRECT = 0x8012,
-    DGTL_OP_SIMD_MASKED_STORE     = 0x8013,
-    DGTL_OP_SIMD_INTERLEAVED_LOAD = 0x8014,
-    DGTL_OP_SIMD_COMPLEX_FMA      = 0x8015,
-    DGTL_OP_GPU_MEM_TRANSFER      = 0x8020,
-    DGTL_OP_GPU_BARRIER           = 0x8021,
-    DGTL_OP_GPU_SYNC_POINT        = 0x8022,
-    DGTL_OP_GPU_KERNEL_FUSE       = 0x8023,
-    DGTL_OP_GPU_ANNOTATE_DEVICE   = 0x8024,
-    DGTL_OP_TENSOR_RELU           = 0x8030,
-    DGTL_OP_TENSOR_BATCHNORM      = 0x8031,
-    DGTL_OP_TENSOR_GATHER         = 0x8032,
-    DGTL_OP_TENSOR_SCATTER_D      = 0x8033,
-    DGTL_OP_CPP_TEMPLATE_SPEC     = 0x8101,
-    DGTL_OP_RUST_BORROW_MUT       = 0x8102,
-    DGTL_OP_SENTINEL              = 0xFFFF
-} dgtl_opcode_t;
+#ifdef __cplusplus
+#  define DGTL_INVALID_VALUE  (dgtl_value_t{0xFFFFFFFFu})
+#  define DGTL_INVALID_BLOCK  (dgtl_block_t{0xFFFFFFFFu})
+#  define DGTL_INVALID_TYPE   (dgtl_type_t {0xFFFFFFFFu})
+#  define DGTL_INVALID_FUNC   (dgtl_func_t {0xFFFFFFFFu})
+#  define DGTL_INVALID_STR    (dgtl_str_t  {0xFFFFFFFFu})
+#  define DGTL_INVALID_PASS   (dgtl_pass_t {0xFFFFFFFFu})
+#else
+#  define DGTL_INVALID_VALUE  ((dgtl_value_t){0xFFFFFFFFu})
+#  define DGTL_INVALID_BLOCK  ((dgtl_block_t){0xFFFFFFFFu})
+#  define DGTL_INVALID_TYPE   ((dgtl_type_t ){0xFFFFFFFFu})
+#  define DGTL_INVALID_FUNC   ((dgtl_func_t ){0xFFFFFFFFu})
+#  define DGTL_INVALID_STR    ((dgtl_str_t  ){0xFFFFFFFFu})
+#  define DGTL_INVALID_PASS   ((dgtl_pass_t ){0xFFFFFFFFu})
 #endif
 
+static inline bool dgtl_value_is_valid(dgtl_value_t v) { return v.id != 0xFFFFFFFFu; }
+static inline bool dgtl_block_is_valid(dgtl_block_t b) { return b.id != 0xFFFFFFFFu; }
+static inline bool dgtl_type_is_valid(dgtl_type_t  t) { return t.id != 0xFFFFFFFFu && t.id != 0u; }
+static inline bool dgtl_func_is_valid(dgtl_func_t  f) { return f.id != 0xFFFFFFFFu; }
+static inline bool dgtl_pass_is_valid(dgtl_pass_t  p) { return p.id != 0xFFFFFFFFu && p.id != 0u; }
+
 /* ============================================================================
- * SECTION 3: CANONICAL TYPE CODES & BITFIELD DOMAINS
- * ============================================================================ */
+ * SECTION 4 â€” OPAQUE STRUCT DECLARATIONS
+ * ========================================================================== */
 
-typedef enum dgtl_type_code {
-    DGTL_TYPE_VOID_T        = 0,
-    DGTL_TYPE_BOOL          = 1,
-    DGTL_TYPE_PREDICATE     = 2,
-    DGTL_TYPE_ADDRESS_SPACE = 3,
-    DGTL_TYPE_PTR           = 4,
-    DGTL_TYPE_STRING_HANDLE = 5,
-    DGTL_TYPE_I4            = 6,
-    DGTL_TYPE_I8            = 7,
-    DGTL_TYPE_I16           = 8,
-    DGTL_TYPE_I32           = 9,
-    DGTL_TYPE_I64           = 10,
-    DGTL_TYPE_I128          = 11,
-    DGTL_TYPE_I256          = 12,
-    DGTL_TYPE_I512          = 13,
-    DGTL_TYPE_F8            = 14,
-    DGTL_TYPE_BF16          = 15,
-    DGTL_TYPE_F16           = 16,
-    DGTL_TYPE_F32           = 17,
-    DGTL_TYPE_F64           = 18,
-    DGTL_TYPE_F128          = 19,
-    DGTL_TYPE_VEC3_F32      = 20,
-    DGTL_TYPE_VEC4_F32      = 21,
-    DGTL_TYPE_MAT4X4_F32    = 22,
-    DGTL_TYPE_QUAT_F32      = 23,
-    DGTL_TYPE_VECTOR_F32X16 = 24,
-    DGTL_TYPE_VECTOR_I32X16 = 25,
-    DGTL_TYPE_VECTOR_F16X32 = 26,
-    DGTL_TYPE_TENSOR_FP8    = 27,
-    DGTL_TYPE_TENSOR_BF16   = 28,
-    DGTL_TYPE_TENSOR_F32    = 29,
-    DGTL_TYPE_TENSOR_I64    = 30
-} dgtl_type_code_t;
+typedef struct dgtl_context          dgtl_context_t;
+typedef struct dgtl_stream           dgtl_stream_t;
+typedef struct dgtl_session          dgtl_session_t;
+typedef struct dgtl_runtime_context  dgtl_runtime_context_t;
+typedef struct dgtl_func_builder     dgtl_func_builder_t;
 
-/* 16-bit Semantic Flags */
-#define DGTL_FLAG_NONE               0x0000u
-#define DGTL_FLAG_IS_CONST           0x0001u
-#define DGTL_FLAG_IS_DEAD            0x0002u
-#define DGTL_FLAG_HAS_SIDE_EFFECTS   0x0004u
-#define DGTL_FLAG_IS_VOLATILE        0x0008u
-#define DGTL_FLAG_IS_SIMD            0x0010u
-#define DGTL_FLAG_IS_VECTOR_LANE     0x0020u
-#define DGTL_FLAG_IS_PREDICATED      0x0040u
-#define DGTL_FLAG_IS_FUSED           0x0080u
-#define DGTL_FLAG_IS_OPTIMIZED       0x0100u
-#define DGTL_FLAG_IS_LOOP_INVARIANT  0x0200u
-#define DGTL_FLAG_IS_SPEC_CONST      0x0400u
-#define DGTL_FLAG_NON_TEMPORAL       0x0800u
-#define DGTL_FLAG_IS_BRANCH          0x1000u
-#define DGTL_FLAG_IS_RETURN          0x2000u
-#define DGTL_FLAG_IS_GUARD           0x4000u
-#define DGTL_FLAG_MAY_DEOPT          0x8000u
+/* ============================================================================
+ * SECTION 5 â€” CANONICAL TYPE SYSTEM DESCRIPTORS
+ * ========================================================================== */
 
-/* 32-bit Extended Execution & Memory Flags */
-#define DGTL_EXT_MEM_RELAXED         0x00000001u
-#define DGTL_EXT_MEM_ACQUIRE         0x00000002u
-#define DGTL_EXT_MEM_RELEASE         0x00000004u
-#define DGTL_EXT_MEM_SEQ_CST         0x00000008u
-#define DGTL_EXT_NO_ALIAS            0x00000010u
-#define DGTL_EXT_MAY_ALIAS           0x00000020u
-#define DGTL_EXT_FAST_MATH           0x00000040u
-#define DGTL_EXT_STRICT_FP           0x00000080u
-#define DGTL_EXT_LATENCY_CRITICAL    0x00000100u
-#define DGTL_EXT_THROUGHPUT_MODE     0x00000200u
-#define DGTL_EXT_PREFETCH_HINT       0x00000400u
-#define DGTL_EXT_VECTORIZABLE        0x00000800u
-#define DGTL_EXT_VEC_WIDTH_128       0x00001000u
-#define DGTL_EXT_VEC_WIDTH_256       0x00002000u
-#define DGTL_EXT_VEC_WIDTH_512       0x00004000u
-#define DGTL_EXT_HOT_PATH            0x00020000u
-#define DGTL_EXT_COLD_PATH           0x00040000u
-#define DGTL_EXT_DETERMINISTIC       0x80000000u
+#ifdef __cplusplus
+#  define DGTL_MKTYPE(n)  (dgtl_type_t{(uint32_t)(n)})
+#else
+#  define DGTL_MKTYPE(n)  ((dgtl_type_t){(uint32_t)(n)})
+#endif
 
-/* Auxiliary Pointer Address Space Flags */
-#define DGTL_AUX_NONE                    0x00000000u
-#define DGTL_AUX_PTR_ADDRSPACE_GENERIC   0x00000001u
-#define DGTL_AUX_PTR_ADDRSPACE_GLOBAL    0x00000002u
-#define DGTL_AUX_PTR_ADDRSPACE_SHARED    0x00000004u
-#define DGTL_AUX_PTR_ADDRSPACE_LOCAL     0x00000008u
-#define DGTL_AUX_PTR_ADDRSPACE_CONSTANT  0x00000010u
-#define DGTL_AUX_PREDICATE_CANONICAL     0x00000020u
+#define DGTL_TYPE_VOID        DGTL_MKTYPE(0)
+#define DGTL_TYPE_BOOL        DGTL_MKTYPE(1)
+#define DGTL_TYPE_PRED        DGTL_MKTYPE(2)
+#define DGTL_TYPE_PTR         DGTL_MKTYPE(4)
+#define DGTL_TYPE_STR         DGTL_MKTYPE(5)
+#define DGTL_TYPE_I4          DGTL_MKTYPE(6)
+#define DGTL_TYPE_I8          DGTL_MKTYPE(7)
+#define DGTL_TYPE_I16         DGTL_MKTYPE(8)
+#define DGTL_TYPE_I32         DGTL_MKTYPE(9)
+#define DGTL_TYPE_I64         DGTL_MKTYPE(10)
+#define DGTL_TYPE_I128        DGTL_MKTYPE(11)
+#define DGTL_TYPE_I256        DGTL_MKTYPE(12)
+#define DGTL_TYPE_I512        DGTL_MKTYPE(13)
+#define DGTL_TYPE_F8          DGTL_MKTYPE(14)
+#define DGTL_TYPE_BF16        DGTL_MKTYPE(15)
+#define DGTL_TYPE_F16         DGTL_MKTYPE(16)
+#define DGTL_TYPE_F32         DGTL_MKTYPE(17)
+#define DGTL_TYPE_F64         DGTL_MKTYPE(18)
+#define DGTL_TYPE_F128        DGTL_MKTYPE(19)
+#define DGTL_TYPE_VEC3_F32    DGTL_MKTYPE(20)
+#define DGTL_TYPE_VEC4_F32    DGTL_MKTYPE(21)
+#define DGTL_TYPE_MAT4_F32    DGTL_MKTYPE(22)
+#define DGTL_TYPE_QUAT_F32    DGTL_MKTYPE(23)
+#define DGTL_TYPE_VECF32X16   DGTL_MKTYPE(24)
+#define DGTL_TYPE_VECI32X16   DGTL_MKTYPE(25)
+#define DGTL_TYPE_VECF16X32   DGTL_MKTYPE(26)
+#define DGTL_TYPE_TENSOR_FP8  DGTL_MKTYPE(27)
+#define DGTL_TYPE_TENSOR_BF16 DGTL_MKTYPE(28)
+#define DGTL_TYPE_TENSOR_F32  DGTL_MKTYPE(29)
+#define DGTL_TYPE_TENSOR_I64  DGTL_MKTYPE(30)
 
-/* Phase D Semantic Verification Flags */
-#define DGTL_PHASED_IS_VARIADIC_OP       0x00000001u
-#define DGTL_PHASED_HAS_MULTI_RESULT     0x00000002u
-#define DGTL_PHASED_EFFECT_TRACKED       0x00000004u
-#define DGTL_PHASED_DOMINANCE_ROOT       0x00000008u
-#define DGTL_PHASED_TYPE_VERIFIED        0x00000010u
-#define DGTL_PHASED_EFFECT_VERIFIED      0x00000020u
-#define DGTL_PHASED_DOMINANCE_VERIFIED   0x00000040u
+static inline bool dgtl_type_is_integer(dgtl_type_t t) { return t.id >= 6u && t.id <= 13u; }
+static inline bool dgtl_type_is_float(dgtl_type_t t)   { return t.id >= 14u && t.id <= 19u; }
+static inline bool dgtl_type_is_vector(dgtl_type_t t)  { return t.id >= 20u && t.id <= 26u; }
+static inline bool dgtl_type_is_tensor(dgtl_type_t t)  { return t.id >= 27u && t.id <= 30u; }
 
-/* Backend Architectures */
+/* ============================================================================
+ * SECTION 6 â€” ERROR & DIAGNOSTIC CONTRACT
+ * ========================================================================== */
+
+typedef enum dgtl_severity {
+    DGTL_SEV_INFO    = 0,
+    DGTL_SEV_WARNING = 1,
+    DGTL_SEV_ERROR   = 2,
+    DGTL_SEV_FATAL   = 3
+} dgtl_severity_t;
+
+typedef struct dgtl_err {
+    int32_t         code;
+    dgtl_severity_t severity;
+} dgtl_err_t;
+
+typedef dgtl_err_t dgtl_status_t;
+
+#ifdef __cplusplus
+#  define DGTL_OK          (dgtl_err_t{0, DGTL_SEV_INFO})
+#  define DGTL_ERR(c)      (dgtl_err_t{(int32_t)(c), DGTL_SEV_ERROR})
+#  define DGTL_WARN(c)     (dgtl_err_t{(int32_t)(c), DGTL_SEV_WARNING})
+#else
+#  define DGTL_OK          ((dgtl_err_t){0, DGTL_SEV_INFO})
+#  define DGTL_ERR(c)      ((dgtl_err_t){(int32_t)(c), DGTL_SEV_ERROR})
+#  define DGTL_WARN(c)     ((dgtl_err_t){(int32_t)(c), DGTL_SEV_WARNING})
+#endif
+
+#define DGTL_IS_OK(e)      ((e).code == 0)
+#define DGTL_IS_ERR(e)     ((e).code != 0)
+
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_err_message(dgtl_err_t err) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_get_last_error(void) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_clear_error(void) DGTL_NOEXCEPT;
+
+typedef struct dgtl_diag {
+    dgtl_severity_t severity;
+    uint32_t        node_index;
+    uint32_t        source_line;
+    uint16_t        source_col;
+    uint16_t        code;
+    const char*     message;
+} dgtl_diag_t;
+
+#define DGTL_DIAG_OK                  0x0000u
+#define DGTL_DIAG_TYPE_MISMATCH       0x0001u
+#define DGTL_DIAG_INVALID_OPERAND     0x0002u
+#define DGTL_DIAG_UNSUPPORTED_OP      0x0003u
+#define DGTL_DIAG_UNREACHABLE_BLOCK   0x0004u
+#define DGTL_DIAG_PHI_PRED_MISMATCH   0x0005u
+#define DGTL_DIAG_MISSING_TERMINATOR  0x0006u
+#define DGTL_DIAG_OVERFLOW_ARGS       0x0010u
+#define DGTL_DIAG_NULL_PARAM          0x0020u
+#define DGTL_DIAG_SIMD_WIDTH_MISMATCH 0x0030u
+
+/* ============================================================================
+ * SECTION 7 â€” UNIVERSAL CALL MARSHALLER (Solves ABI & Register Corruption)
+ * ========================================================================== */
+
+typedef enum dgtl_abi_arg_kind {
+    DGTL_ARG_I64    = 0,
+    DGTL_ARG_F32    = 1,
+    DGTL_ARG_F64    = 2,
+    DGTL_ARG_PTR    = 3,
+    DGTL_ARG_VEC512 = 4
+} dgtl_abi_arg_kind_t;
+
+typedef struct dgtl_abi_arg {
+    dgtl_abi_arg_kind_t kind;
+    union {
+        int64_t  i64;
+        float    f32;
+        double   f64;
+        void*    ptr;
+        uint8_t  vec512[64];
+    } val;
+} dgtl_abi_arg_t;
+
+typedef struct dgtl_call_args {
+    const dgtl_abi_arg_t* args;
+    size_t                count;
+} dgtl_call_args_t;
+
+/* ============================================================================
+ * SECTION 8 â€” COMPARISON & MEMORY PREDICATES
+ * ========================================================================== */
+
+typedef enum dgtl_icmp_pred {
+    DGTL_ICMP_EQ  = 0,
+    DGTL_ICMP_NE  = 1,
+    DGTL_ICMP_SLT = 2,
+    DGTL_ICMP_SLE = 3,
+    DGTL_ICMP_SGT = 4,
+    DGTL_ICMP_SGE = 5,
+    DGTL_ICMP_ULT = 6,
+    DGTL_ICMP_ULE = 7,
+    DGTL_ICMP_UGT = 8,
+    DGTL_ICMP_UGE = 9
+} dgtl_icmp_pred_t;
+
+typedef enum dgtl_fcmp_pred {
+    DGTL_FCMP_OEQ = 0,
+    DGTL_FCMP_ONE = 1,
+    DGTL_FCMP_OLT = 2,
+    DGTL_FCMP_OLE = 3,
+    DGTL_FCMP_OGT = 4,
+    DGTL_FCMP_OGE = 5,
+    DGTL_FCMP_UEQ = 6,
+    DGTL_FCMP_UNE = 7,
+    DGTL_FCMP_ULT = 8,
+    DGTL_FCMP_ULE = 9,
+    DGTL_FCMP_UGT = 10,
+    DGTL_FCMP_UGE = 11,
+    DGTL_FCMP_ORD = 12,
+    DGTL_FCMP_UNO = 13
+} dgtl_fcmp_pred_t;
+
+typedef enum dgtl_memory_order {
+    DGTL_MO_RELAXED  = 0,
+    DGTL_MO_ACQUIRE  = 1,
+    DGTL_MO_RELEASE  = 2,
+    DGTL_MO_ACQ_REL  = 3,
+    DGTL_MO_SEQ_CST  = 4
+} dgtl_memory_order_t;
+
+/* ============================================================================
+ * SECTION 9 â€” FLAGS
+ * ========================================================================== */
+
+#define DGTL_FLAG_NONE             0x0000u
+#define DGTL_FLAG_IS_CONST         0x0001u
+#define DGTL_FLAG_IS_DEAD          0x0002u
+#define DGTL_FLAG_HAS_SIDE_EFFECTS 0x0004u
+#define DGTL_FLAG_IS_VOLATILE      0x0008u
+#define DGTL_FLAG_IS_SIMD          0x0010u
+#define DGTL_FLAG_IS_VECTOR_LANE   0x0020u
+#define DGTL_FLAG_IS_PREDICATED    0x0040u
+#define DGTL_FLAG_IS_FUSED         0x0080u
+#define DGTL_FLAG_IS_OPTIMIZED     0x0100u
+#define DGTL_FLAG_IS_LOOP_INV      0x0200u
+#define DGTL_FLAG_IS_SPEC_CONST    0x0400u
+#define DGTL_FLAG_NON_TEMPORAL     0x0800u
+#define DGTL_FLAG_IS_BRANCH        0x1000u
+#define DGTL_FLAG_IS_RETURN        0x2000u
+#define DGTL_FLAG_IS_GUARD         0x4000u
+#define DGTL_FLAG_MAY_DEOPT        0x8000u
+
+#define DGTL_EXT_NONE              0x00000000u
+#define DGTL_EXT_MEM_RELAXED       0x00000001u
+#define DGTL_EXT_MEM_ACQUIRE       0x00000002u
+#define DGTL_EXT_MEM_RELEASE       0x00000004u
+#define DGTL_EXT_MEM_SEQ_CST       0x00000008u
+#define DGTL_EXT_NO_ALIAS          0x00000010u
+#define DGTL_EXT_MAY_ALIAS         0x00000020u
+#define DGTL_EXT_FAST_MATH         0x00000040u
+#define DGTL_EXT_STRICT_FP         0x00000080u
+#define DGTL_EXT_LATENCY_CRITICAL  0x00000100u
+#define DGTL_EXT_THROUGHPUT_MODE   0x00000200u
+#define DGTL_EXT_PREFETCH_HINT     0x00000400u
+#define DGTL_EXT_VECTORIZABLE      0x00000800u
+#define DGTL_EXT_VEC_WIDTH_128     0x00001000u
+#define DGTL_EXT_VEC_WIDTH_256     0x00002000u
+#define DGTL_EXT_VEC_WIDTH_512     0x00004000u
+#define DGTL_EXT_HOT_PATH          0x00010000u
+#define DGTL_EXT_COLD_PATH         0x00020000u
+#define DGTL_EXT_DETERMINISTIC     0x00040000u
+#define DGTL_EXT_NON_BLOCKING      0x00080000u
+#define DGTL_EXT_SPECULATION_SAFE  0x00100000u
+#define DGTL_EXT_LOOP_CARRIED      0x00200000u
+#define DGTL_EXT_COMMUTATIVE       0x00400000u
+#define DGTL_EXT_ASSOCIATIVE       0x00800000u
+#define DGTL_EXT_HFT_CRITICAL      0x01000000u
+#define DGTL_EXT_GPU_KERNEL        0x02000000u
+#define DGTL_EXT_WASM_EXPORTABLE   0x04000000u
+#define DGTL_EXT_TENSOR_OP         0x08000000u
+
+/* ============================================================================
+ * SECTION 10 â€” OPCODES
+ * ========================================================================== */
+
+typedef uint16_t dgtl_opcode_t;
+
+#define DGTL_OP_NOP                   0u
+#define DGTL_OP_LOAD                  10u
+#define DGTL_OP_STORE                 11u
+#define DGTL_OP_REG_MOVE              12u
+#define DGTL_OP_LOAD_IMM              13u
+#define DGTL_OP_CONST                 13u
+#define DGTL_OP_LEA                   14u
+#define DGTL_OP_PREFETCH              15u
+#define DGTL_OP_ATOMIC_LOAD           16u
+#define DGTL_OP_ATOMIC_STORE          17u
+#define DGTL_OP_ATOMIC_FENCE          18u
+#define DGTL_OP_ADD_I8                19u
+#define DGTL_OP_ADD_I32               20u
+#define DGTL_OP_SUB_I32               21u
+#define DGTL_OP_MUL_I32               22u
+#define DGTL_OP_DIV_I32               23u
+#define DGTL_OP_SHL_I32               24u
+#define DGTL_OP_AND_I32               25u
+#define DGTL_OP_OR_I32                26u
+#define DGTL_OP_XOR_I32               27u
+#define DGTL_OP_MOD_I32               28u
+#define DGTL_OP_SHR_I32               29u
+#define DGTL_OP_ADD_F32               30u
+#define DGTL_OP_SUB_F32               31u
+#define DGTL_OP_MUL_F32               32u
+#define DGTL_OP_DIV_F32               33u
+#define DGTL_OP_FMA_F32               35u
+#define DGTL_OP_FMA_WIDEN_F16_F32     36u
+#define DGTL_OP_CMP_EQ_I32            40u
+#define DGTL_OP_CMP_NE_I32            41u
+#define DGTL_OP_CMP_LT_I32            42u
+#define DGTL_OP_CMP_LE_I32            43u
+#define DGTL_OP_CMP_GT_I32            44u
+#define DGTL_OP_CMP_GE_I32            45u
+#define DGTL_OP_BIT_FIELD_INSERT      50u
+#define DGTL_OP_BIT_FIELD_EXTRACT     51u
+#define DGTL_OP_ADD_I64               60u
+#define DGTL_OP_SUB_I64               61u
+#define DGTL_OP_MUL_I64               62u
+#define DGTL_OP_DIV_I64               63u
+#define DGTL_OP_MOD_I64               64u
+#define DGTL_OP_AND_I64               65u
+#define DGTL_OP_OR_I64                66u
+#define DGTL_OP_XOR_I64               67u
+#define DGTL_OP_SHL_I64               68u
+#define DGTL_OP_SHR_I64               69u
+#define DGTL_OP_ADD_F64               70u
+#define DGTL_OP_SUB_F64               71u
+#define DGTL_OP_MUL_F64               72u
+#define DGTL_OP_DIV_F64               73u
+#define DGTL_OP_IMMEDIATE             80u
+#define DGTL_OP_PTR_CAST              81u
+#define DGTL_OP_PTR_DIFF              82u
+#define DGTL_OP_BOOL_SELECT           83u
+#define DGTL_OP_STRING_CONST          84u
+#define DGTL_OP_STRING_LENGTH         85u
+#define DGTL_OP_STRING_COMPARE        86u
+#define DGTL_OP_STRING_CONCAT         87u
+#define DGTL_OP_STRING_SUBSTRING      88u
+#define DGTL_OP_UNDEF                 89u
+#define DGTL_OP_GEP                   90u
+#define DGTL_OP_PTR_TO_INT            91u
+#define DGTL_OP_INT_TO_PTR            92u
+#define DGTL_OP_LABEL                 98u
+#define DGTL_OP_GOTO                  99u
+#define DGTL_OP_BRANCH                100u
+#define DGTL_OP_RET                   101u
+#define DGTL_OP_BRANCH_COND           102u
+#define DGTL_OP_BRANCH_FUSED          103u
+#define DGTL_OP_CALL                  110u
+#define DGTL_OP_SYSCALL               111u
+#define DGTL_OP_GUARD_ALIAS           120u
+#define DGTL_OP_ADD_I128              130u
+#define DGTL_OP_ADD_I256              131u
+#define DGTL_OP_ADD_F8                132u
+#define DGTL_OP_ADD_BF16              133u
+#define DGTL_OP_GUARD_VALUE           200u
+#define DGTL_OP_DEOPT_TRIGGER         201u
+#define DGTL_OP_PHI                   202u
+#define DGTL_OP_ASSUME                203u
+#define DGTL_OP_SELECT                204u
+#define DGTL_OP_PHI_MULTI             0x0200u
+#define DGTL_OP_TUPLE_PACK            0x0201u
+#define DGTL_OP_TUPLE_UNPACK          0x0202u
+#define DGTL_OP_SELECT_MULTI          0x0203u
+#define DGTL_OP_CALL_VARIADIC         0x0204u
+#define DGTL_OP_SWITCH_DISPATCH       0x0205u
+#define DGTL_OP_VOLATILE_LOAD         0x0206u
+#define DGTL_OP_VOLATILE_STORE        0x0207u
+#define DGTL_OP_ACQUIRE_FENCE         0x0208u
+#define DGTL_OP_RELEASE_FENCE         0x0209u
+#define DGTL_OP_CMP_EQ_I64            0x0380u
+#define DGTL_OP_CMP_NE_I64            0x0381u
+#define DGTL_OP_CMP_LT_I64            0x0382u
+#define DGTL_OP_CMP_LE_I64            0x0383u
+#define DGTL_OP_CMP_GT_I64            0x0384u
+#define DGTL_OP_CMP_GE_I64            0x0385u
+#define DGTL_OP_ALLOCA                0x0386u
+#define DGTL_OP_OWNERSHIP_ACQUIRE     410u
+#define DGTL_OP_OWNERSHIP_RELEASE     411u
+#define DGTL_OP_OWNERSHIP_TRANSFER    412u
+#define DGTL_OP_ATOMIC_SNAPSHOT       413u
+#define DGTL_OP_ASYNC_SPAWN           420u
+#define DGTL_OP_ASYNC_AWAIT           421u
+#define DGTL_OP_FIBER_YIELD           422u
+#define DGTL_OP_BARRIER_SYNC          423u
+#define DGTL_OP_CHAN_SEND             424u
+#define DGTL_OP_CHAN_RECV             425u
+#define DGTL_OP_LOCK_ACQUIRE          426u
+#define DGTL_OP_LOCK_RELEASE          427u
+#define DGTL_OP_MEMORY_FENCE          428u
+#define DGTL_OP_THREAD_SPAWN          429u
+#define DGTL_OP_GRAPH_BUILD           440u
+#define DGTL_OP_GRAPH_TRAVERSE        441u
+#define DGTL_OP_TREE_BUILD            442u
+#define DGTL_OP_TREE_TRAVERSE         443u
+#define DGTL_OP_TRIE_BUILD            444u
+#define DGTL_OP_TRIE_LOOKUP           445u
+#define DGTL_OP_TRIE_INSERT           446u
+#define DGTL_OP_DSA_ALLOCATE          447u
+#define DGTL_OP_DSA_DEALLOCATE        448u
+#define DGTL_OP_SCOP_ANALYZE          449u
+#define DGTL_OP_TENSOR_RESHAPE        460u
+#define DGTL_OP_TENSOR_REDUCE         461u
+#define DGTL_OP_TENSOR_TRANSPOSE      462u
+#define DGTL_OP_TENSOR_SLICE          463u
+#define DGTL_OP_TENSOR_CONCAT         464u
+#define DGTL_OP_TENSOR_BROADCAST      465u
+#define DGTL_OP_TENSOR_GEMM           466u
+#define DGTL_OP_TENSOR_CONV           467u
+#define DGTL_OP_TENSOR_POOL           468u
+#define DGTL_OP_TENSOR_SOFTMAX        469u
+#define DGTL_OP_MATMUL_BF16           0x0480u
+#define DGTL_OP_MATMUL_FP8            0x0481u
+#define DGTL_OP_SDPA_F16              0x0482u
+#define DGTL_OP_SOFTMAX_FAST          0x0483u
+#define DGTL_OP_LAYER_NORM            0x0484u
+#define DGTL_OP_ROPE_EMBED            0x0485u
+#define DGTL_OP_GATHER_F32_512        0x0500u
+#define DGTL_OP_GATHER_16             0x0501u
+#define DGTL_OP_STORE_V512            0x0502u
+#define DGTL_OP_VEC_ADD_F32_512       0x0503u
+#define DGTL_OP_VEC_MUL_F32_512       0x0504u
+#define DGTL_OP_VEC_ADD_F64_512       0x0505u
+#define DGTL_OP_VEC_MUL_F64_512       0x0506u
+#define DGTL_OP_SIMD_BSL              0x0507u
+#define DGTL_OP_FCVTL_F16_F32         0x0508u
+#define DGTL_OP_FCVTN_F32_F16         0x0509u
+#define DGTL_OP_VEC_LOAD              0x0510u
+#define DGTL_OP_VEC_STORE             0x0511u
+#define DGTL_OP_VEC_SHUFFLE           0x0512u
+#define DGTL_OP_VEC_REDUCE_ADD        0x0513u
+#define DGTL_OP_VEC_REDUCE_MAX        0x0514u
+#define DGTL_OP_VEC_REDUCE_MIN        0x0515u
+#define DGTL_OP_READ_TSC              0x0600u
+#define DGTL_OP_BRANCH_LIKELY         0x0601u
+#define DGTL_OP_BRANCH_UNLIKELY       0x0602u
+#define DGTL_OP_CLFLUSH               0x0603u
+#define DGTL_OP_PREFETCH_T0           0x0604u
+#define DGTL_OP_SPIN_ACQUIRE          0x0605u
+#define DGTL_OP_RING_PUSH_FREE        0x0606u
+#define DGTL_OP_FAST_INV_SQRT         0x0700u
+#define DGTL_OP_VEC3_CROSS            0x0701u
+#define DGTL_OP_VEC4_DOT              0x0702u
+#define DGTL_OP_MAT4_MUL              0x0703u
+#define DGTL_OP_QUAT_SLERP            0x0704u
+#define DGTL_OP_RAY_AABB_ISECT        0x0705u
+
+/* ============================================================================
+ * SECTION 11 â€” COMPILATION TARGETS
+ * ========================================================================== */
+
 typedef enum dgtl_target {
-    DGTL_TARGET_X64_AVX512 = 0,
-    DGTL_TARGET_ARM64_SVE  = 1,
-    DGTL_TARGET_ARM32_NEON = 2,
-    DGTL_TARGET_RISCV64    = 3,
-    DGTL_TARGET_WASM       = 4,
-    DGTL_TARGET_CUDA_PTX   = 5,
-    DGTL_TARGET_ROCM       = 6,
-    DGTL_TARGET_NASM_X64   = 7,
-    DGTL_TARGET_ELF_OBJ    = 8,
-    DGTL_TARGET_COFF_OBJ   = 9,
-    DGTL_TARGET_MACHO      = 10,
-    DGTL_TARGET_STATIC_LIB = 11,
-    DGTL_TARGET_COUNT      = 12
+    DGTL_TARGET_X86_64        = 0,
+    DGTL_TARGET_X86_64_AVX512 = 1,
+    DGTL_TARGET_ARM64         = 2,
+    DGTL_TARGET_ARM64_SVE     = 3,
+    DGTL_TARGET_RISCV64       = 4,
+    DGTL_TARGET_WASM          = 5,
+    DGTL_TARGET_WASM_SIMD     = 6,
+    DGTL_TARGET_CUDA_SM89     = 7,
+    DGTL_TARGET_ROCM_GFX12    = 8,
+    DGTL_TARGET_HOST          = 255
 } dgtl_target_t;
 
-DGTL_API const char* DGTL_CALL dgtl_target_name(dgtl_target_t target);
-DGTL_API const char* DGTL_CALL dgtl_target_extension(dgtl_target_t target);
-
 /* ============================================================================
- * SECTION 4: EXACT CACHE-LINE ALIGNED STRUCTURES
- * ============================================================================ */
+ * SECTION 12 â€” CORE STRUCTURES & PROFILING
+ * ========================================================================== */
 
-#pragma pack(push, 1)
-typedef struct dgtl_node {
-    uint16_t opcode;       /* Canonical OpCode (dgtl_opcode_t) */
-    uint16_t flags;        /* 16-bit Semantic Flags (DGTL_FLAG_*) */
-    uint32_t result_id;    /* Virtual Register / SSA Slot */
-    uint32_t op_a;         /* Primary Operand */
-    uint32_t op_b;         /* Secondary Operand */
-    uint32_t op_c;         /* Tertiary Operand */
-    uint64_t intent_hash;  /* Structural Cryptographic Hash */
-    uint32_t logic_flags;  /* 32-bit Extended Execution Flags (DGTL_EXT_*) */
+typedef struct alignas(8) dgtl_node {
+    uint64_t      intent_hash;
+    uint32_t      result_id;
+    uint32_t      op_a;
+    uint32_t      op_b;
+    uint32_t      op_c;
+    uint32_t      logic_flags;
+    dgtl_opcode_t opcode;
+    uint16_t      flags;
 } dgtl_node_t;
-#pragma pack(pop)
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(sizeof(dgtl_node_t) == 32, "dgtl_node_t must be exactly 32 bytes for AVX-512 alignment");
-#endif
+static_assert(sizeof(dgtl_node_t) == 32, "dgtl_node_t must be exactly 32 bytes");
 
 typedef struct dgtl_core_record {
     uint32_t result_id;
@@ -447,388 +589,73 @@ typedef struct dgtl_core_record {
     uint32_t epoch;
 } dgtl_core_record_t;
 
-/* Stream Evaluation Modes */
 typedef enum dgtl_ir_mode {
-    DGTL_IR_MODE_INT   = 0,
-    DGTL_IR_MODE_FLOAT = 1,
-    DGTL_IR_MODE_FMA   = 2
+    DGTL_IR_MODE_INT    = 0,
+    DGTL_IR_MODE_FLOAT  = 1,
+    DGTL_IR_MODE_TENSOR = 2,
+    DGTL_IR_MODE_MIXED  = 3
 } dgtl_ir_mode_t;
 
-/* Stream Optimization Profiles */
-typedef enum dgtl_opt_profile {
-    DGTL_OPT_PROFILE_DEFAULT     = 0,
-    DGTL_OPT_PROFILE_FOLD        = 1,
-    DGTL_OPT_PROFILE_FUSION      = 2,
-    DGTL_OPT_PROFILE_SIMD        = 3,
-    DGTL_OPT_PROFILE_PRESSURE    = 4,
-    DGTL_OPT_PROFILE_PREDICATION = 5
-} dgtl_opt_profile_t;
+typedef enum dgtl_opt_level {
+    DGTL_OPT_O0      = 0,
+    DGTL_OPT_O1      = 1,
+    DGTL_OPT_O2      = 2,
+    DGTL_OPT_O3      = 3,
+    DGTL_OPT_OSTRIKE = 4
+} dgtl_opt_level_t;
 
-/* ============================================================================
- * SECTION 5: PERFORMANCE PROFILING, DIAGNOSTICS & STATUS
- * ============================================================================ */
-
-typedef enum dgtl_severity {
-    DGTL_SEV_INFO    = 0,
-    DGTL_SEV_WARNING = 1,
-    DGTL_SEV_ERROR   = 2,
-    DGTL_SEV_FATAL   = 3
-} dgtl_severity_t;
-
-typedef struct dgtl_status {
-    int32_t         ok;
-    int32_t         error_code;
-    dgtl_severity_t severity;
-    char            message[256];
-} dgtl_status_t;
-
-typedef struct dgtl_strike_result {
-    int32_t         ok;
-    size_t          code_size;
-    uint64_t        logic_hash;
-    double          compilation_latency_ms;
-    char            message[256];
-} dgtl_strike_result_t;
+typedef struct dgtl_emit_options {
+    uint32_t inline_threshold;
+    uint32_t unroll_factor;
+    uint32_t vectorize_threshold;
+    uint8_t  enable_cache_optimization;
+    uint8_t  enable_branch_prediction;
+    uint8_t  enable_numa_locality;
+    uint8_t  enable_fast_math;
+} dgtl_emit_options_t;
 
 typedef struct dgtl_perf_metrics {
-    uint64_t total_compilation_time_us;
-    uint64_t optimization_time_us;
-    uint64_t emission_time_us;
-    uint32_t peak_register_count;
-    uint32_t peak_memory_usage_bytes;
-    uint64_t estimated_cycle_count;
+    uint64_t total_nodes;
+    uint64_t eliminated_nodes;
+    uint64_t fused_nodes;
+    uint64_t vectorized_nodes;
+    uint64_t inlined_calls;
+    double   estimated_ipc;
+    double   compilation_ms;
+    uint64_t code_size_bytes;
+    uint64_t logic_hash;
 } dgtl_perf_metrics_t;
 
+typedef enum dgtl_trace_kind {
+    DGTL_TRACE_PASS_START = 0,
+    DGTL_TRACE_PASS_END   = 1,
+    DGTL_TRACE_JIT_START  = 2,
+    DGTL_TRACE_JIT_END    = 3,
+    DGTL_TRACE_ALLOC      = 4,
+    DGTL_TRACE_FREE       = 5
+} dgtl_trace_kind_t;
+
 typedef struct dgtl_trace_event {
-    uint64_t timestamp_us;
-    uint32_t pass_id;
-    uint32_t node_count;
-    char     pass_name[64];
+    dgtl_trace_kind_t kind;
+    uint64_t          timestamp_ns;
+    uint64_t          payload;
+    const char*       label;
 } dgtl_trace_event_t;
 
 /* ============================================================================
- * SECTION 6: CONTEXT, STREAM & TRANSACTIONAL ISOLATION
- * ============================================================================ */
-
-DGTL_API dgtl_context_t* DGTL_CALL dgtl_context_create(void);
-DGTL_API dgtl_context_t* DGTL_CALL dgtl_context_create_custom(size_t worker_threads, size_t arena_mb_per_worker);
-DGTL_API void            DGTL_CALL dgtl_context_destroy(dgtl_context_t* ctx);
-
-DGTL_API dgtl_stream_t*  DGTL_CALL dgtl_stream_create(dgtl_context_t* ctx, size_t reserved_nodes);
-DGTL_API void            DGTL_CALL dgtl_stream_destroy(dgtl_stream_t* stream);
-DGTL_API size_t          DGTL_CALL dgtl_stream_node_count(const dgtl_stream_t* stream);
-DGTL_API uint64_t        DGTL_CALL dgtl_stream_logic_hash(const dgtl_stream_t* stream);
-DGTL_API void            DGTL_CALL dgtl_stream_reset(dgtl_stream_t* stream);
-DGTL_API bool            DGTL_CALL dgtl_stream_reserve(dgtl_stream_t* stream, size_t additional_nodes);
-DGTL_API dgtl_status_t   DGTL_CALL dgtl_stream_compact(dgtl_stream_t* s);
-
-/* Transactional Shadow Core */
-DGTL_API void DGTL_CALL dgtl_stream_begin_transaction(dgtl_stream_t* stream);
-DGTL_API bool DGTL_CALL dgtl_stream_commit_transaction(dgtl_stream_t* stream);
-DGTL_API void DGTL_CALL dgtl_stream_rollback_transaction(dgtl_stream_t* stream);
-DGTL_API bool DGTL_CALL dgtl_stream_validate_shadow_integrity(const dgtl_stream_t* stream);
-
-/* ============================================================================
- * SECTION 7: CANONICAL IR EMISSION ENGINE
- * ============================================================================ */
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_node(dgtl_stream_t* s, dgtl_opcode_t op, uint16_t flags,
-                                          uint32_t result_slot, uint32_t op_a, uint32_t op_b,
-                                          uint32_t op_c, uint64_t intent_hash);
-DGTL_API void     DGTL_CALL dgtl_set_node_logic_flags(dgtl_stream_t* s, size_t node_idx, uint32_t logic_flags);
-DGTL_API void     DGTL_CALL dgtl_set_result_type(dgtl_stream_t* s, uint32_t result_slot, dgtl_type_code_t type_code);
-
-/* Generic Op with Payload */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_op(dgtl_stream_t* s, dgtl_opcode_t op, uint32_t lhs, uint32_t rhs, uint64_t immediate, uint32_t flags);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_op_with_result(dgtl_stream_t* s, uint32_t result_slot, dgtl_opcode_t op, uint32_t lhs, uint32_t rhs, uint64_t immediate, uint32_t flags);
-
-/* Immediates & Memory */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_const_i64(dgtl_stream_t* s, uint64_t value);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_const_f32(dgtl_stream_t* s, float value);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_const_f64(dgtl_stream_t* s, double value);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_const_binary(dgtl_stream_t* s, const void* data, size_t len);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_load(dgtl_stream_t* s, uint32_t ptr_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_store(dgtl_stream_t* s, uint32_t ptr_slot, uint32_t val_slot);
-
-/* Integer ALU */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_add_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_sub_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_mul_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_div_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_mod_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_add_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_sub_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_mul_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_div_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_mod_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-/* Bitwise / Shift Operations */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_and_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_or_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_xor_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_shl_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_shr_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_and_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_or_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_xor_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_shl_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_shr_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-/* Floating-Point ALU */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fadd(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fsub(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fmul(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fdiv(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fadd_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fsub_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fmul_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fdiv_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-/* Integer & Floating-Point Comparisons */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_f32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_eq_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ne_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_lt_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_le_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_gt_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_cmp_ge_f64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-
-/* Unary & Bitwise Negation */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_i32(dgtl_stream_t* s, uint32_t val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_not_i32(dgtl_stream_t* s, uint32_t val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_i64(dgtl_stream_t* s, uint32_t val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_not_i64(dgtl_stream_t* s, uint32_t val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_f32(dgtl_stream_t* s, uint32_t val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_neg_f64(dgtl_stream_t* s, uint32_t val);
-
-/* Selection & Memory Operations */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_select(dgtl_stream_t* s, uint32_t cond, uint32_t true_val, uint32_t false_val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_bool_select(dgtl_stream_t* s, uint32_t cond, uint32_t true_val, uint32_t false_val);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_gep(dgtl_stream_t* s, uint32_t base_ptr, uint32_t offset_bytes);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_ptr_to_int(dgtl_stream_t* s, uint32_t ptr_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_int_to_ptr(dgtl_stream_t* s, uint32_t int_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_ptr_cast(dgtl_stream_t* s, uint32_t ptr_slot, dgtl_type_code_t target_type);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_ptr_diff(dgtl_stream_t* s, uint32_t lhs_ptr, uint32_t rhs_ptr);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_reg_move(dgtl_stream_t* s, uint32_t dst_slot, uint32_t src_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_alloca(dgtl_stream_t* s, uint32_t size_bytes, uint32_t align);
-
-/* Concurrency & Async Primitives */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_async_spawn(dgtl_stream_t* s, uint32_t fn_slot, uint32_t arg_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_async_await(dgtl_stream_t* s, uint32_t task_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_chan_send(dgtl_stream_t* s, uint32_t chan_slot, uint32_t val_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_chan_recv(dgtl_stream_t* s, uint32_t chan_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_barrier_sync(dgtl_stream_t* s, uint32_t barrier_slot);
-
-/* Control Flow & Calls */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_label(dgtl_stream_t* s, const char* label_name);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_label_slot(dgtl_stream_t* s, uint32_t label_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_function_label_slot(dgtl_stream_t* s, uint32_t function_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_function_label_with_params(dgtl_stream_t* s, uint32_t function_slot, const uint32_t* params, size_t param_count);
-DGTL_API void     DGTL_CALL dgtl_emit_branch(dgtl_stream_t* s, uint32_t target_label_slot);
-DGTL_API void     DGTL_CALL dgtl_emit_branch_cond(dgtl_stream_t* s, uint32_t cond_slot, uint32_t target_label_slot);
-DGTL_API void     DGTL_CALL dgtl_emit_branch_predictive(dgtl_stream_t* s, uint32_t cond_reg, uint32_t true_label, uint32_t false_label, uint8_t weight);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_call(dgtl_stream_t* s, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_call_with_result(dgtl_stream_t* s, uint32_t result_slot, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
-DGTL_API void     DGTL_CALL dgtl_emit_return(dgtl_stream_t* s, uint32_t value_slot);
-
-/* String Handling */
-DGTL_API void     DGTL_CALL dgtl_emit_constant_str(dgtl_stream_t* s, dgtl_value_t dest_reg, const char* value, size_t length);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_const_handle(dgtl_stream_t* s, uint32_t string_handle);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_const_utf8(dgtl_stream_t* s, const char* utf8_literal);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_length(dgtl_stream_t* s, uint32_t string_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_compare(dgtl_stream_t* s, uint32_t lhs_string_slot, uint32_t rhs_string_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_concat(dgtl_stream_t* s, uint32_t lhs_string_slot, uint32_t rhs_string_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_substring(dgtl_stream_t* s, uint32_t string_slot, uint32_t start_slot, uint32_t length_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_string_const_rodata_rip(dgtl_stream_t* s, const char* str, size_t len);
-
-/* Phase D: Variadics & Multi-Result */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_phi(dgtl_stream_t* s, uint32_t* incoming_slots, size_t incoming_count);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_phi_multi(dgtl_stream_t* s, uint32_t result_slot, const uint32_t* incoming_values, const uint32_t* incoming_blocks, size_t count);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_tuple_pack(dgtl_stream_t* s, const uint32_t* elements, size_t count);
-DGTL_API void     DGTL_CALL dgtl_emit_tuple_unpack(dgtl_stream_t* s, uint32_t tuple_slot, const uint32_t* out_result_slots, size_t count);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_call_variadic(dgtl_stream_t* s, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_call_variadic_with_result(dgtl_stream_t* s, uint32_t result_slot, uint32_t callee_slot, const uint32_t* args, size_t arg_count);
-
-/* Data Structures & SCoP Analysis */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_graph_build(dgtl_stream_t* s, uint32_t nodes_vector, uint32_t edges_vector);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_graph_traverse(dgtl_stream_t* s, uint32_t graph_handle, uint32_t visitor_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_trie_insert(dgtl_stream_t* s, uint32_t trie_handle, uint32_t key_str_handle, uint32_t val_slot);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_scop_analyze(dgtl_stream_t* s, uint32_t region_begin_slot);
-
-/* Linear Ownership Lifecycle */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_ownership_acquire(dgtl_stream_t* s, uint32_t resource_handle);
-DGTL_API void     DGTL_CALL dgtl_emit_ownership_release(dgtl_stream_t* s, uint32_t resource_handle);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_ownership_transfer(dgtl_stream_t* s, uint32_t src_handle, uint32_t dest_context);
-DGTL_API bool     DGTL_CALL dgtl_verify_ownership_lifetimes(const dgtl_stream_t* stream, char* err_buf, size_t err_buf_size);
-
-/* AI, Neural & Spatial Acceleration */
-DGTL_API uint32_t DGTL_CALL dgtl_emit_matmul_bf16(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_matmul_fp8(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_sdpa_f16(dgtl_stream_t* s, uint32_t q, uint32_t k, uint32_t v, uint32_t mask);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_softmax_fast(dgtl_stream_t* s, uint32_t input);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_layer_norm(dgtl_stream_t* s, uint32_t input, uint32_t gamma, uint32_t beta);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fast_inv_sqrt(dgtl_stream_t* s, uint32_t input);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec3_cross(dgtl_stream_t* s, uint32_t a, uint32_t b);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec4_dot(dgtl_stream_t* s, uint32_t a, uint32_t b);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_mat4_mul(dgtl_stream_t* s, uint32_t a, uint32_t b);
-
-/* HFT Nanosecond Primitives */
-DGTL_API uint32_t      DGTL_CALL dgtl_emit_read_tsc(dgtl_stream_t* s);
-DGTL_API void          DGTL_CALL dgtl_emit_clflush(dgtl_stream_t* s, uint32_t addr_slot);
-DGTL_API void          DGTL_CALL dgtl_emit_prefetch_t0(dgtl_stream_t* s, uint32_t addr_slot);
-DGTL_API void          DGTL_CALL dgtl_emit_spin_acquire(dgtl_stream_t* s, uint32_t lock_slot);
-DGTL_API uint32_t      DGTL_CALL dgtl_emit_ring_push_free(dgtl_stream_t* s, uint32_t ring_handle, uint32_t payload_slot);
-DGTL_API void          DGTL_CALL dgtl_emit_hardware_affinity(dgtl_stream_t* s, dgtl_value_t mask_register_id);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_apply_quiet_core_policy(uint32_t preferred_core);
-
-/* ============================================================================
- * SECTION 8: CFG MATRIX, PASS MANAGEMENT & COMPACTION
- * ============================================================================ */
-
-typedef enum dgtl_cfg_edge_kind {
-    DGTL_CFG_EDGE_FALLTHROUGH       = 0,
-    DGTL_CFG_EDGE_UNCONDITIONAL     = 1,
-    DGTL_CFG_EDGE_CONDITIONAL_TRUE  = 2,
-    DGTL_CFG_EDGE_CONDITIONAL_FALSE = 3
-} dgtl_cfg_edge_kind_t;
-
-typedef struct dgtl_cfg_block {
-    uint32_t id;
-    size_t   begin;
-    size_t   end;
-    uint32_t primary_label;
-    int32_t  is_entry;
-} dgtl_cfg_block_t;
-
-typedef struct dgtl_cfg_edge {
-    uint32_t             from;
-    uint32_t             to;
-    dgtl_cfg_edge_kind_t kind;
-} dgtl_cfg_edge_t;
-
-typedef struct dgtl_emit_options {
-    int32_t inline_threshold;
-    int32_t unroll_factor;
-    int32_t enable_cache_optimization;
-    int32_t enable_branch_prediction;
-    int32_t vectorize_threshold;
-    int32_t reserved[11];
-} dgtl_emit_options_t;
-
-DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_block_count(const dgtl_stream_t* s);
-DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_edge_count(const dgtl_stream_t* s);
-DGTL_API int32_t DGTL_CALL dgtl_stream_cfg_get_block(const dgtl_stream_t* s, size_t index, dgtl_cfg_block_t* out);
-DGTL_API int32_t DGTL_CALL dgtl_stream_cfg_get_edge(const dgtl_stream_t* s, size_t index, dgtl_cfg_edge_t* out);
-DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_get_successors(const dgtl_stream_t* s, uint32_t block_id, uint32_t* out_ids, size_t out_cap);
-DGTL_API size_t  DGTL_CALL dgtl_stream_cfg_get_predecessors(const dgtl_stream_t* s, uint32_t block_id, uint32_t* out_ids, size_t out_cap);
-
-DGTL_API dgtl_status_t DGTL_CALL dgtl_optimize(dgtl_stream_t* s);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_optimize_with_profile(dgtl_stream_t* s, dgtl_opt_profile_t profile);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_set_ir_mode(dgtl_stream_t* s, dgtl_ir_mode_t mode);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_run_pass_by_name(dgtl_stream_t* s, const char* pass_name);
-DGTL_API int32_t       DGTL_CALL dgtl_has_pass(const char* pass_name);
-DGTL_API const char**  DGTL_CALL dgtl_list_passes(size_t* out_count);
-
-DGTL_API dgtl_status_t DGTL_CALL dgtl_set_optimization_enabled(dgtl_stream_t* s, int32_t enabled);
-DGTL_API int32_t       DGTL_CALL dgtl_get_optimization_level(const dgtl_stream_t* s);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_set_optimization_level(dgtl_stream_t* s, int32_t level);
-DGTL_API dgtl_emit_options_t DGTL_CALL dgtl_emit_options_default(dgtl_target_t target);
-DGTL_API dgtl_strike_result_t DGTL_CALL dgtl_strike_stream_with_options(dgtl_stream_t* s, dgtl_target_t target, const dgtl_emit_options_t* options);
-
-/* Diagnostics, Cycle Projections & Tracing */
-DGTL_API size_t        DGTL_CALL dgtl_estimate_code_size(const dgtl_stream_t* s, dgtl_target_t target);
-DGTL_API size_t        DGTL_CALL dgtl_stream_memory_usage(const dgtl_stream_t* s);
-DGTL_API size_t        DGTL_CALL dgtl_context_memory_usage(const dgtl_context_t* ctx);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_shrink_to_fit(dgtl_stream_t* s);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_enable_tracing(dgtl_stream_t* s);
-DGTL_API dgtl_trace_event_t* DGTL_CALL dgtl_stream_get_trace_events(const dgtl_stream_t* s, size_t* out_count);
-DGTL_API uint64_t      DGTL_CALL dgtl_stream_estimate_cycles(const dgtl_stream_t* s);
-DGTL_API int32_t       DGTL_CALL dgtl_stream_get_optimization_score(const dgtl_stream_t* s);
-DGTL_API int32_t       DGTL_CALL dgtl_stream_get_perf_metrics(const dgtl_stream_t* s, dgtl_perf_metrics_t* out);
-
-DGTL_API void          DGTL_CALL dgtl_stream_dump_ir(const dgtl_stream_t* s, void* custom_file_handle_opt);
-DGTL_API const char*   DGTL_CALL dgtl_get_last_error(void);
-DGTL_API void          DGTL_CALL dgtl_clear_error(void);
-DGTL_API void          DGTL_CALL dgtl_set_verbose(int32_t enabled);
-DGTL_API const char*   DGTL_CALL dgtl_get_build_config(void);
-
-/* Stream Node Inspection */
-DGTL_API bool          DGTL_CALL dgtl_stream_get_node(const dgtl_stream_t* s, size_t index, dgtl_node_t* out_node);
-DGTL_API bool          DGTL_CALL dgtl_stream_get_core_record(const dgtl_stream_t* s, size_t index, dgtl_core_record_t* out_record);
-DGTL_API uint32_t      DGTL_CALL dgtl_stream_get_max_virtual_slot(const dgtl_stream_t* s);
-DGTL_API bool          DGTL_CALL dgtl_node_is_terminator(dgtl_opcode_t op, uint16_t flags);
-DGTL_API bool          DGTL_CALL dgtl_node_has_side_effects(dgtl_opcode_t op, uint16_t flags);
-DGTL_API double        DGTL_CALL dgtl_node_predict_inlined_benefit(dgtl_opcode_t op);
-
-/* Phase D: Sidecar Buffer Operations */
-DGTL_API void          DGTL_CALL dgtl_stream_set_call_overflow_args(dgtl_stream_t* s, size_t node_idx, const uint32_t* args, size_t count);
-DGTL_API size_t        DGTL_CALL dgtl_stream_get_call_overflow_args(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_args, size_t max_out);
-DGTL_API void          DGTL_CALL dgtl_stream_set_operand_overflow(dgtl_stream_t* s, size_t node_idx, const uint32_t* operands, size_t count);
-DGTL_API size_t        DGTL_CALL dgtl_stream_get_operand_overflow(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_operands, size_t max_out);
-DGTL_API void          DGTL_CALL dgtl_stream_set_result_ids(dgtl_stream_t* s, size_t node_idx, const uint32_t* result_ids, size_t count);
-DGTL_API size_t        DGTL_CALL dgtl_stream_get_result_ids(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_result_ids, size_t max_out);
-DGTL_API void          DGTL_CALL dgtl_stream_set_node_effects(dgtl_stream_t* s, size_t node_idx, uint32_t effect_set);
-DGTL_API uint32_t      DGTL_CALL dgtl_stream_get_node_effects(const dgtl_stream_t* s, size_t node_idx);
-
-/* Binary Interchange Serialization */
-DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_serialize(const dgtl_stream_t* s, void** out_blob, size_t* out_size);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_deserialize(dgtl_stream_t* s, const void* blob, size_t blob_size);
-DGTL_API void          DGTL_CALL dgtl_free_serialized_blob(void* blob);
-DGTL_API int32_t       DGTL_CALL dgtl_binary_loader_validate_payload(const uint8_t* bytes, size_t len);
-
-/* Task Runtime Controls */
-DGTL_API void          DGTL_CALL dgtl_yield(void);
-DGTL_API uint64_t      DGTL_CALL dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg);
-DGTL_API void          DGTL_CALL dgtl_join_task(uint64_t task_handle);
-DGTL_API dgtl_runtime_context_t* DGTL_CALL dgtl_runtime_context_create(size_t worker_threads, size_t arena_mb_per_worker);
-DGTL_API void          DGTL_CALL dgtl_runtime_context_destroy(dgtl_runtime_context_t* ctx);
-DGTL_API uint64_t      DGTL_CALL dgtl_runtime_spawn_task(dgtl_runtime_context_t* ctx, dgtl_runtime_task_fn fn, void* arg);
-DGTL_API void          DGTL_CALL dgtl_runtime_join_task(dgtl_runtime_context_t* ctx, uint64_t task_handle);
-DGTL_API void          DGTL_CALL dgtl_runtime_yield(dgtl_runtime_context_t* ctx);
-
-/* Linker Fallback Diagnostics */
-DGTL_API size_t        DGTL_CALL dgtl_last_linker_fallback_count(void);
-DGTL_API size_t        DGTL_CALL dgtl_last_linker_fallback_message(size_t index, char* out_buffer, size_t out_buffer_size);
-
-/* ============================================================================
- * SECTION 9: SIMD VECTORIZATION, FMA & GATHER/SCATTER
- * ============================================================================ */
+ * SECTION 13 â€” SIMD TYPES
+ * ========================================================================== */
 
 typedef enum dgtl_simd_arch {
     DGTL_SIMD_ARCH_GENERIC         = 0,
     DGTL_SIMD_ARCH_X86_SSE42       = 1,
     DGTL_SIMD_ARCH_X86_AVX         = 2,
     DGTL_SIMD_ARCH_X86_AVX2        = 3,
-    DGTL_SIMD_ARCH_X86_AVX512_F_DQ = 4,
+    DGTL_SIMD_ARCH_X86_AVX512_FDQ  = 4,
     DGTL_SIMD_ARCH_X86_AVX512_FULL = 5,
     DGTL_SIMD_ARCH_ARM_NEON        = 6,
-    DGTL_SIMD_ARCH_ARM64_SVE       = 7,
-    DGTL_SIMD_ARCH_ARM64_SVE2      = 8,
-    DGTL_SIMD_ARCH_RISCV_V_128     = 9,
-    DGTL_SIMD_ARCH_RISCV_V_256     = 10,
-    DGTL_SIMD_ARCH_RISCV_V_512     = 11,
-    DGTL_SIMD_ARCH_WASM_SIMD128    = 12,
-    DGTL_SIMD_ARCH_COUNT           = 13
+    DGTL_SIMD_ARCH_ARM_SVE         = 7,
+    DGTL_SIMD_ARCH_WASM_SIMD128    = 8
 } dgtl_simd_arch_t;
 
 typedef enum dgtl_simd_width {
@@ -837,23 +664,10 @@ typedef enum dgtl_simd_width {
     DGTL_SIMD_WIDTH_512 = 64
 } dgtl_simd_width_t;
 
-typedef enum dgtl_simd_scale {
-    DGTL_SIMD_SCALE_BYTE  = 1,
-    DGTL_SIMD_SCALE_WORD  = 2,
-    DGTL_SIMD_SCALE_DWORD = 4,
-    DGTL_SIMD_SCALE_QWORD = 8
-} dgtl_simd_scale_t;
-
-typedef enum dgtl_simd_mask_mode {
-    DGTL_SIMD_MASK_NONE      = 0,
-    DGTL_SIMD_MASK_ZEROING   = 1,
-    DGTL_SIMD_MASK_MERGING   = 2
-} dgtl_simd_mask_mode_t;
-
 typedef struct dgtl_simd_caps {
     dgtl_simd_arch_t native_arch;
     uint32_t         max_vector_width_bytes;
-    uint32_t         supported_element_widths_mask;
+    uint32_t         native_vector_register_count;
     bool             has_fma;
     bool             has_native_gather;
     bool             has_native_scatter;
@@ -861,218 +675,35 @@ typedef struct dgtl_simd_caps {
     bool             has_bf16_arithmetic;
     bool             has_masked_operations;
     bool             has_transcendental_approximations;
-    uint32_t         native_vector_register_count;
+    bool             _pad[1];
 } dgtl_simd_caps_t;
 
-typedef struct dgtl_simd_gather_spec {
-    uint32_t              base_ptr_slot;
-    uint32_t              index_vector_slot;
-    uint32_t              mask_slot;
-    dgtl_simd_scale_t     scale;
-    dgtl_simd_width_t     vector_width;
-    dgtl_type_code_t      element_type;
-    dgtl_simd_mask_mode_t mask_mode;
-    uint32_t              memory_alignment;
-} dgtl_simd_gather_spec_t;
+typedef struct dgtl_gather_spec {
+    uint32_t    base_ptr_slot;
+    uint32_t    index_vector_slot;
+    uint32_t    mask_slot;
+    uint32_t    scale;
+    dgtl_type_t element_type;
+} dgtl_gather_spec_t;
 
-typedef struct dgtl_simd_scatter_spec {
-    uint32_t              base_ptr_slot;
-    uint32_t              index_vector_slot;
-    uint32_t              value_vector_slot;
-    uint32_t              mask_slot;
-    dgtl_simd_scale_t     scale;
-    dgtl_simd_width_t     vector_width;
-    dgtl_type_code_t      element_type;
-    dgtl_simd_mask_mode_t mask_mode;
-    uint32_t              memory_alignment;
-} dgtl_simd_scatter_spec_t;
+typedef struct dgtl_scatter_spec {
+    uint32_t base_ptr_slot;
+    uint32_t index_vector_slot;
+    uint32_t value_vector_slot;
+    uint32_t mask_slot;
+    uint32_t scale;
+} dgtl_scatter_spec_t;
 
-typedef struct dgtl_simd_legalize_options {
-    dgtl_simd_arch_t  target_arch;
-    uint32_t          forced_max_vector_width;
-    bool              allow_software_gather_scatter;
-    bool              decompose_unsupported_lanes;
-    bool              enable_reciprocal_approximations;
-} dgtl_simd_legalize_options_t;
-
-DGTL_API dgtl_simd_caps_t DGTL_CALL dgtl_simd_query_host_caps(void);
-DGTL_API bool             DGTL_CALL dgtl_simd_arch_is_supported(dgtl_simd_arch_t arch);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_f64(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fms_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fnmadd_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_widen_f16_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fma_widen_bf16_f32(dgtl_stream_t* s, uint32_t a, uint32_t b, uint32_t c);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_complex_fma(dgtl_stream_t* s, uint32_t acc, uint32_t a, uint32_t b);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_gather(dgtl_stream_t* s, const dgtl_simd_gather_spec_t* spec);
-DGTL_API void     DGTL_CALL dgtl_emit_scatter(dgtl_stream_t* s, const dgtl_simd_scatter_spec_t* spec);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_gather_f32_512(dgtl_stream_t* s, uint32_t base_ptr, uint32_t indices);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_gather_16(dgtl_stream_t* s, uint32_t base_ptr, uint32_t indices);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_scatter_indirect(dgtl_stream_t* s, uint32_t base_ptr, uint32_t indices, uint32_t values);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_masked_store(dgtl_stream_t* s, uint32_t base_ptr, uint32_t mask, uint32_t values);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_interleaved_load(dgtl_stream_t* s, uint32_t base_ptr, uint8_t stride_elements);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_load(dgtl_stream_t* s, uint32_t ptr, dgtl_simd_width_t width);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_store(dgtl_stream_t* s, uint32_t ptr, uint32_t val, dgtl_simd_width_t width);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_load_aligned(dgtl_stream_t* s, uint32_t ptr, dgtl_simd_width_t width, uint32_t align);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_store_aligned(dgtl_stream_t* s, uint32_t ptr, uint32_t val, dgtl_simd_width_t width, uint32_t align);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_add_f32_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_mul_f32_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_add_f64_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_mul_f64_512(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_store_v512(dgtl_stream_t* s, uint32_t addr_id, uint32_t val_id);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_store_v512(dgtl_stream_t* s, uint32_t addr_id, uint32_t val_id);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_shuffle(dgtl_stream_t* s, uint32_t vec, uint32_t mask);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_blend(dgtl_stream_t* s, uint32_t mask, uint32_t if_true, uint32_t if_false);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_vec_reduce_add(dgtl_stream_t* s, uint32_t vec);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_reduce_max(dgtl_stream_t* s, uint32_t vec);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_reduce_min(dgtl_stream_t* s, uint32_t vec);
-
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fcvtl_f16_to_f32(dgtl_stream_t* s, uint32_t f16_vec);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_fcvtn_f32_to_f16(dgtl_stream_t* s, uint32_t f32_vec);
-DGTL_API uint32_t DGTL_CALL dgtl_emit_simd_bsl_predicate(dgtl_stream_t* s, uint32_t mask, uint32_t t_val, uint32_t f_val);
-
-DGTL_API dgtl_status_t DGTL_CALL dgtl_legalize_simd(dgtl_stream_t* s, dgtl_simd_arch_t arch);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_legalize_simd_ex(dgtl_stream_t* s, const dgtl_simd_legalize_options_t* opts);
-DGTL_API uint32_t      DGTL_CALL dgtl_simd_get_native_lane_count(dgtl_simd_arch_t arch, dgtl_type_code_t type_code);
+typedef struct dgtl_simd_legalize_opts {
+    dgtl_simd_arch_t target_arch;
+    bool             allow_scalarization;
+    bool             allow_splitting;
+    uint8_t          _pad[2];
+} dgtl_simd_legalize_opts_t;
 
 /* ============================================================================
- * SECTION 10: GPU ACCELERATION & PLATFORM PIPELINES
- * ============================================================================ */
-
-typedef enum dgtl_quad_flags {
-    DGTL_QUAD_SOLID_COLOR     = 0x00,
-    DGTL_QUAD_LINEAR_GRADIENT = 0x01,
-    DGTL_QUAD_RADIAL_GRADIENT = 0x02,
-    DGTL_QUAD_TEXTURE_SAMPLED = 0x04,
-    DGTL_QUAD_BOX_SHADOW      = 0x08,
-    DGTL_QUAD_BORDER_ONLY     = 0x10,
-    DGTL_QUAD_CLIP_ENABLED    = 0x20
-} dgtl_quad_flags_t;
-
-typedef enum dgtl_event_type {
-    DGTL_EVENT_NONE            = 0x0000,
-    DGTL_EVENT_MOUSE_DOWN      = 0x0001,
-    DGTL_EVENT_MOUSE_UP        = 0x0002,
-    DGTL_EVENT_MOUSE_MOVE      = 0x0004,
-    DGTL_EVENT_CLICK           = 0x0008,
-    DGTL_EVENT_KEY_DOWN        = 0x0010,
-    DGTL_EVENT_KEY_UP          = 0x0020,
-    DGTL_EVENT_SCROLL          = 0x0040,
-    DGTL_EVENT_TOUCH_START     = 0x0080,
-    DGTL_EVENT_TOUCH_MOVE      = 0x0100,
-    DGTL_EVENT_TOUCH_END       = 0x0200,
-    DGTL_EVENT_TOUCH_CANCEL    = 0x0400,
-    DGTL_EVENT_FOCUS           = 0x0800,
-    DGTL_EVENT_BLUR            = 0x1000,
-    DGTL_EVENT_DPI_CHANGED     = 0x2000,
-    DGTL_EVENT_IME_COMPOSITION = 0x4000,
-    DGTL_EVENT_IME_COMMIT      = 0x8000
-} dgtl_event_type_t;
-
-typedef enum dgtl_cursor_type {
-    DGTL_CURSOR_ARROW          = 0,
-    DGTL_CURSOR_IBEAM          = 1,
-    DGTL_CURSOR_HAND           = 2,
-    DGTL_CURSOR_CROSSHAIR      = 3,
-    DGTL_CURSOR_RESIZE_EW      = 4,
-    DGTL_CURSOR_RESIZE_NS      = 5,
-    DGTL_CURSOR_RESIZE_NWSE    = 6,
-    DGTL_CURSOR_RESIZE_NESW    = 7,
-    DGTL_CURSOR_NOT_ALLOWED    = 8
-} dgtl_cursor_type_t;
-
-#pragma pack(push, 1)
-typedef struct dgtl_quad_instance {
-    float    x, y, w, h;
-    float    r, g, b, a;
-    float    secondary_r, secondary_g;
-    float    secondary_b, secondary_a;
-    float    radius_tl, radius_tr;
-    float    radius_br, radius_bl;
-    float    border_width;
-    float    shadow_blur;
-    float    shadow_spread;
-    uint32_t flags;
-    uint32_t texture_slot;
-    uint32_t clip_rect_id;
-    float    _padding[10];
-} dgtl_quad_instance_t;
-
-typedef struct dgtl_glyph_gpu_instance {
-    float    screen_x, screen_y;
-    float    screen_w, screen_h;
-    float    uv_x, uv_y;
-    float    uv_w, uv_h;
-    float    color_r, color_g;
-    float    color_b, color_a;
-    float    font_size;
-    float    px_range;
-    uint32_t atlas_texture_slot;
-    uint32_t clip_rect_id;
-} dgtl_glyph_gpu_instance_t;
-
-typedef struct dgtl_vector_path_instance {
-    float    p0_x, p0_y;
-    float    p1_x, p1_y;
-    float    p2_x, p2_y;
-    float    stroke_width;
-    float    r, g, b, a;
-    uint32_t path_type;
-    uint32_t clip_rect_id;
-    float    _padding[3];
-} dgtl_vector_path_instance_t;
-
-typedef struct dgtl_raw_input_event {
-    uint64_t timestamp_us;
-    uint32_t event_type;
-    float    pointer_x, pointer_y;
-    float    delta_x, delta_y;
-    uint32_t key_code;
-    uint32_t modifiers;
-    uint32_t touch_id;
-    float    dpi_scale;
-    uint32_t target_node;
-    uint8_t  is_handled;
-    char     ime_text[15];
-} dgtl_raw_input_event_t;
-#pragma pack(pop)
-
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(sizeof(dgtl_quad_instance_t) == 128, "dgtl_quad_instance_t must be exactly 128 bytes");
-_Static_assert(sizeof(dgtl_glyph_gpu_instance_t) == 64, "dgtl_glyph_gpu_instance_t must be exactly 64 bytes");
-_Static_assert(sizeof(dgtl_vector_path_instance_t) == 64, "dgtl_vector_path_instance_t must be exactly 64 bytes");
-_Static_assert(sizeof(dgtl_raw_input_event_t) == 64, "dgtl_raw_input_event_t must be exactly 64 bytes");
-#endif
-
-DGTL_API const char* DGTL_CALL dgtl_sdk_gpu_version(void) noexcept;
-DGTL_API void*    DGTL_CALL dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* title) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_resize(void* ctx_ptr, uint32_t width, uint32_t height, float dpi_scale) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_destroy_pipeline(void* ctx_ptr) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_begin_frame(void* ctx_ptr, float r, float g, float b, float a) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_end_frame(void* ctx_ptr) noexcept;
-DGTL_API uint32_t DGTL_CALL dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_pop_clip_rect(void* ctx_ptr) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl_quad_instance_t* instances, uint32_t count) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl_glyph_gpu_instance_t* instances, uint32_t count) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl_vector_path_instance_t* instances, uint32_t count) noexcept;
-DGTL_API uint32_t DGTL_CALL dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba) noexcept;
-DGTL_API void     DGTL_CALL dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) noexcept;
-DGTL_API bool     DGTL_CALL dgtl_platform_poll_events(void* ctx_ptr, dgtl_raw_input_event_t* out_event) noexcept;
-DGTL_API uint64_t DGTL_CALL dgtl_platform_get_time_us(void) noexcept;
-DGTL_API void     DGTL_CALL dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) noexcept;
-
-/* ============================================================================
- * SECTION 11: COMPILATION SESSIONS, AOT/JIT & NATIVE LINKERS
- * ============================================================================ */
-
-typedef struct dgtl_session dgtl_session_t;
+ * SECTION 14 â€” SESSION CONFIGURATION
+ * ========================================================================== */
 
 typedef enum dgtl_session_mode {
     DGTL_SESSION_MODE_JIT    = 0,
@@ -1080,520 +711,820 @@ typedef enum dgtl_session_mode {
     DGTL_SESSION_MODE_HYBRID = 2
 } dgtl_session_mode_t;
 
-typedef enum dgtl_session_opt_level {
-    DGTL_SESSION_OPT_O0      = 0,
-    DGTL_SESSION_OPT_O1      = 1,
-    DGTL_SESSION_OPT_O2      = 2,
-    DGTL_SESSION_OPT_O3      = 3,
-    DGTL_SESSION_OPT_OSTRIKE = 4
-} dgtl_session_opt_level_t;
-
-typedef enum dgtl_host_symbol_flags {
-    DGTL_HOST_SYMBOL_BIND_BY_NAME = 0x1,
-    DGTL_HOST_SYMBOL_BIND_BY_SLOT = 0x2
-} dgtl_host_symbol_flags_t;
+typedef dgtl_opt_level_t dgtl_session_opt_level_t;
 
 typedef struct dgtl_session_config {
     dgtl_session_mode_t      mode;
     dgtl_session_opt_level_t opt_level;
+    dgtl_target_t            target;
+    uint32_t                 jit_worker_threads;
+    uint64_t                 code_cache_bytes;
     uint64_t                 timeout_us;
-    int32_t                  enable_temporal_fusion;
-    int32_t                  enable_polyhedral_scop;
-    int32_t                  enable_speculation;
-    int32_t                  enable_vectorization;
-    int32_t                  enable_deterministic_replay;
-    uint32_t                 osr_threshold_invocations;
-    uint32_t                 background_worker_threads;
-    uint32_t                 preferred_numa_node;
-    uint32_t                 reserved[5];
+    bool                     enable_simd;
+    bool                     enable_inliner;
+    bool                     enable_profiling;
+    bool                     enable_smt_verify;
+    bool                     _pad[4];
 } dgtl_session_config_t;
+
+#define DGTL_HOST_SYMBOL_BIND_BY_NAME  0x01u
+#define DGTL_HOST_SYMBOL_BIND_BY_SLOT  0x02u
+#define DGTL_HOST_SYMBOL_WEAK          0x04u
 
 typedef struct dgtl_host_symbol {
     const char* name;
-    uint32_t    slot;
     uintptr_t   address;
+    uint32_t    slot;
     uint32_t    flags;
 } dgtl_host_symbol_t;
 
 typedef struct dgtl_callee_binding {
-    uint32_t    slot;
+    uint32_t    callee_slot;
     const char* symbol_name;
+    uintptr_t   address;
 } dgtl_callee_binding_t;
 
-DGTL_API dgtl_session_config_t DGTL_CALL dgtl_session_config_default(void);
-DGTL_API const char*           DGTL_CALL dgtl_session_mode_name(dgtl_session_mode_t mode);
-DGTL_API dgtl_session_t*       DGTL_CALL dgtl_session_create(const dgtl_session_config_t* cfg);
-DGTL_API void                  DGTL_CALL dgtl_session_destroy(dgtl_session_t* session);
+/* ============================================================================
+ * SECTION 15 â€” GPU/PLATFORM DRAW STRUCTURES
+ * ========================================================================== */
 
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_register_host_symbol(dgtl_session_t* s, const char* name, uintptr_t addr);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_register_host_symbol_slot(dgtl_session_t* s, uint32_t slot, uintptr_t addr);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_register_host_symbols(dgtl_session_t* s, const dgtl_host_symbol_t* syms, size_t count);
-DGTL_API void          DGTL_CALL dgtl_session_clear_host_symbols(dgtl_session_t* s);
+typedef struct dgtl_quad_instance {
+    float    x, y, w, h;
+    float    r, g, b, a;
+    float    corner_radius;
+    float    border_width;
+    uint32_t texture_slot;
+    uint32_t _pad;
+} dgtl_quad_instance_t;
 
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_compile_stream(dgtl_session_t* session, dgtl_stream_t* stream);
-DGTL_API uint64_t      DGTL_CALL dgtl_session_get_symbol_address(dgtl_session_t* session, const char* symbol_name);
-DGTL_API uint64_t      DGTL_CALL dgtl_session_get_symbol_address_by_slot(dgtl_session_t* session, uint32_t slot);
+typedef struct dgtl_glyph_gpu_instance {
+    float    x, y;
+    float    u, v;
+    float    uw, vh;
+    float    r, g, b, a;
+    uint16_t glyph_id;
+    uint16_t _pad;
+} dgtl_glyph_gpu_instance_t;
 
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_emit_object(dgtl_session_t* session, const char* output_path);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_emit_binary(dgtl_session_t* session, const char* output_path);
+typedef struct dgtl_vector_path_instance {
+    float    x, y;
+    float    scale;
+    float    r, g, b, a;
+    uint32_t path_slot;
+} dgtl_vector_path_instance_t;
 
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_i64(dgtl_session_t* session, const char* symbol, int64_t* out_result);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_f64(dgtl_session_t* session, const char* symbol, double* out_result);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_ptr(dgtl_session_t* session, const char* symbol, void** out_result);
-DGTL_API void*         DGTL_CALL dgtl_session_get_function_pointer(dgtl_session_t* session, const char* symbol);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_i64_args(dgtl_session_t* session, const char* symbol, const int64_t* args, size_t arg_count, int64_t* out_result);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_f64_args(dgtl_session_t* session, const char* symbol, const double* args, size_t arg_count, double* out_result);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_session_run_entry_ptr_args(dgtl_session_t* session, const char* symbol, const void* const* args, size_t arg_count, void** out_result);
-
-/* Direct Native Binary Emitters */
-DGTL_API dgtl_strike_result_t DGTL_CALL dgtl_strike_stream(dgtl_stream_t* s, dgtl_target_t target);
-DGTL_API dgtl_status_t        DGTL_CALL dgtl_emit_to_file(dgtl_stream_t* s, dgtl_target_t target, const char* output_path);
-DGTL_API dgtl_status_t        DGTL_CALL dgtl_emit_pe_binary_in_memory(dgtl_stream_t* s, void** out_buf, size_t* out_size);
-DGTL_API dgtl_status_t        DGTL_CALL dgtl_emit_elf_binary_in_memory(dgtl_stream_t* s, void** out_buf, size_t* out_size);
-DGTL_API dgtl_status_t        DGTL_CALL dgtl_emit_macho_binary_in_memory(dgtl_stream_t* s, void** out_buf, size_t* out_size);
-DGTL_API void                 DGTL_CALL dgtl_free_binary_buffer(void* buf);
-
-/* String Interning Registry */
-DGTL_API uint32_t    DGTL_CALL dgtl_intern_string_handle_utf8(const char* data, size_t len);
-DGTL_API const char* DGTL_CALL dgtl_try_lookup_string_handle(uint32_t handle, size_t* out_len);
-DGTL_API void        DGTL_CALL dgtl_register_string_handle(uint32_t handle, const char* data, size_t len);
-
-/* Callee Bindings */
-DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_bind_callee_slot(dgtl_stream_t* stream, uint32_t slot, const char* symbol_name);
-DGTL_API dgtl_status_t DGTL_CALL dgtl_stream_bind_callee_slots(dgtl_stream_t* stream, const dgtl_callee_binding_t* bindings, size_t count);
+typedef struct dgtl_input_event {
+    uint32_t type;
+    uint32_t key_or_button;
+    float    x, y;
+    float    delta_x, delta_y;
+    uint64_t timestamp_us;
+    uint64_t modifiers;
+} dgtl_input_event_t;
 
 /* ============================================================================
- * SECTION 12: CAPABILITIES, NUMA TOPOLOGY & SMT VERIFICATION
- * ============================================================================ */
+ * SECTION 16 â€” VERSION & DIAGNOSTIC APIS
+ * ========================================================================== */
 
-#define DGTL_CAPABILITY_SCHEMA_VERSION 2u
+typedef struct dgtl_version_info {
+    uint32_t    major;
+    uint32_t    minor;
+    uint32_t    patch;
+    uint32_t    abi_version;
+    const char* build_id;
+    bool        is_release_build;
+    bool        _pad[7];
+} dgtl_version_info_t;
 
-#define DGTL_CAP_FEATURE_JIT                    (1ull << 0)
-#define DGTL_CAP_FEATURE_AOT                    (1ull << 1)
-#define DGTL_CAP_FEATURE_HYBRID                 (1ull << 2)
-#define DGTL_CAP_FEATURE_HOST_BIND_NAME         (1ull << 3)
-#define DGTL_CAP_FEATURE_HOST_BIND_SLOT         (1ull << 4)
-#define DGTL_CAP_FEATURE_OBJECT_EMISSION        (1ull << 5)
-#define DGTL_CAP_FEATURE_BINARY_EMISSION        (1ull << 6)
-#define DGTL_CAP_FEATURE_IN_PROCESS_EXEC        (1ull << 7)
-#define DGTL_CAP_FEATURE_CFG_INTROSPECTION      (1ull << 8)
-#define DGTL_CAP_FEATURE_PER_PASS_CONTROL       (1ull << 9)
-#define DGTL_CAP_FEATURE_SPECULATIVE_CONST      (1ull << 10)
-#define DGTL_CAP_FEATURE_OSR                    (1ull << 11)
-#define DGTL_CAP_FEATURE_DEOPT_RECOVERY         (1ull << 12)
-#define DGTL_CAP_FEATURE_POLYHEDRAL_SCOP        (1ull << 13)
-#define DGTL_CAP_FEATURE_LINEAR_BORROW_CHECK    (1ull << 14)
-#define DGTL_CAP_FEATURE_SMT_FORMAL_VERIFY      (1ull << 15)
-#define DGTL_CAP_FEATURE_NUMA_AWARE             (1ull << 16)
-#define DGTL_CAP_FEATURE_WX_MEMORY_PROTECT      (1ull << 17)
+DGTL_NODISCARD DGTL_API dgtl_version_info_t DGTL_CALL dgtl_get_version(void) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_abi_compatible(uint32_t client_abi_version) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_get_build_config(void) DGTL_NOEXCEPT;
 
-/* SIMD Capability Tiers */
-#define DGTL_CAP_SIMD_SCALAR                    0x0000u
-#define DGTL_CAP_SIMD_AVX2                      0x0001u
-#define DGTL_CAP_SIMD_AVX512                    0x0002u
-#define DGTL_CAP_SIMD_ARM_NEON                  0x0004u
-#define DGTL_CAP_SIMD_ARM_SVE                   0x0008u
-#define DGTL_CAP_SIMD_RISCV_V                   0x0010u
-#define DGTL_CAP_SIMD_WASM128                   0x0020u
+/* ============================================================================
+ * SECTION 17 â€” CONTEXT APIS
+ * ========================================================================== */
+
+#ifdef __cplusplus
+DGTL_NODISCARD DGTL_API dgtl_context_t* DGTL_CALL dgtl_context_create(size_t worker_threads = 0, size_t arena_mb_per_worker = 64) DGTL_NOEXCEPT;
+#else
+DGTL_NODISCARD DGTL_API dgtl_context_t* DGTL_CALL dgtl_context_create(size_t worker_threads, size_t arena_mb_per_worker) DGTL_NOEXCEPT;
+#endif
+DGTL_API void DGTL_CALL dgtl_context_destroy(dgtl_context_t* ctx) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_context_worker_count(const dgtl_context_t* ctx) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_context_set_verbose(dgtl_context_t* ctx, bool enabled) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 18 â€” STREAM & TRANSACTION APIS
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API dgtl_stream_t* DGTL_CALL dgtl_stream_create(dgtl_context_t* ctx, size_t reserved_nodes) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_destroy(dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_reset(dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_size(const dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_stream_max_slot(const dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_stream_get_node(const dgtl_stream_t* s, size_t index, dgtl_node_t* DGTL_NONNULL(3) out_node) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_stream_get_core_record(const dgtl_stream_t* s, size_t index, dgtl_core_record_t* DGTL_NONNULL(3) out_rec) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_ir_mode(dgtl_stream_t* s, dgtl_ir_mode_t mode) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_emit_options(dgtl_stream_t* s, const dgtl_emit_options_t* opts) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_diag_count(const dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_diag_t DGTL_CALL dgtl_stream_get_diag(const dgtl_stream_t* s, size_t index) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_clear_diags(dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_source_loc(dgtl_stream_t* s, uint32_t line, uint16_t col, const char* filename) DGTL_NOEXCEPT;
+
+DGTL_API void DGTL_CALL dgtl_stream_set_call_overflow(dgtl_stream_t* s, size_t node_idx, const uint32_t* args, size_t count) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_get_call_overflow(const dgtl_stream_t* s, size_t node_idx, uint32_t* out_args, size_t max_out) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_operand_overflow(dgtl_stream_t* s, size_t node_idx, const uint32_t* operands, size_t count) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_get_operand_overflow(const dgtl_stream_t* s, size_t node_idx, uint32_t* out, size_t max_out) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_result_ids(dgtl_stream_t* s, size_t node_idx, const uint32_t* ids, size_t count) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_get_result_ids(const dgtl_stream_t* s, size_t node_idx, uint32_t* out, size_t max_out) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_node_effects(dgtl_stream_t* s, size_t node_idx, uint32_t effect_set) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_stream_get_node_effects(const dgtl_stream_t* s, size_t node_idx) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 19 â€” FUNCTION & CONTROL FLOW GRAPH BUILDER
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API dgtl_func_builder_t* DGTL_CALL dgtl_func_builder_create(dgtl_stream_t* DGTL_NONNULL(1) stream, const char* name, dgtl_type_t ret) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_func_builder_destroy(dgtl_func_builder_t* fb) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_func_add_param(dgtl_func_builder_t* DGTL_NONNULL(1) fb, dgtl_type_t type) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_func_param_count(const dgtl_func_builder_t* fb) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_func_get_param(const dgtl_func_builder_t* fb, uint32_t index) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_block_t DGTL_CALL dgtl_func_append_block(dgtl_func_builder_t* DGTL_NONNULL(1) fb, const char* name) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_func_set_insert_block(dgtl_func_builder_t* DGTL_NONNULL(1) fb, dgtl_block_t block) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_block_t DGTL_CALL dgtl_func_get_insert_block(const dgtl_func_builder_t* fb) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_func_seal_block(dgtl_func_builder_t* DGTL_NONNULL(1) fb, dgtl_block_t block) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_func_builder_finalize(dgtl_func_builder_t* DGTL_NONNULL(1) fb) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_func_builder_verify(const dgtl_func_builder_t* fb, char* err_buf, size_t err_buf_size) DGTL_NOEXCEPT;
+
+DGTL_API void DGTL_CALL dgtl_func_set_value_type(dgtl_func_builder_t* DGTL_NONNULL(1) fb, dgtl_value_t val, dgtl_type_t type) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_type_t DGTL_CALL dgtl_func_get_value_type(const dgtl_func_builder_t* fb, dgtl_value_t val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_func_diag_count(const dgtl_func_builder_t* fb) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_diag_t DGTL_CALL dgtl_func_get_diag(const dgtl_func_builder_t* fb, size_t index) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_func_clear_diags(dgtl_func_builder_t* DGTL_NONNULL(1) fb) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 20 â€” TYPE-DEDUCED SSA EMISSION APIS
+ * ========================================================================== */
+
+/* Arithmetic & Bitwise */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_add(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_sub(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_mul(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_div(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_rem(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_neg(dgtl_func_builder_t* fb, dgtl_value_t val) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_and(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_or(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_xor(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_not(dgtl_func_builder_t* fb, dgtl_value_t val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_shl(dgtl_func_builder_t* fb, dgtl_value_t val, dgtl_value_t amount) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_shr(dgtl_func_builder_t* fb, dgtl_value_t val, dgtl_value_t amount) DGTL_NOEXCEPT;
+
+/* Comparisons & Selection */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_icmp(dgtl_func_builder_t* fb, dgtl_icmp_pred_t pred, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fcmp(dgtl_func_builder_t* fb, dgtl_fcmp_pred_t pred, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_select(dgtl_func_builder_t* fb, dgtl_value_t cond, dgtl_value_t true_val, dgtl_value_t false_val) DGTL_NOEXCEPT;
+
+/* Memory Access & Addressing */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_load(dgtl_func_builder_t* fb, dgtl_type_t result_type, dgtl_value_t ptr) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_load_aligned(dgtl_func_builder_t* fb, dgtl_type_t result_type, dgtl_value_t ptr, uint32_t align) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_build_store(dgtl_func_builder_t* fb, dgtl_value_t val, dgtl_value_t ptr) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_build_store_aligned(dgtl_func_builder_t* fb, dgtl_value_t val, dgtl_value_t ptr, uint32_t align) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_gep(dgtl_func_builder_t* fb, dgtl_value_t base, dgtl_value_t offset) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_alloca(dgtl_func_builder_t* fb, dgtl_type_t type, uint32_t align) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_volatile_load(dgtl_func_builder_t* fb, dgtl_type_t result_type, dgtl_value_t ptr) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_build_volatile_store(dgtl_func_builder_t* fb, dgtl_value_t val, dgtl_value_t ptr) DGTL_NOEXCEPT;
+
+/* Casts */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_cast(dgtl_func_builder_t* fb, dgtl_value_t val, dgtl_type_t to_type) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_ptr_to_int(dgtl_func_builder_t* fb, dgtl_value_t ptr) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_int_to_ptr(dgtl_func_builder_t* fb, dgtl_value_t val) DGTL_NOEXCEPT;
+
+/* Constant Pool */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_const_i64(dgtl_func_builder_t* fb, int64_t val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_const_i32(dgtl_func_builder_t* fb, int32_t val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_const_f32(dgtl_func_builder_t* fb, float val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_const_f64(dgtl_func_builder_t* fb, double val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_const_bool(dgtl_func_builder_t* fb, bool val) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_const_null(dgtl_func_builder_t* fb, dgtl_type_t type) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_str(dgtl_func_builder_t* fb, const char* utf8) DGTL_NOEXCEPT;
+
+/* Control Flow & Graph SSA */
+DGTL_API void DGTL_CALL dgtl_build_br(dgtl_func_builder_t* fb, dgtl_block_t target) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_cond_br(dgtl_func_builder_t* fb, dgtl_value_t cond, dgtl_block_t true_bb, dgtl_block_t false_bb) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_ret(dgtl_func_builder_t* fb, dgtl_value_t val) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_ret_void(dgtl_func_builder_t* fb) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_phi(dgtl_func_builder_t* fb, dgtl_type_t type) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_phi_add_incoming(dgtl_func_builder_t* fb, dgtl_value_t phi, dgtl_value_t incoming_val, dgtl_block_t from_block) DGTL_NOEXCEPT;
+DGTL_DEPRECATED("Use dgtl_phi_add_incoming")
+DGTL_API void DGTL_CALL dgtl_build_phi_incoming(dgtl_func_builder_t* fb, dgtl_value_t phi, dgtl_value_t incoming_val, dgtl_block_t from_block) DGTL_NOEXCEPT;
+
+/* Calls */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_call(dgtl_func_builder_t* fb, dgtl_func_t callee, const dgtl_value_t* args, size_t arg_count) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_call_indirect(dgtl_func_builder_t* fb, dgtl_value_t callee_ptr, dgtl_type_t ret_type, const dgtl_value_t* args, size_t arg_count) DGTL_NOEXCEPT;
+
+/* Fused & Vectorized Math */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fma(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b, dgtl_value_t c) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fms(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b, dgtl_value_t c) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fnmadd(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b, dgtl_value_t c) DGTL_NOEXCEPT;
+
+/* Deep AI & Spatial Primitives */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_matmul(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b, dgtl_value_t acc) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_softmax(dgtl_func_builder_t* fb, dgtl_value_t input) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_layer_norm(dgtl_func_builder_t* fb, dgtl_value_t x, dgtl_value_t gamma, dgtl_value_t beta) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_sdpa(dgtl_func_builder_t* fb, dgtl_value_t q, dgtl_value_t k, dgtl_value_t v, dgtl_value_t mask) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_rope_embed(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT;
+
+/* SIMD & Gather/Scatter */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_load(dgtl_func_builder_t* fb, dgtl_value_t ptr, dgtl_type_t lane_type, uint32_t lane_count) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_build_vec_store(dgtl_func_builder_t* fb, dgtl_value_t ptr, dgtl_value_t vec) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_add(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_mul(dgtl_func_builder_t* fb, dgtl_value_t lhs, dgtl_value_t rhs) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_reduce_add(dgtl_func_builder_t* fb, dgtl_value_t vec) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_reduce_max(dgtl_func_builder_t* fb, dgtl_value_t vec) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_reduce_min(dgtl_func_builder_t* fb, dgtl_value_t vec) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_shuffle(dgtl_func_builder_t* fb, dgtl_value_t vec, dgtl_value_t mask) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec_blend(dgtl_func_builder_t* fb, dgtl_value_t mask, dgtl_value_t a, dgtl_value_t b) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_gather(dgtl_func_builder_t* fb, dgtl_value_t base, dgtl_value_t indices, dgtl_value_t mask) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_scatter(dgtl_func_builder_t* fb, dgtl_value_t base, dgtl_value_t indices, dgtl_value_t vals, dgtl_value_t mask) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fcvtl_f16_f32(dgtl_func_builder_t* fb, dgtl_value_t f16_vec) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fcvtn_f32_f16(dgtl_func_builder_t* fb, dgtl_value_t f32_vec) DGTL_NOEXCEPT;
+
+/* Concurrency & Memory Safety */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_async_spawn(dgtl_func_builder_t* fb, dgtl_value_t fn, dgtl_value_t arg) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_async_await(dgtl_func_builder_t* fb, dgtl_value_t task) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_fence(dgtl_func_builder_t* fb, dgtl_memory_order_t order) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_own_acquire(dgtl_func_builder_t* fb, dgtl_value_t resource) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_own_release(dgtl_func_builder_t* fb, dgtl_value_t resource) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_own_transfer(dgtl_func_builder_t* fb, dgtl_value_t resource) DGTL_NOEXCEPT;
+
+/* HFT & Low Latency */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_read_tsc(dgtl_func_builder_t* fb) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_prefetch(dgtl_func_builder_t* fb, dgtl_value_t addr, uint32_t hint) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_build_clflush(dgtl_func_builder_t* fb, dgtl_value_t addr) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_spin_acquire(dgtl_func_builder_t* fb, dgtl_value_t lock_ptr) DGTL_NOEXCEPT;
+
+/* Spatial & Vector Math */
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_fast_inv_sqrt(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec3_cross(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_vec4_dot(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_mat4_mul(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_quat_slerp(dgtl_func_builder_t* fb, dgtl_value_t q0, dgtl_value_t q1, dgtl_value_t t) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_value_t DGTL_CALL dgtl_build_ray_aabb_isect(dgtl_func_builder_t* fb, dgtl_value_t ray_origin, dgtl_value_t ray_dir, dgtl_value_t aabb_min, dgtl_value_t aabb_max) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 21 â€” PASS REGISTRY & EXECUTION APIS
+ * ========================================================================== */
+
+typedef dgtl_err_t (DGTL_CALL *dgtl_pass_fn_t)(dgtl_stream_t* s, void* user_data);
+
+DGTL_NODISCARD DGTL_API dgtl_pass_t DGTL_CALL dgtl_pass_register(const char* DGTL_NONNULL(1) name, dgtl_pass_fn_t fn, void* user_data) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_pass_run(dgtl_pass_t pass, dgtl_stream_t* DGTL_NONNULL(2) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_pass_run_by_name(const char* DGTL_NONNULL(1) name, dgtl_stream_t* DGTL_NONNULL(2) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_pass_exists(const char* name) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char** DGTL_CALL dgtl_pass_list(size_t* DGTL_NONNULL(1) out_count) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 22 â€” OPTIMIZATION ENGINE APIS
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_optimize(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_optimize_with_profile(dgtl_stream_t* DGTL_NONNULL(1) s, dgtl_opt_level_t level) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_run_dce(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_run_gvn(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_run_loop_fusion(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_run_inliner(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_run_escape_analysis(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_run_error_recovery(dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_auto_optimize(dgtl_stream_t* s, bool enabled) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_opt_level(dgtl_stream_t* s, dgtl_opt_level_t level) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 23 â€” DIRECT BINARY SYNTHESIS
+ * ========================================================================== */
+
+/*
+ * These APIs expose the sovereign in-memory binary emitters already provided
+ * by the SDK implementation. The caller owns the returned buffer and must
+ * release it with dgtl_free_binary_buffer().
+ */
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL
+dgtl_emit_pe_binary_in_memory(
+    dgtl_stream_t* DGTL_NONNULL(1) s,
+    void** DGTL_NONNULL(2) out_buf,
+    size_t* DGTL_NONNULL(3) out_size) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL
+dgtl_emit_elf_binary_in_memory(
+    dgtl_stream_t* DGTL_NONNULL(1) s,
+    void** DGTL_NONNULL(2) out_buf,
+    size_t* DGTL_NONNULL(3) out_size) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL
+dgtl_emit_macho_binary_in_memory(
+    dgtl_stream_t* DGTL_NONNULL(1) s,
+    void** DGTL_NONNULL(2) out_buf,
+    size_t* DGTL_NONNULL(3) out_size) DGTL_NOEXCEPT;
+
+DGTL_API void DGTL_CALL
+dgtl_free_binary_buffer(void* buf) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_opt_level_t DGTL_CALL dgtl_stream_get_opt_level(const dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_perf_metrics_t DGTL_CALL dgtl_stream_get_perf_metrics(const dgtl_stream_t* s) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 23 â€” DIRECT-TO-BINARY STRIKE APIS
+ * ========================================================================== */
+
+typedef struct dgtl_strike_result {
+    int32_t  ok;
+    size_t   code_size;
+    uint64_t logic_hash;
+    double   compilation_latency_ms;
+    char     message[128];
+} dgtl_strike_result_t;
+
+DGTL_NODISCARD DGTL_API dgtl_strike_result_t DGTL_CALL dgtl_strike_stream(dgtl_stream_t* DGTL_NONNULL(1) s, dgtl_target_t target) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 24 â€” JIT / AOT / HYBRID SESSIONS & MARSHALLED RUNNERS
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API dgtl_session_config_t DGTL_CALL dgtl_session_config_default(void) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_session_t* DGTL_CALL dgtl_session_create(const dgtl_session_config_t* config) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_session_destroy(dgtl_session_t* session) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_session_mode_name(dgtl_session_mode_t mode) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_register_symbol(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) symbol_name, uintptr_t address) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_register_symbols(dgtl_session_t* DGTL_NONNULL(1) session, const dgtl_host_symbol_t* DGTL_NONNULL(2) symbols, size_t count) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_session_clear_symbols(dgtl_session_t* DGTL_NONNULL(1) session) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_compile(dgtl_session_t* DGTL_NONNULL(1) session, dgtl_stream_t* DGTL_NONNULL(2) stream) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint64_t DGTL_CALL dgtl_session_get_symbol_address(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) name) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API void* DGTL_CALL dgtl_session_get_function_ptr(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) name) DGTL_NOEXCEPT;
+
+/* Universal ABI Marshaller */
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_run_marshalled(dgtl_session_t* DGTL_NONNULL(1) session, const char* entry_symbol, const dgtl_call_args_t* call_args, dgtl_abi_arg_t* DGTL_NONNULL(4) out_result) DGTL_NOEXCEPT;
+
+/* Fast Homogeneous Overloads */
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_run_i64(dgtl_session_t* DGTL_NONNULL(1) session, const char* entry_symbol, const int64_t* args, size_t arg_count, int64_t* DGTL_NONNULL(5) out_result) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_run_f64(dgtl_session_t* DGTL_NONNULL(1) session, const char* entry_symbol, const double* args, size_t arg_count, double* DGTL_NONNULL(5) out_result) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_run_ptr(dgtl_session_t* DGTL_NONNULL(1) session, const char* entry_symbol, const void* const* args, size_t arg_count, void** DGTL_NONNULL(5) out_result) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_emit_object(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) output_path) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_emit_binary(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) output_path) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 25 â€” SIMD LEGALIZATION APIS
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API dgtl_simd_caps_t DGTL_CALL dgtl_simd_query_host_caps(void) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_simd_arch_is_supported(dgtl_simd_arch_t arch) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_legalize_simd(dgtl_stream_t* DGTL_NONNULL(1) s, dgtl_simd_arch_t arch) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_legalize_simd_ex(dgtl_stream_t* DGTL_NONNULL(1) s, const dgtl_simd_legalize_opts_t* DGTL_NONNULL(2) opts) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_simd_native_lane_count(dgtl_simd_arch_t arch, dgtl_type_t type) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 26 â€” IR TEXT, CFG & INTROSPECTION APIS
+ * ========================================================================== */
+
+typedef struct dgtl_text {
+    char*  data;
+    size_t length;
+} dgtl_text_t;
+
+DGTL_NODISCARD DGTL_API dgtl_text_t DGTL_CALL dgtl_stream_print_ir(const dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_text_t DGTL_CALL dgtl_stream_print_cfg_dot(const dgtl_stream_t* DGTL_NONNULL(1) s) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_free_text(dgtl_text_t text) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_node_is_terminator(dgtl_opcode_t op, uint16_t flags) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_node_has_side_effects(dgtl_opcode_t op, uint16_t flags) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API double DGTL_CALL dgtl_node_inlining_benefit(dgtl_opcode_t op) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_opcode_name(dgtl_opcode_t op) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 27 â€” SERIALIZATION & INTEGRITY APIS
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_stream_serialize(const dgtl_stream_t* DGTL_NONNULL(1) s, void** DGTL_NONNULL(2) out_blob, size_t* DGTL_NONNULL(3) out_size) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_stream_deserialize(dgtl_stream_t* DGTL_NONNULL(1) s, const void* DGTL_NONNULL(2) blob, size_t blob_size) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_free_blob(void* blob) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API int32_t DGTL_CALL dgtl_binary_validate(const uint8_t* bytes, size_t len) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 28 â€” HARDWARE TOPOLOGY & NUMA APIS
+ * ========================================================================== */
 
 typedef struct dgtl_capabilities {
-    uint32_t schema_version;
-    uint32_t supported_simd_tiers;
-    uint64_t feature_mask;
-    uint64_t backend_target_mask;
-    uint64_t optimization_profile_mask;
-    uint32_t max_call_arity;
-    uint32_t cache_line_bytes;
+    int32_t  has_avx512;
+    int32_t  has_avx2;
+    int32_t  has_amx;
+    int32_t  has_fma;
+    int32_t  has_bmi2;
     uint32_t numa_node_count;
-    uint32_t physical_core_count;
-    uint32_t reserved[6];
+    uint32_t core_count;
+    uint64_t l3_cache_bytes;
 } dgtl_capabilities_t;
 
-DGTL_API dgtl_capabilities_t DGTL_CALL dgtl_get_capabilities(void);
-DGTL_API bool                DGTL_CALL dgtl_capabilities_support_target(const dgtl_capabilities_t* caps, dgtl_target_t target);
-DGTL_API bool                DGTL_CALL dgtl_capabilities_has_feature(const dgtl_capabilities_t* caps, uint64_t feature_flag);
+DGTL_NODISCARD DGTL_API dgtl_capabilities_t DGTL_CALL dgtl_query_capabilities(void) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_numa_pin_thread(uint32_t numa_node) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_numa_current_node(void) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_numa_node_count(void) DGTL_NOEXCEPT;
 
-/* System NUMA Controller */
-DGTL_API uint32_t DGTL_CALL dgtl_numa_node_count(void);
-DGTL_API uint32_t DGTL_CALL dgtl_numa_current_node(void);
-DGTL_API int32_t  DGTL_CALL dgtl_numa_pin_thread_to_node(uint32_t node_id);
-DGTL_API int32_t  DGTL_CALL dgtl_numa_pin_thread_to_core(uint32_t core_id);
-DGTL_API void*    DGTL_CALL dgtl_numa_alloc_on_node(size_t size, uint32_t node_id);
-DGTL_API void     DGTL_CALL dgtl_numa_free_on_node(void* ptr, size_t size);
+/* ============================================================================
+ * SECTION 29 â€” CONTEXT-ANCHORED STRING INTERNING
+ * ========================================================================== */
 
-/* Mathematical SMT Verification & Source Mapping */
-DGTL_API int32_t DGTL_CALL dgtl_stream_verify_integrity(const dgtl_stream_t* s, char* err_buf, size_t err_buf_size);
-DGTL_API int32_t DGTL_CALL dgtl_verify_pass_equivalence(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass);
-DGTL_API size_t  DGTL_CALL dgtl_export_smtlib2_script(const dgtl_stream_t* orig, const dgtl_stream_t* opt, const char* pass, char* out, size_t sz);
-DGTL_API void    DGTL_CALL dgtl_record_source_location(dgtl_stream_t* s, size_t node_idx, uint32_t line, uint16_t col, uint16_t file_id);
+DGTL_NODISCARD DGTL_API dgtl_str_t DGTL_CALL dgtl_str_intern(dgtl_context_t* DGTL_NONNULL(1) ctx, const char* DGTL_NONNULL(2) utf8, size_t len) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_str_t DGTL_CALL dgtl_str_intern_cstr(dgtl_context_t* DGTL_NONNULL(1) ctx, const char* DGTL_NONNULL(2) utf8) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_str_get(dgtl_context_t* DGTL_NONNULL(1) ctx, dgtl_str_t handle) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_str_len(dgtl_context_t* DGTL_NONNULL(1) ctx, dgtl_str_t handle) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 30 â€” SMT FORMAL VERIFICATION
+ * ========================================================================== */
+
+typedef struct dgtl_smt_result {
+    bool   proved_equivalent;
+    bool   has_counterexample;
+    double verification_ms;
+    char   solver_name[32];
+    char   message[128];
+} dgtl_smt_result_t;
+
+DGTL_NODISCARD DGTL_API dgtl_smt_result_t DGTL_CALL dgtl_smt_verify(const dgtl_stream_t* original, const dgtl_stream_t* optimized, const char* solver_name) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 31 â€” ASYNC RUNTIME & SCHEDULER APIS
+ * ========================================================================== */
+
+typedef void (*dgtl_runtime_task_fn)(void* arg);
+
+DGTL_NODISCARD DGTL_API dgtl_runtime_context_t* DGTL_CALL dgtl_runtime_context_create(size_t worker_threads, size_t arena_mb_per_worker) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_runtime_context_destroy(dgtl_runtime_context_t* ctx) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint64_t DGTL_CALL dgtl_runtime_spawn(dgtl_runtime_context_t* DGTL_NONNULL(1) ctx, dgtl_runtime_task_fn fn, void* arg) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_runtime_join(dgtl_runtime_context_t* DGTL_NONNULL(1) ctx, uint64_t task_handle) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_runtime_yield(dgtl_runtime_context_t* ctx) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API uint64_t DGTL_CALL dgtl_spawn_task(dgtl_runtime_task_fn fn, void* arg) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_join_task(uint64_t handle) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_yield(void) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 32 â€” GPU & PLATFORM WEAK SUBSYSTEMS
+ * ========================================================================== */
+
+DGTL_API void* DGTL_CALL dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* title) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_resize(void* ctx, uint32_t width, uint32_t height, float dpi_scale) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_destroy_pipeline(void* ctx) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_begin_frame(void* ctx, float r, float g, float b, float a) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_end_frame(void* ctx) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_gpu_push_clip_rect(void* ctx, float x, float y, float w, float h) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_pop_clip_rect(void* ctx) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_render_quads(void* ctx, const dgtl_quad_instance_t* instances, uint32_t count) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_render_glyphs(void* ctx, uint32_t atlas_slot, const dgtl_glyph_gpu_instance_t* instances, uint32_t count) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_render_vector_paths(void* ctx, const dgtl_vector_path_instance_t* instances, uint32_t count) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_gpu_upload_texture(void* ctx, uint32_t width, uint32_t height, const uint8_t* rgba) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_gpu_destroy_texture(void* ctx, uint32_t texture_slot) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_platform_poll_event(void* ctx, dgtl_input_event_t* DGTL_NONNULL(2) out_event) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint64_t DGTL_CALL dgtl_platform_time_us(void) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_platform_set_cursor(void* ctx, uint32_t cursor_type) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_gpu_sdk_version(void) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 33 â€” LOW-LEVEL EMISSION & LINKER DIAGNOSTICS
+ * ========================================================================== */
+
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_emit_raw(dgtl_stream_t* DGTL_NONNULL(1) s, dgtl_opcode_t opcode, uint16_t flags, uint32_t op_a, uint32_t op_b, uint32_t op_c) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_emit_raw_with_slot(dgtl_stream_t* DGTL_NONNULL(1) s, dgtl_opcode_t opcode, uint16_t flags, uint32_t result_id, uint32_t op_a, uint32_t op_b, uint32_t op_c) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_set_verbose(int32_t enabled) DGTL_NOEXCEPT;
+
+/* ============================================================================
+ * SECTION 24C â€” CONVENIENCE EMISSION & INTROSPECTION HELPERS
+ * ========================================================================== */
+
+static inline uint32_t dgtl_emit_const_i64(dgtl_stream_t* s, int64_t val) {
+    uint32_t lo = (uint32_t)((uint64_t)val & 0xFFFFFFFFu);
+    uint32_t hi = (uint32_t)(((uint64_t)val >> 32) & 0xFFFFFFFFu);
+    return dgtl_emit_raw(s, DGTL_OP_CONST, DGTL_FLAG_IS_CONST, lo, hi, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_const_f64(dgtl_stream_t* s, double val) {
+    uint64_t u = 0;
+    memcpy(&u, &val, sizeof(u));
+    uint32_t lo = (uint32_t)(u & 0xFFFFFFFFu);
+    uint32_t hi = (uint32_t)((u >> 32) & 0xFFFFFFFFu);
+    return dgtl_emit_raw(s, DGTL_OP_CONST, DGTL_FLAG_IS_CONST | DGTL_FLAG_IS_SPEC_CONST, lo, hi, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_const_f32(dgtl_stream_t* s, float val) {
+    uint32_t u = 0;
+    memcpy(&u, &val, sizeof(u));
+    return dgtl_emit_raw(s, DGTL_OP_CONST, DGTL_FLAG_IS_CONST | DGTL_FLAG_IS_SPEC_CONST, u, 0, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_add_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_ADD_I32, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_sub_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_SUB_I32, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_mul_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_MUL_I32, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_div_i32(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_DIV_I32, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_add_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_ADD_I64, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_sub_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_SUB_I64, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_mul_i64(dgtl_stream_t* s, uint32_t lhs, uint32_t rhs) {
+    return dgtl_emit_raw(s, DGTL_OP_MUL_I64, DGTL_FLAG_NONE, lhs, rhs, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_ret(dgtl_stream_t* s, uint32_t val) {
+    return dgtl_emit_raw(s, DGTL_OP_RET, DGTL_FLAG_IS_RETURN, val, 0, 0);
+}
+
+static inline uint32_t dgtl_emit_ret_void(dgtl_stream_t* s) {
+    return dgtl_emit_raw(s, DGTL_OP_RET, DGTL_FLAG_IS_RETURN, 0, 0, 0);
+}
+
+static inline uint32_t dgtl_emit_load(dgtl_stream_t* s, uint32_t ptr) {
+    return dgtl_emit_raw(s, DGTL_OP_LOAD, DGTL_FLAG_NONE, ptr, 0, DGTL_INVALID_SLOT);
+}
+
+static inline uint32_t dgtl_emit_store(dgtl_stream_t* s, uint32_t ptr, uint32_t val) {
+    return dgtl_emit_raw(s, DGTL_OP_STORE, DGTL_FLAG_HAS_SIDE_EFFECTS, ptr, val, DGTL_INVALID_SLOT);
+}
+
+static inline const char* dgtl_version_string(void) {
+    return DGTL_VERSION_STRING;
+}
+
+static inline size_t dgtl_stream_node_count(const dgtl_stream_t* s) {
+    return dgtl_stream_size(s);
+}
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_last_linker_fallback_count(void) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_last_linker_fallback_message(size_t index, char* out_buffer, size_t out_size) DGTL_NOEXCEPT;
 
 #ifdef __cplusplus
-}
+} /* extern "C" */
 #endif
 
+/* ============================================================================
+ * SECTION 34 â€” C++20 ERGONOMIC RAII FACADE
+ * ========================================================================== */
+
 #ifdef __cplusplus
-#include <string>
-#include <string_view>
+
+#include <initializer_list>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
-#include <type_traits>
-#include <utility>
-
-#ifdef alloca
-#  undef alloca
-#endif
-#ifdef min
-#  undef min
-#endif
-#ifdef max
-#  undef max
-#endif
 
 namespace dgtl {
-namespace sdk {
 
-/**
- * @class Context
- * @brief High-performance thread-safe memory and compilation manager.
- */
+struct Value {
+    dgtl_value_t v;
+    constexpr Value() noexcept : v{0xFFFFFFFFu} {}
+    constexpr explicit Value(dgtl_value_t vv) noexcept : v(vv) {}
+    constexpr explicit Value(uint32_t id) noexcept : v{id} {}
+    [[nodiscard]] constexpr bool valid() const noexcept { return dgtl_value_is_valid(v); }
+    [[nodiscard]] constexpr uint32_t id() const noexcept { return v.id; }
+    [[nodiscard]] constexpr dgtl_value_t raw() const noexcept { return v; }
+};
+
+struct Block {
+    dgtl_block_t b;
+    constexpr Block() noexcept : b{0xFFFFFFFFu} {}
+    constexpr explicit Block(dgtl_block_t bb) noexcept : b(bb) {}
+    [[nodiscard]] constexpr bool valid() const noexcept { return dgtl_block_is_valid(b); }
+    [[nodiscard]] constexpr uint32_t id() const noexcept { return b.id; }
+    [[nodiscard]] constexpr dgtl_block_t raw() const noexcept { return b; }
+};
+
 class Context {
 public:
-    Context() : handle_(dgtl_context_create()) {
-        if (!handle_) throw std::bad_alloc();
+    Context() : ctx_(dgtl_context_create(0, 0)) {
+        if (!ctx_) throw std::bad_alloc();
     }
-    Context(size_t worker_threads, size_t arena_mb_per_worker)
-        : handle_(dgtl_context_create_custom(worker_threads, arena_mb_per_worker)) {
-        if (!handle_) throw std::bad_alloc();
+    explicit Context(size_t workers, size_t arena_mb = 64)
+        : ctx_(dgtl_context_create(workers, arena_mb)) {
+        if (!ctx_) throw std::bad_alloc();
     }
-    ~Context() {
-        if (handle_) {
-            dgtl_context_destroy(handle_);
-            handle_ = nullptr;
-        }
-    }
+    ~Context() noexcept { if (ctx_) dgtl_context_destroy(ctx_); }
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
-    Context(Context&& o) noexcept : handle_(o.handle_) { o.handle_ = nullptr; }
+    Context(Context&& o) noexcept : ctx_(o.ctx_) { o.ctx_ = nullptr; }
     Context& operator=(Context&& o) noexcept {
-        if (this != &o) {
-            if (handle_) dgtl_context_destroy(handle_);
-            handle_ = o.handle_;
-            o.handle_ = nullptr;
-        }
+        if (this != &o) { if (ctx_) dgtl_context_destroy(ctx_); ctx_ = o.ctx_; o.ctx_ = nullptr; }
         return *this;
     }
-    [[nodiscard]] dgtl_context_t* get() const noexcept { return handle_; }
-    [[nodiscard]] dgtl_context_t* handle() const noexcept { return handle_; }
-
+    [[nodiscard]] dgtl_context_t* get() const noexcept { return ctx_; }
+    void set_verbose(bool v) noexcept { dgtl_context_set_verbose(ctx_, v); }
 private:
-    dgtl_context_t* handle_ = nullptr;
+    dgtl_context_t* ctx_ = nullptr;
 };
 
-/**
- * @class Stream
- * @brief Linear transactional IR stream container.
- */
 class Stream {
 public:
-    explicit Stream(Context& ctx, size_t reserved_nodes = 1024)
-        : stream_(dgtl_stream_create(ctx.handle(), reserved_nodes)) {
-        if (!stream_) throw std::bad_alloc();
+    explicit Stream(Context& ctx, size_t reserve = 256)
+        : s_(dgtl_stream_create(ctx.get(), reserve)) {
+        if (!s_) throw std::bad_alloc();
     }
-    explicit Stream(dgtl_context_t* ctx_raw, size_t reserved_nodes = 1024)
-        : stream_(dgtl_stream_create(ctx_raw, reserved_nodes)) {
-        if (!stream_) throw std::bad_alloc();
+    explicit Stream(size_t reserve = 256)
+        : s_(dgtl_stream_create(nullptr, reserve)) {
+        if (!s_) throw std::bad_alloc();
     }
-    ~Stream() {
-        if (stream_) {
-            dgtl_stream_destroy(stream_);
-            stream_ = nullptr;
-        }
-    }
+    ~Stream() noexcept { if (s_) dgtl_stream_destroy(s_); }
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
-    Stream(Stream&& o) noexcept : stream_(o.stream_) { o.stream_ = nullptr; }
+    Stream(Stream&& o) noexcept : s_(o.s_) { o.s_ = nullptr; }
     Stream& operator=(Stream&& o) noexcept {
-        if (this != &o) {
-            if (stream_) dgtl_stream_destroy(stream_);
-            stream_ = o.stream_;
-            o.stream_ = nullptr;
-        }
+        if (this != &o) { if (s_) dgtl_stream_destroy(s_); s_ = o.s_; o.s_ = nullptr; }
         return *this;
     }
-
-    [[nodiscard]] dgtl_stream_t* get() const noexcept { return stream_; }
-    [[nodiscard]] dgtl_stream_t* handle() const noexcept { return stream_; }
-
-    [[nodiscard]] size_t size() const noexcept { return dgtl_stream_node_count(stream_); }
-    [[nodiscard]] uint64_t hash() const noexcept { return dgtl_stream_logic_hash(stream_); }
-    void reset() noexcept { dgtl_stream_reset(stream_); }
-    bool reserve(size_t additional) noexcept { return dgtl_stream_reserve(stream_, additional); }
-    dgtl_status_t compact() noexcept { return dgtl_stream_compact(stream_); }
-    dgtl_status_t optimize() noexcept { return dgtl_optimize(stream_); }
-    dgtl_status_t optimize(dgtl_opt_profile_t prof) noexcept { return dgtl_optimize_with_profile(stream_, prof); }
-
-    void begin_transaction() noexcept { dgtl_stream_begin_transaction(stream_); }
-    bool commit_transaction() noexcept { return dgtl_stream_commit_transaction(stream_); }
-    void rollback_transaction() noexcept { dgtl_stream_rollback_transaction(stream_); }
-
-    void bind_callee_slot(uint32_t slot, const char* symbol_name) noexcept {
-        dgtl_stream_bind_callee_slot(stream_, slot, symbol_name);
+    [[nodiscard]] dgtl_stream_t* get() const noexcept { return s_; }
+    [[nodiscard]] size_t size() const noexcept { return dgtl_stream_size(s_); }
+    void reset() noexcept { dgtl_stream_reset(s_); }
+    [[nodiscard]] dgtl_text_t print_ir() const noexcept { return dgtl_stream_print_ir(s_); }
+    [[nodiscard]] dgtl_text_t print_cfg_dot() const noexcept { return dgtl_stream_print_cfg_dot(s_); }
+    [[nodiscard]] dgtl_err_t optimize() noexcept { return dgtl_optimize(s_); }
+    [[nodiscard]] dgtl_err_t run_dce() noexcept { return dgtl_run_dce(s_); }
+    [[nodiscard]] dgtl_err_t run_gvn() noexcept { return dgtl_run_gvn(s_); }
+    [[nodiscard]] dgtl_strike_result_t strike(dgtl_target_t t = DGTL_TARGET_HOST) noexcept {
+        return dgtl_strike_stream(s_, t);
     }
-
-private:
-    dgtl_stream_t* stream_ = nullptr;
-};
-
-/**
- * @class Builder
- * @brief Fluid, ergonomic SSA code emission builder designed for compiler frontends.
- */
-class Builder {
-public:
-    explicit Builder(Stream& stream) noexcept : s_(stream.handle()) {}
-    explicit Builder(dgtl_stream_t* stream) noexcept : s_(stream) {}
-
-    [[nodiscard]] dgtl_stream_t* stream() const noexcept { return s_; }
-
-    // Immediates
-    uint32_t const_i64(uint64_t val) noexcept { return dgtl_emit_const_i64(s_, val); }
-    uint32_t const_f32(float val) noexcept { return dgtl_emit_const_f32(s_, val); }
-    uint32_t const_f64(double val) noexcept { return dgtl_emit_const_f64(s_, val); }
-    uint32_t const_str(const char* str) noexcept { return dgtl_emit_string_const_utf8(s_, str); }
-    uint32_t const_str(std::string_view sv) noexcept {
-        return dgtl_emit_string_const_handle(s_, dgtl_intern_string_handle_utf8(sv.data(), sv.size()));
-    }
-
-    // Memory & Addresses
-    uint32_t load(uint32_t ptr) noexcept { return dgtl_emit_load(s_, ptr); }
-    uint32_t store(uint32_t ptr, uint32_t val) noexcept { return dgtl_emit_store(s_, ptr, val); }
-    uint32_t gep(uint32_t base, uint32_t offset) noexcept { return dgtl_emit_gep(s_, base, offset); }
-    uint32_t ptr_to_int(uint32_t ptr) noexcept { return dgtl_emit_ptr_to_int(s_, ptr); }
-    uint32_t int_to_ptr(uint32_t val) noexcept { return dgtl_emit_int_to_ptr(s_, val); }
-    uint32_t ptr_cast(uint32_t ptr, dgtl_type_code_t ty) noexcept { return dgtl_emit_ptr_cast(s_, ptr, ty); }
-    uint32_t ptr_diff(uint32_t a, uint32_t b) noexcept { return dgtl_emit_ptr_diff(s_, a, b); }
-    uint32_t reg_move(uint32_t dst, uint32_t src) noexcept { return dgtl_emit_reg_move(s_, dst, src); }
-    uint32_t (alloca)(uint32_t size, uint32_t align = 8) noexcept { return dgtl_emit_alloca(s_, size, align); }
-    uint32_t emit_alloca(uint32_t size, uint32_t align = 8) noexcept { return dgtl_emit_alloca(s_, size, align); }
-
-    // 32-bit Integer ALU
-    uint32_t add_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_add_i32(s_, a, b); }
-    uint32_t sub_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_sub_i32(s_, a, b); }
-    uint32_t mul_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_mul_i32(s_, a, b); }
-    uint32_t div_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_div_i32(s_, a, b); }
-    uint32_t mod_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_mod_i32(s_, a, b); }
-    uint32_t and_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_and_i32(s_, a, b); }
-    uint32_t or_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_or_i32(s_, a, b); }
-    uint32_t xor_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_xor_i32(s_, a, b); }
-    uint32_t shl_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_shl_i32(s_, a, b); }
-    uint32_t shr_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_shr_i32(s_, a, b); }
-    uint32_t neg_i32(uint32_t a) noexcept { return dgtl_emit_neg_i32(s_, a); }
-    uint32_t not_i32(uint32_t a) noexcept { return dgtl_emit_not_i32(s_, a); }
-
-    // 64-bit Integer ALU
-    uint32_t add_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_add_i64(s_, a, b); }
-    uint32_t sub_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_sub_i64(s_, a, b); }
-    uint32_t mul_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_mul_i64(s_, a, b); }
-    uint32_t div_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_div_i64(s_, a, b); }
-    uint32_t mod_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_mod_i64(s_, a, b); }
-    uint32_t and_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_and_i64(s_, a, b); }
-    uint32_t or_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_or_i64(s_, a, b); }
-    uint32_t xor_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_xor_i64(s_, a, b); }
-    uint32_t shl_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_shl_i64(s_, a, b); }
-    uint32_t shr_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_shr_i64(s_, a, b); }
-    uint32_t neg_i64(uint32_t a) noexcept { return dgtl_emit_neg_i64(s_, a); }
-    uint32_t not_i64(uint32_t a) noexcept { return dgtl_emit_not_i64(s_, a); }
-
-    // Floating-Point ALU
-    uint32_t fadd(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fadd(s_, a, b); }
-    uint32_t fsub(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fsub(s_, a, b); }
-    uint32_t fmul(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fmul(s_, a, b); }
-    uint32_t fdiv(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fdiv(s_, a, b); }
-    uint32_t neg_f32(uint32_t a) noexcept { return dgtl_emit_neg_f32(s_, a); }
-    uint32_t fadd_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fadd_f64(s_, a, b); }
-    uint32_t fsub_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fsub_f64(s_, a, b); }
-    uint32_t fmul_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fmul_f64(s_, a, b); }
-    uint32_t fdiv_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_fdiv_f64(s_, a, b); }
-    uint32_t neg_f64(uint32_t a) noexcept { return dgtl_emit_neg_f64(s_, a); }
-
-    // Comparisons (i32)
-    uint32_t cmp_eq_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_eq_i32(s_, a, b); }
-    uint32_t cmp_ne_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ne_i32(s_, a, b); }
-    uint32_t cmp_lt_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_lt_i32(s_, a, b); }
-    uint32_t cmp_le_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_le_i32(s_, a, b); }
-    uint32_t cmp_gt_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_gt_i32(s_, a, b); }
-    uint32_t cmp_ge_i32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ge_i32(s_, a, b); }
-
-    // Comparisons (i64)
-    uint32_t cmp_eq_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_eq_i64(s_, a, b); }
-    uint32_t cmp_ne_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ne_i64(s_, a, b); }
-    uint32_t cmp_lt_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_lt_i64(s_, a, b); }
-    uint32_t cmp_le_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_le_i64(s_, a, b); }
-    uint32_t cmp_gt_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_gt_i64(s_, a, b); }
-    uint32_t cmp_ge_i64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ge_i64(s_, a, b); }
-
-    // Comparisons (f32)
-    uint32_t cmp_eq_f32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_eq_f32(s_, a, b); }
-    uint32_t cmp_ne_f32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ne_f32(s_, a, b); }
-    uint32_t cmp_lt_f32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_lt_f32(s_, a, b); }
-    uint32_t cmp_le_f32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_le_f32(s_, a, b); }
-    uint32_t cmp_gt_f32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_gt_f32(s_, a, b); }
-    uint32_t cmp_ge_f32(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ge_f32(s_, a, b); }
-
-    // Comparisons (f64)
-    uint32_t cmp_eq_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_eq_f64(s_, a, b); }
-    uint32_t cmp_ne_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ne_f64(s_, a, b); }
-    uint32_t cmp_lt_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_lt_f64(s_, a, b); }
-    uint32_t cmp_le_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_le_f64(s_, a, b); }
-    uint32_t cmp_gt_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_gt_f64(s_, a, b); }
-    uint32_t cmp_ge_f64(uint32_t a, uint32_t b) noexcept { return dgtl_emit_cmp_ge_f64(s_, a, b); }
-
-    // Selection
-    uint32_t select(uint32_t cond, uint32_t true_val, uint32_t false_val) noexcept {
-        return dgtl_emit_select(s_, cond, true_val, false_val);
-    }
-    uint32_t bool_select(uint32_t cond, uint32_t true_val, uint32_t false_val) noexcept {
-        return dgtl_emit_bool_select(s_, cond, true_val, false_val);
-    }
-
-    // Control Flow
-    uint32_t label(const char* name) noexcept { return dgtl_emit_label(s_, name); }
-    uint32_t label_slot(uint32_t slot) noexcept { return dgtl_emit_label_slot(s_, slot); }
-    uint32_t function_label(uint32_t slot) noexcept { return dgtl_emit_function_label_slot(s_, slot); }
-    uint32_t function_label_with_params(uint32_t slot, const uint32_t* params, size_t count) noexcept {
-        return dgtl_emit_function_label_with_params(s_, slot, params, count);
-    }
-    void branch(uint32_t target) noexcept { dgtl_emit_branch(s_, target); }
-    void branch_cond(uint32_t cond, uint32_t target) noexcept { dgtl_emit_branch_cond(s_, cond, target); }
-    void branch_predictive(uint32_t cond, uint32_t t_label, uint32_t f_label, uint8_t weight) noexcept {
-        dgtl_emit_branch_predictive(s_, cond, t_label, f_label, weight);
-    }
-    void ret(uint32_t val) noexcept { dgtl_emit_return(s_, val); }
-
-    // Calls
-    uint32_t call(uint32_t callee, const uint32_t* args = nullptr, size_t count = 0) noexcept {
-        return dgtl_emit_call(s_, callee, args, count);
-    }
-    uint32_t call(uint32_t callee, const std::vector<uint32_t>& args) noexcept {
-        return dgtl_emit_call(s_, callee, args.data(), args.size());
-    }
-    uint32_t call_with_result(uint32_t result, uint32_t callee, const uint32_t* args = nullptr, size_t count = 0) noexcept {
-        return dgtl_emit_call_with_result(s_, result, callee, args, count);
-    }
-    uint32_t call_with_result(uint32_t result, uint32_t callee, const std::vector<uint32_t>& args) noexcept {
-        return dgtl_emit_call_with_result(s_, result, callee, args.data(), args.size());
-    }
-
-    // Concurrency & Async
-    uint32_t async_spawn(uint32_t fn, uint32_t arg) noexcept { return dgtl_emit_async_spawn(s_, fn, arg); }
-    uint32_t async_await(uint32_t task) noexcept { return dgtl_emit_async_await(s_, task); }
-    uint32_t chan_send(uint32_t chan, uint32_t val) noexcept { return dgtl_emit_chan_send(s_, chan, val); }
-    uint32_t chan_recv(uint32_t chan) noexcept { return dgtl_emit_chan_recv(s_, chan); }
-    uint32_t barrier_sync(uint32_t barrier) noexcept { return dgtl_emit_barrier_sync(s_, barrier); }
-
 private:
     dgtl_stream_t* s_ = nullptr;
 };
 
-/**
- * @class Session
- * @brief High-performance JIT/AOT compilation session with zero-overhead native function invocation.
- */
+class FuncBuilder {
+public:
+    FuncBuilder(Stream& stream, const char* name, dgtl_type_t ret = DGTL_TYPE_VOID)
+        : fb_(dgtl_func_builder_create(stream.get(), name, ret)) {
+        if (!fb_) throw std::bad_alloc();
+    }
+    ~FuncBuilder() noexcept { if (fb_) dgtl_func_builder_destroy(fb_); }
+    FuncBuilder(const FuncBuilder&) = delete;
+    FuncBuilder& operator=(const FuncBuilder&) = delete;
+    FuncBuilder(FuncBuilder&& o) noexcept : fb_(o.fb_) { o.fb_ = nullptr; }
+    FuncBuilder& operator=(FuncBuilder&& o) noexcept {
+        if (this != &o) { if (fb_) dgtl_func_builder_destroy(fb_); fb_ = o.fb_; o.fb_ = nullptr; }
+        return *this;
+    }
+
+    [[nodiscard]] dgtl_func_builder_t* get() const noexcept { return fb_; }
+
+    [[nodiscard]] Value param(dgtl_type_t type) noexcept { return Value(dgtl_func_add_param(fb_, type)); }
+    [[nodiscard]] Block append_block(const char* name = "") noexcept { return Block(dgtl_func_append_block(fb_, name)); }
+    void set_insert_block(Block bb) noexcept { dgtl_func_set_insert_block(fb_, bb.b); }
+    [[nodiscard]] Block get_insert_block() const noexcept { return Block(dgtl_func_get_insert_block(fb_)); }
+    void seal_block(Block bb) noexcept { dgtl_func_seal_block(fb_, bb.b); }
+    void set_type(Value v, dgtl_type_t t) noexcept { dgtl_func_set_value_type(fb_, v.v, t); }
+    [[nodiscard]] dgtl_type_t get_type(Value v) const noexcept { return dgtl_func_get_value_type(fb_, v.v); }
+
+    [[nodiscard]] dgtl_err_t finalize() noexcept { return dgtl_func_builder_finalize(fb_); }
+    [[nodiscard]] dgtl_err_t verify(char* buf = nullptr, size_t sz = 0) const noexcept {
+        return dgtl_func_builder_verify(fb_, buf, sz);
+    }
+
+    /* Core Arithmetic */
+    [[nodiscard]] Value add(Value l, Value r) noexcept { return Value(dgtl_build_add(fb_, l.v, r.v)); }
+    [[nodiscard]] Value sub(Value l, Value r) noexcept { return Value(dgtl_build_sub(fb_, l.v, r.v)); }
+    [[nodiscard]] Value mul(Value l, Value r) noexcept { return Value(dgtl_build_mul(fb_, l.v, r.v)); }
+    [[nodiscard]] Value div(Value l, Value r) noexcept { return Value(dgtl_build_div(fb_, l.v, r.v)); }
+    [[nodiscard]] Value rem(Value l, Value r) noexcept { return Value(dgtl_build_rem(fb_, l.v, r.v)); }
+    [[nodiscard]] Value neg(Value v) noexcept { return Value(dgtl_build_neg(fb_, v.v)); }
+    [[nodiscard]] Value band(Value l, Value r) noexcept { return Value(dgtl_build_and(fb_, l.v, r.v)); }
+    [[nodiscard]] Value bor(Value l, Value r) noexcept  { return Value(dgtl_build_or(fb_, l.v, r.v)); }
+    [[nodiscard]] Value bxor(Value l, Value r) noexcept { return Value(dgtl_build_xor(fb_, l.v, r.v)); }
+    [[nodiscard]] Value bnot(Value v) noexcept  { return Value(dgtl_build_not(fb_, v.v)); }
+    [[nodiscard]] Value shl(Value v, Value n) noexcept  { return Value(dgtl_build_shl(fb_, v.v, n.v)); }
+    [[nodiscard]] Value shr(Value v, Value n) noexcept  { return Value(dgtl_build_shr(fb_, v.v, n.v)); }
+
+    /* Predicates & Select */
+    [[nodiscard]] Value icmp(dgtl_icmp_pred_t p, Value l, Value r) noexcept { return Value(dgtl_build_icmp(fb_, p, l.v, r.v)); }
+    [[nodiscard]] Value fcmp(dgtl_fcmp_pred_t p, Value l, Value r) noexcept { return Value(dgtl_build_fcmp(fb_, p, l.v, r.v)); }
+    [[nodiscard]] Value select(Value c, Value t, Value f) noexcept { return Value(dgtl_build_select(fb_, c.v, t.v, f.v)); }
+
+    /* Memory Access */
+    [[nodiscard]] Value load(dgtl_type_t ty, Value ptr) noexcept { return Value(dgtl_build_load(fb_, ty, ptr.v)); }
+    void store(Value val, Value ptr) noexcept { (void)dgtl_build_store(fb_, val.v, ptr.v); }
+    [[nodiscard]] Value gep(Value base, Value off) noexcept { return Value(dgtl_build_gep(fb_, base.v, off.v)); }
+    [[nodiscard]] Value stack_alloc(dgtl_type_t ty, uint32_t align = 0) noexcept { return Value(dgtl_build_alloca(fb_, ty, align)); }
+    [[nodiscard]] Value cast(Value v, dgtl_type_t to) noexcept { return Value(dgtl_build_cast(fb_, v.v, to)); }
+
+    /* Constants */
+    [[nodiscard]] Value k_i32(int32_t v) noexcept  { return Value(dgtl_build_const_i32(fb_, v)); }
+    [[nodiscard]] Value k_i64(int64_t v) noexcept  { return Value(dgtl_build_const_i64(fb_, v)); }
+    [[nodiscard]] Value k_f32(float v) noexcept    { return Value(dgtl_build_const_f32(fb_, v)); }
+    [[nodiscard]] Value k_f64(double v) noexcept   { return Value(dgtl_build_const_f64(fb_, v)); }
+    [[nodiscard]] Value k_bool(bool v) noexcept    { return Value(dgtl_build_const_bool(fb_, v)); }
+    [[nodiscard]] Value k_null(dgtl_type_t t) noexcept { return Value(dgtl_build_const_null(fb_, t)); }
+    [[nodiscard]] Value str(const char* s) noexcept { return Value(dgtl_build_str(fb_, s)); }
+
+    /* Control Flow & Graph SSA */
+    void br(Block target) noexcept { dgtl_build_br(fb_, target.b); }
+    void cond_br(Value cond, Block t, Block f) noexcept { dgtl_build_cond_br(fb_, cond.v, t.b, f.b); }
+    void ret(Value v) noexcept { dgtl_build_ret(fb_, v.v); }
+    void ret_void() noexcept   { dgtl_build_ret_void(fb_); }
+    [[nodiscard]] Value phi(dgtl_type_t ty) noexcept { return Value(dgtl_build_phi(fb_, ty)); }
+    void phi_incoming(Value phi_val, Value val, Block from) noexcept { dgtl_phi_add_incoming(fb_, phi_val.v, val.v, from.b); }
+
+    /* Calls */
+    [[nodiscard]] Value call(dgtl_func_t fn, std::initializer_list<Value> args) noexcept {
+        std::vector<dgtl_value_t> a;
+        a.reserve(args.size());
+        for (const auto& v : args) a.push_back(v.v);
+        return Value(dgtl_build_call(fb_, fn, a.data(), a.size()));
+    }
+
+    /* Math Extensions */
+    [[nodiscard]] Value fma(Value a, Value b, Value c) noexcept { return Value(dgtl_build_fma(fb_, a.v, b.v, c.v)); }
+    [[nodiscard]] Value fms(Value a, Value b, Value c) noexcept { return Value(dgtl_build_fms(fb_, a.v, b.v, c.v)); }
+    [[nodiscard]] Value matmul(Value a, Value b, Value acc) noexcept { return Value(dgtl_build_matmul(fb_, a.v, b.v, acc.v)); }
+    [[nodiscard]] Value softmax(Value x) noexcept { return Value(dgtl_build_softmax(fb_, x.v)); }
+    [[nodiscard]] Value layer_norm(Value x, Value g, Value b2) noexcept { return Value(dgtl_build_layer_norm(fb_, x.v, g.v, b2.v)); }
+    [[nodiscard]] Value sdpa(Value q, Value k, Value v2, Value mask) noexcept { return Value(dgtl_build_sdpa(fb_, q.v, k.v, v2.v, mask.v)); }
+
+    /* SIMD */
+    [[nodiscard]] Value vec_add(Value l, Value r) noexcept { return Value(dgtl_build_vec_add(fb_, l.v, r.v)); }
+    [[nodiscard]] Value vec_mul(Value l, Value r) noexcept { return Value(dgtl_build_vec_mul(fb_, l.v, r.v)); }
+    [[nodiscard]] Value vec_reduce_add(Value v) noexcept { return Value(dgtl_build_vec_reduce_add(fb_, v.v)); }
+    [[nodiscard]] Value gather(Value base, Value idx, Value mask) noexcept { return Value(dgtl_build_gather(fb_, base.v, idx.v, mask.v)); }
+
+    /* Concurrency & Latency */
+    [[nodiscard]] Value read_tsc() noexcept { return Value(dgtl_build_read_tsc(fb_)); }
+    void prefetch(Value addr, uint32_t hint = 0) noexcept { dgtl_build_prefetch(fb_, addr.v, hint); }
+    void clflush(Value addr) noexcept { dgtl_build_clflush(fb_, addr.v); }
+    void fence(dgtl_memory_order_t order = DGTL_MO_SEQ_CST) noexcept { dgtl_build_fence(fb_, order); }
+
+private:
+    dgtl_func_builder_t* fb_ = nullptr;
+};
+
 class Session {
 public:
-    Session() : Session(dgtl_session_config_default()) {}
-    explicit Session(const dgtl_session_config_t& cfg)
-        : session_(dgtl_session_create(&cfg)) {
+    explicit Session(const dgtl_session_config_t* cfg = nullptr)
+        : session_(dgtl_session_create(cfg)) {
         if (!session_) throw std::bad_alloc();
     }
-    ~Session() {
-        if (session_) {
-            dgtl_session_destroy(session_);
-            session_ = nullptr;
-        }
-    }
+    ~Session() noexcept { if (session_) dgtl_session_destroy(session_); }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     Session(Session&& o) noexcept : session_(o.session_) { o.session_ = nullptr; }
     Session& operator=(Session&& o) noexcept {
-        if (this != &o) {
-            if (session_) dgtl_session_destroy(session_);
-            session_ = o.session_;
-            o.session_ = nullptr;
-        }
+        if (this != &o) { if (session_) dgtl_session_destroy(session_); session_ = o.session_; o.session_ = nullptr; }
         return *this;
     }
-
     [[nodiscard]] dgtl_session_t* get() const noexcept { return session_; }
-    [[nodiscard]] dgtl_session_t* handle() const noexcept { return session_; }
 
-    dgtl_status_t register_symbol(const char* name, uintptr_t addr) noexcept {
-        return dgtl_session_register_host_symbol(session_, name, addr);
+    dgtl_err_t register_symbol(const char* name, uintptr_t addr) noexcept {
+        return dgtl_session_register_symbol(session_, name, addr);
     }
-    dgtl_status_t register_symbol(const std::string& name, uintptr_t addr) noexcept {
-        return dgtl_session_register_host_symbol(session_, name.c_str(), addr);
+    dgtl_err_t compile(Stream& s) noexcept {
+        return dgtl_session_compile(session_, s.get());
     }
-    dgtl_status_t register_slot(uint32_t slot, uintptr_t addr) noexcept {
-        return dgtl_session_register_host_symbol_slot(session_, slot, addr);
+    [[nodiscard]] void* function_ptr(const char* name) const noexcept {
+        return dgtl_session_get_function_ptr(session_, name);
     }
-
-    dgtl_status_t compile(Stream& stream) noexcept {
-        return dgtl_session_compile_stream(session_, stream.handle());
+    template <typename Sig>
+    [[nodiscard]] Sig* get_function(const char* name) const noexcept {
+        return reinterpret_cast<Sig*>(dgtl_session_get_function_ptr(session_, name));
     }
-    dgtl_status_t compile(dgtl_stream_t* stream) noexcept {
-        return dgtl_session_compile_stream(session_, stream);
-    }
-
-    [[nodiscard]] uint64_t get_symbol_address(const char* name) const noexcept {
-        return dgtl_session_get_symbol_address(session_, name);
-    }
-    [[nodiscard]] void* get_function_pointer(const char* name) const noexcept {
-        return dgtl_session_get_function_pointer(session_, name);
-    }
-
-    template <typename Signature>
-    [[nodiscard]] auto get_function(const char* name) const noexcept -> Signature* {
-        return reinterpret_cast<Signature*>(get_function_pointer(name));
-    }
-
     template <typename Ret, typename... Args>
-    Ret invoke(const char* name, Args... args) {
-        auto fn = get_function<Ret(Args...)>(name);
-        if (!fn) throw std::runtime_error(std::string("DGTL JIT symbol not found: ") + name);
-        return fn(std::forward<Args>(args)...);
+    [[nodiscard]] Ret invoke(const char* name, Args... args) const {
+        auto* fn = get_function<Ret(Args...)>(name);
+        if (!fn) throw std::runtime_error(std::string("DGTL: Symbol resolution failed: ") + name);
+        return fn(args...);
     }
-
-    dgtl_status_t emit_object(const char* path) noexcept {
-        return dgtl_session_emit_object(session_, path);
-    }
-    dgtl_status_t emit_binary(const char* path) noexcept {
-        return dgtl_session_emit_binary(session_, path);
-    }
-
-    dgtl_status_t run_entry_i64(const char* symbol, int64_t* out_res) noexcept {
-        return dgtl_session_run_entry_i64(session_, symbol, out_res);
-    }
-    dgtl_status_t run_entry_f64(const char* symbol, double* out_res) noexcept {
-        return dgtl_session_run_entry_f64(session_, symbol, out_res);
-    }
-    dgtl_status_t run_entry_ptr(const char* symbol, void** out_res) noexcept {
-        return dgtl_session_run_entry_ptr(session_, symbol, out_res);
-    }
-
 private:
     dgtl_session_t* session_ = nullptr;
 };
 
-} // namespace sdk
+namespace sdk {
+    using Context     = dgtl::Context;
+    using Stream      = dgtl::Stream;
+    using FuncBuilder = dgtl::FuncBuilder;
+    using Session     = dgtl::Session;
+    using Value       = dgtl::Value;
+    using Block       = dgtl::Block;
+}
 
-// Transparent namespace aliases for frontend compiler writers
-using sdk::Context;
-using sdk::Stream;
-using sdk::Builder;
-using sdk::Session;
-
-} // namespace dgtl
+} /* namespace dgtl */
 
 #endif /* __cplusplus */
 

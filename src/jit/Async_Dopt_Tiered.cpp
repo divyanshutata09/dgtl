@@ -13,7 +13,7 @@ module;
 #include <memory>
 #include <vector>
 
-module dgtl.ir_core.async_dopt_tiered;
+module dgtl.jit.tiered_optimizer;
 
 namespace dgtl::jit {
 
@@ -44,7 +44,6 @@ std::vector<SpeculativeVersion> AsyncSpeculator::generate_versions(ir::IRNode* n
     {
         ir::IRNode folded = *node;
         folded.flags |= ir::Flags::IS_SPEC_CONST;
-        folded.fold_if_possible();
         folded.refresh_intent_hash();
         add_variant(folded, 0.72);
     }

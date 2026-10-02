@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -35,7 +35,7 @@
  *
  * BUGS FIXED FROM v1.0
  * --------------------
-import dgtl.ir_core.io;
+import dgtl.ir.io;
  * undefined, causing a compilation failure in any TU that included
  * this header.
  * BUG-2  NOP hash exemption was wrong: the old guard
@@ -82,15 +82,18 @@ module;
 #include <string_view>
 #include <vector>
 #include <algorithm>
+#include <memory>
 
 
-export module dgtl.ir_core.verifier;
+export module dgtl.ir.verifier;
 
 // Import native compiler interface dependencies
 import dgtl.ir_enums;
+import dgtl.ir_schema;
+import dgtl.ir_contracts;
 import dgtl.ir_node;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.io;
+import dgtl.ir.stream;
+import dgtl.ir.io;
 
 
 import dgtl.ir_traits;
@@ -198,6 +201,13 @@ struct IRVerifyOptions {
  * after building a CFG.
  */
 class IRVerifier {
+    [[nodiscard]] static bool verify_schema_contract(OpCode op,
+                                                       std::string* reason = nullptr) {
+        if (schema::is_canonical(op)) return true;
+        if (reason) *reason = "opcode is not present in the canonical DGTL schema";
+        return false;
+    }
+
 public:
     IRVerifier()                             = default;
     ~IRVerifier()                            = default;
@@ -416,7 +426,7 @@ public:
             return;
         }
 
-        dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity> def_map;
+        auto def_map = std::make_unique<dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity>>();
 
         for (size_t i = 0; i < n && !capped(diags, opts); ++i) {
             const IRNode nd = stream.get_node(i);
@@ -424,7 +434,7 @@ public:
             if (nd.result_id  == INVALID_SLOT)continue;
             if (nd.result_id  == 0)           continue;
 
-            if (const uint32_t* first = def_map.find(nd.result_id); first != nullptr) {
+            if (const uint32_t* first = def_map->find(nd.result_id); first != nullptr) {
                 push(diags, {
                     IRVerifyDiagnostic::Kind::DuplicateDef,
                     u32(i),
@@ -435,7 +445,7 @@ public:
                     " (opcode=" + std::string(opcode_name(nd.opcode)) + ")"
                 });
             } else {
-                const bool ok = def_map.insert(nd.result_id, u32(i));
+                const bool ok = def_map->insert(nd.result_id, u32(i));
                 if (!ok) {
                     push(diags, {
                         IRVerifyDiagnostic::Kind::InternalInvariantViolation,
@@ -533,6 +543,10 @@ public:
                 } else if (nd.opcode == OpCode::BRANCH_COND || nd.opcode == OpCode::BRANCH_LIKELY || nd.opcode == OpCode::BRANCH_UNLIKELY) {
                     // op_a is boolean condition register; op_b and op_c are branch target labels
                     chk(nd.op_a, "op_a");
+                } else if (nd.opcode == OpCode::REG_MOVE) {
+                    chk(nd.op_b, "op_b");
+                    if (nd.op_a != INVALID_SLOT && nd.op_a != 0)
+                        defined.insert_or_assign(nd.op_a, static_cast<uint8_t>(1));
                 } else if (nd.opcode != OpCode::PHI_NODE && !uses_immediate_in_operands(nd.opcode)) {
                     chk(nd.op_a, "op_a");
                     chk(nd.op_b, "op_b");
@@ -554,7 +568,7 @@ public:
             return;
         }
 
-        dgtl::utils::FastFlatMap<uint32_t, uint8_t, kOverflowCapacity> defined;
+        auto defined = std::make_unique<dgtl::utils::FastFlatMap<uint32_t, uint8_t, kOverflowCapacity>>();
 
         for (size_t i = 0; i < n && !capped(diags, opts); ++i) {
             const IRNode nd = stream.get_node(i);
@@ -563,32 +577,32 @@ public:
                 // Tombstone: do not interpret stale op fields as vreg uses,
                 // but DO register a non-zero result_id if present.
                 if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
-                    (void)defined.insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
+                    (void)defined->insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
                 continue;
             }
 
             if (nd.opcode == OpCode::LABEL) {
                 if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
-                    defined.insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
+                    defined->insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
                 if (nd.op_a != INVALID_SLOT && nd.op_a != 0)
-                    defined.insert_or_assign(nd.op_a, static_cast<uint8_t>(1));
+                    defined->insert_or_assign(nd.op_a, static_cast<uint8_t>(1));
                 if (nd.op_b != INVALID_SLOT && nd.op_b != 0)
-                    defined.insert_or_assign(nd.op_b, static_cast<uint8_t>(1));
+                    defined->insert_or_assign(nd.op_b, static_cast<uint8_t>(1));
                 if (nd.op_c != INVALID_SLOT && nd.op_c != 0)
-                    defined.insert_or_assign(nd.op_c, static_cast<uint8_t>(1));
+                    defined->insert_or_assign(nd.op_c, static_cast<uint8_t>(1));
                 if (nd.logic_flags != 0 && nd.logic_flags != INVALID_SLOT)
-                    defined.insert_or_assign(nd.logic_flags, static_cast<uint8_t>(1));
+                    defined->insert_or_assign(nd.logic_flags, static_cast<uint8_t>(1));
                 const auto extra_params = stream.get_call_overflow_args(i);
                 for (uint32_t p : extra_params) {
                     if (p != INVALID_SLOT && p != 0)
-                        defined.insert_or_assign(p, static_cast<uint8_t>(1));
+                        defined->insert_or_assign(p, static_cast<uint8_t>(1));
                 }
                 continue;
             }
 
             auto chk = [&](uint32_t id, const char* slot) {
                 if (id == INVALID_SLOT || id == 0) return;
-                if (!defined.contains(id)) {
+                if (!defined->contains(id)) {
                     push(diags, {
                         IRVerifyDiagnostic::Kind::UseBeforeDef,
                         u32(i), id,
@@ -614,6 +628,10 @@ public:
             } else if (nd.opcode == OpCode::BRANCH_COND || nd.opcode == OpCode::BRANCH_LIKELY || nd.opcode == OpCode::BRANCH_UNLIKELY) {
                 // op_a is boolean condition register; op_b and op_c are branch target labels
                 chk(nd.op_a, "op_a");
+            } else if (nd.opcode == OpCode::REG_MOVE) {
+                chk(nd.op_b, "op_b");
+                if (nd.op_a != INVALID_SLOT && nd.op_a != 0)
+                    (void)defined->insert_or_assign(nd.op_a, static_cast<uint8_t>(1));
             } else if (nd.opcode != OpCode::PHI_NODE && !uses_immediate_in_operands(nd.opcode)) {
                 chk(nd.op_a, "op_a");
                 chk(nd.op_b, "op_b");
@@ -621,7 +639,7 @@ public:
             }
 
             if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
-                (void)defined.insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
+                (void)defined->insert_or_assign(nd.result_id, static_cast<uint8_t>(1));
         }
     }
 
@@ -721,8 +739,8 @@ public:
             return;
         }
 
-        dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity> live;
-        dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity> released;
+        auto live = std::make_unique<dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity>>();
+        auto released = std::make_unique<dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity>>();
 
         for (size_t i = 0; i < n; ++i) {
             const IRNode nd = stream.get_node(i);
@@ -731,16 +749,16 @@ public:
             switch (nd.opcode) {
             case OpCode::OWNERSHIP_ACQUIRE:
                 if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
-                    (void)live.insert_or_assign(nd.result_id, idx);
+                    (void)live->insert_or_assign(nd.result_id, idx);
                 break;
 
             case OpCode::OWNERSHIP_RELEASE: {
                 const uint32_t h = nd.op_a;
                 if (h == INVALID_SLOT || h == 0) break; 
-                if (live.contains(h)) {
-                    live.erase(h);
-                    (void)released.insert_or_assign(h, idx);
-                } else if (const uint32_t* rel_idx = released.find(h); rel_idx != nullptr) {
+                if (live->contains(h)) {
+                    live->erase(h);
+                    (void)released->insert_or_assign(h, idx);
+                } else if (const uint32_t* rel_idx = released->find(h); rel_idx != nullptr) {
                     if (capped(diags, opts)) break;
                     push(diags, {
                         IRVerifyDiagnostic::Kind::OwnershipViolation, idx, h,
@@ -763,7 +781,7 @@ public:
             case OpCode::OWNERSHIP_TRANSFER: {
                 const uint32_t h = nd.op_a;
                 if (h != INVALID_SLOT && h != 0)
-                    live.erase(h); 
+                    live->erase(h); 
                 break;
             }
 
@@ -771,8 +789,8 @@ public:
             }
         }
 
-        // L1: handles still live at end-of-stream were never released.
-        for (const auto& [h, acq_idx] : live) {
+        // L1: handles still live at end-of-stream were never released->
+        for (const auto& [h, acq_idx] : *live) {
             if (capped(diags, opts)) break;
             push(diags, {
                 IRVerifyDiagnostic::Kind::OwnershipViolation,
@@ -871,8 +889,8 @@ public:
             return;
         }
 
-        dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity> held;
-        dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity> unlocked;
+        auto held = std::make_unique<dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity>>();
+        auto unlocked = std::make_unique<dgtl::utils::FastFlatMap<uint32_t, uint32_t, kOverflowCapacity>>();
 
         for (size_t i = 0; i < n; ++i) {
             const IRNode nd = stream.get_node(i);
@@ -881,16 +899,16 @@ public:
             switch (nd.opcode) {
             case OpCode::LOCK_ACQUIRE:
                 if (nd.result_id != INVALID_SLOT && nd.result_id != 0)
-                    (void)held.insert_or_assign(nd.result_id, idx);
+                    (void)held->insert_or_assign(nd.result_id, idx);
                 break;
 
             case OpCode::LOCK_RELEASE: {
                 const uint32_t h = nd.op_a;
                 if (h == INVALID_SLOT || h == 0) break;
-                if (held.contains(h)) {
-                    held.erase(h);
-                    (void)unlocked.insert_or_assign(h, idx);
-                } else if (const uint32_t* unlock_idx = unlocked.find(h); unlock_idx != nullptr) {
+                if (held->contains(h)) {
+                    held->erase(h);
+                    (void)unlocked->insert_or_assign(h, idx);
+                } else if (const uint32_t* unlock_idx = unlocked->find(h); unlock_idx != nullptr) {
                     if (capped(diags, opts)) break;
                     push(diags, {
                         IRVerifyDiagnostic::Kind::LockViolation, idx, h,
@@ -915,7 +933,7 @@ public:
         }
 
         // L1: locks still held at end-of-stream.
-        for (const auto& [h, acq_idx] : held) {
+        for (const auto& [h, acq_idx] : *held) {
             if (capped(diags, opts)) break;
             push(diags, {
                 IRVerifyDiagnostic::Kind::LockViolation,
@@ -1559,100 +1577,8 @@ public:
 
 private:
     [[nodiscard]] static constexpr bool is_value_producing(OpCode op) noexcept {
-        switch (op) {
-        case OpCode::LOAD:
-        case OpCode::ATOMIC_LOAD:
-        case OpCode::REG_MOVE:            
-        case OpCode::LOAD_IMM:            
-        case OpCode::LEA:
-        case OpCode::PTR_CAST:
-        case OpCode::PTR_DIFF:
-        case OpCode::BOOL_SELECT:
-        case OpCode::IMMEDIATE:           
-        case OpCode::STRING_CONST:
-        case OpCode::STRING_LENGTH:
-        case OpCode::STRING_COMPARE:
-        case OpCode::STRING_CONCAT:
-        case OpCode::STRING_SUBSTRING:
-        case OpCode::ADD_I32:
-        case OpCode::SUB_I32:
-        case OpCode::MUL_I32:
-        case OpCode::DIV_I32:
-        case OpCode::SHL_I32:
-        case OpCode::AND_I32:
-        case OpCode::OR_I32:
-        case OpCode::XOR_I32:
-        case OpCode::MOD_I32:
-        case OpCode::SHR_I32:
-        case OpCode::ADD_I64:
-        case OpCode::SUB_I64:
-        case OpCode::MUL_I64:
-        case OpCode::DIV_I64:
-        case OpCode::ADD_F32:
-        case OpCode::SUB_F32:
-        case OpCode::MUL_F32:
-        case OpCode::DIV_F32:
-        case OpCode::FMA_F32:
-        case OpCode::FMA_WIDEN_F16_F32:
-        case OpCode::PHI_MULTI:
-        case OpCode::TUPLE_PACK:
-        case OpCode::TUPLE_UNPACK:
-        case OpCode::SELECT_MULTI:
-        case OpCode::CALL_VARIADIC:
-        case OpCode::VOLATILE_LOAD:
-        case OpCode::ADD_F64:
-        case OpCode::SUB_F64:
-        case OpCode::MUL_F64:
-        case OpCode::DIV_F64:
-        case OpCode::MOD_I64:
-        case OpCode::CMP_EQ_I32:
-        case OpCode::CMP_NE_I32:
-        case OpCode::CMP_LT_I32:
-        case OpCode::CMP_LE_I32:
-        case OpCode::CMP_GT_I32:
-        case OpCode::CMP_GE_I32:
-        case OpCode::BIT_FIELD_INSERT:
-        case OpCode::BIT_FIELD_EXTRACT:
-        case OpCode::GATHER_F32_512:
-        case OpCode::GATHER_16:
-        case OpCode::VEC_LOAD:
-        case OpCode::VEC_ADD_F32_512:
-        case OpCode::VEC_MUL_F32_512:
-        case OpCode::VEC_SHUFFLE:
-        case OpCode::VEC_REDUCE_ADD:
-        case OpCode::FCVTL_F16_TO_F32:
-        case OpCode::FCVTN_F32_TO_F16:
-        case OpCode::SIMD_BSL_PREDICATE:  
-        case OpCode::PHI_NODE:
-        case OpCode::GUARD_VALUE:
-        case OpCode::ASSUME:
-        case OpCode::OWNERSHIP_ACQUIRE:
-        case OpCode::ATOMIC_SNAPSHOT:
-        case OpCode::LOCK_ACQUIRE:
-        case OpCode::CHAN_RECV:
-        case OpCode::TENSOR_RESHAPE:
-        case OpCode::TENSOR_REDUCE:
-        case OpCode::TENSOR_TRANSPOSE:
-        case OpCode::TENSOR_SLICE:
-        case OpCode::TENSOR_CONCAT:
-        case OpCode::TENSOR_BROADCAST:
-        case OpCode::TENSOR_GEMM:
-        case OpCode::TENSOR_CONV:
-        case OpCode::TENSOR_POOL:
-        case OpCode::TENSOR_SOFTMAX:
-        case OpCode::GRAPH_BUILD:
-        case OpCode::GRAPH_TRAVERSE:
-        case OpCode::TREE_BUILD:
-        case OpCode::TREE_TRAVERSE:
-        case OpCode::TRIE_BUILD:
-        case OpCode::TRIE_LOOKUP:
-        case OpCode::TRIE_INSERT:
-        case OpCode::DSA_ALLOCATE:
-        case OpCode::CALL:
-            return true;
-        default:
-            return false;
-        }
+        if (const auto* d = schema::lookup(op)) return d->has_result;
+        return false;
     }
 
     [[nodiscard]] static constexpr bool uses_immediate_in_operands(OpCode op) noexcept {
@@ -1703,3 +1629,8 @@ private:
 };
 
 } // namespace dgtl::ir
+
+
+
+
+

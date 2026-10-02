@@ -1,0 +1,22 @@
+{
+  "root": "D:\\TataG\\DGTL",
+  "module_count": 242,
+  "cycle_count": 0,
+  "declaration_cache": {"hits": 357, "misses": 0, "files_scanned": 0},
+  "logs_scanned": ["D:\\TataG\\DGTL\\debug_logs\\sessions\\last-nondebug-session.log"],
+  "cycles": [
+  ],
+  "error_clusters": [
+    {"signature": "No such file or directory", "count": 1},
+    {"signature": "returning to the gate for a mechanical issue", "count": 1}
+  ],
+  "cache_hints": [],
+  "last_command": "dgtl build-strict",
+  "last_exit_code": "1",
+  "likely_failing_command": "g++ -std=c++26 -fmodules-ts -O3 -pipe -I\"D:\\TataG\\DGTL\\include\" -Wall -Wextra -Wpedantic -Werror -c \"D:\\TataG\\DGTL\\src\\apps\\smoke_main.cpp\" -o \"D:\\TataG\\DGTL\\build\\obj\\dgtl_release\\apps_smoke_main.o\"",
+  "compiler_fingerprint": "21e23e613205837c",
+  "command_fingerprint": "67e6377b20627a07",
+  "symbol_collisions": [{"symbol": "IRStream", "site_count": 435}, {"symbol": "TargetMachine", "site_count": 58}, {"symbol": "find_generated_op_def", "site_count": 39}, {"symbol": "RuntimeFeedback", "site_count": 4}],
+  "regression_notes": ["Previous run: identical fingerprint to previous snapshot."],
+  "ownership_recommendations": [{"symbol": "find_generated_op_def", "candidate_count": 39, "winner": "D:/TataG/DGTL/include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:623"}, {"symbol": "TargetMachine", "candidate_count": 58, "winner": "D:/TataG/DGTL/tools/cpp/dgtl_isel_gen_main.cpp:1189"}, {"symbol": "IRStream", "candidate_count": 435, "winner": "D:/TataG/DGTL/include/dgtl/formal/Formal_Verification_SMT.ixx:235"}, {"symbol": "RuntimeFeedback", "candidate_count": 4, "winner": "D:/TataG/DGTL/include/dgtl/ir/analysis/AI_Cost_Model.ixx:47"}]
+}

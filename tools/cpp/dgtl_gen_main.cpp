@@ -24,13 +24,15 @@ namespace {
 
 struct Options {
     fs::path root{"."};
-    fs::path definition_file{"include/dgtl/ir/gen/defs/phase1_core_ops.dgtl_def"};
+    fs::path definition_file{"defs/ir/phase1_core_ops.dgtl_def"};
     fs::path output_file{"include/dgtl/ir/gen/DGTL_Gen_Ops.ixx"};
+    fs::path enum_output_file{"include/dgtl/ir/gen/DGTL_Gen_Enums.ixx"};
 };
 
 struct Operation {
     std::string name;
     std::string opcode;
+    std::optional<uint32_t> stable_value;
     std::string dialect;
     int operands{0};
     bool is_variadic_operands{false};
@@ -48,6 +50,14 @@ struct DialectSpec {
     std::string ns;
     uint32_t range_low = 0;
     uint32_t range_high = 0;
+};
+
+struct OpcodeAlias {
+    enum class Kind { alias, explicit_value };
+    std::string name;
+    Kind kind{Kind::alias};
+    std::string target;
+    std::optional<uint32_t> value;
 };
 
 struct TypeSpec {
@@ -70,6 +80,8 @@ struct NamedDocSpec {
         if (arg == "--root" && i + 1 < argc) opts.root = argv[++i];
         else if (arg == "--definition-file" && i + 1 < argc) opts.definition_file = argv[++i];
         else if (arg == "--output-file" && i + 1 < argc) opts.output_file = argv[++i];
+        else if (arg == "--enum-output-file" && i + 1 < argc) opts.enum_output_file = argv[++i];
+        else if (arg == "--check") { /* validation-only mode; handled after parse */ }
         else if (arg == "--output-dir" && i + 1 < argc) opts.output_file = fs::path(argv[++i]) / "DGTL_Gen_Ops.ixx";
         else if (arg == "--help") {
             std::cout << "Usage: dgtl-gen [--root <repo>] [--definition-file <rel>] [--output-file <rel>]\n";
@@ -200,9 +212,13 @@ int main(int argc, char** argv) {
     std::vector<NamedDocSpec> traits, interfaces, attributes;
     std::vector<DialectSpec> dialects;
     std::unordered_map<std::string, std::size_t> dialect_index;
+    std::vector<OpcodeAlias> opcode_aliases;
     std::vector<Operation> operations;
 
-    enum class Section { none, types, traits, interfaces, attributes, dialects, operations };
+    enum class Section {
+        none, types, traits, interfaces, attributes, dialects,
+        aliases, operations
+    };
     Section section = Section::none;
     std::string current_operation_dialect;
 
@@ -241,6 +257,24 @@ int main(int argc, char** argv) {
         if (t == "[attributes]") { section = Section::attributes; continue; }
         if (t == "[interfaces]") { section = Section::interfaces; continue; }
         if (t == "[types]") { section = Section::types; continue; }
+        if (t == "[aliases]") { section = Section::aliases; continue; }
+
+        if (section == Section::aliases) {
+            if (t.starts_with("alias ")) {
+                const auto body = trim(t.substr(6));
+                const auto eq = body.find('=');
+                if (eq == std::string::npos) {
+                    std::cerr << "FATAL: malformed opcode alias: " << t << "\n";
+                    return 1;
+                }
+                OpcodeAlias entry;
+                entry.name = trim(body.substr(0, eq));
+                entry.kind = OpcodeAlias::Kind::alias;
+                entry.target = trim(body.substr(eq + 1));
+                opcode_aliases.push_back(std::move(entry));
+                continue;
+            }
+        }
 
         if (section == Section::types && t.starts_with("type ")) {
             auto body = t.substr(5); auto col = body.find(':');
@@ -311,6 +345,7 @@ int main(int argc, char** argv) {
             if (col != std::string::npos) {
                 auto kv = parse_key_values(body.substr(col + 1));
                 if (kv.count("opcode")) op.opcode = kv["opcode"];
+                if (kv.count("value")) op.stable_value = parse_u32(kv["value"]);
                 if (kv.count("dialect")) op.dialect = kv["dialect"];
                 if (kv.count("result")) op.result = kv["result"];
                 if (kv.count("results") && kv["results"] == "variadic") op.is_variadic_results = true;
@@ -336,7 +371,79 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ------------------------------------------------------------------------
+    // Canonical schema validation.  The DSL owns stable operation identity.
+    // ------------------------------------------------------------------------
+    {
+        std::unordered_map<std::string, std::string> opcode_to_name;
+        std::unordered_map<uint32_t, std::string> value_to_name;
+        for (const auto& op : operations) {
+            if (op.opcode.empty()) {
+                std::cerr << "FATAL: operation '" << op.name << "' has no opcode symbol\n";
+                return 1;
+            }
+            if (!op.stable_value.has_value()) {
+                std::cerr << "FATAL: operation '" << op.name << "' has no explicit stable value; "
+                          << "canonical DGTL IR requires value=<uint16>\n";
+                return 1;
+            }
+            if (*op.stable_value > 0xFFFFu) {
+                std::cerr << "FATAL: stable opcode value out of uint16 range for '" << op.name << "'\n";
+                return 1;
+            }
+            if (auto [it, inserted] = opcode_to_name.emplace(op.opcode, op.name); !inserted) {
+                std::cerr << "FATAL: duplicate opcode symbol '" << op.opcode << "' used by '"
+                          << it->second << "' and '" << op.name << "'\n";
+                return 1;
+            }
+            if (auto [it, inserted] = value_to_name.emplace(*op.stable_value, op.name); !inserted) {
+                std::cerr << "FATAL: duplicate stable opcode value 0x" << std::hex << *op.stable_value
+                          << std::dec << " used by '" << it->second << "' and '" << op.name << "'\n";
+                return 1;
+            }
+            // References in traits/interfaces/attributes must resolve against the schema.
+            for (const auto& name : op.traits) {
+                // Checked below after metadata vectors are parsed.
+                (void)name;
+            }
+        }
+    }
+
+    {
+        std::unordered_map<std::string, bool> canonical_opcode_names;
+        std::unordered_map<std::string, uint32_t> canonical_opcode_values;
+        for (const auto& op : operations) {
+            canonical_opcode_names.emplace(op.opcode, true);
+            canonical_opcode_values.emplace(op.opcode, *op.stable_value);
+        }
+
+        std::unordered_map<std::string, bool> alias_names;
+        for (const auto& entry : opcode_aliases) {
+            if (entry.name.empty()) {
+                std::cerr << "FATAL: opcode alias entry has an empty name\n";
+                return 1;
+            }
+            if (canonical_opcode_names.contains(entry.name) || alias_names.contains(entry.name)) {
+                std::cerr << "FATAL: duplicate opcode alias name '" << entry.name << "'\n";
+                return 1;
+            }
+            if (entry.kind == OpcodeAlias::Kind::alias) {
+                if (!canonical_opcode_values.contains(entry.target)) {
+                    std::cerr << "FATAL: opcode alias '" << entry.name
+                              << "' targets unknown canonical opcode '" << entry.target << "'\n";
+                    return 1;
+                }
+            } else if (!entry.value.has_value() || *entry.value > 0xFFFFu) {
+                std::cerr << "FATAL: opcode alias value out of uint16 range for '"
+                          << entry.name << "'\n";
+                return 1;
+            }
+            alias_names.emplace(entry.name, true);
+        }
+    }
+
     fs::create_directories(out_path.parent_path());
+    fs::create_directories((root / opts.enum_output_file).parent_path());
 
     // Automatically remove obsolete partition files if present in the output directory
     const auto parent_dir = out_path.parent_path();
@@ -355,6 +462,18 @@ int main(int argc, char** argv) {
 
     std::unordered_map<std::string, std::size_t> attribute_indices;
     for (std::size_t i = 0; i < attributes.size(); ++i) attribute_indices[attributes[i].name] = i;
+
+    for (const auto& op : operations) {
+        for (const auto& name : op.traits) {
+            if (!trait_indices.contains(name)) { std::cerr << "FATAL: unknown trait '" << name << "' in op '" << op.name << "'\n"; return 1; }
+        }
+        for (const auto& name : op.interfaces) {
+            if (!interface_indices.contains(name)) { std::cerr << "FATAL: unknown interface '" << name << "' in op '" << op.name << "'\n"; return 1; }
+        }
+        for (const auto& name : op.attributes) {
+            if (!attribute_indices.contains(name)) { std::cerr << "FATAL: unknown attribute '" << name << "' in op '" << op.name << "'\n"; return 1; }
+        }
+    }
 
     auto compute_bits = [](const std::vector<std::string>& names, const std::unordered_map<std::string, std::size_t>& index_map) -> uint64_t {
         uint64_t bits = 0ULL;
@@ -430,7 +549,7 @@ int main(int argc, char** argv) {
         << "#include <cstdint>\n"
         << "#include <optional>\n"
         << "#include <string_view>\n\n"
-        << "export module dgtl.ir_core.gen;\n\n"
+        << "export module dgtl.ir.gen;\n\n"
         << "import dgtl.ir_enums;\n"
         << "import dgtl.ir_node;\n\n"
         << "export namespace dgtl::ir::gen {\n\n";
@@ -537,6 +656,7 @@ int main(int argc, char** argv) {
     out << "struct OpDefMetadata {\n"
         << "    std::string_view name;\n"
         << "    dgtl::ir::OpCode opcode;\n"
+        << "    uint16_t stable_id;\n"
         << "    std::string_view dialect;\n"
         << "    uint64_t trait_bits;\n"
         << "    uint64_t interface_bits;\n"
@@ -548,12 +668,22 @@ int main(int argc, char** argv) {
         << "    dgtl::ir::TypeCode result_type_code;\n"
         << "};\n\n";
 
+    out << "struct OpAliasMetadata {\n"
+        << "    std::string_view name;\n"
+        << "    dgtl::ir::OpCode target;\n"
+        << "};\n\n";
+    out << "inline constexpr std::array<OpAliasMetadata, " << opcode_aliases.size() << "> kGeneratedOpAliases = {{\n";
+    for (const auto& alias : opcode_aliases) {
+        out << "    {\"" << cpp_escape(alias.name) << "\", dgtl::ir::OpCode::" << alias.target << "},\n";
+    }
+    out << "}};\n\n";
+
     out << "inline constexpr std::size_t kNumGeneratedOps = " << operations.size() << ";\n";
     out << "inline constexpr std::array<OpDefMetadata, " << operations.size() << "> kGeneratedOpDefs = {{\n";
 
     for (const auto& op : operations) {
         out << "    {\"" << cpp_escape(op.name) << "\", dgtl::ir::OpCode::" << op.opcode
-            << ", \"" << cpp_escape(op.dialect) << "\", " 
+            << ", static_cast<uint16_t>(0x" << std::hex << *op.stable_value << std::dec << "), \"" << cpp_escape(op.dialect) << "\", " 
             << compute_bits(op.traits, trait_indices) << "ULL, "
             << compute_bits(op.interfaces, interface_indices) << "ULL, " 
             << compute_bits(op.attributes, attribute_indices) << "ULL, "
@@ -582,6 +712,7 @@ int main(int argc, char** argv) {
 [[nodiscard]] constexpr bool validate_generated_op_defs() noexcept {
     for (size_t i = 0; i < kGeneratedOpDefs.size(); ++i) {
         const auto& def = kGeneratedOpDefs[i];
+        if (static_cast<uint16_t>(def.opcode) != def.stable_id) return false;
         if (def.name.empty() || def.description.empty()) return false;
         if (def.has_result) {
             if (def.result_type.empty() || def.result_type == "void") return false;
@@ -945,9 +1076,17 @@ static_assert(validate_all_op_types<
     return nullptr;
 }
 
+[[nodiscard]] inline constexpr const OpAliasMetadata* find_op_alias(std::string_view name) noexcept {
+    for (const auto& alias : kGeneratedOpAliases) {
+        if (alias.name == name) return &alias;
+    }
+    return nullptr;
+}
+
 [[nodiscard]] inline constexpr std::optional<dgtl::ir::OpCode> find_opcode_by_name(std::string_view name) noexcept {
-    const auto* def = find_generated_op_def_by_name(name);
-    return def ? std::optional<dgtl::ir::OpCode>(def->opcode) : std::nullopt;
+    if (const auto* def = find_generated_op_def_by_name(name)) return def->opcode;
+    if (const auto* alias = find_op_alias(name)) return alias->target;
+    return std::nullopt;
 }
 
 [[nodiscard]] inline constexpr const DialectDefMetadata* find_dialect_by_name(std::string_view name) noexcept {
@@ -1017,7 +1156,529 @@ static_assert(validate_all_op_types<
 } // namespace dgtl::ir::gen
 )";
 
-    std::cout << "[dgtl-gen] Success! Emitted " << operations.size() 
-              << " typed wrappers to " << opts.output_file.string() << "\n";
+
+    // ------------------------------------------------------------------------
+    // Partition generated metadata from typed node wrappers.
+    //
+    // The metadata module is deliberately independent of IRNode. This removes
+    // the former cycle IRNode -> schema -> generated metadata -> IRNode and
+    // permits IRNode to consume canonical schema semantics directly.
+    // ------------------------------------------------------------------------
+    out.flush();
+    out.close();
+    {
+        std::ifstream gin(out_path, std::ios::binary);
+        std::string full((std::istreambuf_iterator<char>(gin)), std::istreambuf_iterator<char>());
+        gin.close();
+
+        const std::string wrapper_begin = "template <typename Derived>\nstruct OpWrapperBase";
+        const std::string lookup_begin = "inline constexpr std::array<const OpDefMetadata*, 65536>";
+        const auto wb = full.find(wrapper_begin);
+        const auto lb = full.find(lookup_begin);
+        if (wb == std::string::npos || lb == std::string::npos || wb >= lb) {
+            std::cerr << "FATAL: generated wrapper partition markers not found\n";
+            return 1;
+        }
+
+        std::string metadata = full.substr(0, wb);
+        metadata += full.substr(lb);
+
+        // Metadata must not contain references to wrapper types or IRNode.
+        const auto custom_begin = metadata.find("[[nodiscard]] inline constexpr std::string_view op_custom_verifier");
+        const auto attr_begin = metadata.find("[[nodiscard]] inline bool op_has_attribute", custom_begin);
+        if (custom_begin != std::string::npos && attr_begin != std::string::npos) {
+            metadata.erase(custom_begin, attr_begin - custom_begin);
+        }
+        const auto verify_begin = metadata.find("[[nodiscard]] inline bool verify_generated_node");
+        const auto namespace_end = metadata.rfind("} // namespace dgtl::ir::gen");
+        if (verify_begin != std::string::npos && namespace_end != std::string::npos && verify_begin < namespace_end) {
+            metadata.erase(verify_begin, namespace_end - verify_begin);
+        }
+        const auto import_node = metadata.find("import dgtl.ir_node;\n");
+        if (import_node != std::string::npos) metadata.erase(import_node, std::string("import dgtl.ir_node;\n").size());
+
+        const fs::path wrapper_path = out_path.parent_path() / "DGTL_Gen_Op_Wrappers.ixx";
+        std::ofstream mout(out_path, std::ios::binary | std::ios::trunc);
+        mout << metadata;
+        mout.close();
+
+        std::string wrapper =
+            "/*\n"
+            " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+            " *\n"
+            " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+            " * Owner:       Divyanshu Tata\n"
+            " * Repository:  github.com/TataG-Systems/DGTL\n"
+            " *\n"
+            " * Component:   Auto-generated DGTL IR Typed Operation Wrappers\n"
+            " *\n"
+            " * This software is the proprietary property of TataG Systems.\n"
+            " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+            " *\n"
+            " * Auto-generated by tools/cpp/dgtl_gen_main.cpp.\n"
+            " */\n"
+            "module;\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string_view>\n"
+            "export module dgtl.ir.gen_wrappers;\n"
+            "import dgtl.ir_enums;\n"
+            "import dgtl.ir_node;\n"
+            "import dgtl.ir.gen;\n"
+            "export namespace dgtl::ir::gen {\n\n";
+        wrapper += full.substr(wb, lb - wb);
+
+        wrapper += R"(
+[[nodiscard]] inline constexpr std::string_view op_custom_verifier(dgtl::ir::OpCode opcode) noexcept {
+    switch (opcode) {
+)";
+        for (const auto& op : operations) {
+            if (!op.verifier.empty()) {
+                wrapper += "        case dgtl::ir::OpCode::" + op.opcode +
+                           ": return " + op.name + "Op::kCustomVerifier;\n";
+            }
+        }
+        wrapper += R"(        default: return "";
+    }
+}
+
+[[nodiscard]] inline bool verify_generated_node(const dgtl::ir::IRNode& node) noexcept {
+    return find_generated_op_def(node.opcode) != nullptr;
+}
+
+[[nodiscard]] inline dgtl::ir::IRNode make_generated_node(
+    dgtl::ir::OpCode opcode,
+    uint32_t result_id = dgtl::ir::INVALID_SLOT,
+    uint32_t op_a = dgtl::ir::INVALID_SLOT,
+    uint32_t op_b = dgtl::ir::INVALID_SLOT,
+    uint32_t op_c = dgtl::ir::INVALID_SLOT,
+    uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+    dgtl::ir::IRNode n{};
+    n.opcode = opcode;
+    n.flags = flags;
+    n.result_id = result_id;
+    n.op_a = op_a;
+    n.op_b = op_b;
+    n.op_c = op_c;
+    n.intent_hash = dgtl::ir::IRNode::calculate_hash(
+        n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+    return n;
+}
+
+} // namespace dgtl::ir::gen
+)";
+        std::ofstream wout(wrapper_path, std::ios::binary | std::ios::trunc);
+        wout << wrapper;
+        wout.close();
+
+        std::error_code remove_ec;
+        fs::remove(out_path.parent_path() / "DGTL_Gen_Wrappers.ixx", remove_ec);
+        std::cout << "[dgtl-gen] Partitioned metadata and typed wrappers into separate modules\n";
+    }
+
+    // ABI support surface retained for alias with existing HIR code.
+    // Operation identity itself is never sourced from this block; OpCode and
+    // TypeCode are emitted from the canonical DSL immediately above it.
+    static constexpr std::string_view kGeneratedEnumSupport = R"DGTL(
+inline constexpr std::uint32_t kMaxTypeHandle = static_cast<std::uint32_t>(TypeCode::TENSOR_I64);
+
+[[nodiscard]] inline constexpr bool is_valid_type_handle(std::uint32_t type_handle) noexcept {
+    return type_handle >= static_cast<std::uint32_t>(TypeCode::BOOL) &&
+           type_handle <= kMaxTypeHandle;
+}
+
+[[nodiscard]] inline constexpr bool is_floating_type_code(TypeCode type_code) noexcept {
+    return type_code == TypeCode::F8 ||
+           type_code == TypeCode::BF16 ||
+           type_code == TypeCode::F16 ||
+           type_code == TypeCode::F32 ||
+           type_code == TypeCode::F64 ||
+           type_code == TypeCode::F128;
+}
+
+[[nodiscard]] inline constexpr bool is_pointer_type_code(TypeCode type_code) noexcept {
+    return type_code == TypeCode::PTR;
+}
+
+namespace Flags {
+    inline constexpr std::uint16_t NONE               = 0x0000u;
+    inline constexpr std::uint16_t IS_CONST           = 0x0001u;
+    inline constexpr std::uint16_t IS_DEAD            = 0x0002u;
+    inline constexpr std::uint16_t HAS_SIDE_EFFECTS   = 0x0004u;
+    inline constexpr std::uint16_t IS_VOLATILE        = 0x0008u;
+
+    inline constexpr std::uint16_t IS_SIMD            = 0x0010u;
+    inline constexpr std::uint16_t IS_SIMD_BURST      = IS_SIMD;
+    inline constexpr std::uint16_t IS_VECTOR_LANE     = 0x0020u;
+    inline constexpr std::uint16_t IS_PREDICATED      = 0x0040u;
+
+    inline constexpr std::uint16_t IS_FUSED           = 0x0080u;
+    inline constexpr std::uint16_t IS_MACRO_FUSED     = IS_FUSED;
+    inline constexpr std::uint16_t IS_OPTIMIZED       = 0x0100u;
+    inline constexpr std::uint16_t IS_LOOP_INVARIANT  = 0x0200u;
+
+    inline constexpr std::uint16_t IS_SPEC_CONST      = 0x0400u;
+    inline constexpr std::uint16_t NON_TEMPORAL       = 0x0800u;
+    inline constexpr std::uint16_t NON_TEMPORAL_HINT  = NON_TEMPORAL;
+
+    inline constexpr std::uint16_t IS_BRANCH          = 0x1000u;
+    inline constexpr std::uint16_t IS_RETURN          = 0x2000u;
+
+    inline constexpr std::uint16_t IS_GUARD           = 0x4000u;
+    inline constexpr std::uint16_t MAY_DEOPT          = 0x8000u;
+
+    inline constexpr std::uint16_t kCanonicalSemanticMask =
+        IS_CONST | IS_DEAD | HAS_SIDE_EFFECTS | IS_VOLATILE |
+        IS_SIMD | IS_VECTOR_LANE | IS_PREDICATED |
+        IS_FUSED | IS_OPTIMIZED | IS_LOOP_INVARIANT |
+        IS_SPEC_CONST | NON_TEMPORAL |
+        IS_BRANCH | IS_RETURN | IS_GUARD | MAY_DEOPT;
+
+    static_assert(kCanonicalSemanticMask == 0xFFFFu,
+                  "Flags canonical semantic bits must be unique and fully packed (16/16 used)");
+} // namespace Flags
+
+namespace ExtendedFlags {
+    inline constexpr std::uint32_t MEM_RELAXED   = 0x00000001u;
+    inline constexpr std::uint32_t MEM_ACQUIRE   = 0x00000002u;
+    inline constexpr std::uint32_t MEM_RELEASE_  = 0x00000004u;
+    inline constexpr std::uint32_t MEM_SEQ_CST   = 0x00000008u;
+
+    inline constexpr std::uint32_t NO_ALIAS      = 0x00000010u;
+    inline constexpr std::uint32_t MAY_ALIAS     = 0x00000020u;
+
+    inline constexpr std::uint32_t FAST_MATH     = 0x00000040u;
+    inline constexpr std::uint32_t STRICT_FP     = 0x00000080u;
+
+    inline constexpr std::uint32_t LATENCY_CRITICAL = 0x00000100u;
+    inline constexpr std::uint32_t THROUGHPUT_MODE  = 0x00000200u;
+
+    inline constexpr std::uint32_t PREFETCH_HINT = 0x00000400u;
+
+    inline constexpr std::uint32_t VECTORIZABLE  = 0x00000800u;
+    inline constexpr std::uint32_t VEC_WIDTH_128 = 0x00001000u;
+    inline constexpr std::uint32_t VEC_WIDTH_256 = 0x00002000u;
+    inline constexpr std::uint32_t VEC_WIDTH_512 = 0x00004000u;
+
+    inline constexpr std::uint32_t PARALLEL_SAFE = 0x00008000u;
+    inline constexpr std::uint32_t REQUIRES_SYNC = 0x00010000u;
+
+    inline constexpr std::uint32_t HOT_PATH      = 0x00020000u;
+    inline constexpr std::uint32_t COLD_PATH     = 0x00040000u;
+    inline constexpr std::uint32_t HOST_ONLY     = 0x00080000u;
+    inline constexpr std::uint32_t DEVICE_ONLY   = 0x00100000u;
+    inline constexpr std::uint32_t PIPELINE_READY = 0x00200000u;
+
+    inline constexpr std::uint32_t DEOPT_SAFEPOINT = 0x00400000u;
+
+    inline constexpr std::uint32_t PROFILE_GUIDED   = 0x00800000u;
+    inline constexpr std::uint32_t SPECULATIVE_PATH = 0x01000000u;
+    inline constexpr std::uint32_t CACHE_HOT        = 0x02000000u;
+    inline constexpr std::uint32_t CACHE_COLD       = 0x04000000u;
+    inline constexpr std::uint32_t INLINE_CANDIDATE = 0x08000000u;
+    inline constexpr std::uint32_t NO_INLINE        = 0x10000000u;
+    inline constexpr std::uint32_t VIRTUALIZED      = 0x20000000u;
+    inline constexpr std::uint32_t SECURITY_HARDEN  = 0x40000000u;
+    inline constexpr std::uint32_t DETERMINISTIC    = 0x80000000u;
+
+    inline constexpr std::uint64_t IS_OWNED         = 0x0001000000ULL;
+    inline constexpr std::uint64_t IS_SHARED        = 0x0002000000ULL;
+    inline constexpr std::uint64_t IS_ATOMIC        = 0x0004000000ULL;
+    inline constexpr std::uint64_t IS_ISOLATED      = 0x0008000000ULL;
+    inline constexpr std::uint64_t IS_LINEAR        = 0x0010000000ULL;
+    inline constexpr std::uint64_t IS_BORROWED      = 0x0020000000ULL;
+    inline constexpr std::uint64_t MAY_DEADLOCK     = 0x0040000000ULL;
+    inline constexpr std::uint64_t REQUIRES_FENCE   = 0x0080000000ULL;
+
+    inline constexpr std::uint64_t IS_CONCURRENT    = 0x0100000000ULL;
+    inline constexpr std::uint64_t IS_SPAWN         = 0x0200000000ULL;
+    inline constexpr std::uint64_t IS_FIBER         = 0x0400000000ULL;
+    inline constexpr std::uint64_t IS_ASYNC         = 0x0800000000ULL;
+    inline constexpr std::uint64_t REQUIRES_SYNC_OP = 0x1000000000ULL;
+    inline constexpr std::uint64_t BARRIER_POINT    = 0x2000000000ULL;
+    inline constexpr std::uint64_t CHANNEL_OP       = 0x4000000000ULL;
+    inline constexpr std::uint64_t LOCK_OP          = 0x8000000000ULL;
+
+    inline constexpr std::uint64_t IS_GRAPH_OP      = 0x10000000000ULL;
+    inline constexpr std::uint64_t IS_TREE_OP       = 0x20000000000ULL;
+    inline constexpr std::uint64_t IS_TRIE_OP       = 0x40000000000ULL;
+    inline constexpr std::uint64_t IS_TENSOR_OP     = 0x80000000000ULL;
+    inline constexpr std::uint64_t HAS_SCOP         = 0x100000000000ULL;
+
+    inline constexpr std::uint64_t LANG_DSL         = 0x200000000000ULL;
+    inline constexpr std::uint64_t LANG_CPP         = 0x400000000000ULL;
+    inline constexpr std::uint64_t LANG_RUST        = 0x800000000000ULL;
+} // namespace ExtendedFlags
+
+namespace AuxFlags {
+    inline constexpr std::uint32_t NONE = 0x00000000u;
+
+    inline constexpr std::uint32_t PTR_ADDRSPACE_GENERIC  = 0x00000001u;
+    inline constexpr std::uint32_t PTR_ADDRSPACE_GLOBAL   = 0x00000002u;
+    inline constexpr std::uint32_t PTR_ADDRSPACE_SHARED   = 0x00000004u;
+    inline constexpr std::uint32_t PTR_ADDRSPACE_LOCAL    = 0x00000008u;
+    inline constexpr std::uint32_t PTR_ADDRSPACE_CONSTANT = 0x00000010u;
+
+    inline constexpr std::uint32_t PTR_ADDRSPACE_MASK =
+        PTR_ADDRSPACE_GENERIC |
+        PTR_ADDRSPACE_GLOBAL |
+        PTR_ADDRSPACE_SHARED |
+        PTR_ADDRSPACE_LOCAL |
+        PTR_ADDRSPACE_CONSTANT;
+
+    inline constexpr std::uint32_t PREDICATE_CANONICAL = 0x00000020u;
+
+    static_assert((PTR_ADDRSPACE_MASK & PREDICATE_CANONICAL) == 0u,
+                  "AuxFlags domains must not overlap");
+} // namespace AuxFlags
+
+namespace PhaseDFlags {
+    inline constexpr std::uint32_t IS_VARIADIC_OP     = 0x00000001u;
+    inline constexpr std::uint32_t HAS_MULTI_RESULT   = 0x00000002u;
+    inline constexpr std::uint32_t EFFECT_TRACKED    = 0x00000004u;
+    inline constexpr std::uint32_t DOMINANCE_ROOT    = 0x00000008u;
+
+    inline constexpr std::uint32_t TYPE_VERIFIED      = 0x00000010u;
+    inline constexpr std::uint32_t EFFECT_VERIFIED    = 0x00000020u;
+    inline constexpr std::uint32_t DOMINANCE_VERIFIED = 0x00000040u;
+} // namespace PhaseDFlags
+
+namespace HintFlags {
+    inline constexpr std::uint16_t LatencySensitive     = 0x2000u;
+    inline constexpr std::uint16_t ThroughputMode       = 0x4000u;
+
+    inline constexpr std::uint16_t RequiresVecPort      = 0x0002u;
+    inline constexpr std::uint16_t SVEActive            = 0x0004u;
+    inline constexpr std::uint16_t IsSpillCandidate     = 0x0008u;
+
+    inline constexpr std::uint16_t BranchLikely         = 0x1000u;
+    inline constexpr std::uint16_t BranchUnlikely       = 0x2000u;
+
+    inline constexpr std::uint16_t IsHosted             = 0x0040u;
+    inline constexpr std::uint16_t RequiresDepassTarget = 0x0100u;
+    inline constexpr std::uint16_t NonTemporalHint      = 0x0800u;
+} // namespace HintFlags
+
+inline constexpr std::uint32_t NULL_REGISTER = 0x0u;
+inline constexpr std::uint32_t INVALID_ATOM  = 0xFFFFFFFFu;
+inline constexpr std::uint32_t INVALID_SLOT  = INVALID_ATOM;
+
+enum class OwnershipModel : std::uint8_t {
+    OWNED = 0,
+    SHARED = 1,
+    CONST = 2,
+    ATOMIC = 3,
+    ISOLATED = 4,
+    MUT = 5,
+    AUTO = 6,
+    VOLATILE = 7,
+    LINEAR = 8,
+    MANAGED = 9,
+    OPAQUE = 10,
+    SEALED = 11,
+    CAP = 12
+};
+
+enum class ConcurrencyClass : std::uint8_t {
+    SEQUENTIAL = 0,
+    SPAWN = 1,
+    ASYNC = 2,
+    FIBER = 3,
+    ELASTIC = 4,
+    THREAD = 5,
+    SYNC = 6,
+    AWAIT_READY = 7,
+    JOIN_POINT = 8,
+    LOCK_OP = 9,
+    FENCE = 10,
+    RECV_OP = 11,
+    SEND_OP = 12,
+    BARRIER = 13
+};
+
+enum class DSAType : std::uint8_t {
+    SCALAR = 0,
+    TENSOR = 1,
+    GRAPH = 2,
+    TREE = 3,
+    TRIE = 4,
+    NODE = 5,
+    EDGE = 6,
+    STREAM = 7
+};
+
+enum class FrontendLanguage : std::uint8_t {
+    UNIVERSAL = 0,
+    DSL = 1,
+    CPP = 2,
+    RUST = 3,
+    PYTHON = 4,
+    GO = 5,
+    SWIFT = 6,
+    KOTLIN = 7,
+    JAVA = 8,
+    C = 9
+};
+
+struct OwnershipLifetime {
+    OwnershipModel model         = OwnershipModel::OWNED;
+    std::uint32_t acquire_site   = 0u;
+    std::uint32_t release_site   = 0u;
+    std::uint32_t transfer_count = 0u;
+    std::uint32_t last_transfer_site = 0u;
+    bool is_borrowed             = false;
+    bool has_aliasing            = false;
+};
+
+struct TypeContext {
+    FrontendLanguage language         = FrontendLanguage::UNIVERSAL;
+    OwnershipModel default_ownership  = OwnershipModel::OWNED;
+    ConcurrencyClass concurrency_class = ConcurrencyClass::SEQUENTIAL;
+    DSAType primary_dsa               = DSAType::SCALAR;
+    bool is_value_type                = false;
+    bool is_generic                   = false;
+    std::uint32_t generic_params      = 0u;
+    std::uint64_t type_id             = 0ULL;
+};
+)DGTL";
+
+    // ------------------------------------------------------------------------
+    // Generate DGTL_Gen_Enums.ixx directly from the canonical DSL.
+    //
+    // The generated enum artifact is deterministic: the previous DGTL_Gen_Enums.ixx
+    // is never read and never used as an input to generation.
+    // ------------------------------------------------------------------------
+    {
+        const fs::path enum_path = root / opts.enum_output_file;
+        std::ofstream eout(enum_path, std::ios::binary | std::ios::trunc);
+        if (!eout) {
+            std::cerr << "FATAL: failed to open generated enum output: "
+                      << enum_path.string() << "\n";
+            return 1;
+        }
+
+        eout << "/*\n"
+             << " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+             << " *\n"
+             << " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+             << " * Owner:       Divyanshu Tata\n"
+             << " * Repository:  github.com/TataG-Systems/DGTL\n"
+             << " *\n"
+             << " * Component:   Auto-generated DGTL IR Enumerations and Core Opcodes\n"
+             << " *\n"
+             << " * This software is the proprietary property of TataG Systems.\n"
+             << " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+             << " *\n"
+             << " * ============================================================================\n"
+             << " * AUTO-GENERATED FILE — DO NOT EDIT MANUALLY\n"
+             << " * Generator:        tools/cpp/dgtl_gen_main.cpp\n"
+             << " * Canonical Source: " << opts.definition_file.generic_string() << "\n"
+             << " * ============================================================================\n"
+             << " */\n\n"
+             << "module;\n\n"
+             << "#include <cstddef>\n"
+             << "#include <cstdint>\n\n"
+             << "export module dgtl.ir_enums;\n\n"
+             << "export namespace dgtl::ir {\n\n"
+             << "enum class OpCode : std::uint16_t {\n";
+
+        for (const auto& op : operations) {
+            eout << "    " << op.opcode << " = 0x"
+                 << std::hex << std::uppercase << *op.stable_value
+                 << std::dec << ",\n";
+        }
+
+        if (!opcode_aliases.empty()) {
+            eout << "\n    // Canonical source-level aliases — emitted from the DSL.\n";
+            for (const auto& entry : opcode_aliases) {
+                eout << "    " << entry.name << " = " << entry.target << ",\n";
+            }
+        }
+        eout << "};\n\n";
+
+        eout << "enum class TypeCode : std::uint16_t {\n"
+             << "    VOID_T = 0,\n";
+
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            const auto& t = types[i];
+            std::string name;
+            if (t.name == "Bool") name = "BOOL";
+            else if (t.name == "Predicate") name = "PREDICATE";
+            else if (t.name == "AddressSpace") name = "ADDRESS_SPACE";
+            else if (t.name == "Ptr") name = "PTR";
+            else if (t.name == "StringHandle") name = "STRING_HANDLE";
+            else if (t.name == "Vec3xF32") name = "VEC3_F32";
+            else if (t.name == "Vec4xF32") name = "VEC4_F32";
+            else if (t.name == "Mat4x4F32") name = "MAT4X4_F32";
+            else if (t.name == "QuatF32") name = "QUAT_F32";
+            else if (t.name == "VectorF32x16") name = "VECTOR_F32X16";
+            else if (t.name == "VectorI32x16") name = "VECTOR_I32X16";
+            else if (t.name == "VectorF16x32") name = "VECTOR_F16X32";
+            else if (t.name == "TensorFP8") name = "TENSOR_FP8";
+            else if (t.name == "TensorBF16") name = "TENSOR_BF16";
+            else if (t.name == "TensorF32") name = "TENSOR_F32";
+            else if (t.name == "TensorI64") name = "TENSOR_I64";
+            else {
+                name = t.name;
+                std::transform(name.begin(), name.end(), name.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            }
+            eout << "    " << name << " = " << (i + 1) << ",\n";
+        }
+        eout << "};\n\n";
+        eout << kGeneratedEnumSupport << "\n\n";
+
+
+        eout << "inline constexpr std::uint16_t kMaxOpcode = []() constexpr {\n"
+             << "    std::uint16_t value = 0;\n";
+        for (const auto& op : operations) {
+            eout << "    if (value < 0x" << std::hex << std::uppercase << *op.stable_value
+                 << ") value = 0x" << *op.stable_value << std::dec << ";\n";
+        }
+        for (const auto& entry : opcode_aliases) {
+            if (entry.kind == OpcodeAlias::Kind::explicit_value) {
+                eout << "    if (value < 0x" << std::hex << std::uppercase << *entry.value
+                     << ") value = 0x" << *entry.value << std::dec << ";\n";
+            }
+        }
+        eout << "    return value;\n"
+             << "}();\n"
+             << "inline constexpr std::uint16_t kMaxTypeCode = "
+             << static_cast<unsigned long long>(types.size()) << ";\n"
+             << "inline constexpr std::size_t kCanonicalOpCount = "
+             << operations.size() << ";\n\n"
+             << "[[nodiscard]] constexpr std::uint16_t to_underlying(OpCode op) noexcept {\n"
+             << "    return static_cast<std::uint16_t>(op);\n"
+             << "}\n"
+             << "[[nodiscard]] constexpr std::uint16_t to_underlying(TypeCode type) noexcept {\n"
+             << "    return static_cast<std::uint16_t>(type);\n"
+             << "}\n"
+             << "[[nodiscard]] constexpr bool is_valid_type_code(TypeCode type) noexcept {\n"
+             << "    return to_underlying(type) <= kMaxTypeCode;\n"
+             << "}\n\n";
+
+        for (const auto& op : operations) {
+            eout << "static_assert(static_cast<std::uint16_t>(OpCode::"
+                 << op.opcode << ") == 0x" << std::hex << std::uppercase
+                 << *op.stable_value << std::dec
+                 << ", \"DGTL stable opcode ID drift: " << op.opcode << "\");\n";
+        }
+
+        eout << "\n} // namespace dgtl::ir\n";
+        eout.close();
+        if (!eout) {
+            std::cerr << "FATAL: failed while writing generated enum artifact\n";
+            return 1;
+        }
+
+        std::cout << "[dgtl-gen] Generated canonical enum/type artifact: "
+                  << enum_path.string() << "\n";
+    }
+
+    std::cout << "[dgtl-gen] Canonical schema validated: "
+              << operations.size() << " operations, explicit stable IDs\n";
+    std::cout << "[dgtl-gen] Generated DGTL_Gen_Enums.ixx + metadata + typed wrappers from canonical DSL\n";
+    std::cout << "[dgtl-gen] Metadata: " << opts.output_file.string() << "\n";
     return 0;
 }
+

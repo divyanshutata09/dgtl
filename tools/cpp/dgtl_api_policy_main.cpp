@@ -125,8 +125,8 @@ int main(int argc, char** argv) {
         "include/dgtl/api/Api_all.ixx",
         "include/dgtl_sdk/dgtl.h",
         "include/dgtl_sdk/",
-        "include/dgtl/backend/driver/Backend_Driver_API.ixx",
-        "include/dgtl/api/Runtime.ixx",
+        "include/dgtl/linker/driver/Backend_Driver_API.ixx",
+        "include/dgtl/api/Runtime_API.ixx",
         "include/dgtl/runtime/TaskScheduler.ixx",
         "tests/functional/frontend/t07_frontend_pipeline_lowerer.cpp"
     };
@@ -138,16 +138,16 @@ int main(int argc, char** argv) {
     }
 
     std::vector<Rule> rules;
-    rules.push_back(Rule{"include/dgtl/dgtl_all.ixx", "dgtl.ir_stream", "top-level umbrella must include public API umbrella", true});
+    rules.push_back(Rule{"include/dgtl/dgtl.ixx", "(dgtl\\.ir|dgtl\\.ir_stream)", "top-level umbrella must include public API umbrella", true});
     rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "dgtl/api/FrontendHelper\\.(hpp|ixx)", "public API umbrella must not expose removed frontend helper wrapper", false});
     rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "dgtl/api/Frontend_Payload\\.(hpp|ixx)", "public API umbrella must not expose removed frontend payload wrapper", false});
-    rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "(:api_runtime|dgtl\\.internal\\.api_runtime)", "public API umbrella must expose runtime scheduler API", true});
-    rules.push_back(Rule{"include/dgtl/api/Runtime.ixx", "dgtl.task_scheduler", "runtime API header must include TaskScheduler implementation header", true});
+    rules.push_back(Rule{"include/dgtl/api/Api_all.ixx", "(:api_runtime|dgtl\\.internal\\.api_runtime|dgtl\\.api\\.runtime)", "public API umbrella must expose runtime scheduler API", true});
+    rules.push_back(Rule{"include/dgtl/api/Runtime_API.ixx", "(dgtl\\.task_scheduler|dgtl\\.runtime\\.task_scheduler)", "runtime API header must include TaskScheduler implementation header", true});
     rules.push_back(Rule{"include/dgtl/jit/JIT_Orchestrator.ixx", "dgtl/runtime/Runtime_Intrinsics\\.ixx", "orchestrator must depend on runtime intrinsic facade", true});
     rules.push_back(Rule{"include/dgtl/jit/JIT_Orchestrator.ixx", "Myzon_Bulletins\\.ixx", "orchestrator must not include legacy runtime bulletins directly", false});
     rules.push_back(Rule{"include/dgtl/core/ABI.ixx", "__myzon_", "core ABI contract must not hardcode legacy intrinsic symbols", false});
-    rules.push_back(Rule{"include/dgtl/backend/driver/Backend_Driver_API.ixx", "frontend_payload_path", "backend driver must not carry frontend payload path anymore", false});
-    rules.push_back(Rule{"include/dgtl/backend/driver/Backend_Driver_API.ixx", "emit_ir_stream\\(", "IRStream backend emission helper must exist", true});
+    rules.push_back(Rule{"include/dgtl/linker/driver/Backend_Driver_API.ixx", "frontend_payload_path", "backend driver must not carry frontend payload path anymore", false});
+    rules.push_back(Rule{"include/dgtl/linker/driver/Backend_Driver_API.ixx", "(emit_ir_stream|emit_machine_function)\\(", "Machine function/stream backend emission helper must exist", true});
     rules.push_back(Rule{"src/main.cpp", "--frontend-payload", "DGTL driver must not accept frontend payload CLI option anymore", false});
     rules.push_back(Rule{"src/main.cpp", "build_ir_from_frontend_payload\\(", "DGTL driver must not load IR from frontend payload anymore", false});
     // FIXED: Passed a string pattern instead of 'true' boolean for rule matching definition
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
     rules.push_back(Rule{"include/dgtl_sdk/dgtl.h", "dgtl_session_config_t", "public SDK umbrella must expose session contract header", true});
     rules.push_back(Rule{"tools/cpp/dgtl_main.cpp", "api-status", "main orchestrator must expose api-status command", true});
     rules.push_back(Rule{"tools/cpp/dgtl_orchestrator_main.cpp", "api-status", "secondary orchestrator must expose api-status command", true});
-    rules.push_back(Rule{"tests/test_suite_main.cpp", "run_test_t07_frontend_pipeline_lowerer", "aggregate suite must include frontend pipeline lowerer test", true});
+    rules.push_back(Rule{"tests/functional/frontend/t07_frontend_pipeline_lowerer.cpp", "run_test_t07_frontend_pipeline_lowerer", "aggregate suite must include frontend pipeline lowerer test", true});
 
     for (const auto& rule : rules) {
         const fs::path file = root / rule.relative_path;

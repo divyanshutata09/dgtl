@@ -36,54 +36,43 @@ module;
 # include <intrin.h>   // _mm_prefetch on UCRT64 / MSVC
 #endif
 
-// 🚀 PRODUCTION RESOLUTION: Named interface matches your target renaming schema exactly
-export module dgtl.ir_core.stream;
+// Canonical HIR stream representation and transactional storage.
+export module dgtl.ir.stream;
 
-// Export native C++20 dependencies previously tracked via legacy header paths
-export import dgtl.numa_runtime;
+// Export native C++ dependencies required by the storage implementation
+export import dgtl.runtime.numa;
 export import dgtl.arena; // Handles your arena-backed allocation mechanics
 export import dgtl.ir_enums;
+import dgtl.ir_schema;
+import dgtl.ir_contracts;
 export import dgtl.ir_node; // Contains your base IRAtom, IRCore, IRNode, and OpCode footprints
-export import dgtl.flat_map; // 🚀 Natively import your high-performance flat map layer
-export import dgtl.sync;     // 🚀 Natively import your ultra-low latency sync primitives
-export import dgtl.target;
+export import dgtl.flat_map;
+export import dgtl.sync;
+// Target-specific execution and lowering are outside the HIR module.
+// This profile records only target-neutral compilation/runtime observations.
 
 export namespace dgtl::ir {
 
 // ============================================================================
-// FORWARD DECLARATIONS - Backend Profiling &  Execution (NEW - DGTL v1.0)
+// Target-neutral compilation profile
 // ============================================================================
 
 /**
- * @brief Backend Profile - Tracking per-target compilation metrics
- * Enables adaptive compilation tier selection and cross-platform optimization
+ * @brief Target-neutral compilation/profile metrics used by HIR analysis and scheduling
  */
-struct BackendProfile {
-    enum class TargetISA : uint8_t {
-        X64_AVX512 = 0,
-        ARM64_SVE = 1,
-        ARM32_NEON = 2,
-        RISCV64_RV64GC = 3,
-        WASM = 4,
-        CUDA_PTX = 5,
-        ROCM_LLVMIR = 6,
-        NASM_X64 = 7,
-        FPGA_VERILOG = 8
-    };
-
+struct CompilationProfile {
     enum class CompilationTier : uint8_t {
-        JIT_FAST = 0,
-        AOT_INTENSIVE = 1,
-        ADAPTIVE_HYBRID = 2
+        Fast = 0,
+        Intensive = 1,
+        Adaptive = 2
     };
 
-    TargetISA target = TargetISA::X64_AVX512;
     uint64_t execution_time_us = 0;
     uint64_t calls_count = 0;
     uint32_t cache_hits = 0;
     uint32_t cache_misses = 0;
     float avg_compilation_latency_us = 0.0f;
-    CompilationTier current_tier = CompilationTier::JIT_FAST;
+    CompilationTier current_tier = CompilationTier::Fast;
     uint32_t tier_switch_count = 0;
 
     struct SpeculationMetrics {
@@ -91,13 +80,13 @@ struct BackendProfile {
         uint32_t speculations_verified = 0;
         uint32_t deopt_triggers = 0;
         [[nodiscard]] float speculation_success_rate() const noexcept {
-            if (speculations_made == 0) return 0.0f;
-            return 100.0f * speculations_verified / speculations_made;
+            return speculations_made == 0 ? 0.0f
+                : 100.0f * static_cast<float>(speculations_verified) / static_cast<float>(speculations_made);
         }
     } speculation;
 
     struct LoopMetrics {
-        uint32_t speculations_made = 0; 
+        uint32_t speculations_made = 0;
         uint32_t loops_detected = 0;
         uint32_t loops_unrolled = 0;
         uint64_t total_iterations = 0;
@@ -433,10 +422,8 @@ public:
     [[nodiscard]] uint32_t intent_crc() const noexcept;
     [[nodiscard]] uint32_t get_max_id() const noexcept;
 
-    void push_shadow_fold(const IRNode& node) noexcept;
 
     void optimize_memory_access_patterns() noexcept;
-    void evolve_node(IRNode* node);
 
     // ============================================================================
     // ADVANCED OPTIMIZATION PASSES (NEW - BETTER THAN LLVM)
@@ -444,7 +431,6 @@ public:
     void perform_speculative_optimization() noexcept;
     void perform_loop_unrolling(uint8_t unroll_factor = 4) noexcept;
     void optimize_branch_prediction() noexcept;
-    void apply_backend_specific_optimizations(BackendProfile::TargetISA target) noexcept;
     void perform_profile_guided_optimization(const ProfilingData& profile_data) noexcept;
     void analyze_vectorization_patterns() noexcept;
 
@@ -470,25 +456,16 @@ public:
     }
     
     // ============================================================================
-    // BACKEND-AWARE INSTRUCTION OPTIMIZATION (NEW)
-    // ============================================================================
-    void apply_backend_instruction_selection(BackendProfile::TargetISA target) noexcept;
-    void dispatch_simd_operations(BackendProfile::TargetISA target) noexcept;
-    void optimize_gather_scatter_patterns(BackendProfile::TargetISA target) noexcept;
-    
-    // ============================================================================
     // PROFILE-GUIDED OPTIMIZATION &  TIER TRACKING (NEW)
     // ============================================================================
-    BackendProfile::CompilationTier compute_adaptive_tier(
-        uint32_t function_id,
-        const dgtl::core::TargetDescription* target_desc = nullptr) noexcept;
+    [[nodiscard]] CompilationProfile get_compilation_profile(uint32_t stream_id) const noexcept;
+    [[nodiscard]] CompilationProfile::CompilationTier compute_adaptive_tier(uint32_t function_id) const noexcept;
+
     void record_function_call(uint32_t function_id) noexcept;
+    void update_compilation_stats(uint32_t stream_id, uint64_t compilation_time_us) noexcept;
     void record_block_hotness(uint32_t block_id) noexcept;
-    [[nodiscard]] BackendProfile get_backend_profile(uint32_t stream_id) const noexcept;
-    void set_backend_target(uint32_t stream_id, BackendProfile::TargetISA target) noexcept;
-    void update_backend_stats(uint32_t stream_id, uint64_t compilation_time_us) noexcept;
-    void record_cache_access(uint32_t stream_id, bool hit) noexcept;
-    void ingest_runtime_feedback(uint32_t stream_id,
+    void record_compilation_cache_access(uint32_t stream_id, bool hit) noexcept;
+    void ingest_compilation_feedback(uint32_t stream_id,
                                  double actual_latency,
                                  double cache_miss_rate,
                                  double branch_mispredict_rate,
@@ -732,3 +709,7 @@ namespace numa = dgtl::runtime::numa;
 }
 
 } // namespace dgtl::ir
+
+
+
+

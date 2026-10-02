@@ -37,8 +37,8 @@ SmokeCheck run_fusion_check(dgtl::core::DGTL_Arena& arena) {
 	}
 
 	const size_t size_before = stream.size();
-	dgtl::core::DGTLFormalVerifier verifier;
-	dgtl::pass::transform::DGTLInstructionFusionSynth fusion(verifier);
+	dgtl::ir::DGTLFormalVerifier verifier;
+	dgtl::ir::pass::transform::DGTLInstructionFusionSynth fusion(verifier);
 	fusion.execute(stream);
 
 	// Fusion either transforms nodes or shrinks the stream post-DCE.
@@ -57,7 +57,7 @@ SmokeCheck run_simd_check(dgtl::core::DGTL_Arena& arena, BackendKind backend) {
 		return {"simd-legalize", false, "failed to build simd IR"};
 	}
 
-	dgtl::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+	dgtl::ir::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
 	legalizer.legalize(stream);
 
 	// Legalization passes if the legalizer ran without error and stream is still valid.
@@ -121,28 +121,19 @@ SmokeCheck run_pressure_check(dgtl::core::DGTL_Arena& arena) {
 		return {"pressure-zero-spill", false, "failed to build pressure IR"};
 	}
 
-	dgtl::analysis::LivenessAnalyzer liveness;
-	liveness.analyze_stream(stream);
-	if (liveness.has_corruption()) {
-		return {"pressure-zero-spill", false, liveness.last_error()};
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("pressure_test");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return {"pressure-zero-spill", false, "failed to lower pressure IR to MIR"};
 	}
 
-	dgtl::isa::DGTLARM64RegAlloc regalloc;
-	regalloc.execute(stream, liveness);
+	dgtl::isa::regalloc::X64GraphColoringRegAlloc regalloc;
+	auto alloc_res = regalloc.allocate(mf);
 
-	const bool integrity_ok = stream.validate_shadow_integrity();
-	size_t spill_candidates = 0;
-	const auto* atoms = stream.raw_atoms();
-	for (size_t i = 0; i < stream.size(); ++i) {
-		if (atoms[i].flags & dgtl::ir::HintFlags::IsSpillCandidate) {
-			++spill_candidates;
-		}
-	}
-	stream.rollback_transaction();
-
+	const bool ok = alloc_res.success && alloc_res.spilled_virtuals.empty();
 	std::ostringstream oss;
-	oss << "spill_candidates=" << spill_candidates;
-	return {"pressure-zero-spill", integrity_ok && spill_candidates == 0, oss.str()};
+	oss << "spilled=" << alloc_res.spilled_virtuals.size() << " instructions=" << mf.instruction_count();
+	return {"pressure-zero-spill", ok, oss.str()};
 }
 
 SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,

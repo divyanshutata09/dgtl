@@ -1,191 +1,92 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
- * Repository: github.com/TataG-Systems/DGTL
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
+ * Repository:  github.com/TataG-Systems/DGTL
+ *
+ * Component:   x64 Graph Coloring Register Allocator (MIR-Native)
+ * Standards:   C++26 / Clang 18+ / MSVC 19.40+ / GCC 14+
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
 module;
 
 #include <cstdlib>
-
-#include <algorithm>
-#include <array>
-#include <cstddef>
 #include <cstdint>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
+#include <memory>
+#include <algorithm>
+#include <unordered_map>
 
-export module dgtl.ir_core.x64_graphcoloring_regalloc;
+export module dgtl.isa.x64.x64_graphcoloring_regalloc;
 
-import dgtl.ir_core;
-import dgtl.ir_core.strike_live_manager;
-import dgtl.ir_core.x64_reg_map;
+import dgtl.mir;
+import dgtl.mir.machine_ir;
+import dgtl.mir.regalloc.universal;
+import dgtl.isa.x64.x64_reg_map;
 
 export namespace dgtl::isa::regalloc {
 
-struct GraphColoringAllocation {
-    std::unordered_map<uint32_t, dgtl::exec::X64Reg> assigned_registers;
+struct X64AllocationResult {
+    bool success = true;
     std::vector<uint32_t> spilled_virtuals;
+    std::vector<dgtl::machine::MachineRegister> physical_assignments;
 };
 
+/**
+ * @class X64GraphColoringRegAlloc
+ * @brief Tier-2 x64 Graph Coloring Register Allocator anchored on canonical MIR.
+ * Bridges MIR register allocation with UniversalGraphColoringRegAlloc.
+ */
 class X64GraphColoringRegAlloc {
 public:
-    [[nodiscard]] static GraphColoringAllocation allocate(const ir::IRStream& stream) {
-        GraphColoringAllocation out{};
-        if (stream.is_null() || stream.size() == 0) {
-            return out;
+    X64GraphColoringRegAlloc() = default;
+
+    /**
+     * @brief Allocate registers for a pure MachineFunction using UniversalGraphColoringRegAlloc.
+     */
+    [[nodiscard]] X64AllocationResult allocate(dgtl::machine::MachineFunction& function) {
+        X64AllocationResult result;
+        dgtl::isa::x64::emitter::X64TargetRegisterInfo reg_info{};
+        dgtl::mir::regalloc::UniversalGraphColoringRegAlloc allocator(function, reg_info);
+        result.success = allocator.run();
+        for (const auto& spilled : allocator.spilled_virtuals()) {
+            result.spilled_virtuals.push_back(spilled.id);
         }
+        return result;
+    }
 
-        // Build comprehensive label-to-node index mapping for loop analysis
-        std::unordered_map<uint32_t, size_t> label_map;
-        for (size_t i = 0; i < stream.size(); ++i) {
-            const ir::IRNode node = stream.get_node_readonly(i);
-            if (node.opcode == ir::OpCode::LABEL) {
-                if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                    label_map[node.result_id] = i;
-                }
-                if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-                    label_map[node.op_a] = i;
-                }
-                if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-                    label_map[node.op_b] = i;
-                }
-            }
-        }
+    /**
+     * @brief Analyze register pressure and spill candidates for Tier-2 machine function optimization.
+     */
+    [[nodiscard]] X64AllocationResult allocate_pressure(const dgtl::machine::MachineFunction& function) const {
+        X64AllocationResult result;
+        constexpr size_t kMaxAllocatableGPRs = 14;
+        std::unordered_map<uint32_t, uint32_t> use_counts;
 
-        // Compute rigorous live intervals with loop backedge resolution
-        StrikeLiveManager live;
-        live.compute(stream, label_map);
-
-        constexpr std::array<dgtl::exec::X64Reg, 7> kPalette = {
-            dgtl::exec::X64Reg::RAX,
-            dgtl::exec::X64Reg::RCX,
-            dgtl::exec::X64Reg::RDX,
-            dgtl::exec::X64Reg::RSI,
-            dgtl::exec::X64Reg::RDI,
-            dgtl::exec::X64Reg::R8,
-            dgtl::exec::X64Reg::R9
-        };
-
-        // Identify all virtual registers that cross a CALL boundary
-        std::unordered_set<uint32_t> call_clobbered_vregs;
-        for (size_t i = 0; i < stream.size(); ++i) {
-            const ir::IRNode node = stream.get_node_readonly(i);
-            if (node.opcode == ir::OpCode::CALL ||
-                node.opcode == ir::OpCode::CALL_VARIADIC ||
-                node.opcode == ir::OpCode::SYSCALL) {
-                for (size_t v = 0; v < 65536; ++v) {
-                    if (!live.is_dead(static_cast<uint32_t>(v), i)) {
-                        call_clobbered_vregs.insert(static_cast<uint32_t>(v));
-                    }
+        for (const auto& instr : function.instructions()) {
+            for (const auto& op : instr.operands) {
+                if (op.kind == dgtl::machine::MachineOperandKind::Register && op.reg.valid()) {
+                    use_counts[op.reg.id]++;
                 }
             }
         }
 
-        // Track produced virtual IDs so immediates/labels are never treated as SSA registers
-        std::unordered_map<uint32_t, bool> produced_ids;
-        produced_ids.reserve(stream.size());
-        for (size_t i = 0; i < stream.size(); ++i) {
-            const ir::IRNode node = stream.get_node_readonly(i);
-            if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                produced_ids.emplace(node.result_id, true);
+        if (use_counts.size() > kMaxAllocatableGPRs) {
+            std::vector<std::pair<uint32_t, uint32_t>> sorted_uses(use_counts.begin(), use_counts.end());
+            std::sort(sorted_uses.begin(), sorted_uses.end(), [](const auto& a, const auto& b) {
+                return a.second < b.second;
+            });
+            const size_t num_spills = sorted_uses.size() - kMaxAllocatableGPRs;
+            for (size_t i = 0; i < num_spills; ++i) {
+                result.spilled_virtuals.push_back(sorted_uses[i].first);
             }
         }
 
-        std::array<bool, kPalette.size()> reg_used{};
-
-        const auto is_value_slot = [&](uint32_t slot) noexcept {
-            return slot != ir::INVALID_SLOT && slot != 0u && produced_ids.find(slot) != produced_ids.end();
-        };
-
-        const auto reclaim_dead_assignments = [&](size_t node_index) {
-            for (size_t r = 0; r < kPalette.size(); ++r) {
-                if (!reg_used[r]) {
-                    continue;
-                }
-
-                const bool still_live_owner = std::any_of(out.assigned_registers.begin(), out.assigned_registers.end(),
-                    [&](const auto& kv) noexcept {
-                        return kv.second == kPalette[r] && !live.is_dead(kv.first, node_index);
-                    });
-
-                if (!still_live_owner) {
-                    reg_used[r] = false;
-                }
-            }
-        };
-
-        const auto ensure_assignment = [&](uint32_t vid, size_t node_index) {
-            if (!is_value_slot(vid)) {
-                return;
-            }
-            if (out.assigned_registers.find(vid) != out.assigned_registers.end()) {
-                return;
-            }
-
-            // Spill virtuals that are live across function calls to preserve ABI integrity
-            if (call_clobbered_vregs.find(vid) != call_clobbered_vregs.end()) {
-                out.spilled_virtuals.push_back(vid);
-                return;
-            }
-
-            reclaim_dead_assignments(node_index);
-            for (size_t r = 0; r < kPalette.size(); ++r) {
-                if (!reg_used[r]) {
-                    reg_used[r] = true;
-                    out.assigned_registers.emplace(vid, kPalette[r]);
-                    return;
-                }
-            }
-
-            out.spilled_virtuals.push_back(vid);
-        };
-
-        for (size_t i = 0; i < stream.size(); ++i) {
-            const ir::IRNode node = stream.get_node_readonly(i);
-
-            if (node.opcode == ir::OpCode::LABEL || node.opcode == ir::OpCode::GOTO) {
-                reclaim_dead_assignments(i);
-                continue;
-            }
-
-            if (node.opcode == ir::OpCode::BRANCH_COND ||
-                node.opcode == ir::OpCode::BRANCH_LIKELY ||
-                node.opcode == ir::OpCode::BRANCH_UNLIKELY) {
-                ensure_assignment(node.op_a, i);
-                reclaim_dead_assignments(i);
-                continue;
-            }
-
-            if (node.opcode == ir::OpCode::BRANCH_COMPARE_FUSED) {
-                ensure_assignment(node.op_a, i);
-                ensure_assignment(node.op_b, i);
-                reclaim_dead_assignments(i);
-                continue;
-            }
-
-            // Ensure operand values are assigned before definition point use
-            ensure_assignment(node.op_a, i);
-            ensure_assignment(node.op_b, i);
-            ensure_assignment(node.op_c, i);
-
-            if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                ensure_assignment(node.result_id, i);
-            }
-
-            reclaim_dead_assignments(i);
-        }
-
-        std::sort(out.spilled_virtuals.begin(), out.spilled_virtuals.end());
-        out.spilled_virtuals.erase(
-            std::unique(out.spilled_virtuals.begin(), out.spilled_virtuals.end()),
-            out.spilled_virtuals.end());
-
-        return out;
+        return result;
     }
 };
 

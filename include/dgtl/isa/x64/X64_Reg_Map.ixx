@@ -16,13 +16,10 @@ module;
 #include <array>
 #include <cstdint>
 #include <algorithm>
-
-export module dgtl.ir_core.x64_reg_map;
-import dgtl.ir_core;
+export module dgtl.isa.x64.x64_reg_map;
+import dgtl.mir.machine_ir;
 import dgtl.flat_map;
-
-
-export namespace dgtl::exec {
+export namespace dgtl::isa::x64::emitter {
 
 /**
  * @brief Physical x86_64 Register Indices
@@ -253,7 +250,7 @@ public:
  */
 class X64AIGuidedRegisterAllocator {
 private:
-    const dgtl::analysis::DGTLAICostModel* m_ai_model = nullptr;
+    float m_memory_latency_estimate = 1.0f;
     X64LocalStateLockTable m_locks;
 
     /**
@@ -301,22 +298,18 @@ private:
             score += 150;  // Weight: 15%
         }
 
-        // Factor 4: AI model prediction
-        // Ask model: how much would spilling this cost?
-        if (m_ai_model) {
-            float ai_spill_cost = m_ai_model->get_memory_latency_estimate();
-            const uint32_t ai_score = static_cast<uint32_t>(ai_spill_cost * 50.0f);
-            score += ai_score;  // Weight: 15%
-        }
+        // Factor 4: Model prediction / memory latency sensitivity
+        const uint32_t ai_score = static_cast<uint32_t>(m_memory_latency_estimate * 50.0f);
+        score += ai_score;  // Weight: 15%
 
         return score;
     }
 
 public:
     explicit X64AIGuidedRegisterAllocator(
-        const dgtl::analysis::DGTLAICostModel* ai_model = nullptr
+        float memory_latency_estimate = 1.0f
     ) noexcept
-        : m_ai_model(ai_model) {}
+        : m_memory_latency_estimate(memory_latency_estimate) {}
 
     /**
      * @brief Allocate a virtual register to physical storage (register or stack).
@@ -464,11 +457,149 @@ public:
     [[nodiscard]] AllocationStats get_stats() const noexcept {
         AllocationStats stats{};
         // In production, track actual register and stack usage
-        if (m_ai_model) {
-            stats.estimated_memory_pressure = m_ai_model->get_memory_latency_estimate();
-        }
+        stats.estimated_memory_pressure = m_memory_latency_estimate;
         return stats;
     }
 };
 
-} // namespace dgtl::exec
+// ============================================================
+
+/*
+ * MIR target-register contract.
+ *
+ * This adapter is the sole x64 physical-register authority used by MIR
+ * register allocation.  The legacy modulo mappers above remain available for
+ * source compatibility, but they are not legal for emission because modulo
+ * mapping can alias simultaneously-live virtual registers.
+ */
+class X64TargetRegisterInfo final : public dgtl::machine::TargetRegisterInfo {
+public:
+    [[nodiscard]] std::size_t physical_register_count() const noexcept override {
+        return 16u + 32u;
+    }
+
+    [[nodiscard]] bool is_allocatable(dgtl::machine::MachineRegister reg) const noexcept override {
+        if (!reg.is_physical()) return false;
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::General ||
+            reg.reg_class == dgtl::machine::RegisterClassKind::Integer ||
+            reg.reg_class == dgtl::machine::RegisterClassKind::Address) {
+            switch (static_cast<X64Reg>(reg.id)) {
+                case X64Reg::RBX:
+                case X64Reg::R12:
+                case X64Reg::R13:
+                case X64Reg::R14:
+                case X64Reg::R15:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint) {
+            // Win64: XMM0-XMM5 are volatile; XMM6-XMM15 are nonvolatile.
+            return reg.id < 6u;
+        }
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::Vector) {
+            // ZMM0-ZMM5 and ZMM16-ZMM31 are volatile under the AVX-512
+            // extension of the Win64 ABI. ZMM6-ZMM15 are nonvolatile.
+            return (reg.id >= 16u && reg.id < 22u) ||
+                   (reg.id >= 32u && reg.id < 48u);
+        }
+        return false;
+    }
+
+    [[nodiscard]] dgtl::machine::RegisterClassKind
+    register_class(dgtl::machine::MachineRegister reg) const noexcept override {
+        if (!reg.is_physical()) return dgtl::machine::RegisterClassKind::Invalid;
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint)
+            return dgtl::machine::RegisterClassKind::FloatingPoint;
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::Vector)
+            return dgtl::machine::RegisterClassKind::Vector;
+        if (reg.id < 16u)
+            return dgtl::machine::RegisterClassKind::General;
+        return dgtl::machine::RegisterClassKind::Invalid;
+    }
+
+    [[nodiscard]] bool aliases(dgtl::machine::MachineRegister lhs,
+                               dgtl::machine::MachineRegister rhs) const noexcept override {
+        if (!lhs.is_physical() || !rhs.is_physical()) return false;
+        if (lhs.id == rhs.id) return true;
+        // Scalar FP registers share the low architectural XMM register bank.
+        const auto fp_vector_alias = [](const auto& fp, const auto& vec) noexcept {
+            return fp.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint &&
+                   vec.reg_class == dgtl::machine::RegisterClassKind::Vector &&
+                   vec.id >= 16u && vec.id < 32u &&
+                   fp.id == (vec.id - 16u);
+        };
+        return fp_vector_alias(lhs, rhs) || fp_vector_alias(rhs, lhs);
+    }
+
+    [[nodiscard]] bool is_reserved(dgtl::machine::MachineRegister reg) const noexcept override {
+        if (!reg.is_physical()) return false;
+        if (reg.id == static_cast<std::uint32_t>(X64Reg::RSP) ||
+            reg.id == static_cast<std::uint32_t>(X64Reg::RBP)) {
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool is_caller_saved(dgtl::machine::MachineRegister reg) const noexcept override {
+        if (!reg.is_physical()) return false;
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::General ||
+            reg.reg_class == dgtl::machine::RegisterClassKind::Integer ||
+            reg.reg_class == dgtl::machine::RegisterClassKind::Address) {
+            switch (static_cast<X64Reg>(reg.id)) {
+                case X64Reg::RAX: case X64Reg::RCX: case X64Reg::RDX:
+                case X64Reg::RSI: case X64Reg::RDI: case X64Reg::R8:
+                case X64Reg::R9: case X64Reg::R10: case X64Reg::R11:
+                    return true;
+                default: return false;
+            }
+        }
+        return reg.id < 16u;
+    }
+
+    [[nodiscard]] bool is_callee_saved(dgtl::machine::MachineRegister reg) const noexcept override {
+        if (!reg.is_physical()) return false;
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::General ||
+            reg.reg_class == dgtl::machine::RegisterClassKind::Integer ||
+            reg.reg_class == dgtl::machine::RegisterClassKind::Address) {
+            switch (static_cast<X64Reg>(reg.id)) {
+                case X64Reg::RBX: case X64Reg::RBP:
+                case X64Reg::R12: case X64Reg::R13:
+                case X64Reg::R14: case X64Reg::R15:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        return false;
+    }
+};
+
+} // namespace dgtl::isa::x64::emitter
+
+export namespace dgtl::exec {
+    using dgtl::isa::x64::emitter::X64Reg;
+    using dgtl::isa::x64::emitter::X64ZmmReg;
+    using dgtl::isa::x64::emitter::X64SinglePassRegisterMapper;
+    using dgtl::isa::x64::emitter::X64StorageKind;
+    using dgtl::isa::x64::emitter::X64StorageBinding;
+    using dgtl::isa::x64::emitter::X64Encoding;
+}
+
+export namespace dgtl::isa::x64 {
+    using emitter::X64TargetRegisterInfo;
+    using emitter::X64Reg;
+    using emitter::X64ZmmReg;
+    using emitter::X64SinglePassRegisterMapper;
+    using emitter::X64Encoding;
+}
+
+export namespace dgtl::isa {
+    using x64::emitter::X64TargetRegisterInfo;
+    using x64::emitter::X64Reg;
+    using x64::emitter::X64ZmmReg;
+    using x64::emitter::X64SinglePassRegisterMapper;
+    using x64::emitter::X64Encoding;
+}
+

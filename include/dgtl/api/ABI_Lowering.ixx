@@ -9,8 +9,8 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-export module dgtl.internal.api_abi_lowering;
+export module dgtl.api.abi_lowering;
 
 // Re-export the ABI lowering abstractions straight from the consolidated passes layer
-export import dgtl.ir_core;
-export import dgtl.ir_core.abi_lowering;
+export import dgtl.ir;
+export import dgtl.mir.abi_lowering;

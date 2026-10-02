@@ -36,7 +36,7 @@ module;
 #  include <unistd.h>
 #endif
 
-export module dgtl.numa_runtime;
+export module dgtl.runtime.numa;
 
 import dgtl.numa;
 

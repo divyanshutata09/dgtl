@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  */
 
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     const std::string r8 = "import dgtl.arena;\nimport dgtl.ir_stream;";
     const std::string r9 = "import dgtl.arena;\nimport dgtl.ir_stream;";
     const std::string r10 = "import dgtl.arena;\nimport dgtl.ir_stream;";
-    const std::string r11 = "import dgtl.ir_stream;";
+    const std::string r11 = "import dgtl.ir;";
 
     const std::vector<Rule> rules = {
         {"tests/functional/pipeline/test_pipeline_0.cpp", r3},

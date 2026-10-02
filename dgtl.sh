@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 ###############################################################################
 # DGTL Command Runner - Direct Memory & SDK Architecture Edition
 # Optimized for MSYS2 UCRT64 / Linux / macOS
@@ -64,19 +64,20 @@ Pick by intent:
   Build smoke/conformance binary  dgtl build-smoke
   Build strict binary             dgtl build-strict
   Run full conformance            dgtl run-all
-  Run one backend quickly         dgtl run-backend x64
-  Run backend benchmark           dgtl bench-backend x64 fusion
+  Run one backend quickly         dgtl run-backend <backend>
+  Run backend benchmark           dgtl bench-backend <backend> [profile]
   Build and run benchmark suite   dgtl brun
   Clean outputs/logs              dgtl clean-all
   Clean + build + run             dgtl clean-build-and-run
+
+Supported Backends:
+  x64, arm64, riscv64, wasm, ptx, amdgpu, spirv
 
 Categories (recommended):
 
 1) SDK & Infrastructure
   dgtl build-sdk                                  -> build/DGTL_SDK/ (For Myzon Linking)
-                                      ships dgtl.h
-    dgtl api-status --api <internal|public|both>   -> verifies DGTL API lane readiness
-  dgtl gen                                        -> Generates DGTL_Gen_Ops.hpp
+  dgtl gen                                        -> Generates DGTL_Gen_Ops.hpp & ISel
 
 2) Build binaries
   dgtl build-release                              -> build/dgtl_release
@@ -85,7 +86,7 @@ Categories (recommended):
 
 3) Validate correctness
   dgtl run-all                                    # full conformance
-  dgtl run-backend <arm64|x64|nasm|wasm>  # quick backend check
+  dgtl run-backend <x64|arm64|riscv64|wasm|ptx|amdgpu|spirv>
   dgtl test [full]                                # aggregate source-backed tests
 
 4) Benchmark performance
@@ -95,17 +96,6 @@ Categories (recommended):
 5) Clean and one-shot workflows
   dgtl clean-all
   dgtl clean-build-and-run
-
-Alias mapping:
-  build-release -> build
-  build-smoke -> smoke-build
-  build-strict -> strict
-  run-all -> run
-  run-backend -> run <backend>
-  bench-backend -> bench <backend>
-  run-tests -> test
-  clean-all -> clean
-  clean-build-and-run -> crun
 EOF
 }
 
@@ -119,7 +109,7 @@ find_tool() {
 }
 
 find_g_plusplus() {
-  local candidates=("g++" "g++-12" "g++-11" "clang++" "c++")
+  local candidates=("g++" "g++-14" "g++-13" "g++-12" "clang++" "c++")
   for candidate in "${candidates[@]}"; do
     if command -v "$candidate" &>/dev/null; then
       if [[ "$candidate" != "clang"* ]]; then
@@ -189,10 +179,21 @@ run_gen() {
 
   echo "[dgtl] Generating IR Ops from DSL..."
   "$GEN_TOOL_EXE" --root "$ROOT"
+
+  local ISEL_GEN_SRC="$ROOT/tools/cpp/dgtl_isel_gen_main.cpp"
+  local ISEL_GEN_EXE="$BUILD_DIR/tools/dgtl-isel-gen"
+  if [[ -f "$ISEL_GEN_SRC" ]]; then
+    if [[ ! -f "$ISEL_GEN_EXE" || "$ISEL_GEN_SRC" -nt "$ISEL_GEN_EXE" ]]; then
+      echo "[dgtl] Compiling dgtl-isel-gen tool..."
+      "$g_plusplus" -std=c++26 -O2 -I"$INCLUDE_DIR" "$ISEL_GEN_SRC" -o "$ISEL_GEN_EXE"
+    fi
+    echo "[dgtl] Generating ISel Target modules..."
+    "$ISEL_GEN_EXE" --root "$ROOT"
+  fi
 }
 
 # ============================================================================
-# DETERMINISTIC TOPOLOGICAL MODULE COMPILATION PHASE (GCC Bug Mitigation)
+# DETERMINISTIC TOPOLOGICAL MODULE COMPILATION PHASE
 # ============================================================================
 
 compile_all_dgtl_modules() {
@@ -207,161 +208,231 @@ compile_all_dgtl_modules() {
 
   local cflags=("-std=c++26" "-fmodules-ts" "-O2" "-pipe" "-I$INCLUDE_DIR")
 
-  # Macro partitioned structure matches dgtl_main.cpp topological resolution
   local module_files=(
-    # --- 1. Foundational Utilities & Base Runtime ---
-    "utils/assert/Assertions.ixx"
-    "utils/bit/Bit_Pack.ixx"
-    "utils/hashing/Hashing.ixx"
-    "utils/container/Flat_Map.ixx"
-    "core/Arena.ixx"
-    "core/Target.ixx"
-    "runtime/NUMA_Runtime.ixx"
-    "core/NUMA.ixx"
-    "runtime/dgtl_bulletins.ixx"
-    "api/Config.ixx"
-
-    # --- 2. IR Base Types, Enums & Traits ---
-    "ir/base/IR_Enums.ixx"
-    "ir/base/IR_Node.ixx"
-    "ir/interfaces/Op_Traits.ixx"
-    "core/ABI.ixx"
-    "ir/base/IR_Traits_Static.ixx"
-    "ir/base/IR_Forward.ixx"
-    "ir/base/IR_Stream.ixx"
-    "ir/base/IR_PrintSerialDumper.ixx"
-    "ir/base/IR_Verifier.ixx"
-    "ir/base/IR_SSA.ixx"
-
-    # --- 3. The Complete Semantic Suite ---
-    "semantic/Symbol_Table.ixx"
-    "semantic/Type_System.ixx"
-    "semantic/Type_Checker.ixx"
-    "semantic/Borrow_Checker.ixx"
-    "semantic/Name_Resolver.ixx"
-    "semantic/Constant_Evaluator.ixx"
-    "semantic/Semantic_Analyzer.ixx"
-
-    # --- 4. Core Modules & Formal Verification ---
-    "ir/debug/debug_Metadata.ixx"
-    "core/ControlFlow.ixx"
-    "core/Function.ixx"
-    "core/Verified_Formal.ixx"
-    "formal/Formal_Verification_SMT.ixx"
-    "analysis/Analysis_Interface.ixx"
-    "analysis/AI_Cost_Model.ixx"
-    "analysis/Polyhedral_Scop_Unified.ixx"
-    "pass/analysis/Escape_Analysis.ixx"
-    "analysis/Speculative_Value_Profiler.ixx"
-    "analysis/Liveness_Memory_Dependency_Unified.ixx"
-    "core/Compiler_Context.ixx"
-    "graph/IR_GraphEdgeClusterRegion.ixx"
-    "ir/evolver/IR_Evolver_Mutation.ixx"
-    "ir/rewrite/Pattern_Rewriter.ixx"
-    "ir/interop/IR_Analysis_Bridge.ixx"
-    
-    # [SUB-MODULE AGGREGATOR 1] Build Core macro interface unit
-    "ir/ir_core_module.ixx"
-
-    # --- 5. Pipeline Management & Analysis ---
-    "pipeline/Pass_Manager_Config.ixx"
-    "pipeline/Pass_Manager_Analysis.ixx"
-    "pipeline/Pass_Manager_Orchestrator.ixx"
-    "pipeline/Pass_Manager.ixx"
-    "pipeline/GPU_Scheduling.ixx"
-    "pipeline/Performance_Probes.ixx"
-    "pipeline/Pipeline_Probes.ixx"
-
-    # --- 6. Middle-End Passes ---
-    "pass/simd/SimdGScatter_LegalVecRecognizer.ixx"
-    "pass/speculative/SpecAliasDCE_InlineVecFusion.ixx"
-    "pass/transform/Transform_Control_Predication.ixx"
-    "pass/transform/Transform_Inlining.ixx"
-    "pass/transform/Transform_Poly_Loop.ixx"
-    "pass/transform/Transform_Scalar_Core.ixx"
-    "pass/ml/MLoptimization.ixx"
-    "pass/query/Query_Optimizer_Unified.ixx"
-    "pass/tuning/Tuning_Optimize.ixx"
-    "pass/error_handling/Enhanced_Error_Recovery.ixx"
-    
-    # [SUB-MODULE AGGREGATOR 2] Build Passes macro interface unit
-    "ir/ir_passes_module.ixx"
-
-    # --- 7. ISA Lowering, Register Allocation & Linker Backend ---
-    "ir/gen/DGTL_Gen_Ops.ixx"
-    "backend/codegen/ABI_Lowering.ixx"
-    "backend/codegen/Stack_Spiller.ixx"
-    "isa/wasm/Wasm_Encoder.ixx"
-    "isa/wasm/Wasm_Target.ixx"
-    "isa/x64/NASM_Emitter.ixx"
-    "isa/macho/MachO_Emitter.ixx"
-    "isa/arm32/ARM32_Emitter.ixx"
-    "isa/arm64/ARM64_Emitter.ixx"
-    "isa/riscv64/RiscV64_Emitter.ixx"
-    "isa/wasm/Wasm_SIMD_Emitter.ixx"
-    "isa/common/Backend_Runtime_Contract.ixx"
-    "isa/common/Instruction_Selector.ixx"
-    "isa/common/Legalizer.ixx"
-    "isa/common/Runtime_Legalization_Policy.ixx"
-    "isa/x64/X64_Machine_Form_Lowering.ixx"
-    "isa/x64/Win64_Frame_Lowering.ixx"
-    "isa/x64/X64_ISel_Generated.ixx"
-    "isa/x64/X64_ISel_Rules_Generated.ixx"
-    "isa/x64/X64_Reg_Map.ixx"
-    "isa/regalloc/Strike_Live_Manager.ixx"
-    "isa/x64/X64_GraphColoring_RegAlloc.ixx"
-    "isa/arm64/ARM64_RegAlloc.ixx"
-    "ir/runtime/TLS_Flush_Merge.ixx"
-    "backend/driver/Backend_Driver_Shared_Utils.ixx"
-    "backend/driver/Backend_Driver_API.ixx"
-    "backend/linker/AOT_Linker.ixx"
-    "backend/linker/Sovereign_PE_Linker.ixx"
-    "backend/linker/dgtl_pe_elf_macho_assembler.ixx"
-    "backend/orchestrator/AOT_Orchestrator.ixx"
-    "jit/Async_Dopt_Tiered.ixx"
-    "jit/Hardware_Scheduler.ixx"
-    "jit/JIT_Executor.ixx"
-    "jit/JIT_Orchestrator.ixx"
-    "execution/cache/Code_Cache.ixx"
-    "execution/dispatcher/Execution_Dispatcher.ixx"
-    "execution/format/Binary_Loader_object.ixx"
-    "backend/linker/Linker_Backend.ixx"
-
-    # --- 8. Public & Internal API Translation Facades ---
-    "api/Backend_Driver_Shared_Utils.ixx"
-    "api/Backend_Driver_API.ixx"
-    "api/ABI.ixx"
-    "api/ABI_Lowering.ixx"
-    "api/ExecutionEngine.ixx"
-    "api/Runtime.ixx"
-    "api/IRBuilder.ixx"
-    "api/JITSession.ixx"
-    "api/AOTSession.ixx"
-    "api/HybridSession.ixx"
-    "api/Api_all.ixx"
-    
-    # [SUB-MODULE AGGREGATOR 3] Build Backend macro interface unit
-    "ir/ir_backend_module.ixx"
-
-    # --- 9. Memory & Task Runtime Extensions ---
-    "core/VirtualMemory.ixx"
-    "core/MemoryCapability.ixx"
-    "core/MemoryManager.ixx"
-    "runtime/TaskScheduler.ixx"
-    "runtime/Runtime_Intrinsics.ixx"
-    "runtime/Runtime_Context.ixx"
-    "utils/memory/Memory_Guard.ixx"
-    "testing/FileCheck.ixx"
-    "utils/automata/LUT_FSM_Matcher.ixx"
-    
-    # --- 10. Global Aggregators ---
-    "ir/Global_IR.ixx"
-    "dgtl_all.ixx"
+    "include/dgtl/ir/gen/DGTL_Gen_Enums.ixx"
+    "include/dgtl/ir/gen/DGTL_Gen_Ops.ixx"
+    "include/dgtl/ir/IR_Schema.ixx"
+    "include/dgtl/ir/base/IR_Node.ixx"
+    "include/dgtl/core/Target.ixx"
+    "include/dgtl/utils/container/FastSharedSpin_lock.ixx"
+    "include/dgtl/utils/hashing/Hashing.ixx"
+    "include/dgtl/utils/container/Flat_Map.ixx"
+    "include/dgtl/utils/bit/Bit_Pack.ixx"
+    "include/dgtl/core/VirtualMemory.ixx"
+    "include/dgtl/core/MemoryCapability.ixx"
+    "include/dgtl/core/MemoryManager.ixx"
+    "include/dgtl/core/Arena.ixx"
+    "include/dgtl/core/NUMA.ixx"
+    "include/dgtl/runtime/NUMA_Runtime.ixx"
+    "include/dgtl/runtime/TaskScheduler.ixx"
+    "include/dgtl/ir/IR_Contracts.ixx"
+    "include/dgtl/ir/base/IR_Stream.ixx"
+    "include/dgtl/ir/base/Op_Traits.ixx"
+    "include/dgtl/ir/graph/IR_GraphEdgeClusterRegion.ixx"
+    "include/dgtl/ir/graph/IR_Graph_Region_Compat.ixx"
+    "include/dgtl/hir/semantic/Symbol_Table.ixx"
+    "include/dgtl/ir/base/IR_Storage.ixx"
+    "include/dgtl/ir/base/IR_Traits_Static.ixx"
+    "include/dgtl/ir/IR_Analysis.ixx"
+    "include/dgtl/ir/IR_Analysis_Manager.ixx"
+    "include/dgtl/ir/IR_Diagnostics.ixx"
+    "include/dgtl/ir/IR_Pass_Contract.ixx"
+    "include/dgtl/ir/base/IR_SSA.ixx"
+    "include/dgtl/ir/base/IR_PrintSerialDumper.ixx"
+    "include/dgtl/ir/base/IR_Verifier.ixx"
+    "include/dgtl/ir/IR_Pass_Manager.ixx"
+    "include/dgtl/ir/IR_Transaction.ixx"
+    "include/dgtl/ir/base/IR_Forward.ixx"
+    "include/dgtl/ir/pass/Pattern_Rewriter.ixx"
+    "include/dgtl/ir/pass/IR_Evolver_Mutation.ixx"
+    "include/dgtl/ir/analysis/Analysis_Interface.ixx"
+    "include/dgtl/ir/support/IR_Analysis_Bridge.ixx"
+    "include/dgtl/ir/gen/DGTL_Gen_Op_Wrappers.ixx"
+    "include/dgtl/ir/debug/debug_Metadata.ixx"
+    "include/dgtl/ir/Function.ixx"
+    "include/dgtl/ir/ControlFlow.ixx"
+    "include/dgtl/ir/IR_Formal_Verifier.ixx"
+    "include/dgtl/ir/Global_IR.ixx"
+    "include/dgtl/mir/Machine_IR.ixx"
+    "include/dgtl/isa/x64/X64_ISel_Generated.ixx"
+    "include/dgtl/isa/arm64/ARM64_ISel_Generated.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_ISel_Generated.ixx"
+    "include/dgtl/isa/wasm/Wasm_ISel_Generated.ixx"
+    "include/dgtl/isa/ptx/PTX_ISel_Generated.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_ISel_Generated.ixx"
+    "include/dgtl/isa/spirv/SPIRV_ISel_Generated.ixx"
+    "include/dgtl/mir/ISel_Generated.ixx"
+    "include/dgtl/mir/Backend_Runtime_Contract.ixx"
+    "include/dgtl/mir/Runtime_Legalization_Policy.ixx"
+    "include/dgtl/mir/Legalizer.ixx"
+    "include/dgtl/mir/Instruction_Selector.ixx"
+    "include/dgtl/mir/Phi_Lowering.ixx"
+    "include/dgtl/mir/Two_Address.ixx"
+    "include/dgtl/CodeGen/RegAlloc/Universal_GraphColoring_RegAlloc.ixx"
+    "include/dgtl/mir/Machine_Pipeline.ixx"
+    "include/dgtl/mir/ABI_Lowering.ixx"
+    "include/dgtl/isa/x64/X64_ISel_Rules_Generated.ixx"
+    "include/dgtl/isa/arm64/ARM64_ISel_Rules_Generated.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_ISel_Rules_Generated.ixx"
+    "include/dgtl/isa/wasm/Wasm_ISel_Rules_Generated.ixx"
+    "include/dgtl/isa/ptx/PTX_ISel_Rules_Generated.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_ISel_Rules_Generated.ixx"
+    "include/dgtl/isa/spirv/SPIRV_ISel_Rules_Generated.ixx"
+    "include/dgtl/mir/ISel_Rules_Generated.ixx"
+    "include/dgtl/mir/Stack_Spiller.ixx"
+    "include/dgtl/mir/Strike_Live_Manager.ixx"
+    "include/dgtl/mir/Global_MIR.ixx"
+    "include/dgtl/object/Object_Section.ixx"
+    "include/dgtl/object/Object_Symbol.ixx"
+    "include/dgtl/object/Object_Relocation.ixx"
+    "include/dgtl/object/Object_File.ixx"
+    "include/dgtl/execution/cache/Code_Cache.ixx"
+    "include/dgtl/execution/dispatcher/Execution_Dispatcher.ixx"
+    "include/dgtl/execution/format/Binary_Loader_object.ixx"
+    "include/dgtl/execution/Execution.ixx"
+    "include/dgtl/formal/Formal_Verification_SMT.ixx"
+    "include/dgtl/formal/Formal.ixx"
+    "include/dgtl/api/Config.ixx"
+    "include/dgtl/core/Compiler_Context.ixx"
+    "include/dgtl/api/ExecutionEngine.ixx"
+    "include/dgtl/api/Runtime_API.ixx"
+    "include/dgtl/runtime/dgtl_bulletins.ixx"
+    "include/dgtl/core/ABI.ixx"
+    "include/dgtl/hir/semantic/Type_System.ixx"
+    "include/dgtl/api/IRBuilder.ixx"
+    "include/dgtl/ir/pipeline/Pass_Manager_Config.ixx"
+    "include/dgtl/ir/pipeline/Pass_Manager_Analysis.ixx"
+    "include/dgtl/ir/analysis/AI_Cost_Model.ixx"
+    "include/dgtl/ir/pass/MLoptimization.ixx"
+    "include/dgtl/ir/pass/Query_Optimizer_Unified.ixx"
+    "include/dgtl/ir/pass/SimdGScatter_LegalVecRecognizer.ixx"
+    "include/dgtl/ir/analysis/Liveness_Memory_Dependency_Unified.ixx"
+    "include/dgtl/ir/pass/SpecAliasDCE_InlineVecFusion.ixx"
+    "include/dgtl/ir/pass/Transform_Control_Predication.ixx"
+    "include/dgtl/ir/pass/Transform_Inlining.ixx"
+    "include/dgtl/ir/pass/Transform_Poly_Loop.ixx"
+    "include/dgtl/ir/pass/Transform_Scalar_Core.ixx"
+    "include/dgtl/jit/JIT_Executor.ixx"
+    "include/dgtl/ir/pass/Tuning_Optimize.ixx"
+    "include/dgtl/ir/pipeline/Pass_Manager_Orchestrator.ixx"
+    "include/dgtl/runtime/Runtime_Intrinsics.ixx"
+    "include/dgtl/execution/format/Binary_Loader_Compat.ixx"
+    "include/dgtl/execution/cache/Code_Cache_Compat.ixx"
+    "include/dgtl/execution/dispatcher/Execution_Dispatcher_Compat.ixx"
+    "include/dgtl/isa/wasm/Wasm_Encoder.ixx"
+    "include/dgtl/backend/linker/Linker_Driver.ixx"
+    "include/dgtl/backend/linker/Linker_Backend.ixx"
+    "include/dgtl/ir/analysis/Polyhedral_Scop_Unified.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_Emitter.ixx"
+    "include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx"
+    "include/dgtl/isa/arm64/ARM64_Emitter.ixx"
+    "include/dgtl/isa/x64/X64_Emitter.ixx"
+    "include/dgtl/isa/wasm/Wasm_SIMD_Emitter.ixx"
+    "include/dgtl/isa/ptx/PTX_Emitter.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_Emitter.ixx"
+    "include/dgtl/isa/spirv/SPIRV_Encoder.ixx"
+    "include/dgtl/object/Object_Writer.ixx"
+    "include/dgtl/backend/writers/ELF_Object_Writer.ixx"
+    "include/dgtl/backend/linker/pe/PE_Linker.ixx"
+    "include/dgtl/backend/writers/PE_Object_Writer.ixx"
+    "include/dgtl/backend/writers/MachO_Object_Writer.ixx"
+    "include/dgtl/backend/writers/WASM_Binary_Writer.ixx"
+    "include/dgtl/isa/x64/X64_Machine_Form_Lowering.ixx"
+    "include/dgtl/isa/x64/X64_Frame_Lowering.ixx"
+    "include/dgtl/isa/arm64/ARM64_Frame_Lowering.ixx"
+    "include/dgtl/isa/arm64/ARM64_Reg_Map.ixx"
+    "include/dgtl/isa/arm64/ARM64_Machine_Form_Lowering.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_Frame_Lowering.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_Reg_Map.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_Machine_Form_Lowering.ixx"
+    "include/dgtl/isa/wasm/Wasm_Frame_Lowering.ixx"
+    "include/dgtl/isa/wasm/Wasm_Reg_Map.ixx"
+    "include/dgtl/isa/wasm/Wasm_Machine_Form_Lowering.ixx"
+    "include/dgtl/isa/ptx/PTX_Frame_Lowering.ixx"
+    "include/dgtl/isa/ptx/PTX_Reg_Map.ixx"
+    "include/dgtl/isa/ptx/PTX_Machine_Form_Lowering.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_Frame_Lowering.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_Reg_Map.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_Machine_Form_Lowering.ixx"
+    "include/dgtl/isa/spirv/SPIRV_Frame_Lowering.ixx"
+    "include/dgtl/isa/spirv/SPIRV_Reg_Map.ixx"
+    "include/dgtl/isa/spirv/SPIRV_Machine_Form_Lowering.ixx"
+    "include/dgtl/backend/driver/Backend_Driver_API.ixx"
+    "include/dgtl/jit/Async_Dopt_Tiered.ixx"
+    "include/dgtl/jit/Hardware_Scheduler.ixx"
+    "include/dgtl/isa/x64/X64_Reg_Map.ixx"
+    "include/dgtl/isa/x64/X64_Instruction_Info.ixx"
+    "include/dgtl/isa/x64/X64_ABI.ixx"
+    "include/dgtl/isa/x64/X64_Target.ixx"
+    "include/dgtl/jit/JIT_Orchestrator.ixx"
+    "include/dgtl/runtime/TLS_Flush_Merge.ixx"
+    "include/dgtl/api/JITSession.ixx"
+    "include/dgtl/api/HybridSession.ixx"
+    "include/dgtl/backend/linker/elf/ELF_Linker.ixx"
+    "include/dgtl/backend/linker/wasm/WASM_Binary_Link.ixx"
+    "include/dgtl/backend/linker/Linker_Driver_API.ixx"
+    "include/dgtl/backend/orchestrator/AOT_Orchestrator.ixx"
+    "include/dgtl/api/AOTSession.ixx"
+    "include/dgtl/api/ABI.ixx"
+    "include/dgtl/api/ABI_Lowering.ixx"
+    "include/dgtl/api/Backend_Driver_API.ixx"
+    "include/dgtl/api/Backend_Driver_Shared_Utils.ixx"
+    "include/dgtl/api/Api_all.ixx"
+    "include/dgtl/dgtl.ixx"
+    "include/dgtl/utils/assert/Assertions.ixx"
+    "include/dgtl/backend/linker/Linker_Context.ixx"
+    "include/dgtl/backend/linker/elf/ELF_Relocations.ixx"
+    "include/dgtl/backend/linker/elf/ELF_Sections.ixx"
+    "include/dgtl/backend/linker/Entry_Point.ixx"
+    "include/dgtl/backend/linker/macho/MachO_Relocations.ixx"
+    "include/dgtl/backend/linker/macho/MachO_Sections.ixx"
+    "include/dgtl/backend/linker/pe/PE_Relocations.ixx"
+    "include/dgtl/backend/linker/pe/PE_Sections.ixx"
+    "include/dgtl/backend/linker/Relocation_Resolver.ixx"
+    "include/dgtl/backend/linker/Section_Layout.ixx"
+    "include/dgtl/backend/linker/Symbol_Resolver.ixx"
+    "include/dgtl/backend/writers/Binary_Assembler.ixx"
+    "include/dgtl/hir/semantic/Borrow_Checker.ixx"
+    "include/dgtl/hir/semantic/Constant_Evaluator.ixx"
+    "include/dgtl/hir/semantic/Name_Resolver.ixx"
+    "include/dgtl/hir/semantic/Type_Checker.ixx"
+    "include/dgtl/hir/semantic/Semantic_Analyzer.ixx"
+    "include/dgtl/ir/analysis/Escape_Analysis.ixx"
+    "include/dgtl/ir/analysis/Speculative_Value_Profiler.ixx"
+    "include/dgtl/ir/pass/Enhanced_Error_Recovery.ixx"
+    "include/dgtl/ir/pipeline/GPU_Scheduling.ixx"
+    "include/dgtl/ir/pipeline/Pass_Manager.ixx"
+    "include/dgtl/ir/pipeline/Performance_Probes.ixx"
+    "include/dgtl/ir/pipeline/Pipeline_Probes.ixx"
+    "include/dgtl/formal/Formal_Verification_SMT_Compat.ixx"
+    "include/dgtl/isa/arm64/ARM64_ABI.ixx"
+    "include/dgtl/isa/arm64/ARM64_Instruction_Info.ixx"
+    "include/dgtl/isa/arm64/ARM64_Target.ixx"
+    "include/dgtl/isa/ptx/PTX_ABI.ixx"
+    "include/dgtl/isa/ptx/PTX_Instruction_Info.ixx"
+    "include/dgtl/isa/ptx/PTX_Target.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_ABI.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_Instruction_Info.ixx"
+    "include/dgtl/isa/riscv64/RiscV64_Target.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_ABI.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_Instruction_Info.ixx"
+    "include/dgtl/isa/amdgpu/AMDGPU_Target.ixx"
+    "include/dgtl/isa/spirv/SPIRV_ABI.ixx"
+    "include/dgtl/isa/spirv/SPIRV_Instruction_Info.ixx"
+    "include/dgtl/isa/spirv/SPIRV_Target.ixx"
+    "include/dgtl/isa/wasm/Wasm_Target.ixx"
+    "include/dgtl/isa/wasm/Wasm_ABI.ixx"
+    "include/dgtl/isa/wasm/Wasm_Instruction_Info.ixx"
+    "include/dgtl/isa/ISel_Dispatch.ixx"
+    "include/dgtl/utils/automata/LUT_FSM_Matcher.ixx"
+    "include/dgtl/utils/memory/Memory_Guard.ixx"
+    "include/dgtl/runtime/Runtime_Context.ixx"
+    "include/dgtl/runtime/dgtl_gpu.ixx"
+    "include/dgtl/testing/FileCheck.ixx"
   )
 
   for file in "${module_files[@]}"; do
-    local src="$INCLUDE_DIR/dgtl/$file"
-    [[ "$file" == "dgtl_all.ixx" ]] && src="$INCLUDE_DIR/$file"
+    local src="$ROOT/$file"
     
     if [[ ! -f "$src" ]]; then
       continue
@@ -372,7 +443,7 @@ compile_all_dgtl_modules() {
     local obj="$OBJ_DIR/${stem}.o"
 
     if [[ ! -f "$obj" || "$src" -nt "$obj" ]]; then
-      echo "[build] Compiling module: include/dgtl/$file..."
+      echo "[build] Compiling module: $file..."
       "$g_plusplus" "${cflags[@]}" -c "$src" -o "$obj" || {
         echo "[dgtl] ERROR: Failed to compile module partition $file" >&2
         return 1
@@ -427,7 +498,6 @@ build_sdk() {
     fi
   done
 
-  # Programmatically clean up legacy non-namespaced root headers and internal subdirectories
   rm -rf "$SDK_DIR/include/dgtl"
   for sdk_header in dgtl.h; do
     rm -f "$SDK_DIR/include/$sdk_header"
@@ -534,11 +604,11 @@ invoke_single_backend() {
   
   if [[ ! -f "$exe_path" ]]; then echo "[dgtl] ERROR: Missing executable: $exe_path" >&2; return 1; fi
   
-  local valid_backends=(arm64 x64 nasm wasm)
+  local valid_backends=(x64 arm64 riscv64 wasm ptx amdgpu spirv)
   local valid=false
   for b in "${valid_backends[@]}"; do if [[ "$backend" == "$b" ]]; then valid=true; break; fi; done
   
-  if [[ $valid == false ]]; then echo "[dgtl] ERROR: Unsupported backend '$backend'" >&2; return 1; fi
+  if [[ $valid == false ]]; then echo "[dgtl] ERROR: Unsupported backend '$backend'. Valid: ${valid_backends[*]}" >&2; return 1; fi
   
   "$exe_path" --backend "$backend" "${extra_args[@]}" || { echo "[dgtl] ERROR: Execution failed" >&2; return 1; }
 }

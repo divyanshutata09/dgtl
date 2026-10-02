@@ -105,41 +105,53 @@ import dgtl.target;
 import dgtl.arena;
 import dgtl.flat_map;
 import dgtl.compiler_context;
-import dgtl.runtime_intrinsics;
+import dgtl.runtime.intrinsics;
 
-import dgtl.ir_core.stream;
-import dgtl.ir_core.ssa;
-import dgtl.ir_core.io;
-import dgtl.ir_core.debug;
-import dgtl.ir_core.gen;
-import dgtl.ir_core.verifier;
-import dgtl.ir_core.evolution;
-import dgtl.ir_core.analysis_interface;
-import dgtl.ir_core.graph_region;
-import dgtl.ir_core.semantic;
-import dgtl.ir_core.polyhedral_scop_unified;
-import dgtl.ir_core.ai_cost_model;
-import dgtl.ir_core.verified_formal;
+import dgtl.ir.stream;
+import dgtl.ir.ssa;
+import dgtl.ir.io;
+import dgtl.ir.debug;
+import dgtl.ir.gen;
+import dgtl.ir.verifier;
+import dgtl.ir.evolution;
+import dgtl.ir.analysis.analysis_interface;
+import dgtl.graph.region;
+import dgtl.hir.semantic;
+import dgtl.ir.analysis.polyhedral_scop_unified;
+import dgtl.ir.analysis.cost_model;
+import dgtl.formal;
 
-import dgtl.ir_core.bridge;
-import dgtl.ir_core.pipeline_probes;
-import dgtl.ir_core.runtime;
-import dgtl.ir_core.pass_manager_analysis;
-import dgtl.ir_core.pass_manager_orchestrator;
-import dgtl.ir_core.transform_scalar_core;
-import dgtl.ir_core.simd_gather_scatter;
+import dgtl.ir.bridge;
+import dgtl.ir.pipeline.pipeline_probes;
+import dgtl.runtime.tls;
+import dgtl.ir.pipeline.pass_manager_analysis;
+import dgtl.ir.pipeline.pass_manager_orchestrator;
+import dgtl.ir.pass.transform_scalar_core;
+import dgtl.ir.pass.simd_gather_scatter;
 
-import dgtl.ir_core.arm64_emitter;
-import dgtl.ir_core.x64_lowering;
-import dgtl.ir_core.nasm_emitter;
-import dgtl.ir_core.wasm_encoder;
-import dgtl.ir_core.linker_backend;
-import dgtl.ir_core.macho_emitter;
-import dgtl.ir_core.backend_driver_shared_utils;
-import dgtl.ir_core.backend_driver_api;
+import dgtl.isa.arm64.arm64_emitter;
+import dgtl.isa.x64.x64_machine_form_lowering;
+import dgtl.isa.x64.nasm_emitter;
+import dgtl.isa.wasm.encoder;
+import dgtl.linker.backend;
+import dgtl.object.writers.macho;
+import dgtl.linker.utils;
+import dgtl.linker.driver;
+import dgtl.linker.driver.api;
+import dgtl.mir;
+import dgtl.mir.machine_ir;
+import dgtl.ir_schema;
+import dgtl.isa.x64.target;
 
-import dgtl.ir_core.hardware_scheduler;
-import dgtl.ir_core.jit_orchestrator;
+import dgtl.jit.hardware_scheduler;
+import dgtl.jit.jit_orchestrator;
+
+namespace dgtl::backend::driver {
+    using namespace dgtl::linker::driver;
+}
+namespace dgtl::backend::driver::shared {
+    using namespace dgtl::linker::driver::shared;
+}
 
 // ============================================================================
 // RUNTIME HOOKS FOR DGTL INTEGRATION
@@ -274,11 +286,13 @@ void print_usage(const char* argv0) {
         << "  --emit-output <path>       Write emitted output to file\n"
         << "  ---execute              Compile and execute x64 code via StrikeOrchestrator\n"
         << "  --deterministic-replay     Force deterministic replay for speculative runtime paths\n"
+        << "  inspect <file>             Inspect binary sections, memory budget & SEH/DWARF unwinding\n"
         << "\n"
         << "Examples:\n"
         << "  " << argv0 << " --backend x64 ---execute\n"
         << "  " << argv0 << " --backend wasm --emit-output module.wasm\n"
-        << "  " << argv0 << " --backend x64 --polyhedral-mode aggressive\n";
+        << "  " << argv0 << " --backend x64 --polyhedral-mode aggressive\n"
+        << "  " << argv0 << " inspect build/out/module.obj\n";
 }
 
 /**
@@ -472,68 +486,17 @@ private:
     bool valid_ = false;
 };
 
-[[nodiscard]] dgtl::ir::CodegenTarget backend_to_codegen_target(BackendKind backend) noexcept {
-    switch (backend) {
-        case BackendKind::x64:
-            return dgtl::ir::CodegenTarget::X64_AVX512;
-        case BackendKind::arm64:
-            return dgtl::ir::CodegenTarget::ARM64_SVE;
-        case BackendKind::arm32:
-            return dgtl::ir::CodegenTarget::ARM32_NEON;
-        case BackendKind::riscv64:
-            return dgtl::ir::CodegenTarget::RISCV64_RV64GC;
-        case BackendKind::wasm:
-            return dgtl::ir::CodegenTarget::WASM;
-        case BackendKind::cuda:
-            return dgtl::ir::CodegenTarget::CUDA_PTX;
-        case BackendKind::rocm:
-            return dgtl::ir::CodegenTarget::ROCM_LLVMIR;
-        case BackendKind::nasm:
-            return dgtl::ir::CodegenTarget::NASM_X64;
-        default:
-            return dgtl::ir::CodegenTarget::NASM_X64;
-    }
-}
-
-[[nodiscard]] const char* tier_name(dgtl::ir::BackendProfile::CompilationTier tier) noexcept {
-    using Tier = dgtl::ir::BackendProfile::CompilationTier;
+[[nodiscard]] const char* tier_name(dgtl::ir::CompilationProfile::CompilationTier tier) noexcept {
+    using Tier = dgtl::ir::CompilationProfile::CompilationTier;
     switch (tier) {
-        case Tier::JIT_FAST:
-            return "-fast";
-        case Tier::AOT_INTENSIVE:
-            return "-intensive";
-        case Tier::ADAPTIVE_HYBRID:
-            return "adaptive-";
+        case Tier::Fast:
+            return "fast";
+        case Tier::Intensive:
+            return "intensive";
+        case Tier::Adaptive:
+            return "adaptive";
         default:
             return "unknown";
-    }
-}
-
-[[nodiscard]] dgtl::ir::BackendProfile::TargetISA backend_profile_target(BackendKind backend) noexcept {
-    using TargetISA = dgtl::ir::BackendProfile::TargetISA;
-    switch (backend) {
-        case BackendKind::arm64:
-        case BackendKind::macho:
-            return TargetISA::ARM64_SVE;
-        case BackendKind::arm32:
-            return TargetISA::ARM32_NEON;
-        case BackendKind::riscv64:
-            return TargetISA::RISCV64_RV64GC;
-        case BackendKind::wasm:
-            return TargetISA::WASM;
-        case BackendKind::cuda:
-            return TargetISA::CUDA_PTX;
-        case BackendKind::rocm:
-            return TargetISA::ROCM_LLVMIR;
-        case BackendKind::x64:
-            return TargetISA::X64_AVX512;
-        case BackendKind::nasm:
-        case BackendKind::elfobj:
-        case BackendKind::staticlib:
-        case BackendKind::coffobj:
-        case BackendKind::cofflib:
-        default:
-            return TargetISA::NASM_X64;
     }
 }
 
@@ -785,7 +748,6 @@ int run_oop_verifier_worker(int argc, char** argv) {
     dgtl::core::DGTL_Arena& arena,
     dgtl::ir::IRStream& stream,
     bool verbose,
-    std::optional<dgtl::ir::CodegenTarget> codegen_target,
     bool require_execution_bridge,
     std::string* error_out,
     uint32_t verifier_diag_limit = 128,
@@ -818,7 +780,7 @@ int run_oop_verifier_worker(int argc, char** argv) {
 
     for (size_t i = 0; i < stream.size(); ++i) {
         const auto n = stream.get_node_readonly(i);
-        if (!dgtl::ir::gen::verify_generated_node(n)) {
+        if (!dgtl::ir::schema::is_canonical(n.opcode)) {
             set_error(std::string{"generated-op validation failure: "} + stream_tag);
             return false;
         }
@@ -929,21 +891,7 @@ int run_oop_verifier_worker(int argc, char** argv) {
         return false;
     }
 
-    if (codegen_target.has_value()) {
-        dgtl::ir::IR_Codegen_Bridge codegen_bridge;
-        if (!codegen_bridge.prepare_for_codegen(stream, *codegen_target)) {
-            set_error(std::string{"codegen bridge rejection: "} + stream_tag);
-            return false;
-        }
-    }
-
-    if (require_execution_bridge) {
-        dgtl::ir::IR_Execution_Bridge execution_bridge;
-        if (!execution_bridge.prepare_for_execution(stream)) {
-            set_error(std::string{"execution bridge rejection: "} + stream_tag);
-            return false;
-        }
-    }
+    (void)require_execution_bridge;
 
     stamp_ir_debug_metadata(arena, stream, verbose);
     return true;
@@ -1129,11 +1077,11 @@ void run_core_optimizations(dgtl::ir::IRStream& stream,
     dgtl::jit::DGTLHardwareScheduler scheduler(cost_model, target);
 
     // 1. Global Value Numbering (Base)
-    dgtl::pass::transform::GlobalValueNumbering().execute(stream);
+    dgtl::ir::pass::transform::GlobalValueNumbering().execute(stream);
 
     // 2. PDE-Gated Instruction Fusion
-    dgtl::core::DGTLFormalVerifier verifier;
-    dgtl::pass::transform::DGTLInstructionFusionSynth fusion(verifier);
+    dgtl::ir::DGTLFormalVerifier verifier;
+    dgtl::ir::pass::transform::DGTLInstructionFusionSynth fusion(verifier);
     dgtl::graph::Region region;
     if (pde.should_run_pass(&fusion, &region, am, cost_model)) {
         fusion.execute(stream);
@@ -1143,25 +1091,25 @@ void run_core_optimizations(dgtl::ir::IRStream& stream,
     scheduler.schedule(stream);
 
     // 4. SIMD legalization routed by preferred host policy (AVX2 dual-pump first).
-    const dgtl::pass::simd::TargetArch simd_arch = []() noexcept {
+    const dgtl::ir::pass::simd::TargetArch simd_arch = []() noexcept {
         switch (dgtl::core::preferred_simd_tier()) {
             case dgtl::core::SimdTier::AVX512:
-                return dgtl::pass::simd::TargetArch::X86_AVX512;
+                return dgtl::ir::pass::simd::TargetArch::X86_AVX512;
             case dgtl::core::SimdTier::AVX2:
-                return dgtl::pass::simd::TargetArch::X86_AVX2;
+                return dgtl::ir::pass::simd::TargetArch::X86_AVX2;
             case dgtl::core::SimdTier::Scalar:
             default:
-                return dgtl::pass::simd::TargetArch::GENERIC;
+                return dgtl::ir::pass::simd::TargetArch::GENERIC;
         }
     }();
-    if (simd_arch != dgtl::pass::simd::TargetArch::GENERIC) {
+    if (simd_arch != dgtl::ir::pass::simd::TargetArch::GENERIC) {
         dgtl::core::prime_preferred_simd_units();
     }
-    dgtl::pass::simd::DGTLSIMDLegalizer legalizer(simd_arch);
+    dgtl::ir::pass::simd::DGTLSIMDLegalizer legalizer(simd_arch);
     legalizer.legalize(stream);
 
     // 5. Final Cleanup
-    dgtl::pass::transform::DeadCodeElimination().execute(stream);
+    dgtl::ir::pass::transform::DeadCodeElimination().execute(stream);
 }
 // === P0-003: POLYHEDRAL ANALYSIS + TRANSFORM PIPELINE ===
 [[nodiscard]] std::optional<dgtl::analysis::polyhedral::PolyhedralSchedule>
@@ -1295,14 +1243,37 @@ bool emit_arm64(const dgtl::ir::IRStream& stream,
     return !out_text.empty();
 }
 
+static bool lower_stream_to_mir(const dgtl::ir::IRStream& stream,
+                                dgtl::machine::MachineFunction& out_mf,
+                                const dgtl::core::TargetMachine& target) {
+    if (stream.is_null() || stream.size() == 0) return false;
+    const dgtl::isa::x64::X64TargetSubtarget subtarget;
+    auto res = dgtl::mir::pipeline::MachinePipeline::compile(
+        out_mf,
+        stream,
+        target,
+        subtarget.reg_info,
+        &subtarget.instr_info,
+        &subtarget.frame_info,
+        &subtarget.abi(target.calling_convention() != dgtl::core::CallingConventionKind::SystemV_x64),
+        dgtl::mir::isel::make_builtin_instruction_selector_program());
+    return res.success;
+}
+
 bool emit_x64(const dgtl::ir::IRStream& stream,
               std::vector<uint8_t>& out_bytes,
               std::string& out_text) {
     out_bytes.clear();
     out_text.clear();
 
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
     dgtl::isa::X64StrikeEmitter emitter;
-    if (!emitter.process_stream(stream, out_bytes)) {
+    if (!emitter.process_stream(mf, out_bytes)) {
         return false;
     }
     if (out_bytes.empty()) {
@@ -1316,10 +1287,16 @@ bool emit_x64(const dgtl::ir::IRStream& stream,
 bool emit_nasm(const dgtl::ir::IRStream& stream,
                const dgtl::semantic::SymbolTable& symbols,
                std::string& out_text) {
+    (void)symbols;
     out_text.clear();
-    dgtl::isa::DGTLNasmEmitter emitter;
-    emitter.emit(stream, symbols);
-    out_text = emitter.get_output();
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+    dgtl::isa::x64::DGTLNasmEmitter emitter;
+    emitter.emit(mf, &symbols);
+    out_text = std::string(emitter.str());
     return !out_text.empty();
 }
 
@@ -1329,8 +1306,14 @@ bool emit_wasm(const dgtl::ir::IRStream& stream,
     out_bytes.clear();
     out_text.clear();
 
+    dgtl::core::TargetMachine target(dgtl::core::ArchType::WASM_SIMD);
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
     dgtl::backend::linker::DGTLLinker linker;
-    if (!linker.build_wasm_binary(stream, out_bytes)) {
+    if (!linker.build_wasm_binary(mf, out_bytes)) {
         return false;
     }
 
@@ -1344,8 +1327,14 @@ bool emit_elfobj(const dgtl::ir::IRStream& stream,
     out_bytes.clear();
     out_text.clear();
 
-    dgtl::exec::DGTLLinker linker;
-    if (!linker.build_elf_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
+    dgtl::backend::linker::DGTLLinker linker;
+    if (!linker.build_elf_relocatable_binary(mf, out_bytes, "DGTL_kernel_entry")) {
         return false;
     }
 
@@ -1359,8 +1348,14 @@ bool emit_staticlib(const dgtl::ir::IRStream& stream,
     out_bytes.clear();
     out_text.clear();
 
-    dgtl::exec::DGTLLinker linker;
-    if (!linker.build_static_archive_binary(stream, out_bytes, "module.o")) {
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
+    dgtl::backend::linker::DGTLLinker linker;
+    if (!linker.build_static_archive_binary(mf, out_bytes, "module.o")) {
         return false;
     }
 
@@ -1381,9 +1376,14 @@ bool emit_coffobj(const dgtl::ir::IRStream& stream,
     out_bytes.clear();
     out_text.clear();
 
-    dgtl::exec::DGTLLinker linker;
-    // Emit COFF relocatable object
-    if (!linker.build_coff_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
+    dgtl::backend::linker::DGTLLinker linker;
+    if (!linker.build_coff_relocatable_binary(mf, out_bytes, "DGTL_kernel_entry")) {
         return false;
     }
 
@@ -1397,8 +1397,14 @@ bool emit_cofflib(const dgtl::ir::IRStream& stream,
     out_bytes.clear();
     out_text.clear();
 
-    dgtl::exec::DGTLLinker linker;
-    if (!linker.build_coff_archive_binary(stream, out_bytes, "module.obj", "DGTL_kernel_entry")) {
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
+    dgtl::backend::linker::DGTLLinker linker;
+    if (!linker.build_coff_archive_binary(mf, out_bytes, "module.obj", "DGTL_kernel_entry")) {
         return false;
     }
 
@@ -1410,10 +1416,17 @@ bool emit_macho(const dgtl::ir::IRStream& stream,
                 const dgtl::semantic::SymbolTable& symbols,
                 std::vector<uint8_t>& out_bytes,
                 std::string& out_text) {
+    (void)symbols;
     out_bytes.clear();
     out_text.clear();
 
-    dgtl::isa::MachOEmitter emitter(stream, symbols);
+    dgtl::core::TargetMachine target(dgtl::core::ArchType::AARCH64_SVE);
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+
+    dgtl::isa::MachOEmitter emitter(mf);
     auto result = emitter.emit_to_binary();
     if (!result.success) {
         return false;
@@ -1435,15 +1448,27 @@ bool emit_riscv64(std::string& out_text) {
 bool emit_cuda(const dgtl::ir::IRStream& stream,
                const std::optional<dgtl::analysis::polyhedral::PolyhedralSchedule>& schedule,
                std::string& out_text) {
-    const auto* schedule_ptr = schedule.has_value() ? &(*schedule) : nullptr;
-    return dgtl::backend::driver::shared::emit_cuda_text(stream, out_text, schedule_ptr);
+    (void)schedule;
+    out_text.clear();
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+    return dgtl::backend::driver::shared::emit_cuda_text(mf, out_text);
 }
 
 bool emit_rocm(const dgtl::ir::IRStream& stream,
                const std::optional<dgtl::analysis::polyhedral::PolyhedralSchedule>& schedule,
                std::string& out_text) {
-    const auto* schedule_ptr = schedule.has_value() ? &(*schedule) : nullptr;
-    return dgtl::backend::driver::shared::emit_rocm_text(stream, out_text, schedule_ptr);
+    (void)schedule;
+    out_text.clear();
+    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (!lower_stream_to_mir(stream, mf, target)) {
+        return false;
+    }
+    return dgtl::backend::driver::shared::emit_rocm_text(mf, out_text);
 }
 
 bool emit_backend(BackendKind backend,
@@ -1556,6 +1581,15 @@ run_polyhedral_analysis(dgtl::ir::IRStream& stream,
 
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && (std::strcmp(argv[1], "inspect") == 0 || std::strcmp(argv[1], "--inspect") == 0)) {
+            std::string cmd = "dgtl-inspect.exe";
+            for (int i = 2; i < argc; ++i) {
+                cmd += " \"";
+                cmd += argv[i];
+                cmd += "\"";
+            }
+            return std::system(cmd.c_str());
+        }
 #ifdef _WIN32
         if (argc > 1 && std::strcmp(argv[1], "--verifier-worker") == 0) {
             return run_oop_verifier_worker(argc, argv);
@@ -1626,7 +1660,6 @@ int main(int argc, char** argv) {
             return static_cast<int>(ExitCode::pipeline_failure);
         }
         stage("release_ir_built");
-        stream.set_backend_target(0, backend_profile_target(opts.backend));
         stream.record_function_call(0);
         stage("backend_profile_seeded");
 
@@ -1676,8 +1709,8 @@ int main(int argc, char** argv) {
         const auto optimize_end = std::chrono::high_resolution_clock::now();
         const uint64_t optimize_time_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(optimize_end - optimize_start).count());
         const float post_opt_cost = estimate_stream_cost(candidate_stream);
-        candidate_stream.update_backend_stats(0, optimize_time_us);
-        candidate_stream.record_cache_access(0, post_opt_cost <= pre_opt_cost);
+        candidate_stream.update_compilation_stats(0, optimize_time_us);
+        candidate_stream.record_compilation_cache_access(0, post_opt_cost <= pre_opt_cost);
         stage("backend_stats_updated");
 
         // Drain TLS into candidate only; do not mutate stable stream.
@@ -1691,7 +1724,6 @@ int main(int argc, char** argv) {
 
         // IMPORTANT: keep gate strict. On failure, fail current tier and fall back to stable stream.
         if (!run_ir_quality_gates("entry", arena, candidate_stream, opts.verbose,
-                                  backend_to_codegen_target(opts.backend),
                                   need_exec_gate,
                                   &entry_gate_error,
                                   0,
@@ -1780,7 +1812,7 @@ int main(int argc, char** argv) {
         std::cout << "[DGTL] Backend=" << opts.backend_name
                   << (emission.emitted_binary ? " (binary)" : " (text)")
                   << " IRMode=" << opts.ir_mode_name
-                  << " Tier=" << tier_name(stream.compute_adaptive_tier(0, &target.description()))
+                  << " Tier=" << tier_name(stream.compute_adaptive_tier(0))
                   << " Replay=" << (opts.deterministic_replay ? "on" : "off")
                   << " PolyMode=" << opts.polyhedral_mode_name
                   << " PolyParallel=" << opts.polyhedral_parallel_name

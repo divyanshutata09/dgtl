@@ -47,17 +47,25 @@ module;
 #include <unistd.h>
 #endif
 
-export module dgtl.ir_core.async_dopt_tiered;
+export module dgtl.jit.tiered_optimizer;
 
-import dgtl.ir_core;
-import dgtl.ir_core.jit_executor;
-import dgtl.ir_core.bridge;
-import dgtl.ir_core.semantic;
-import dgtl.ir_core.lowering;
-import dgtl.ir_core.nasm_emitter;
+import dgtl.ir;
+import dgtl.jit.executor;
+import dgtl.ir.bridge;
+import dgtl.hir.semantic;
+import dgtl.mir.instruction_selector;
+import dgtl.mir.machine_ir;
+import dgtl.mir.pipeline;
+import dgtl.mir.isel_gen;
+import dgtl.mir;
+import dgtl.isa.x64.x64_reg_map;
+import dgtl.isa.x64.x64_instruction_info;
+import dgtl.isa.x64.x64_abi;
+import dgtl.isa.x64.nasm_emitter;
+import dgtl.isa.x64.target;
 import dgtl.target;
-import dgtl.ir_core.transform_scalar_core;
-import dgtl.ir_core.linker_backend;
+import dgtl.ir.pass.transform_scalar_core;
+import dgtl.linker.backend;
 
 export namespace dgtl::jit {
 
@@ -378,10 +386,13 @@ private:
 
             if (strike_success) [[likely]] {
                 if (validate_ir_invariants(shadow_stream)) {
-                    std::vector<uint8_t> machine_code = emit_speculative_code(shadow_stream);
+                    dgtl::machine::MachineFunction speculative_mf;
+                    std::vector<uint8_t> machine_code = emit_speculative_code(shadow_stream, speculative_mf, m_target_machine);
                     dgtl::runtime::Function func = machine_code.empty()
                         ? nullptr
-                        : m__engine.load_and_prepare(machine_code, shadow_stream);
+                        : (speculative_mf.instructions().empty()
+                            ? m__engine.load_and_prepare(machine_code)
+                            : m__engine.load_and_prepare_mir(machine_code, speculative_mf));
 
                     std::lock_guard<std::mutex> lock(m_registry_mtx);
                     auto it = m_registry.find(target_idx);
@@ -437,8 +448,8 @@ private:
         stream.set_node(start_idx, anchor);
 
         // Execute speculative optimization passes
-        dgtl::pass::transform::GlobalValueNumbering().execute(stream);
-        dgtl::pass::transform::DeadCodeElimination().execute(stream);
+        dgtl::ir::pass::transform::GlobalValueNumbering().execute(stream);
+        dgtl::ir::pass::transform::DeadCodeElimination().execute(stream);
         
         // Transactional validation: if passes corrupt SSA, rollback
         if (!stream.validate_shadow_integrity()) [[unlikely]] {
@@ -481,21 +492,43 @@ private:
 
     /**
      * @brief Generates machine code for the optimized speculative branch.
-     * Uses direct-to-binary x64 lowering to synthesize validated native machine code.
+     * Lowers IRStream to formal MachineFunction via MachinePipeline, verifies via MachineVerifier,
+     * and synthesizes validated native machine code via DGTLLinker.
      */
-    static std::vector<uint8_t> emit_speculative_code(const ir::IRStream& stream) {
+    static std::vector<uint8_t> emit_speculative_code(const ir::IRStream& stream,
+                                                      dgtl::machine::MachineFunction& out_mf,
+                                                      const dgtl::core::TargetMachine& target) {
         if (!dgtl::ir::bridge_validation::is_stream_ready(stream) || stream.size() == 0) [[unlikely]] {
-            // Minimal valid callable function: push rbp; mov rbp, rsp; nop; pop rbp; ret
+            return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 };
+        }
+
+        const dgtl::isa::x64::X64TargetSubtarget subtarget;
+
+        const auto mir_result = dgtl::mir::MachinePipeline::compile(
+            out_mf,
+            stream,
+            target,
+            subtarget.reg_info,
+            &subtarget.instr_info,
+            &subtarget.frame_info,
+            &subtarget.abi(true),
+            dgtl::mir::make_builtin_instruction_selector_program());
+
+        if (!mir_result.success || out_mf.instructions().empty()) {
+            return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 };
+        }
+
+        const auto verify_result = dgtl::machine::MachineVerifier::verify(out_mf);
+        if (!verify_result.ok()) {
             return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 };
         }
 
         std::vector<uint8_t> code;
-        dgtl::backend::linker::DGTLLinker linker;
-        if (linker.build_raw_x64_machine_code(stream, code) && !code.empty()) {
+        dgtl::linker::DGTLLinker linker;
+        if (linker.build_raw_x64_machine_code(out_mf, code) && !code.empty()) {
             return code;
         }
 
-        // Direct fallback: valid minimal x64 callable function
         return { 0x55, 0x48, 0x89, 0xE5, 0x90, 0x5D, 0xC3 };
     }
 };
@@ -596,43 +629,79 @@ private:
      * @param addr JIT function address (key to IR trace map)
      * @param symbols Symbol table for code generation
      */
-    void bake_to_disk(uintptr_t addr, const dgtl::semantic::DGTLSymbolTable& symbols) {
+    void bake_mir_to_disk(uintptr_t addr, const dgtl::machine::MachineFunction& mf) {
         try {
-            // Retrieve IR trace associated with this JIT function
-            auto ir = engine_.get_ir_from_address(addr);
-            
-            if (ir.is_null() || ir.size() == 0) [[unlikely]] {
-                std::cerr << "[DGTL-TIERED] No IR trace found at 0x" << std::hex << addr << std::dec << "\n";
-                return;
-            }
-
-            // Emit IR to NASM assembly
-            emitter_.clear();
-            emitter_.emit(ir, symbols);
-
-            // Write to timestamped file for analysis
             char filename_buf[128] = {};
             std::snprintf(filename_buf, sizeof(filename_buf), 
-                        "dgtl_baked_kernel_0x%llX.asm", 
+                        "dgtl_baked_mir_kernel_0x%llX.mir", 
                         static_cast<unsigned long long>(addr));
             std::string filename(filename_buf);
-            
+
             std::ofstream file(filename, std::ios::out | std::ios::trunc);
             if (!file.is_open()) [[unlikely]] {
-                std::cerr << "[DGTL-WARN] Failed to open bake output: " << filename << "\n";
                 return;
             }
-            
-            // Write assembly header with metadata
-            file << "; DGTL Baked Kernel\n";
+
+            file << "; DGTL Verified MIR Baked Kernel\n";
+            file << "; Function: " << mf.name() << "\n";
             file << "; Address: 0x" << std::hex << addr << std::dec << "\n";
-            file << "; IR Size: " << ir.size() << " nodes\n";
-            file << "; Baked at: " << std::chrono::system_clock::now().time_since_epoch().count() << "\n";
-            file << "\n" << emitter_.get_output();
+            file << "; Basic Blocks: " << mf.blocks().size() << "\n";
+            file << "; Instructions: " << mf.instructions().size() << "\n";
+            file << "; Frame Size: " << mf.frame_info().total_frame_bytes << " bytes\n";
+            file << "; Baked at: " << std::chrono::system_clock::now().time_since_epoch().count() << "\n\n";
+
+            for (const auto& block : mf.blocks()) {
+                file << "bb." << block.id << ":\n";
+                for (auto instr_id : block.instructions) {
+                    const auto* inst = mf.instruction(instr_id);
+                    if (!inst) continue;
+                    file << "  " << dgtl::machine::machine_form_name(inst->form);
+                    if (inst->has_target_opcode()) {
+                        file << " [opcode: 0x" << std::hex << inst->target_opcode() << std::dec << "]";
+                    }
+                    file << "\n";
+                }
+            }
             file.close();
 
-            std::cerr << "[DGTL-TIERED] Baked kernel to " << filename << " (" 
-                      << ir.size() << " IR nodes)\n";
+            std::cerr << "[DGTL-TIERED] Baked verified MIR kernel to " << filename << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[DGTL-ERROR] MIR Bake failed at 0x" << std::hex << addr << std::dec 
+                      << ": " << e.what() << "\n";
+        }
+    }
+
+    void bake_to_disk(uintptr_t addr, const dgtl::semantic::DGTLSymbolTable& symbols) {
+        try {
+            // Check if verified Machine IR is available from the executor
+            auto mir_func = engine_.get_mir_from_address(addr);
+            if (mir_func && !mir_func->instructions().empty()) {
+                bake_mir_to_disk(addr, *mir_func);
+
+                // Also emit NASM assembly directly from the verified MachineFunction
+                emitter_.clear();
+                emitter_.emit(*mir_func, &symbols);
+
+                char filename_buf[128] = {};
+                std::snprintf(filename_buf, sizeof(filename_buf), 
+                            "dgtl_baked_kernel_0x%llX.asm", 
+                            static_cast<unsigned long long>(addr));
+                std::string filename(filename_buf);
+                
+                std::ofstream file(filename, std::ios::out | std::ios::trunc);
+                if (file.is_open()) {
+                    file << "; DGTL Baked Kernel (from MIR)\n";
+                    file << "; Function: " << mir_func->name() << "\n";
+                    file << "; Address: 0x" << std::hex << addr << std::dec << "\n";
+                    file << "; Baked at: " << std::chrono::system_clock::now().time_since_epoch().count() << "\n\n";
+                    file << emitter_.get_output();
+                    file.close();
+                    std::cerr << "[DGTL-TIERED] Baked kernel to " << filename << "\n";
+                }
+                return;
+            }
+
+            std::cerr << "[DGTL-TIERED] No verified MIR trace found at 0x" << std::hex << addr << std::dec << "\n";
         } catch (const std::exception& e) {
             std::cerr << "[DGTL-ERROR] Bake failed at 0x" << std::hex << addr << std::dec 
                       << ": " << e.what() << "\n";

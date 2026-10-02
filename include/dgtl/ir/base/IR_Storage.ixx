@@ -26,6 +26,7 @@ export module dgtl.ir_storage;
 // Dependency Ordered Named Module Imports
 import dgtl.arena;
 import dgtl.ir_enums;
+import dgtl.ir_node;
 
 // ============================================================================
 // SYSTEM RUNTIME TYPE PROXIES (NUMA Integration Layers)
@@ -42,37 +43,23 @@ namespace dgtl::runtime::numa {
 // ============================================================================
 // INTERNAL STORAGE ENGINE PIPELINES
 // ============================================================================
+//
+// IRStorage intentionally does NOT define its own IRAtom/IRCore/IRNode types.
+// The canonical representations live in dgtl.ir_node. Keeping a second
+// fallback representation here creates an ABI/layout split between storage,
+// SSA, rewriting, verification, and downstream consumers.
+//
+// Canonical ownership:
+//   dgtl.ir_node -> IRAtom / IRCore / IRNode
+//   dgtl.ir_storage -> storage of those canonical types
+//
+// This follows the compiler-layering principle used by mature IR systems:
+// storage owns lifetime/layout management, while the IR node module owns the
+// semantic data model.
+//
+// ============================================================================
 
 export namespace dgtl::ir {
-
-// Temporary fallback bindings matching structural tree dependencies
-namespace fallback_ir {
-    struct IRAtom { std::uint32_t raw_bits = 0u; };
-    struct IRCore {
-        std::uint32_t result_id = 0u;
-        std::uint32_t op_a = 0u;
-        std::uint32_t op_b = 0u;
-        std::uint32_t op_c = 0u;
-        std::uint64_t intent_hash = 0ull;
-        std::uint16_t logic_flags = 0u;
-        std::uint16_t aux_flags = 0u;
-        std::uint32_t debug_id = 0u;
-        std::uint64_t epoch = 0ull;
-    };
-    struct IRNode {
-        OpCode opcode = OpCode::NOP;
-        std::uint16_t flags = 0;
-        std::uint32_t result_id = 0;
-        std::uint32_t op_a = 0;
-        std::uint32_t op_b = 0;
-        std::uint32_t op_c = 0;
-        std::uint64_t intent_hash = 0;
-    };
-}
-
-using IRAtom = fallback_ir::IRAtom;
-using IRCore = fallback_ir::IRCore;
-using IRNode = fallback_ir::IRNode;
 
 namespace detail {
 
@@ -126,6 +113,13 @@ inline void copy_atom_core_stream(
 #undef DGTL_IR_STORAGE_RESTRICT
 
 } // namespace detail
+
+static_assert(sizeof(IRAtom) == sizeof(dgtl::ir::IRAtom),
+              "IRStorage must use canonical IRAtom");
+static_assert(sizeof(IRCore) == sizeof(dgtl::ir::IRCore),
+              "IRStorage must use canonical IRCore");
+static_assert(sizeof(IRNode) == sizeof(dgtl::ir::IRNode),
+              "IRStorage must use canonical IRNode");
 
 struct IRStorage {
     IRAtom* atoms         = nullptr;
@@ -240,3 +234,7 @@ struct IRStorage {
 };
 
 } // namespace dgtl::ir
+
+
+
+

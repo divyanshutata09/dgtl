@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -26,11 +26,11 @@ module;
 #include <thread>
 #include <string_view>
 
-export module dgtl.ir_core.runtime;
+export module dgtl.runtime.tls;
 
 // Import native compiler sub-systems and sibling module interfaces
-import dgtl.ir_core.stream;
-import dgtl.ir_core.ssa;
+import dgtl.ir.stream;
+import dgtl.ir.ssa;
 import dgtl.compiler_context;
 import dgtl.sync;     // 🚀 Natively import your low-latency spin synchronization layer
 import dgtl.flat_map; // 🚀 Natively import your high-performance flat mapping layer

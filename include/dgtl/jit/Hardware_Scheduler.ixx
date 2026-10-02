@@ -34,14 +34,15 @@ module;
 #endif
 
 // 🚀 FIXED: Bind directly to your backend sub-module partition space
-export module dgtl.ir_core.hardware_scheduler;
+export module dgtl.jit.hardware_scheduler;
 
 import dgtl.ir_enums;
 import dgtl.ir_node;
 import dgtl.arena;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.ai_cost_model;
+import dgtl.ir.stream;
+import dgtl.ir.analysis.cost_model;
 import dgtl.target;
+import dgtl.mir.machine_ir;
 
 
 export namespace dgtl::jit {
@@ -216,6 +217,69 @@ public:
         }
     }
 
+    /**
+     * @brief MIR-Native Hardware Port Scheduling (Machine Instruction Scheduling - MISched).
+     * Reorders machine instructions within each basic block to maximize multi-port
+     * parallel execution across ALU, Vector, and AGU/Memory ports.
+     */
+    void schedule(dgtl::machine::MachineFunction& function) {
+        for (auto& block : function.blocks()) {
+            schedule_block(block, function);
+        }
+    }
+
+    /**
+     * @brief Schedules machine instructions within a single MachineBasicBlock.
+     * Uses a cycle-accurate sliding window and port consumption model.
+     */
+    void schedule_block(dgtl::machine::MachineBasicBlock& block,
+                        dgtl::machine::MachineFunction& function) {
+        if (block.instructions.size() <= 1) {
+            return;
+        }
+
+        std::vector<dgtl::machine::InstrId> orig_instructions = block.instructions;
+        std::vector<dgtl::machine::InstrId> scheduled;
+        scheduled.reserve(orig_instructions.size());
+
+        std::vector<dgtl::machine::InstrId> ready_queue;
+        ready_queue.reserve(WINDOW_SIZE);
+
+        size_t lookahead_ptr = 0;
+        const size_t total_count = orig_instructions.size();
+
+        while (scheduled.size() < total_count) {
+            current_cycle_resources.init_from_target(m_target_machine);
+
+            // Fill ready window
+            while (ready_queue.size() < WINDOW_SIZE && lookahead_ptr < total_count) {
+                ready_queue.push_back(orig_instructions[lookahead_ptr++]);
+            }
+
+            // Port dispatch across ready queue
+            bool dispatched_any = false;
+            for (auto it = ready_queue.begin(); it != ready_queue.end(); ) {
+                const auto* inst = function.instruction(*it);
+                if (inst && can_dispatch(*inst)) {
+                    consume_resources(*inst);
+                    scheduled.push_back(*it);
+                    it = ready_queue.erase(it);
+                    dispatched_any = true;
+                } else {
+                    ++it;
+                }
+            }
+
+            // Stall-breaker: force dispatch if stalled to maintain progress
+            if (!dispatched_any && !ready_queue.empty()) {
+                scheduled.push_back(ready_queue.front());
+                ready_queue.erase(ready_queue.begin());
+            }
+        }
+
+        block.instructions = std::move(scheduled);
+    }
+
     static void write_shadow_node(dgtl::ir::IRStream& stream, uint32_t idx, const dgtl::ir::IRNode& node) noexcept {
         dgtl::ir::IRAtom& atom = stream.get_shadow_atom(idx);
         dgtl::ir::IRCore& core = stream.get_shadow_core(idx);
@@ -233,6 +297,47 @@ public:
             core.op_b,
             core.op_c
         );
+    }
+
+    [[nodiscard]] bool can_dispatch(const dgtl::machine::MachineInstruction& inst) const noexcept {
+        switch (inst.semantic_kind) {
+            case dgtl::machine::MachineSemanticKind::VectorAdd:
+            case dgtl::machine::MachineSemanticKind::VectorMul:
+            case dgtl::machine::MachineSemanticKind::VectorGather:
+            case dgtl::machine::MachineSemanticKind::VectorStore:
+                return current_cycle_resources.vec_slots > 0;
+            case dgtl::machine::MachineSemanticKind::LoadStack:
+            case dgtl::machine::MachineSemanticKind::StoreStack:
+            case dgtl::machine::MachineSemanticKind::AtomicOp:
+            case dgtl::machine::MachineSemanticKind::HardwareFence:
+                return current_cycle_resources.mem_slots > 0;
+            case dgtl::machine::MachineSemanticKind::IntegerDiv:
+            case dgtl::machine::MachineSemanticKind::IntegerMod:
+            case dgtl::machine::MachineSemanticKind::FloatDiv:
+                return current_cycle_resources.alu_slots > 0;
+            default:
+                return current_cycle_resources.alu_slots > 0;
+        }
+    }
+
+    void consume_resources(const dgtl::machine::MachineInstruction& inst) noexcept {
+        switch (inst.semantic_kind) {
+            case dgtl::machine::MachineSemanticKind::VectorAdd:
+            case dgtl::machine::MachineSemanticKind::VectorMul:
+            case dgtl::machine::MachineSemanticKind::VectorGather:
+            case dgtl::machine::MachineSemanticKind::VectorStore:
+                if (current_cycle_resources.vec_slots > 0) current_cycle_resources.vec_slots--;
+                break;
+            case dgtl::machine::MachineSemanticKind::LoadStack:
+            case dgtl::machine::MachineSemanticKind::StoreStack:
+            case dgtl::machine::MachineSemanticKind::AtomicOp:
+            case dgtl::machine::MachineSemanticKind::HardwareFence:
+                if (current_cycle_resources.mem_slots > 0) current_cycle_resources.mem_slots--;
+                break;
+            default:
+                if (current_cycle_resources.alu_slots > 0) current_cycle_resources.alu_slots--;
+                break;
+        }
     }
 
 private:

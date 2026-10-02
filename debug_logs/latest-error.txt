@@ -1,80 +1,172 @@
 DGTL Forensic Debugger
-Root: D:\tatag\dgtl
+Root: D:\TataG\DGTL
 
-Last command: dgtl --help
+Last command: dgtl build-strict
 Last exit code: 1
-Compiler fingerprint: 4c170f441e5daac2
-Command fingerprint: 1501e832aca2951f
-Declaration cache: 253 hits, 0 misses, 0 rescanned files
-Likely failing command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -c "D:\TataG\DGTL\src\sdk\dgtl_sdk_impl.cpp" -o "D:\TataG\DGTL\build\sdk_obj\sdk_dgtl_sdk_impl.o"
+Compiler fingerprint: 881fc869c935224c
+Command fingerprint: df6776abfe1a3700
+Declaration cache: 357 hits, 0 misses, 0 rescanned files
+Likely failing command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
 Last session log: debug_logs/sessions/last-nondebug-session.log
 
 [1] Module Graph
-  Modules discovered: 141
+  Modules discovered: 242
   Cycles detected:    0
 
 [2] Error Clusters
   Logs scanned: 1
-  Clusters: 2
-  - (x1) --help
-       :: --help
-  - (x1) --help:String) [], RemoteException
-       :: --help:String) [], RemoteException
+  Clusters: 25
+  - (x13) ##: error: 'dgtl::backend::driver::BackendDriverTarget' has not
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (13 hits)
+       :: 41: error: 'dgtl::backend::driver::BackendDriverTarget' has not
+       :: 41: error: 'dgtl::backend::driver::BackendDriverTarget' has not
+       :: 41: error: 'dgtl::backend::driver::BackendDriverTarget' has not
+       :: 41: error: 'dgtl::backend::driver::BackendDriverTarget' has not
+  - (x1) ##: error: 'ARM##Emitter' is not a member of 'dgtl::isa'
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 20: error: 'ARM64Emitter' is not a member of 'dgtl::isa'
+  - (x1) ##: error: 'BackendDriverTarget' is not a member of
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 28: error: 'BackendDriverTarget' is not a member of
+  - (x1) ##: error: 'DGTLGVN' is not a member of
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 32: error: 'DGTLGVN' is not a member of
+  - (x1) ##: error: 'MachOEmitter' is not a member of 'dgtl::isa'
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 20: error: 'MachOEmitter' is not a member of 'dgtl::isa'
+  - (x1) ##: error: 'backend_driver_target_name' is not a member of
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 43: error: 'backend_driver_target_name' is not a member of
+  - (x1) ##: error: 'bytes_to_hex' is not a member of
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 47: error: 'bytes_to_hex' is not a member of
+  - (x1) ##: error: 'dgtl::isa::ARM##Emitter' has not been declared
+      command: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o" (1 hits)
+       :: 20: error: 'dgtl::isa::ARM64Emitter' has not been declared
 
 [2a] Failing Command Context
+  - ##: error: 'dgtl::backend::driver::BackendDriverTarget' has not
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 13
+  - ##: error: 'ARM##Emitter' is not a member of 'dgtl::isa'
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
+  - ##: error: 'BackendDriverTarget' is not a member of
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
+  - ##: error: 'DGTLGVN' is not a member of
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
+  - ##: error: 'MachOEmitter' is not a member of 'dgtl::isa'
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
+  - ##: error: 'backend_driver_target_name' is not a member of
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
+  - ##: error: 'bytes_to_hex' is not a member of
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
+  - ##: error: 'dgtl::isa::ARM##Emitter' has not been declared
+      compile step: g++ -std=c++26 -fmodules-ts -O3 -pipe -I"D:\TataG\DGTL\include" -Wall -Wextra -Wpedantic -Werror -c "D:\TataG\DGTL\src\apps\smoke_main.cpp" -o "D:\TataG\DGTL\build\obj\dgtl_release\apps_smoke_main.o"
+      evidence hits: 1
 
 [3] Cache & Cycle Hints
   No cache-specific hints emitted.
 
 [4] Symbol Collision Radar
-  Dynamic suspect symbols: 5
-  Suspect symbols: 4
-  - IRStream appears at 558 sites
-      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:97 :: void analyze_stream(const ir::IRStream& stream) {
-      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:208 :: [[nodiscard]] float predict_alias_probability(const ir::IRStream& stream, uint32_t idx_a, uint32_t idx_b) noexcept {
-      include/dgtl/analysis/Liveness_Memory_Dependency_Unified.ixx:242 :: [[nodiscard]] bool can_reorder(const ir::IRStream& stream, uint32_t store_idx, uint32_t load_idx) noexcept {
-  - find_generated_op_def appears at 26 sites
-      include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:219 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
-      include/dgtl/backend/driver/Backend_Driver_Shared_Utils.ixx:251 :: if (auto* def = dgtl::ir::gen::find_generated_op_def(n.opcode)) {
-      include/dgtl/ir/base/IR_SSA.ixx:1361 :: const auto* def = dgtl::ir::gen::find_generated_op_def(node.opcode);
-  - TargetMachine appears at 24 sites
-      include/dgtl/core/Target.ixx:386 :: class alignas(64) TargetMachine {
-      include/dgtl/core/Target.ixx:510 :: using TargetMachine  = dgtl::core::TargetMachine;
-      include/dgtl/graph/IR_GraphEdgeClusterRegion.ixx:390 :: void schedule(const dgtl::core::TargetMachine& target);
-  - RuntimeFeedback appears at 2 sites
-      include/dgtl/analysis/AI_Cost_Model.ixx:47 :: struct RuntimeFeedback {
-      include/dgtl/analysis/AI_Cost_Model.ixx:123 :: void update_with_feedback(const dgtl::ir::IRNode& node, const RuntimeFeedback& feedback) {
+  Dynamic suspect symbols: 25
+  Suspect symbols: 13
+  - IRStream appears at 435 sites
+      include/dgtl/api/AOTSession.ixx:62 :: [[nodiscard]] bool compile(ir::IRStream& stream) override {
+      include/dgtl/api/AOTSession.ixx:165 :: [[nodiscard]] bool compile_module(std::vector<std::pair<std::string, ir::IRStream>>& module_streams) noexcept {
+      include/dgtl/api/AOTSession.ixx:178 :: const ir::IRStream& original_stream,
+  - TargetMachine appears at 58 sites
+      include/dgtl/core/Target.ixx:497 :: class alignas(64) TargetMachine {
+      include/dgtl/ir/graph/IR_GraphEdgeClusterRegion.ixx:394 :: void schedule(const dgtl::core::TargetMachine& target);
+      include/dgtl/isa/ISel_Dispatch.ixx:33 :: const core::TargetMachine& target, ir::OpCode opcode) noexcept {
+  - dgtl::isa appears at 45 sites
+      include/dgtl/isa/amdgpu/AMDGPU_ISel_Generated.ixx:62 :: using namespace dgtl::isa::amdgpu;
+      include/dgtl/isa/amdgpu/AMDGPU_Machine_Form_Lowering.ixx:268 :: const auto op = dgtl::isa::amdgpu::opcode_for(instruction.form, instruction.semantic_kind);
+      include/dgtl/isa/arm64/ARM64_Emitter.ixx:1392 :: using ARM64Emitter = dgtl::isa::arm64::ARM64Emitter;
+  - find_generated_op_def appears at 39 sites
+      include/dgtl/api/IRBuilder.ixx:1912 :: return ir::gen::find_generated_op_def(opcode);
+      include/dgtl/ir/IR_Schema.ixx:43 :: return gen::find_generated_op_def(op);
+      include/dgtl/ir/IR_Schema.ixx:47 :: if (const auto* d = gen::find_generated_op_def(op)) {
+  - BackendDriverTarget appears at 8 sites
+      include/dgtl/linker/driver/Backend_Driver_API.ixx:59 :: enum class BackendDriverTarget : unsigned char {
+      include/dgtl/linker/driver/Backend_Driver_API.ixx:234 :: inline const char* backend_driver_target_name(BackendDriverTarget target) {
+      include/dgtl/linker/driver/Backend_Driver_API.ixx:253 :: inline const char* backend_driver_target_extension(BackendDriverTarget target) {
+  - ARM64Emitter appears at 6 sites
+      include/dgtl/isa/arm64/ARM64_Emitter.ixx:42 :: class alignas(64) ARM64Emitter {
+      include/dgtl/isa/arm64/ARM64_Emitter.ixx:57 :: explicit ARM64Emitter(const dgtl::machine::MachineFunction& function)
+      include/dgtl/isa/arm64/ARM64_Emitter.ixx:60 :: explicit ARM64Emitter(const StreamT&, const SymbolTableT&)
+  - driver_target appears at 6 sites
+      include/dgtl/linker/driver/Backend_Driver_API.ixx:234 :: inline const char* backend_driver_target_name(BackendDriverTarget target) {
+      include/dgtl/linker/driver/Backend_Driver_API.ixx:253 :: inline const char* backend_driver_target_extension(BackendDriverTarget target) {
+      include/dgtl/linker/driver/Backend_Driver_API.ixx:272 :: inline bool parse_backend_driver_target(std::string value, BackendDriverTarget& out) {
+  - write_binary_file appears at 4 sites
+      include/dgtl/linker/Linker_Driver.ixx:498 :: [[nodiscard]] static bool write_binary_file(std::string_view path, const std::vector<uint8_t>& bytes) {
+      include/dgtl/linker/Linker_binary_weaver.ixx:336 :: [[nodiscard]] static bool write_binary_file(std::string_view path, const std::vector<uint8_t>& bytes) {
+      include/dgtl/linker/driver/Backend_Driver_Shared_Utils.ixx:132 :: inline bool write_binary_file(const std::string& path, const std::vector<uint8_t>& bytes) {
 
 [5] Ownership Arbitration
-  Recommendations: 4
-  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:9354 (score 110)
+  Recommendations: 12
+  - find_generated_op_def -> include/dgtl/ir/gen/DGTL_Gen_Ops.ixx:623 (score 110)
       why: inside DGTL workspace, generated-definition ownership path, importable generated IR interface, inline or constexpr definition
-      9352: }();
-      9353: 
-      9354: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
-      9355:     const size_t index = static_cast<size_t>(opcode);
-      9356:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
-  - IRStream -> include/dgtl/backend/driver/Backend_Driver_API.ixx:281 (score 40)
+      621: }();
+      622: 
+      623: [[nodiscard]] inline const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept {
+      624:     const size_t index = static_cast<size_t>(opcode);
+      625:     return index < kGeneratedOpDefLookupTable.size() ? kGeneratedOpDefLookupTable[index] : nullptr;
+  - TargetMachine -> tools/cpp/dgtl_isel_gen_main.cpp:1189 (score 50)
+      why: inside DGTL workspace, generated-definition ownership path, generator tool source, not runtime owner, implementation file
+      1187: 
+      1188:     out << "[[nodiscard]] constexpr MachineForm classify_machine_form(\n"
+      1189:         << "    const core::TargetMachine& target, ir::OpCode opcode) noexcept {\n"
+      1190:         << "    switch (target.get_arch()) {\n";
+      1191:     for (const auto& p : parsed_targets) {
+  - IRStream -> include/dgtl/formal/Formal_Verification_SMT.ixx:235 (score 40)
       why: inside DGTL workspace, inline or constexpr definition
-      279: }
-      280: 
-      281: inline bool emit_arm64_direct(const dgtl::ir::IRStream& stream,
-      282:                               const dgtl::semantic::SymbolTable& symbols,
-      283:                               std::string& out_text) {
-  - TargetMachine -> include/dgtl/isa/common/Instruction_Selector.ixx:460 (score 40)
+      233:     [[nodiscard]] static std::string generate_gvn_proof_obligations(const ir::IRStream& original, const ir::IRStream& optimized) noexcept;
+      234:     [[nodiscard]] static std::string generate_dce_proof_obligations(const ir::IRStream& original, const ir::IRStream& optimized) noexcept;
+      235:     [[nodiscard]] static std::string generate_inlining_proof_obligations(const ir::IRStream& caller, const ir::IRStream& callee, const ir::IRStream& inlined) noexcept;
+      236: 
+      237:     [[nodiscard]] static std::string generate_verification_report(const VerificationResult& result, const ir::IRStream& original, const ir::IRStream& optimized) noexcept;
+  - BackendDriverTarget -> include/dgtl/linker/driver/Backend_Driver_API.ixx:234 (score 40)
       why: inside DGTL workspace, inline or constexpr definition
-      458: }
-      459: 
-      460: [[nodiscard]] inline bool supports_rule_requirements(const SelectionRule& rule, const core::TargetMachine& target) noexcept {
-      461:     if (rule.require_fma && !target.get_caps().has_fma) {
-      462:         return false;
-  - RuntimeFeedback -> include/dgtl/analysis/AI_Cost_Model.ixx:47 (score 20)
-      why: inside DGTL workspace
-      45: 
-      46: // PRODUCTION RESOLUTION: True, fully-defined exported struct attaches layout to this module unit.
-      47: struct RuntimeFeedback {
-      48:     double actual_latency = 0.0;
-      49:     double cache_miss_rate = 0.0;
+      232: }
+      233: 
+      234: inline const char* backend_driver_target_name(BackendDriverTarget target) {
+      235:     switch (target) {
+      236:     case BackendDriverTarget::arm64: return "arm64";
+  - driver_target -> include/dgtl/linker/driver/Backend_Driver_API.ixx:234 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      232: }
+      233: 
+      234: inline const char* backend_driver_target_name(BackendDriverTarget target) {
+      235:     switch (target) {
+      236:     case BackendDriverTarget::arm64: return "arm64";
+  - write_binary_file -> include/dgtl/linker/driver/Backend_Driver_Shared_Utils.ixx:132 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      130: }
+      131: 
+      132: inline bool write_binary_file(const std::string& path, const std::vector<uint8_t>& bytes) {
+      133:     const std::filesystem::path p(path);
+      134:     if (p.has_parent_path()) {
+  - parse_polyhedral_parallel_policy -> include/dgtl/linker/driver/Backend_Driver_Shared_Utils.ixx:76 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      74: 
+      75: template <typename PolyhedralParallelPolicyT>
+      76: inline bool parse_polyhedral_parallel_policy(std::string policy_str,
+      77:                                              PolyhedralParallelPolicyT& out_policy,
+      78:                                              std::string& out_name) {
+  - parse_polyhedral_mode -> include/dgtl/linker/driver/Backend_Driver_Shared_Utils.ixx:53 (score 40)
+      why: inside DGTL workspace, inline or constexpr definition
+      51: 
+      52: template <typename PolyhedralModeT>
+      53: inline bool parse_polyhedral_mode(std::string mode_str,
+      54:                                   PolyhedralModeT& out_mode,
+      55:                                   std::string& out_name) {
 
 [6] Staff-Level Triage
   Primary structural risk: no import SCCs detected in scanned units.

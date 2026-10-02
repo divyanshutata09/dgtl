@@ -1,0 +1,26 @@
+# ============================================================================
+# DGTL version 2.2.0  |  wasm_core.dgtl_isel  (WebAssembly)
+# Architecture:  Wasm32 / Wasm64, SIMD128, Bulk Memory, Threads
+# ============================================================================
+#
+# NOTE ON fma_f32:
+#   WebAssembly does NOT have a native fused-multiply-add instruction in the
+#   base spec or SIMD128 extension (as of Wasm 2.0). FMA must be emitted as
+#   a software call. Therefore fma_f32 -> Call here, not FloatTernaryFma32.
+#   This is the ONLY form that differs between WASM and all other targets.
+
+include "common_runtime_forms.dgtl_isel"
+include "core_base.dgtl_isel"
+
+# ----------------------------------------------------------------------------
+# No target-specific peephole rules for WASM.
+# WASM is a stack machine; branch fusion and GEP folding are handled by
+# the WASM structured-control-flow lowering pass, not by ISel rules.
+# ----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# WASM-specific form override â€” the only divergence from core_base.
+# WebAssembly has no native FMA instruction; lower to a runtime call.
+# ----------------------------------------------------------------------------
+
+form fma_f32:                     opcode=FMA_F32,               machine_form=Call

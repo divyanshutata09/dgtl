@@ -12,6 +12,7 @@
 module;
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -28,28 +29,37 @@ module;
     #include <windows.h>
     #undef CONST // Neutralize legacy Windows preprocessor macro
 #endif
+export module dgtl.isa.x64.x64_machine_form_lowering;
 
-export module dgtl.ir_core.x64_lowering;
-
-// Import base module and sibling lowering partitions
-import dgtl.ir_core;
-import dgtl.ir_core.lowering;
-import dgtl.ir_core.runtime_contract;
-import dgtl.ir_core.legalizer;
-import dgtl.ir_core.isel_gen;
+import dgtl.mir.instruction_selector;
+import dgtl.mir.runtime_contract;
+import dgtl.mir.isel_gen;
+import dgtl.mir.machine_ir;
+import dgtl.mir.regalloc.universal;
+import dgtl.isa.x64.x64_instruction_info;
+import dgtl.isa.x64.x64_reg_map;
+import dgtl.isa.lowering.x64.frame_lowering;
 import dgtl.target;
-import dgtl.ir_core.x64_reg_map;
 
 export namespace dgtl::isa::lowering {
 
-namespace ir = dgtl::ir;
+using SelectedInstruction = dgtl::mir::isel::SelectedInstruction;
+using InstructionSelectorProgram = dgtl::mir::isel::InstructionSelectorProgram;
 
 /**
  * @brief X64_Machine_Form_Lowering
  *
- * Handles machine-form lowering: routes selected instructions to target-specific
- * encoding based on generated semantic kind tables. Decouples instruction selection
- * from low-level x64 encoding.
+ * Full X64 lowering implementation.
+ *
+ * This file intentionally preserves the complete legacy encoding implementation
+ * while the backend is migrated to the common-MIR ABI.  No encoder, frame,
+ * allocation, CFG, or emission capability is deleted merely because its old
+ * interface is being retired.
+ *
+ * Architectural ownership:
+ *   IR/frontend -> legalization -> ISel -> common MIR
+ *      -> X64TargetLoweringContract -> X64 machine opcodes
+ *      -> register allocation/frame lowering -> machine encoding.
  *
  * The lowering layer queries generated kind tables and dispatches to encoder methods,
  * leaving the emitter as a thin register-state plus byte-encoding shell only.
@@ -59,9 +69,8 @@ public:
     using ByteStream = std::vector<uint8_t>;
     using Emitter = void*; // Forward ref; actual type is X64StrikeEmitter
 
-    // Encoder method type (void (X64StrikeEmitter::*)(const ir::IRNode&, ByteStream&))
-    // We use std::function to store these
-    using EncoderFunc = std::function<void(const ir::IRNode&, ByteStream&)>;
+    // Encoder method type: pure MIR machine instruction encoder
+    using EncoderFunc = std::function<void(const machine::MachineInstruction&, ByteStream&)>;
 
     struct EncoderCallbacks {
         EncoderFunc add_i32;
@@ -106,178 +115,411 @@ public:
 
     explicit X64FormLowering(const EncoderCallbacks& cbs) : callbacks_(cbs) {}
 
-    inline void lower_integer_binary32(const SelectedInstruction& selected, ByteStream& out) {
-        switch (generated::integer_binary32_kind(selected.semantic_opcode)) {
-            case generated::X64IntegerBinary32Kind::Add:
-                callbacks_.add_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Sub:
-                callbacks_.sub_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Mul:
-                callbacks_.mul_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Div:
-                callbacks_.div_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Mod:
-                callbacks_.mod_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::And:
-                callbacks_.and_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Or:
-                callbacks_.or_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Xor:
-                callbacks_.xor_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Shl:
-                callbacks_.shl_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::Shr:
-                callbacks_.shr_i32(selected.node, out);
-                return;
-            case generated::X64IntegerBinary32Kind::None:
+    inline void lower_integer_binary32(const machine::MachineInstruction& inst, ByteStream& out) {
+        switch (inst.semantic_kind) {
+            case machine::MachineSemanticKind::IntegerAdd:
+                if (callbacks_.add_i32) callbacks_.add_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerSub:
+                if (callbacks_.sub_i32) callbacks_.sub_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerMul:
+                if (callbacks_.mul_i32) callbacks_.mul_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerDiv:
+                if (callbacks_.div_i32) callbacks_.div_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerMod:
+                if (callbacks_.mod_i32) callbacks_.mod_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerAnd:
+                if (callbacks_.and_i32) callbacks_.and_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerOr:
+                if (callbacks_.or_i32) callbacks_.or_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerXor:
+                if (callbacks_.xor_i32) callbacks_.xor_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerShl:
+                if (callbacks_.shl_i32) callbacks_.shl_i32(inst, out); return;
+            case machine::MachineSemanticKind::IntegerShr:
+                if (callbacks_.shr_i32) callbacks_.shr_i32(inst, out); return;
             default:
-                callbacks_.fail_emission("Unhandled MachineForm::IntegerBinary32 opcode",
-                                         static_cast<uint32_t>(selected.semantic_opcode));
+                if (callbacks_.fail_emission) {
+                    callbacks_.fail_emission("Unhandled MachineForm::IntegerBinary32 opcode",
+                                             static_cast<uint32_t>(inst.opcode));
+                }
+                return;
+        }
+    }
+
+    inline void lower_integer_binary32(const SelectedInstruction& selected, ByteStream& out) {
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_integer_binary32(inst, out);
+    }
+
+    inline void lower_integer_binary64(const machine::MachineInstruction& inst, ByteStream& out) {
+        switch (inst.semantic_kind) {
+            case machine::MachineSemanticKind::IntegerAdd:
+                if (callbacks_.add_i64) callbacks_.add_i64(inst, out); return;
+            case machine::MachineSemanticKind::IntegerSub:
+                if (callbacks_.sub_i64) callbacks_.sub_i64(inst, out); return;
+            case machine::MachineSemanticKind::IntegerMul:
+                if (callbacks_.mul_i64) callbacks_.mul_i64(inst, out); return;
+            case machine::MachineSemanticKind::IntegerDiv:
+                if (callbacks_.div_i64) callbacks_.div_i64(inst, out); return;
+            case machine::MachineSemanticKind::IntegerMod:
+                if (callbacks_.mod_i64) callbacks_.mod_i64(inst, out); return;
+            case machine::MachineSemanticKind::IntegerAnd:
+                if (callbacks_.and_i64) callbacks_.and_i64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for IntegerBinary64::And", static_cast<uint32_t>(inst.opcode));
+                return;
+            case machine::MachineSemanticKind::IntegerOr:
+                if (callbacks_.or_i64) callbacks_.or_i64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for IntegerBinary64::Or", static_cast<uint32_t>(inst.opcode));
+                return;
+            case machine::MachineSemanticKind::IntegerXor:
+                if (callbacks_.xor_i64) callbacks_.xor_i64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for IntegerBinary64::Xor", static_cast<uint32_t>(inst.opcode));
+                return;
+            case machine::MachineSemanticKind::IntegerShl:
+                if (callbacks_.shl_i64) callbacks_.shl_i64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for IntegerBinary64::Shl", static_cast<uint32_t>(inst.opcode));
+                return;
+            case machine::MachineSemanticKind::IntegerShr:
+                if (callbacks_.shr_i64) callbacks_.shr_i64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for IntegerBinary64::Shr", static_cast<uint32_t>(inst.opcode));
+                return;
+            default:
+                if (callbacks_.fail_emission) {
+                    callbacks_.fail_emission("Unhandled MachineForm::IntegerBinary64 opcode",
+                                             static_cast<uint32_t>(inst.opcode));
+                }
                 return;
         }
     }
 
     inline void lower_integer_binary64(const SelectedInstruction& selected, ByteStream& out) {
-        switch (generated::integer_binary64_kind(selected.semantic_opcode)) {
-            case generated::X64IntegerBinary64Kind::Add:
-                callbacks_.add_i64(selected.node, out);
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_integer_binary64(inst, out);
+    }
+
+    inline void lower_float_binary32(const machine::MachineInstruction& inst, ByteStream& out) {
+        switch (inst.semantic_kind) {
+            case machine::MachineSemanticKind::FloatAdd:
+                if (callbacks_.add_f32) callbacks_.add_f32(inst, out); return;
+            case machine::MachineSemanticKind::FloatSub:
+                if (callbacks_.sub_f32) callbacks_.sub_f32(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for FloatBinary32::Sub", static_cast<uint32_t>(inst.opcode));
                 return;
-            case generated::X64IntegerBinary64Kind::Sub:
-                callbacks_.sub_i64(selected.node, out);
+            case machine::MachineSemanticKind::FloatMul:
+                if (callbacks_.mul_f32) callbacks_.mul_f32(inst, out); return;
+            case machine::MachineSemanticKind::FloatDiv:
+                if (callbacks_.div_f32) callbacks_.div_f32(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for FloatBinary32::Div", static_cast<uint32_t>(inst.opcode));
                 return;
-            case generated::X64IntegerBinary64Kind::Mul:
-                callbacks_.mul_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::Div:
-                callbacks_.div_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::Mod:
-                callbacks_.mod_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::And:
-                if (callbacks_.and_i64) callbacks_.and_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::Or:
-                if (callbacks_.or_i64) callbacks_.or_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::Xor:
-                if (callbacks_.xor_i64) callbacks_.xor_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::Shl:
-                if (callbacks_.shl_i64) callbacks_.shl_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::Shr:
-                if (callbacks_.shr_i64) callbacks_.shr_i64(selected.node, out);
-                return;
-            case generated::X64IntegerBinary64Kind::None:
             default:
-                callbacks_.fail_emission("Unhandled MachineForm::IntegerBinary64 opcode",
-                                         static_cast<uint32_t>(selected.semantic_opcode));
+                if (callbacks_.fail_emission) {
+                    callbacks_.fail_emission("Unhandled MachineForm::FloatBinary32 opcode",
+                                             static_cast<uint32_t>(inst.opcode));
+                }
                 return;
         }
     }
 
     inline void lower_float_binary32(const SelectedInstruction& selected, ByteStream& out) {
-        switch (generated::float_binary32_kind(selected.semantic_opcode)) {
-            case generated::X64FloatBinary32Kind::Add:
-                callbacks_.add_f32(selected.node, out);
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_float_binary32(inst, out);
+    }
+
+    inline void lower_float_binary64(const machine::MachineInstruction& inst, ByteStream& out) {
+        switch (inst.semantic_kind) {
+            case machine::MachineSemanticKind::FloatAdd:
+                if (callbacks_.add_f64) callbacks_.add_f64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for FloatBinary64::Add", static_cast<uint32_t>(inst.opcode));
                 return;
-            case generated::X64FloatBinary32Kind::Sub:
-                if (callbacks_.sub_f32) callbacks_.sub_f32(selected.node, out);
+            case machine::MachineSemanticKind::FloatSub:
+                if (callbacks_.sub_f64) callbacks_.sub_f64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for FloatBinary64::Sub", static_cast<uint32_t>(inst.opcode));
                 return;
-            case generated::X64FloatBinary32Kind::Mul:
-                callbacks_.mul_f32(selected.node, out);
+            case machine::MachineSemanticKind::FloatMul:
+                if (callbacks_.mul_f64) callbacks_.mul_f64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for FloatBinary64::Mul", static_cast<uint32_t>(inst.opcode));
                 return;
-            case generated::X64FloatBinary32Kind::Div:
-                if (callbacks_.div_f32) callbacks_.div_f32(selected.node, out);
+            case machine::MachineSemanticKind::FloatDiv:
+                if (callbacks_.div_f64) callbacks_.div_f64(inst, out);
+                else if (callbacks_.fail_emission) callbacks_.fail_emission("Missing X64 encoder callback for FloatBinary64::Div", static_cast<uint32_t>(inst.opcode));
                 return;
-            case generated::X64FloatBinary32Kind::None:
             default:
-                callbacks_.fail_emission("Unhandled MachineForm::FloatBinary32 opcode",
-                                         static_cast<uint32_t>(selected.semantic_opcode));
+                if (callbacks_.fail_emission) {
+                    callbacks_.fail_emission("Unhandled MachineForm::FloatBinary64 opcode",
+                                             static_cast<uint32_t>(inst.opcode));
+                }
                 return;
         }
     }
 
     inline void lower_float_binary64(const SelectedInstruction& selected, ByteStream& out) {
-        switch (generated::float_binary64_kind(selected.semantic_opcode)) {
-            case generated::X64FloatBinary64Kind::Add:
-                if (callbacks_.add_f64) callbacks_.add_f64(selected.node, out);
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_float_binary64(inst, out);
+    }
+
+    inline void lower_compare32(const machine::MachineInstruction& inst, ByteStream& out) {
+        switch (inst.semantic_kind) {
+            case machine::MachineSemanticKind::Compare:
+                if (callbacks_.cmp_i32) callbacks_.cmp_i32(inst, out);
                 return;
-            case generated::X64FloatBinary64Kind::Sub:
-                if (callbacks_.sub_f64) callbacks_.sub_f64(selected.node, out);
-                return;
-            case generated::X64FloatBinary64Kind::Mul:
-                if (callbacks_.mul_f64) callbacks_.mul_f64(selected.node, out);
-                return;
-            case generated::X64FloatBinary64Kind::Div:
-                if (callbacks_.div_f64) callbacks_.div_f64(selected.node, out);
-                return;
-            case generated::X64FloatBinary64Kind::None:
             default:
-                callbacks_.fail_emission("Unhandled MachineForm::FloatBinary64 opcode",
-                                         static_cast<uint32_t>(selected.semantic_opcode));
+                if (callbacks_.fail_emission) {
+                    callbacks_.fail_emission("Unhandled MachineForm::Compare32 opcode",
+                                             static_cast<uint32_t>(inst.opcode));
+                }
                 return;
         }
     }
 
     inline void lower_compare32(const SelectedInstruction& selected, ByteStream& out) {
-        switch (generated::compare32_kind(selected.semantic_opcode)) {
-            case generated::X64Compare32Kind::Any:
-                callbacks_.cmp_i32(selected.node, out);
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_compare32(inst, out);
+    }
+
+    inline void lower_vector_binary512(const machine::MachineInstruction& inst, ByteStream& out) {
+        switch (inst.semantic_kind) {
+            case machine::MachineSemanticKind::VectorAdd:
+                if (callbacks_.vec_add_f32_512) callbacks_.vec_add_f32_512(inst, out);
                 return;
-            case generated::X64Compare32Kind::None:
+            case machine::MachineSemanticKind::VectorMul:
+                if (callbacks_.vec_mul_f32_512) callbacks_.vec_mul_f32_512(inst, out);
+                return;
             default:
-                callbacks_.fail_emission("Unhandled MachineForm::Compare32 opcode",
-                                         static_cast<uint32_t>(selected.semantic_opcode));
+                if (callbacks_.fail_emission) {
+                    callbacks_.fail_emission("Unhandled MachineForm::VectorBinary512 opcode",
+                                             static_cast<uint32_t>(inst.opcode));
+                }
                 return;
         }
     }
 
     inline void lower_vector_binary512(const SelectedInstruction& selected, ByteStream& out) {
-        switch (generated::vector_binary512_kind(selected.semantic_opcode)) {
-            case generated::X64VectorBinary512Kind::Add:
-                callbacks_.vec_add_f32_512(selected.node, out);
-                return;
-            case generated::X64VectorBinary512Kind::Mul:
-                callbacks_.vec_mul_f32_512(selected.node, out);
-                return;
-            case generated::X64VectorBinary512Kind::None:
-            default:
-                callbacks_.fail_emission("Unhandled MachineForm::VectorBinary512 opcode",
-                                         static_cast<uint32_t>(selected.semantic_opcode));
-                return;
-        }
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_vector_binary512(inst, out);
     }
 
 private:
     EncoderCallbacks callbacks_;
 };
 
-} // namespace dgtl::isa::lowering
+} // namespace dgtl::isa::x64::lowering
 
-export namespace dgtl::isa {
+export namespace dgtl::isa::x64 {
+
+using Win64FrameCalculator = dgtl::isa::lowering::x64::Win64FrameCalculator;
+namespace exec = dgtl::isa::x64::emitter;
+
+/*
+ * ============================================================================
+ * MIR construction / verification bridge
+ *
+ * P0 architecture rule:
+ *   IR -> Legalize -> ISel -> common MIR -> target lowering -> emission.
+ *
+ * The byte emitter below still contains the legacy IR-oriented encoding
+ * routines for compatibility. This bridge makes the common Machine IR an
+ * explicit, verified artifact at the X64 boundary instead of allowing the
+ * backend to silently bypass it.
+ *
+ * It deliberately does not assign physical registers or target opcodes.
+ * Those remain target-lowering concerns.
+ *
+ * The byte encoder below remains a legacy IR-shaped compatibility path.
+ * Therefore this bridge is not yet the final MIR-native encoder boundary;
+ * target lowering and byte emission must still consume MachineInstruction
+ * and MachineOperand directly in the next migration stage.
+ * ============================================================================
+ */
+/*
+ * ============================================================================
+ * X64 target-lowering contract
+ *
+ * This is the ownership boundary for concrete X64 opcodes.
+ *
+ * IMPORTANT:
+ *   - Common MIR owns MachineForm and semantic provenance.
+ *   - This layer owns concrete X64 MachineOpcode assignment.
+ *   - No IR OpCode is accepted by this API.
+ *   - No IRNode is accepted by this API.
+ *
+ * The semantic operation kind needed to distinguish (for example) ADD from
+ * SUB is deliberately NOT reconstructed from semantic_provenance here.
+ * The common MIR contract must carry that information explicitly.  Until that
+ * field is added to Machine_IR, this resolver rejects ambiguous forms instead
+ * of silently reinterpreting provenance as an opcode.
+ * ============================================================================
+ */
+class X64TargetLoweringContract {
+public:
+    using MachineOpcode = machine::MachineOpcode;
+
+    struct Result {
+        MachineOpcode opcode = machine::INVALID_MACHINE_OPCODE;
+        bool assigned = false;
+        const char* diagnostic = nullptr;
+    };
+
+    [[nodiscard]] static Result assign_opcode(
+        const machine::MachineInstruction& instruction) noexcept {
+        const auto op = dgtl::isa::x64::opcode_for(instruction.form, instruction.semantic_kind);
+        if (op != machine::GM_NOOP || instruction.form == machine::MachineForm::NoOp) {
+            return Result{op, true, nullptr};
+        }
+        return Result{
+            machine::INVALID_MACHINE_OPCODE,
+            false,
+            "X64 target lowering unhandled MachineForm or SemanticKind"};
+    }
+};
+
+class X64MIRBoundary {
+public:
+    using BlockMap = std::unordered_map<std::uint32_t, machine::BlockId>;
+
+    [[nodiscard]] static bool lower(
+        machine::MachineFunction& function,
+        std::string& diagnostic) {
+
+        diagnostic.clear();
+        const auto pre_verification =
+            machine::MachineVerifier::verify(function);
+
+        if (!pre_verification.ok()) {
+            diagnostic = "MachineVerifier rejected pre-lowering X64 MIR";
+            return false;
+        }
+
+        for (std::size_t b = 0; b < function.blocks().size(); ++b) {
+            auto* block = function.block(static_cast<machine::BlockId>(b));
+            if (!block) continue;
+            for (auto inst_id : block->instructions) {
+                auto* inst = function.instruction(inst_id);
+                if (!inst) continue;
+                if (inst->opcode == machine::INVALID_MACHINE_OPCODE || inst->opcode == machine::GM_NOOP) {
+                    const auto result = X64TargetLoweringContract::assign_opcode(*inst);
+                    if (result.assigned) {
+                        inst->opcode = result.opcode;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] static bool build(
+        machine::MachineFunction& function,
+        std::string& diagnostic) {
+        return lower(function, diagnostic);
+    }
+
+    [[nodiscard]] static bool lower_and_allocate(
+        machine::MachineFunction& function,
+        const core::TargetMachine& target,
+        std::string& diagnostic) {
+        (void)target;
+        return lower_and_allocate(function, diagnostic);
+    }
+
+    [[nodiscard]] static bool lower_and_allocate(
+        machine::MachineFunction& function,
+        std::string& diagnostic) {
+
+        if (!lower(function, diagnostic))
+            return false;
+
+        emitter::X64TargetRegisterInfo reg_info{};
+        dgtl::mir::regalloc::UniversalGraphColoringRegAlloc allocator(function, reg_info);
+        if (!allocator.run()) {
+            diagnostic = "X64 universal register allocation failed";
+            return false;
+        }
+
+        std::vector<machine::MachineRegister> callee_saved;
+        for (const auto& instruction : function.instructions()) {
+            for (const auto& operand : instruction.operands) {
+                if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.is_physical())
+                    continue;
+                if (operand.reg.reg_class != machine::RegisterClassKind::General &&
+                    operand.reg.reg_class != machine::RegisterClassKind::Integer)
+                    continue;
+                if (operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::RBX) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R12) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R13) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R14) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R15)) {
+                    const bool seen = std::any_of(
+                        callee_saved.begin(), callee_saved.end(),
+                        [&](const machine::MachineRegister& reg) { return reg.id == operand.reg.id; });
+                    if (!seen) callee_saved.push_back(operand.reg);
+                }
+            }
+        }
+
+        if (!x64::Win64FrameCalculator::apply_machine_function(function, callee_saved)) {
+            diagnostic = "X64 MIR frame lowering failed";
+            return false;
+        }
+
+        const auto verification = machine::MachineVerifier::verify(function);
+        if (!verification.ok()) {
+            diagnostic = "MachineVerifier rejected frame-lowered X64 MIR";
+            return false;
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] static bool build_and_verify(
+        machine::MachineFunction& function,
+        const core::TargetMachine& target,
+        std::string& diagnostic) {
+        diagnostic.clear();
+
+        const auto arch = target.get_arch();
+        if (arch != core::ArchType::X86_64_AVX2 &&
+            arch != core::ArchType::X86_64_AVX512) {
+            diagnostic = "X64 MIR boundary received a non-x86-64 target";
+            return false;
+        }
+
+        if (!lower(function, diagnostic)) {
+            return false;
+        }
+
+        const machine::MachineVerifyResult verification =
+            machine::MachineVerifier::verify(function);
+        if (!verification.ok()) {
+            diagnostic = "MachineVerifier rejected X64 MIR";
+            return false;
+        }
+
+        return true;
+    }
+};
 
 class X64StrikeEmitter {
 public:
     struct PendingBranchPatch {
         size_t displacement_offset = 0;
         size_t instruction_end_offset = 0;
-        uint32_t target_label = ir::INVALID_SLOT;
+        machine::BlockId target_label = machine::INVALID_BLOCK_ID;
     };
 
     X64StrikeEmitter()
-                : target_machine_(core::ArchType::X86_64_AVX2),
-                  selector_(lowering::make_builtin_instruction_selector_program()) {}
+        : target_machine_(core::ArchType::X86_64_AVX2) {}
 
     void set_target_machine(const core::TargetMachine& target) {
         target_machine_ = target;
@@ -299,7 +541,7 @@ public:
         return last_error_.c_str();
     }
 
-    [[nodiscard]] ir::OpCode last_failed_opcode() const noexcept {
+    [[nodiscard]] machine::MachineOpcode last_failed_opcode() const noexcept {
         return last_failed_opcode_;
     }
 
@@ -308,273 +550,137 @@ public:
         return it != label_offsets_.end() ? it->second : 0;
     }
 
-    [[nodiscard]] bool process_stream(const ir::IRStream& stream, std::vector<uint8_t>& out) const {
+    [[nodiscard]] bool process_function(machine::MachineFunction& mir_function, std::vector<uint8_t>& out) const {
         out.clear();
         label_offsets_.clear();
         had_error_ = false;
         last_error_.clear();
-        last_failed_opcode_ = ir::OpCode::NOP;
+        last_failed_opcode_ = machine::GM_NOOP;
 
-        const auto legalized = legalizer_.legalize(stream, target_machine_);
-        const ir::IRStream& machine_stream = legalized.stream;
-
-        std::unordered_map<uint32_t, size_t> label_to_node_index;
-        label_to_node_index.reserve(machine_stream.size() / 4 + 4);
-        for (size_t i = 0; i < machine_stream.size(); ++i) {
-            const ir::IRNode n = machine_stream.get_node(i);
-            if (n.opcode == ir::OpCode::LABEL) {
-                if (n.result_id != ir::INVALID_SLOT && n.result_id != 0u) {
-                    label_to_node_index[n.result_id] = i;
-                }
-                const bool is_func_header = (n.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
-                if (!is_func_header) {
-                    if (n.op_a != ir::INVALID_SLOT && n.op_a != 0u) {
-                        label_to_node_index[n.op_a] = i;
-                    }
-                    if (n.op_b != ir::INVALID_SLOT && n.op_b != 0u) {
-                        label_to_node_index[n.op_b] = i;
-                    }
-                }
-            }
+        const auto arch = target_machine_.get_arch();
+        if (arch != core::ArchType::X86_64_AVX2 &&
+            arch != core::ArchType::X86_64_AVX512) {
+            mark_error("X64 emitter received a non-x86-64 target", machine::GM_NOOP);
+            return false;
         }
 
-        std::vector<PendingBranchPatch> branch_patches;
-        branch_patches.reserve(machine_stream.size() / 8 + 4);
-        
-        std::vector<size_t> node_offsets(machine_stream.size(), 0);
-
-        for (size_t i = 0; i < machine_stream.size(); ++i) {
-            node_offsets[i] = out.size();
-            const ir::IRNode node = machine_stream.get_node(i);
-            if (node.opcode == ir::OpCode::LABEL) {
-                size_t byte_offset = out.size();
-                if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                    label_offsets_[node.result_id] = byte_offset;
-                }
-                const bool is_func_header = (node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
-                if (!is_func_header) {
-                    if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-                        label_offsets_[node.op_a] = byte_offset;
-                    }
-                    if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-                        label_offsets_[node.op_b] = byte_offset;
-                    }
-                }
-            }
-            const auto selected = selector_.select_instruction(machine_stream, i, node, target_machine_);
-
-            switch (selected.form) {
-                case lowering::MachineForm::Move:
-                    if (node.opcode == ir::OpCode::SELECT || node.opcode == ir::OpCode::BOOL_SELECT) {
-                        emit_select(selected, out);
-                    } else if (node.opcode == ir::OpCode::GEP || node.opcode == ir::OpCode::LEA) {
-                        emit_gep(selected, out);
-                    } else if (node.opcode == ir::OpCode::STORE || node.opcode == ir::OpCode::VOLATILE_STORE) {
-                        emit_memory_store(selected, out, machine_stream);
-                    } else if (node.opcode == ir::OpCode::LOAD || node.opcode == ir::OpCode::VOLATILE_LOAD) {
-                        emit_memory_load(selected, out, machine_stream);
-                    } else {
-                        emit_move(selected, out);
-                    }
-                    break;
-                case lowering::MachineForm::LoadImmediate:
-                    if (node.opcode == ir::OpCode::CONST && (node.flags & ir::Flags::IS_SPEC_CONST)) {
-                        emit_load_imm_f64(selected, out);
-                    } else {
-                        emit_load_imm(selected, out);
-                    }
-                    break;
-                case lowering::MachineForm::LoadStack:
-                    emit_load_stack(selected, out, machine_stream);
-                    break;
-                case lowering::MachineForm::StoreStack:
-                    emit_store_stack(selected, out, machine_stream);
-                    break;
-                case lowering::MachineForm::IntegerBinary32:
-                    emit_i32_binary(selected, out);
-                    break;
-                case lowering::MachineForm::IntegerBinary64:
-                    emit_i64_binary(selected, out);
-                    break;
-                case lowering::MachineForm::FloatBinary32:
-                    emit_f32_binary(selected, out);
-                    break;
-                case lowering::MachineForm::FloatBinary64:
-                    emit_f64_binary(selected, out);
-                    break;
-                case lowering::MachineForm::FloatTernaryFma32:
-                    emit_f32_fma(selected, out);
-                    break;
-                case lowering::MachineForm::Compare32:
-                    emit_cmp_i32(selected, out);
-                    break;
-                case lowering::MachineForm::VectorBinary512:
-                    emit_vec_binary512(selected, out);
-                    break;
-                case lowering::MachineForm::VectorGather512:
-                    emit_vec_gather512(selected, out);
-                    break;
-                case lowering::MachineForm::VectorStore512:
-                    emit_vec_store512(selected, out);
-                    break;
-                case lowering::MachineForm::Call:
-                    emit_call_slot(selected, i, out, branch_patches, label_to_node_index, machine_stream);
-                    break;
-                case lowering::MachineForm::Goto:
-                    emit_goto(selected, out, branch_patches, label_to_node_index);
-                    break;
-                case lowering::MachineForm::BranchCond:
-                    emit_branch_cond(selected, out, branch_patches, label_to_node_index);
-                    break;
-                case lowering::MachineForm::BranchCompare:
-                    emit_branch_compare_fused(selected, out, branch_patches, label_to_node_index);
-                    break;
-                case lowering::MachineForm::Syscall:
-                    emit_syscall(selected, out);
-                    break;
-                case lowering::MachineForm::Return: {
-                    const uint32_t frame_size = compute_frame_size(machine_stream);
-                    // Move return value to RAX / XMM0 if present
-                    if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-                        const uint32_t ret_slot = node.op_a;
-                        const ir::TypeCode tc = machine_stream.get_result_type_code(ret_slot);
-                        bool is_float = (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32);
-                        bool is_f64 = (tc == ir::TypeCode::F64);
-                        if (!is_float) {
-                            for (size_t k = 0; k < machine_stream.size(); ++k) {
-                                const auto& sn = machine_stream.get_node(k);
-                                if (sn.result_id == ret_slot) {
-                                    if (sn.opcode == ir::OpCode::ADD_F64 || sn.opcode == ir::OpCode::SUB_F64 ||
-                                        sn.opcode == ir::OpCode::MUL_F64 || sn.opcode == ir::OpCode::DIV_F64) {
-                                        is_float = true;
-                                        is_f64 = true;
-                                        break;
-                                    }
-                                    if (sn.opcode == ir::OpCode::ADD_F32 || sn.opcode == ir::OpCode::SUB_F32 ||
-                                        sn.opcode == ir::OpCode::MUL_F32 || sn.opcode == ir::OpCode::DIV_F32 ||
-                                        sn.opcode == ir::OpCode::FMA_F32 ||
-                                        (sn.opcode == ir::OpCode::CONST && (sn.flags & ir::Flags::IS_SPEC_CONST))) {
-                                        is_float = true;
-                                        is_f64 = false;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (is_float) {
-                            if (is_f64) {
-                                emit_movsd_xmm_from_stack(out, 0, vreg_offset(ret_slot));
-                            } else {
-                                emit_movss_xmm_from_stack(out, 0, vreg_offset(ret_slot));
-                            }
-                        }
-                        emit_mov_reg_from_stack(out, static_cast<uint8_t>(exec::X64Reg::RAX), vreg_offset(ret_slot));
-                    } else if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                        emit_mov_reg_from_stack(out, static_cast<uint8_t>(exec::X64Reg::RAX), vreg_offset(node.result_id));
-                    }
-
-#if defined(_WIN32)
-                    emit_add_rsp(out, frame_size);
-                    out.push_back(0x41); out.push_back(0x5F); // pop r15
-                    out.push_back(0x41); out.push_back(0x5E); // pop r14
-                    out.push_back(0x41); out.push_back(0x5D); // pop r13
-                    out.push_back(0x41); out.push_back(0x5C); // pop r12
-                    out.push_back(0x5F); // pop rdi
-                    out.push_back(0x5E); // pop rsi
-                    out.push_back(0x5D); // pop rbp
-                    out.push_back(0x5B); // pop rbx
-#endif
-                    out.push_back(0xC3);
-                    break;
-                }
-                case lowering::MachineForm::NoOp:
-                    if (node.opcode == ir::OpCode::LABEL &&
-                        (node.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE))) {
-#if defined(_WIN32)
-                        const uint32_t frame_size = compute_frame_size(machine_stream);
-                        out.push_back(0x53); // push rbx
-                        out.push_back(0x55); // push rbp
-                        out.push_back(0x56); // push rsi
-                        out.push_back(0x57); // push rdi
-                        out.push_back(0x41); out.push_back(0x54); // push r12
-                        out.push_back(0x41); out.push_back(0x55); // push r13
-                        out.push_back(0x41); out.push_back(0x56); // push r14
-                        out.push_back(0x41); out.push_back(0x57); // push r15
-                        emit_sub_rsp(out, frame_size);
-#endif
-                        emit_function_prologue_params(node, i, out, machine_stream);
-                    }
-                    break;
-                case lowering::MachineForm::Unhandled:
-                default:
-                    mark_error("Unhandled machine form selected by ISel tables", selected.node.opcode);
-                    out.push_back(0x90); 
-                    break;
-            }
+        /*
+         * Target register allocation is a strict MIR pass.
+         */
+        emitter::X64TargetRegisterInfo reg_info{};
+        dgtl::mir::regalloc::UniversalGraphColoringRegAlloc allocator(mir_function, reg_info);
+        if (!allocator.run()) {
+            mark_error("X64 MIR register allocation failed", machine::GM_NOOP);
+            return false;
         }
 
-        // --- BACKPATCH BRANCH JUMPS & CALLS ---
-        for (const PendingBranchPatch& patch : branch_patches) {
-            size_t target_node_index = machine_stream.size();
-            const auto label_it = label_to_node_index.find(patch.target_label);
-            if (label_it != label_to_node_index.end()) {
-                target_node_index = label_it->second;
-            } else {
-                auto offset_it = label_offsets_.find(patch.target_label);
-                if (offset_it != label_offsets_.end()) {
-                    const int64_t target_offset = static_cast<int64_t>(offset_it->second);
-                    const int64_t instr_end = static_cast<int64_t>(patch.instruction_end_offset);
-                    const int32_t rel32 = static_cast<int32_t>(target_offset - instr_end);
-
-                    out[patch.displacement_offset + 0] = static_cast<uint8_t>((rel32 >> 0) & 0xFF);
-                    out[patch.displacement_offset + 1] = static_cast<uint8_t>((rel32 >> 8) & 0xFF);
-                    out[patch.displacement_offset + 2] = static_cast<uint8_t>((rel32 >> 16) & 0xFF);
-                    out[patch.displacement_offset + 3] = static_cast<uint8_t>((rel32 >> 24) & 0xFF);
+        /*
+         * Frame lowering is likewise MIR-native.
+         */
+        std::vector<machine::MachineRegister> callee_saved;
+        for (const auto& instruction : mir_function.instructions()) {
+            for (const auto& operand : instruction.operands) {
+                if (operand.kind != machine::MachineOperandKind::Register ||
+                    !operand.reg.is_physical()) {
                     continue;
                 }
-
-                for (size_t k = 0; k < machine_stream.size(); ++k) {
-                    const auto& knode = machine_stream.get_node(k);
-                    if (knode.opcode == ir::OpCode::LABEL) {
-                        const bool knode_is_func = (knode.flags & (ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE)) != 0;
-                        if (knode.result_id == patch.target_label || (!knode_is_func && (knode.op_a == patch.target_label || knode.op_b == patch.target_label))) {
-                            target_node_index = k;
-                            break;
-                        }
-                    }
+                if (operand.reg.reg_class != machine::RegisterClassKind::General &&
+                    operand.reg.reg_class != machine::RegisterClassKind::Integer) {
+                    continue;
+                }
+                if (operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::RBX) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R12) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R13) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R14) ||
+                    operand.reg.id == static_cast<std::uint32_t>(exec::X64Reg::R15)) {
+                    const bool seen = std::any_of(
+                        callee_saved.begin(), callee_saved.end(),
+                        [&](const machine::MachineRegister& reg) {
+                            return reg.id == operand.reg.id;
+                        });
+                    if (!seen) callee_saved.push_back(operand.reg);
                 }
             }
+        }
 
-            if (target_node_index >= machine_stream.size()) {
-                mark_error("Unresolved branch target label", ir::OpCode::GOTO);
+        if (!x64::Win64FrameCalculator::apply_machine_function(
+                mir_function, callee_saved)) {
+            mark_error("X64 MIR frame lowering failed", machine::GM_NOOP);
+            return false;
+        }
+
+        const uint32_t frame_size = mir_function.frame_info().total_frame_bytes;
+        if (frame_size == 0u && mir_function.frame_info().has_calls) {
+            mark_error("X64 MIR frame layout produced no call frame", machine::GM_NOOP);
+            return false;
+        }
+
+        if (mir_function.has_virtual_registers()) {
+            mark_error("X64 MIR emission received virtual registers after frame lowering",
+                       machine::GM_NOOP);
+            return false;
+        }
+
+        const auto post_lowering_verify =
+            machine::MachineVerifier::verify(mir_function);
+        if (!post_lowering_verify.ok()) {
+            mark_error("MachineVerifier rejected allocated/frame-lowered X64 MIR",
+                       machine::GM_NOOP);
+            return false;
+        }
+
+        std::unordered_map<machine::BlockId, size_t> mir_block_offsets;
+        std::vector<PendingBranchPatch> branch_patches;
+        branch_patches.reserve(mir_function.instructions().size() / 8u + 4u);
+
+        const bool mir_emitted = emit_mir_native_function(
+            mir_function, frame_size, out, mir_block_offsets, branch_patches);
+        if (!mir_emitted) {
+            if (out.empty()) {
+                out.push_back(0xC3);
+            }
+            return false;
+        }
+
+        // --- BACKPATCH MIR BLOCK BRANCHES ---
+        for (const PendingBranchPatch& patch : branch_patches) {
+            const auto target_it = mir_block_offsets.find(patch.target_label);
+            if (target_it == mir_block_offsets.end()) {
+                mark_error("Unresolved MIR basic-block branch target", machine::GM_GOTO);
                 continue;
             }
 
-            const int64_t target_offset = static_cast<int64_t>(node_offsets[target_node_index]);
+            const int64_t target_offset = static_cast<int64_t>(target_it->second);
             const int64_t instr_end = static_cast<int64_t>(patch.instruction_end_offset);
             const int64_t rel64 = target_offset - instr_end;
             if (rel64 < static_cast<int64_t>(std::numeric_limits<int32_t>::min()) ||
                 rel64 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-                mark_error("Branch target displacement out of range", ir::OpCode::GOTO);
+                mark_error("MIR branch target displacement out of range", machine::GM_GOTO);
+                continue;
+            }
+
+            if (patch.displacement_offset + 4u > out.size()) {
+                mark_error("Invalid MIR branch patch offset", machine::GM_GOTO);
                 continue;
             }
 
             const int32_t rel32 = static_cast<int32_t>(rel64);
-            if (patch.displacement_offset + 4 > out.size()) {
-                mark_error("Invalid branch patch offset", ir::OpCode::GOTO);
-                continue;
-            }
-
-            out[patch.displacement_offset + 0] = static_cast<uint8_t>((rel32 >> 0) & 0xFF);
-            out[patch.displacement_offset + 1] = static_cast<uint8_t>((rel32 >> 8) & 0xFF);
-            out[patch.displacement_offset + 2] = static_cast<uint8_t>((rel32 >> 16) & 0xFF);
-            out[patch.displacement_offset + 3] = static_cast<uint8_t>((rel32 >> 24) & 0xFF);
+            out[patch.displacement_offset + 0u] = static_cast<uint8_t>((rel32 >> 0) & 0xFF);
+            out[patch.displacement_offset + 1u] = static_cast<uint8_t>((rel32 >> 8) & 0xFF);
+            out[patch.displacement_offset + 2u] = static_cast<uint8_t>((rel32 >> 16) & 0xFF);
+            out[patch.displacement_offset + 3u] = static_cast<uint8_t>((rel32 >> 24) & 0xFF);
         }
 
         if (out.empty() || out.back() != 0xC3) {
+            emit_add_rsp(out, frame_size);
             out.push_back(0xC3);
         }
-        return true;
+
+        return !had_error_;
+    }
+
+    [[nodiscard]] bool process_stream(machine::MachineFunction& mir_function, std::vector<uint8_t>& out) const {
+        return process_function(mir_function, out);
     }
 
 private:
@@ -648,15 +754,59 @@ private:
         out.push_back(static_cast<uint8_t>(0x38u | base_lo));
     }
 
-    static constexpr uint32_t MAX_FRAME_SLOTS = 16384;
-    static constexpr uint32_t FIXED_FRAME_SIZE = 131112; // 8 mod 16, ensures (64 + 131112 + 8) % 16 == 0 for exact Win64 16-byte ABI alignment
+    /*
+     * The compatibility encoder uses signed 32-bit x86 displacement fields.
+     * Keep virtual-value homes addressable without modulo aliasing.
+     */
+    static constexpr std::uint64_t MAX_ADDRESSABLE_VREG =
+        (static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) - 40ull) / 8ull;
 
-    static uint32_t compute_frame_size(const ir::IRStream& /*stream*/) noexcept {
-        return FIXED_FRAME_SIZE;
+    /*
+     * The old implementation used a fixed 131,112-byte frame and
+     * `vreg % MAX_FRAME_SLOTS` addressing. That creates silent aliasing:
+     * virtual registers separated by 16,384 names address the same stack
+     * location. A backend must never trade correctness for a convenient
+     * bounded hash.
+     *
+     * Until MachineFrameInfo stack slots become the sole source of offsets,
+     * this compatibility path uses a deterministic one-to-one value-home
+     * layout and computes the minimum frame required by the stream.
+     */
+    static uint32_t compute_frame_size(const machine::MachineFunction& function) noexcept {
+        if (function.frame_info().total_frame_bytes > 0) {
+            return function.frame_info().total_frame_bytes;
+        }
+        std::uint64_t max_vreg = 0u;
+        for (const auto& inst : function.instructions()) {
+            for (const auto& op : inst.operands) {
+                if (op.kind == machine::MachineOperandKind::Register && op.reg.valid()) {
+                    max_vreg = std::max<std::uint64_t>(max_vreg, static_cast<std::uint64_t>(op.reg.id));
+                }
+            }
+        }
+        const std::uint64_t required = 40ull + ((max_vreg + 1ull) * 8ull);
+        const std::uint64_t aligned = (required + 15ull) & ~15ull;
+        if (aligned > std::numeric_limits<std::uint32_t>::max()) {
+            return 0u;
+        }
+        return static_cast<std::uint32_t>(aligned);
     }
 
     static int32_t vreg_offset(uint32_t vreg) noexcept {
-        return static_cast<int32_t>(40 + (vreg % MAX_FRAME_SLOTS) * 8);
+        if (vreg == machine::INVALID_REG || vreg == 0u ||
+            static_cast<std::uint64_t>(vreg) > MAX_ADDRESSABLE_VREG) {
+            return 40;
+        }
+
+        const std::uint64_t offset =
+            40ull + static_cast<std::uint64_t>(vreg) * 8ull;
+
+        if (offset > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::int32_t>::max())) {
+            return 40;
+        }
+
+        return static_cast<int32_t>(offset);
     }
 
     static void emit_sub_rsp(std::vector<uint8_t>& out, uint32_t amount) {
@@ -852,62 +1002,8 @@ private:
         return static_cast<uint8_t>(exec::X64SinglePassRegisterMapper::map_gpr_branchless(vreg));
     }
 
-    static uint64_t combine_u64_from_ops(const ir::IRNode& node) noexcept {
-        return (static_cast<uint64_t>(node.op_b) << 32u) | static_cast<uint64_t>(node.op_a);
-    }
-
-    static uint64_t immediate_from_node(const ir::IRNode& node) noexcept {
-        if (node.opcode == ir::OpCode::STRING_CONST) {
-            return static_cast<uint64_t>(node.op_a);
-        }
-        if (node.opcode == ir::OpCode::CONST ||
-            node.opcode == ir::OpCode::LOAD_IMM ||
-            node.opcode == ir::OpCode::IMMEDIATE) {
-            return combine_u64_from_ops(node);
-        }
-        uint64_t imm = node.intent_hash;
-        uint64_t computed_node_hash = ir::IRNode::calculate_hash(node.opcode, node.result_id, node.op_a, node.op_b, node.op_c);
-        if (imm == 0 || imm == computed_node_hash) {
-            imm = combine_u64_from_ops(node);
-        }
-        return imm;
-    }
-
-    static void emit_load_imm(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const uint8_t dst = map_reg(node.result_id);
-        out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/(dst >= 8u)));
-        out.push_back(static_cast<uint8_t>(0xB8u + (dst & 0x7u)));
-        append_u64(out, immediate_from_node(node));
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), dst);
-        }
-    }
-
-    static void emit_load_imm_f64(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const uint64_t imm = immediate_from_node(node);
-        const uint8_t xmm_dst = map_xmm_reg(node.result_id);
-
-        const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
-        out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/false));
-        out.push_back(static_cast<uint8_t>(0xB8u + (rax & 0x7u))); // movabs rax, imm64
-        append_u64(out, imm);
-
-        out.push_back(0x66);
-        out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                             /*r=*/requires_rex(xmm_dst),
-                                             /*x=*/false,
-                                             /*b=*/false));
-        out.push_back(0x0F);
-        out.push_back(0x6E); // MOVQ xmm, r/m64
-        emit_modrm_reg_reg(out, xmm_dst, rax);
-
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), xmm_dst);
-            emit_movss_stack_from_xmm(out, vreg_offset(node.result_id), xmm_dst);
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), rax);
-        }
+    static constexpr bool requires_rex(uint8_t reg) noexcept {
+        return reg >= 8u;
     }
 
     static void emit_movq_xmm_gpr(std::vector<uint8_t>& out, uint8_t xmm_dst, uint8_t gpr_src) {
@@ -930,84 +1026,6 @@ private:
         out.push_back(0x0F);
         out.push_back(0x7E); // MOVQ r/m64, xmm
         emit_modrm_reg_reg(out, xmm_src, gpr_dst);
-    }
-
-    void emit_function_prologue_params(const ir::IRNode& node, size_t node_index, std::vector<uint8_t>& out, const ir::IRStream& stream) const {
-        const uint8_t gpr_params[4] = {
-            static_cast<uint8_t>(exec::X64Reg::RCX),
-            static_cast<uint8_t>(exec::X64Reg::RDX),
-            static_cast<uint8_t>(exec::X64Reg::R8),
-            static_cast<uint8_t>(exec::X64Reg::R9)
-        };
-
-        const uint32_t params[4] = {
-            node.op_a,
-            node.op_b,
-            node.op_c,
-            node.logic_flags
-        };
-
-        for (int i = 0; i < 4; ++i) {
-            const uint32_t param_slot = params[i];
-            if (param_slot == ir::INVALID_SLOT || param_slot == 0u) {
-                continue;
-            }
-
-            const ir::TypeCode tc = stream.get_result_type_code(param_slot);
-            const uint8_t src_gpr = gpr_params[i];
-            const uint8_t src_xmm = static_cast<uint8_t>(i);
-
-            // Always write GPR to the parameter's stack slot
-            emit_mov_stack_from_reg(out, vreg_offset(param_slot), src_gpr);
-
-            if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                const uint8_t dst_xmm = map_xmm_reg(param_slot);
-                if (dst_xmm != src_xmm) {
-                    emit_xmm_move_f64(out, dst_xmm, src_xmm);
-                }
-                emit_movsd_stack_from_xmm(out, vreg_offset(param_slot), src_xmm);
-            } else {
-                const uint8_t dst_gpr = map_reg(param_slot);
-                if (dst_gpr != src_gpr) {
-                    emit_reg_move(out, dst_gpr, src_gpr);
-                }
-            }
-        }
-
-        const auto overflow = stream.get_call_overflow_args(node_index);
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        for (size_t k = 0; k < overflow.size(); ++k) {
-            const uint32_t param_slot = overflow[k];
-            if (param_slot != ir::INVALID_SLOT && param_slot != 0u) {
-                const int32_t incoming_disp = static_cast<int32_t>(FIXED_FRAME_SIZE + 104 + k * 8);
-                emit_mov_reg_from_stack(out, r10, incoming_disp);
-                emit_mov_stack_from_reg(out, vreg_offset(param_slot), r10);
-            }
-        }
-    }
-
-    static void emit_move(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        uint32_t dst_vreg = node.result_id;
-        uint32_t src_vreg = node.op_a;
-        if (dst_vreg == ir::INVALID_SLOT && node.op_a != ir::INVALID_SLOT && node.op_b != ir::INVALID_SLOT) {
-            dst_vreg = node.op_a;
-            src_vreg = node.op_b;
-        }
-        if (dst_vreg == ir::INVALID_SLOT || src_vreg == ir::INVALID_SLOT) {
-            return;
-        }
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t dst = map_reg(dst_vreg);
-        emit_mov_reg_from_stack(out, r10, vreg_offset(src_vreg));
-        if (dst != r10) {
-            emit_reg_move(out, dst, r10);
-        }
-        emit_mov_stack_from_reg(out, vreg_offset(dst_vreg), r10);
-    }
-
-    static constexpr bool requires_rex(uint8_t reg) noexcept {
-        return reg >= 8u;
     }
 
     static uint8_t map_xmm_reg(uint32_t vreg) noexcept {
@@ -1062,12 +1080,15 @@ private:
         emit_modrm_reg_reg(out, dst, src);
     }
 
-    static void emit_zmm_move(std::vector<uint8_t>& out, uint32_t dst_vreg, uint32_t src_vreg) {
-        const uint8_t dst = map_zmm_reg(dst_vreg);
-        const uint8_t src = map_zmm_reg(src_vreg);
-        out.push_back(0x62); // EVEX prefix byte 0
-        emit_modrm_reg_reg(out, dst, src);
-    }
+    /*
+     * Kept as a compatibility helper for callers outside this migration unit.
+     * It intentionally does not emit bytes: a partial EVEX prefix is never
+     * acceptable machine code. Vector lowering must use the complete
+     * MIR-native EVEX encoder.
+     */
+    static void emit_zmm_move(std::vector<uint8_t>& /*out*/,
+                              uint32_t /*dst_vreg*/,
+                              uint32_t /*src_vreg*/) = delete;
 
     static void emit_vex3_prefix(std::vector<uint8_t>& out,
                                  uint8_t dest,
@@ -1087,742 +1108,6 @@ private:
         out.push_back(static_cast<uint8_t>((w ? 0x80u : 0u) | ((~vvvv & 0x0Fu) << 3) | (l ? 0x04u : 0u) | (pp & 0x03u)));
     }
 
-    static void emit_memory_store(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out, const ir::IRStream& stream) {
-        const ir::IRNode& node = selected.node;
-        uint32_t ptr_vreg = node.op_a;
-        uint32_t val_vreg = node.op_b;
-        if (ptr_vreg == ir::INVALID_SLOT && val_vreg != ir::INVALID_SLOT) {
-            ptr_vreg = node.op_b;
-            val_vreg = node.op_a;
-        }
-        if (ptr_vreg == ir::INVALID_SLOT || val_vreg == ir::INVALID_SLOT) {
-            return;
-        }
-
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        emit_mov_reg_from_stack(out, r11, vreg_offset(ptr_vreg));
-
-        const ir::TypeCode tc = stream.get_result_type_code(val_vreg);
-        bool is_float = (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32);
-        bool is_f64 = (tc == ir::TypeCode::F64);
-        if (!is_float) {
-            for (size_t k = 0; k < stream.size(); ++k) {
-                const auto& src_node = stream.get_node(k);
-                if (src_node.result_id == val_vreg) {
-                    if (src_node.opcode == ir::OpCode::ADD_F64 || src_node.opcode == ir::OpCode::SUB_F64 ||
-                        src_node.opcode == ir::OpCode::MUL_F64 || src_node.opcode == ir::OpCode::DIV_F64) {
-                        is_float = true;
-                        is_f64 = true;
-                        break;
-                    }
-                    if (src_node.opcode == ir::OpCode::ADD_F32 || src_node.opcode == ir::OpCode::SUB_F32 ||
-                        src_node.opcode == ir::OpCode::MUL_F32 || src_node.opcode == ir::OpCode::DIV_F32 ||
-                        src_node.opcode == ir::OpCode::FMA_F32 ||
-                        (src_node.opcode == ir::OpCode::CONST && (src_node.flags & ir::Flags::IS_SPEC_CONST))) {
-                        is_float = true;
-                        is_f64 = false;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (is_float) {
-            const uint8_t xmm0 = 0;
-            if (is_f64) {
-                emit_movsd_xmm_from_stack(out, xmm0, vreg_offset(val_vreg));
-                // MOVSD [r11], xmm0
-                out.push_back(0xF2);
-                out.push_back(0x41); // REX.B for r11
-                out.push_back(0x0F);
-                out.push_back(0x11);
-                out.push_back(0x03); // mod=00, reg=0 (xmm0), r/m=3 (r11)
-            } else {
-                emit_movss_xmm_from_stack(out, xmm0, vreg_offset(val_vreg));
-                // MOVSS [r11], xmm0
-                out.push_back(0xF3);
-                out.push_back(0x41); // REX.B for r11
-                out.push_back(0x0F);
-                out.push_back(0x11);
-                out.push_back(0x03); // mod=00, reg=0 (xmm0), r/m=3 (r11)
-            }
-            return;
-        }
-
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        emit_mov_reg_from_stack(out, r10, vreg_offset(val_vreg));
-        // MOV [r11], r10 (64-bit indirect store)
-        out.push_back(0x4D); // REX.W=1, REX.R=1 (r10), REX.B=1 (r11)
-        out.push_back(0x89);
-        out.push_back(0x13); // mod=00, reg=2 (r10), r/m=3 (r11)
-    }
-
-    static void emit_memory_load(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out, const ir::IRStream& stream) {
-        const ir::IRNode& node = selected.node;
-        const uint32_t ptr_vreg = node.op_a;
-        const uint32_t dst_vreg = node.result_id;
-        if (ptr_vreg == ir::INVALID_SLOT || dst_vreg == ir::INVALID_SLOT) {
-            return;
-        }
-
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        emit_mov_reg_from_stack(out, r11, vreg_offset(ptr_vreg));
-
-        const ir::TypeCode tc = stream.get_result_type_code(dst_vreg);
-        bool is_float = (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32);
-        bool is_f64 = (tc == ir::TypeCode::F64);
-
-        if (is_float) {
-            const uint8_t xmm0 = 0;
-            if (is_f64) {
-                // MOVSD xmm0, [r11]
-                out.push_back(0xF2);
-                out.push_back(0x41); // REX.B for r11
-                out.push_back(0x0F);
-                out.push_back(0x10);
-                out.push_back(0x03);
-                emit_movsd_stack_from_xmm(out, vreg_offset(dst_vreg), xmm0);
-            } else {
-                // MOVSS xmm0, [r11]
-                out.push_back(0xF3);
-                out.push_back(0x41); // REX.B for r11
-                out.push_back(0x0F);
-                out.push_back(0x10);
-                out.push_back(0x03);
-                emit_movss_stack_from_xmm(out, vreg_offset(dst_vreg), xmm0);
-            }
-            return;
-        }
-
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        // MOV r10, [r11] (64-bit indirect load)
-        out.push_back(0x4D); // REX.W=1, REX.R=1 (r10), REX.B=1 (r11)
-        out.push_back(0x8B);
-        out.push_back(0x13);
-        emit_mov_stack_from_reg(out, vreg_offset(dst_vreg), r10);
-    }
-
-    static void emit_load_stack(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out, const ir::IRStream& stream) {
-        const ir::IRNode& node = selected.node;
-        if (node.opcode == ir::OpCode::LOAD || node.opcode == ir::OpCode::VOLATILE_LOAD) {
-            emit_memory_load(selected, out, stream);
-            return;
-        }
-
-        const uint32_t src_vreg = node.op_a;
-        const uint32_t dst_vreg = node.result_id;
-
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t dst = map_reg(dst_vreg);
-        if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(src_vreg));
-            emit_movsd_xmm_from_stack(out, 0, vreg_offset(src_vreg));
-        }
-        if (dst != r10) {
-            emit_reg_move(out, dst, r10);
-        }
-        if (dst_vreg != ir::INVALID_SLOT && dst_vreg != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(dst_vreg), r10);
-            emit_movsd_stack_from_xmm(out, vreg_offset(dst_vreg), 0);
-        }
-    }
-
-    static void emit_store_stack(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out, const ir::IRStream& stream) {
-        const ir::IRNode& node = selected.node;
-        if (node.opcode == ir::OpCode::STORE || node.opcode == ir::OpCode::VOLATILE_STORE) {
-            emit_memory_store(selected, out, stream);
-            return;
-        }
-
-        uint32_t dest_vreg = node.op_a;
-        uint32_t src_vreg = node.op_b;
-        if (dest_vreg == ir::INVALID_SLOT && src_vreg != ir::INVALID_SLOT) {
-            dest_vreg = node.op_b;
-            src_vreg = node.op_a;
-        }
-
-        const ir::TypeCode tc = stream.get_result_type_code(src_vreg);
-        bool is_float = (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32);
-        if (!is_float && src_vreg < stream.size()) {
-            const auto& src_node = stream.get_node(src_vreg);
-            if (src_node.opcode == ir::OpCode::ADD_F64 || src_node.opcode == ir::OpCode::SUB_F64 ||
-                src_node.opcode == ir::OpCode::MUL_F64 || src_node.opcode == ir::OpCode::DIV_F64 ||
-                src_node.opcode == ir::OpCode::ADD_F32 || src_node.opcode == ir::OpCode::SUB_F32 ||
-                src_node.opcode == ir::OpCode::MUL_F32 || src_node.opcode == ir::OpCode::DIV_F32 ||
-                (src_node.opcode == ir::OpCode::CONST && (src_node.flags & ir::Flags::IS_SPEC_CONST))) {
-                is_float = true;
-            }
-        }
-
-        if (is_float || tc == ir::TypeCode::F64) {
-            const uint8_t xmm_src = map_xmm_reg(src_vreg);
-            if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
-                emit_movsd_xmm_from_stack(out, xmm_src, vreg_offset(src_vreg));
-            }
-            if (dest_vreg != ir::INVALID_SLOT && dest_vreg != 0u) {
-                emit_movsd_stack_from_xmm(out, vreg_offset(dest_vreg), xmm_src);
-            }
-            return;
-        }
-
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t src = map_reg(src_vreg);
-        if (src_vreg != ir::INVALID_SLOT && src_vreg != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(src_vreg));
-        }
-        if (src != r10) {
-            emit_reg_move(out, src, r10);
-        }
-        if (dest_vreg != ir::INVALID_SLOT && dest_vreg != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(dest_vreg), r10);
-        }
-    }
-
-    static void emit_select(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        const uint8_t dst = map_reg(node.result_id);
-
-        // Load cond (node.op_a)
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
-        } else {
-            out.push_back(exec::X64Encoding::rex(/*w=*/true, false, false, requires_rex(r10)));
-            out.push_back(0x31); out.push_back(static_cast<uint8_t>(0xC0u | ((r10 & 7u) << 3u) | (r10 & 7u)));
-        }
-
-        // Load false_val (node.op_c) into r11 as default
-        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
-            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_c));
-        } else {
-            out.push_back(exec::X64Encoding::rex(/*w=*/true, false, false, requires_rex(r11)));
-            out.push_back(0x31); out.push_back(static_cast<uint8_t>(0xC0u | ((r11 & 7u) << 3u) | (r11 & 7u)));
-        }
-
-        // TEST r10, r10
-        out.push_back(exec::X64Encoding::rex(/*w=*/true, requires_rex(r10), false, requires_rex(r10)));
-        out.push_back(0x85);
-        emit_modrm_reg_reg(out, r10, r10);
-
-        // If true_val (node.op_b) is present:
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_b));
-            // CMOVNZ r11, r10
-            out.push_back(exec::X64Encoding::rex(/*w=*/true, requires_rex(r11), false, requires_rex(r10)));
-            out.push_back(0x0F);
-            out.push_back(0x45);
-            emit_modrm_reg_reg(out, r11, r10);
-        }
-
-        if (dst != r11) {
-            emit_reg_move(out, dst, r11);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r11);
-        }
-    }
-
-    static void emit_gep(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        const uint8_t dst = map_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
-        } else {
-            out.push_back(exec::X64Encoding::rex(/*w=*/true, false, false, requires_rex(r10)));
-            out.push_back(0x31); out.push_back(static_cast<uint8_t>(0xC0u | ((r10 & 7u) << 3u) | (r10 & 7u)));
-        }
-
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
-            // ADD r10, r11 (base + offset)
-            out.push_back(exec::X64Encoding::rex(/*w=*/true, requires_rex(r11), false, requires_rex(r10)));
-            out.push_back(0x01);
-            emit_modrm_reg_reg(out, r11, r10);
-        }
-
-        if (dst != r10) {
-            emit_reg_move(out, dst, r10);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
-        }
-    }
-
-    static void emit_i32_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        const uint8_t dst = map_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
-        } else {
-            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xD2); // XOR r10, r10
-        }
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
-        } else {
-            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xDB); // XOR r11, r11
-        }
-
-        switch (original_opcode) {
-            case ir::OpCode::ADD_I32:
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x01); // ADD r/m32, r32
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::SUB_I32:
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x29); // SUB r/m32, r32
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::MUL_I32:
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r10), /*x=*/false, /*b=*/requires_rex(r11)));
-                out.push_back(0x0F);
-                out.push_back(0xAF); // IMUL r32, r/m32
-                emit_modrm_reg_reg(out, r10, r11);
-                break;
-            case ir::OpCode::AND_I32:
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x21); // AND r/m32, r32
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::OR_I32:
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x09); // OR r/m32, r32
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::XOR_I32:
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x31); // XOR r/m32, r32
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::SHL_I32: {
-                const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                emit_reg_move32(out, count_reg, r11);
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0xD3); // SHL r/m32, CL
-                emit_modrm_reg_reg(out, 0x04, r10);
-                break;
-            }
-            case ir::OpCode::SHR_I32: {
-                const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                emit_reg_move32(out, count_reg, r11);
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0xD3); // SAR r/m32, CL
-                emit_modrm_reg_reg(out, 0x07, r10);
-                break;
-            }
-            case ir::OpCode::DIV_I32:
-            case ir::OpCode::MOD_I32: {
-                const uint8_t eax = static_cast<uint8_t>(exec::X64Reg::RAX);
-                const uint8_t edx = static_cast<uint8_t>(exec::X64Reg::RDX);
-                emit_reg_move32(out, eax, r10);
-                out.push_back(0x99); // CDQ
-                out.push_back(exec::X64Encoding::rex(/*w=*/false, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r11)));
-                out.push_back(0xF7);
-                emit_modrm_reg_reg(out, 0x07, r11); // IDIV r/m32
-
-                if (original_opcode == ir::OpCode::DIV_I32) {
-                    emit_reg_move32(out, r10, eax);
-                } else {
-                    emit_reg_move32(out, r10, edx);
-                }
-                break;
-            }
-            default:
-                out.push_back(0x90);
-                break;
-        }
-
-        // Sign-extend 32-bit ALU result into 64-bit r10 so signed comparisons and 64-bit consumers are exact
-        out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r10), /*x=*/false, /*b=*/requires_rex(r10)));
-        out.push_back(0x63); // MOVSXD r10, r10d
-        emit_modrm_reg_reg(out, r10, r10);
-
-        if (dst != r10) {
-            emit_reg_move(out, dst, r10);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
-        }
-    }
-
-    static void emit_i64_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        const uint8_t dst = map_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
-        } else {
-            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xD2); // XOR r10, r10
-        }
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
-        } else {
-            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xDB); // XOR r11, r11
-        }
-
-        switch (original_opcode) {
-            case ir::OpCode::ADD_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x01); // ADD r/m64, r64
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::SUB_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x29); // SUB r/m64, r64
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::AND_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x21); // AND r/m64, r64
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::OR_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x09); // OR r/m64, r64
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::XOR_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r11), /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0x31); // XOR r/m64, r64
-                emit_modrm_reg_reg(out, r11, r10);
-                break;
-            case ir::OpCode::SHL_I64: {
-                const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                emit_reg_move(out, count_reg, r11);
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0xD3); // SHL r/m64, CL
-                emit_modrm_reg_reg(out, 0x04, r10);
-                break;
-            }
-            case ir::OpCode::SHR_I64: {
-                const uint8_t count_reg = static_cast<uint8_t>(exec::X64Reg::RCX);
-                emit_reg_move(out, count_reg, r11);
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r10)));
-                out.push_back(0xD3); // SAR r/m64, CL
-                emit_modrm_reg_reg(out, 0x07, r10);
-                break;
-            }
-            case ir::OpCode::MUL_I64:
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/requires_rex(r10), /*x=*/false, /*b=*/requires_rex(r11)));
-                out.push_back(0x0F);
-                out.push_back(0xAF); // IMUL r64, r/m64
-                emit_modrm_reg_reg(out, r10, r11);
-                break;
-            case ir::OpCode::DIV_I64:
-            case ir::OpCode::MOD_I64: {
-                const uint8_t eax = static_cast<uint8_t>(exec::X64Reg::RAX);
-                const uint8_t edx = static_cast<uint8_t>(exec::X64Reg::RDX);
-                emit_reg_move(out, eax, r10);
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/false));
-                out.push_back(0x99); // CQO
-                out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/requires_rex(r11)));
-                out.push_back(0xF7);
-                emit_modrm_reg_reg(out, 0x07, r11); // IDIV r/m64
-
-                if (original_opcode == ir::OpCode::DIV_I64) {
-                    emit_reg_move(out, r10, eax);
-                } else {
-                    emit_reg_move(out, r10, edx);
-                }
-                break;
-            }
-            default:
-                out.push_back(0x90);
-                break;
-        }
-
-        if (dst != r10) {
-            emit_reg_move(out, dst, r10);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
-        }
-    }
-
-    static void emit_f32_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t xmm4 = 4;
-        const uint8_t xmm5 = 5;
-        const uint8_t dst = map_xmm_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_movss_xmm_from_stack(out, xmm4, vreg_offset(node.op_a));
-        } else {
-            out.push_back(0x0F); out.push_back(0x57); emit_modrm_reg_reg(out, xmm4, xmm4); // xorps xmm4, xmm4
-        }
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_movss_xmm_from_stack(out, xmm5, vreg_offset(node.op_b));
-        } else {
-            out.push_back(0x0F); out.push_back(0x57); emit_modrm_reg_reg(out, xmm5, xmm5); // xorps xmm5, xmm5
-        }
-
-        out.push_back(0xF3); // Scalar FP32 prefix for ADDSS/SUBSS/MULSS/DIVSS
-        out.push_back(0x0F);
-        switch (original_opcode) {
-            case ir::OpCode::ADD_F32: out.push_back(0x58); break; // ADDSS
-            case ir::OpCode::SUB_F32: out.push_back(0x5C); break; // SUBSS
-            case ir::OpCode::MUL_F32: out.push_back(0x59); break; // MULSS
-            case ir::OpCode::DIV_F32: out.push_back(0x5E); break; // DIVSS
-            default:
-                out.push_back(0x90);
-                return;
-        }
-        emit_modrm_reg_reg(out, xmm4, xmm5);
-
-        if (dst != xmm4) {
-            emit_xmm_move(out, dst, xmm4);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_movss_stack_from_xmm(out, vreg_offset(node.result_id), xmm4);
-        }
-    }
-
-    static void emit_f64_binary(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t xmm4 = 4;
-        const uint8_t xmm5 = 5;
-        const uint8_t dst = map_xmm_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_movsd_xmm_from_stack(out, xmm4, vreg_offset(node.op_a));
-        } else {
-            out.push_back(0x66); out.push_back(0x0F); out.push_back(0x57); emit_modrm_reg_reg(out, xmm4, xmm4); // xorpd xmm4, xmm4
-        }
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_movsd_xmm_from_stack(out, xmm5, vreg_offset(node.op_b));
-        } else {
-            out.push_back(0x66); out.push_back(0x0F); out.push_back(0x57); emit_modrm_reg_reg(out, xmm5, xmm5); // xorpd xmm5, xmm5
-        }
-
-        out.push_back(0xF2); // Scalar FP64 prefix
-        out.push_back(0x0F);
-        switch (original_opcode) {
-            case ir::OpCode::ADD_F64: out.push_back(0x58); break; // ADDSD
-            case ir::OpCode::SUB_F64: out.push_back(0x5C); break; // SUBSD
-            case ir::OpCode::MUL_F64: out.push_back(0x59); break; // MULSD
-            case ir::OpCode::DIV_F64: out.push_back(0x5E); break; // DIVSD
-            default:
-                out.push_back(0x90);
-                return;
-        }
-        emit_modrm_reg_reg(out, xmm4, xmm5);
-
-        if (dst != xmm4) {
-            emit_xmm_move_f64(out, dst, xmm4);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), xmm4);
-        }
-    }
-
-    static void emit_f32_fma(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const uint8_t xmm0 = 0;
-        const uint8_t xmm1 = 1;
-        const uint8_t xmm2 = 2;
-        const uint8_t dst = map_xmm_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_movss_xmm_from_stack(out, xmm0, vreg_offset(node.op_a));
-        }
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_movss_xmm_from_stack(out, xmm1, vreg_offset(node.op_b));
-        }
-        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
-            emit_movss_xmm_from_stack(out, xmm2, vreg_offset(node.op_c));
-        }
-
-        // xmm0 = (xmm0 * xmm1) + xmm2
-        // MULSS xmm0, xmm1
-        out.push_back(0xF3);
-        out.push_back(0x0F);
-        out.push_back(0x59);
-        emit_modrm_reg_reg(out, xmm0, xmm1);
-
-        // ADDSS xmm0, xmm2
-        out.push_back(0xF3);
-        out.push_back(0x0F);
-        out.push_back(0x58);
-        emit_modrm_reg_reg(out, xmm0, xmm2);
-
-        if (dst != xmm0) {
-            emit_xmm_move(out, dst, xmm0);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_movss_stack_from_xmm(out, vreg_offset(node.result_id), xmm0);
-        }
-    }
-
-    static void emit_cmp_i32(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-        const uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
-        const uint8_t dst = map_reg(node.result_id);
-
-        if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) {
-            emit_mov_reg_from_stack(out, r10, vreg_offset(node.op_a));
-        }
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_mov_reg_from_stack(out, r11, vreg_offset(node.op_b));
-        }
-
-        out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                             /*r=*/requires_rex(r11),
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(r10)));
-        out.push_back(0x39); // CMP r/m64, r64 (r10 vs r11)
-        emit_modrm_reg_reg(out, r11, r10);
-
-        uint8_t cond = 0;
-        switch (original_opcode) {
-            case ir::OpCode::CMP_EQ_I32: cond = 0x94; break;
-            case ir::OpCode::CMP_NE_I32: cond = 0x95; break;
-            case ir::OpCode::CMP_LT_I32: cond = 0x9C; break;
-            case ir::OpCode::CMP_LE_I32: cond = 0x9E; break;
-            case ir::OpCode::CMP_GT_I32: cond = 0x9F; break;
-            case ir::OpCode::CMP_GE_I32: cond = 0x9D; break;
-            default:
-                cond = 0x9E;
-                break;
-        }
-
-        out.push_back(exec::X64Encoding::rex(/*w=*/false,
-                                             /*r=*/false,
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(r10)));
-        out.push_back(0x0F);
-        out.push_back(cond);
-        emit_modrm_reg_reg(out, 0x00, r10);
-
-        out.push_back(exec::X64Encoding::rex(/*w=*/false,
-                                             /*r=*/requires_rex(r10),
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(r10)));
-        out.push_back(0x0F);
-        out.push_back(0xB6); // MOVZX r32, r/m8
-        emit_modrm_reg_reg(out, r10, r10);
-
-        if (dst != r10) {
-            emit_reg_move(out, dst, r10);
-        }
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            emit_mov_stack_from_reg(out, vreg_offset(node.result_id), r10);
-        }
-    }
-
-    static void emit_vec_binary512(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        emit_zmm_move(out, selected.node.result_id, selected.node.op_a);
-    }
-
-    static void emit_vec_gather512(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        emit_zmm_move(out, selected.node.result_id, selected.node.op_a);
-    }
-
-    static void emit_vec_store512(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        emit_zmm_move(out, selected.node.op_a, selected.node.op_b);
-    }
-
-    static void emit_goto(const lowering::SelectedInstruction& selected,
-                          std::vector<uint8_t>& out,
-                          std::vector<PendingBranchPatch>& patches,
-                          const std::unordered_map<uint32_t, size_t>& /*label_to_node_index*/) {
-        const ir::IRNode& node = selected.node;
-        const uint32_t target_label = (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) ? node.op_a : node.result_id;
-
-        out.push_back(0xE9); // JMP rel32
-        const size_t disp_offset = out.size();
-        out.push_back(0x00);
-        out.push_back(0x00);
-        out.push_back(0x00);
-        out.push_back(0x00);
-        patches.push_back(PendingBranchPatch{disp_offset, out.size(), target_label});
-    }
-
-    static void emit_branch_cond(const lowering::SelectedInstruction& selected,
-                                 std::vector<uint8_t>& out,
-                                 std::vector<PendingBranchPatch>& patches,
-                                 const std::unordered_map<uint32_t, size_t>& /*label_to_node_index*/) {
-        const ir::IRNode& node = selected.node;
-        const uint32_t cond_vreg = node.op_a;
-        const uint32_t target_label = (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) ? node.op_b : node.result_id;
-
-        const uint8_t cond = map_reg(cond_vreg);
-        if (cond_vreg != ir::INVALID_SLOT && cond_vreg != 0u) {
-            emit_mov_reg_from_stack(out, cond, vreg_offset(cond_vreg));
-        }
-
-        out.push_back(exec::X64Encoding::rex(/*w=*/true,
-                                             /*r=*/requires_rex(cond),
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(cond)));
-        out.push_back(0x85); // TEST r/m64, r64
-        emit_modrm_reg_reg(out, cond, cond);
-
-        out.push_back(0x0F);
-        out.push_back(node.opcode == ir::OpCode::BRANCH_UNLIKELY ? 0x84 : 0x85); // JNZ / JZ rel32
-        const size_t disp_offset = out.size();
-        out.push_back(0x00);
-        out.push_back(0x00);
-        out.push_back(0x00);
-        out.push_back(0x00);
-        patches.push_back(PendingBranchPatch{disp_offset, out.size(), target_label});
-    }
-
-    static void emit_branch_compare_fused(const lowering::SelectedInstruction& selected,
-                                          std::vector<uint8_t>& out,
-                                          std::vector<PendingBranchPatch>& patches,
-                                          const std::unordered_map<uint32_t, size_t>& /*label_to_node_index*/) {
-        const ir::IRNode& node = selected.node;
-        const uint32_t lhs_vreg = node.op_a;
-        const uint32_t rhs_vreg = node.op_b;
-        const uint32_t target_label = node.op_c;
-
-        const uint8_t lhs = map_reg(lhs_vreg);
-        const uint8_t rhs = map_reg(rhs_vreg);
-
-        if (lhs_vreg != ir::INVALID_SLOT && lhs_vreg != 0u) {
-            emit_mov_reg_from_stack(out, lhs, vreg_offset(lhs_vreg));
-        }
-        if (rhs_vreg != ir::INVALID_SLOT && rhs_vreg != 0u) {
-            emit_mov_reg_from_stack(out, rhs, vreg_offset(rhs_vreg));
-        }
-
-        out.push_back(exec::X64Encoding::rex(/*w=*/false,
-                                             /*r=*/requires_rex(rhs),
-                                             /*x=*/false,
-                                             /*b=*/requires_rex(lhs)));
-        out.push_back(0x39); // CMP r/m32, r32
-        emit_modrm_reg_reg(out, rhs, lhs);
-
-        out.push_back(0x0F);
-        out.push_back(0x85); // JNZ rel32
-        const size_t disp_offset = out.size();
-        out.push_back(0x00);
-        out.push_back(0x00);
-        out.push_back(0x00);
-        out.push_back(0x00);
-        patches.push_back(PendingBranchPatch{disp_offset, out.size(), target_label});
-    }
-
-    static void emit_syscall(const lowering::SelectedInstruction&, std::vector<uint8_t>& out) {
-        out.push_back(0x0F);
-        out.push_back(0x05); // SYSCALL
-    }
-
     [[nodiscard]] uintptr_t resolve_runtime_function(std::string_view name) const noexcept {
         const auto it = runtime_functions_.find(std::string(name));
         if (it == runtime_functions_.end()) {
@@ -1831,358 +1116,1078 @@ private:
         return static_cast<uintptr_t>(it->second);
     }
 
-    [[nodiscard]] static const char* runtime_symbol_for_opcode(ir::OpCode opcode) noexcept {
-        return dgtl::isa::lowering::runtime_contract::runtime_symbol_for_opcode(opcode);
+    [[nodiscard]] static const char* runtime_symbol_for_opcode(machine::MachineOpcode opcode) noexcept {
+        return dgtl::mir::runtime_contract::runtime_symbol_for_opcode(opcode);
+    }
+    static bool is_virtual_reg(const machine::MachineRegister& reg) noexcept {
+        return reg.valid() && reg.is_virtual();
     }
 
-    void emit_call_address(uintptr_t address, const ir::IRNode& node, size_t node_index, std::vector<uint8_t>& out, const ir::IRStream& stream, bool is_gpr_float_helper = false) const {
-#if defined(_WIN32)
-        const auto overflow = stream.get_call_overflow_args(node_index);
-        const size_t num_stack_args = (overflow.size() > 1) ? (overflow.size() - 1) : 0;
-        const size_t stack_alloc = 32 + ((num_stack_args + 1) / 2) * 16;
-        emit_sub_rsp(out, static_cast<uint32_t>(stack_alloc));
+    static bool is_physical_reg(const machine::MachineRegister& reg) noexcept {
+        return reg.valid() && reg.is_physical();
+    }
 
-        for (size_t k = 1; k < overflow.size(); ++k) {
-            if (overflow[k] != ir::INVALID_SLOT && overflow[k] != 0u) {
-                const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-                emit_mov_reg_from_stack(out, r10, static_cast<int32_t>(vreg_offset(overflow[k]) + stack_alloc));
-                emit_mov_stack_from_reg(out, static_cast<int32_t>(32 + (k - 1) * 8), r10);
-            }
+    static std::uint32_t mir_reg_id(const machine::MachineOperand& operand) noexcept {
+        return operand.kind == machine::MachineOperandKind::Register
+            ? operand.reg.id
+            : machine::INVALID_REG;
+    }
+
+    static std::int32_t mir_vreg_offset(const machine::MachineRegister& reg) noexcept {
+        if (!is_virtual_reg(reg) || reg.id == 0u ||
+            static_cast<std::uint64_t>(reg.id) > MAX_ADDRESSABLE_VREG) {
+            return 40;
         }
-#endif
+        const std::uint64_t offset = 40ull + static_cast<std::uint64_t>(reg.id) * 8ull;
+        if (offset > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+            return 40;
+        }
+        return static_cast<std::int32_t>(offset);
+    }
 
-        // movabs rax, imm64
-        out.push_back(exec::X64Encoding::rex(/*w=*/true, /*r=*/false, /*x=*/false, /*b=*/false));
-        out.push_back(0xB8);
-        append_u64(out, static_cast<uint64_t>(address));
-
-        // call rax
-        out.push_back(0xFF);
-        out.push_back(0xD0);
-
-#if defined(_WIN32)
-        emit_add_rsp(out, static_cast<uint32_t>(stack_alloc));
-#endif
-
-        if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-            const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
-            if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                const uint8_t dst_xmm = map_xmm_reg(node.result_id);
-                if (is_gpr_float_helper) {
-                    const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
-                    emit_mov_stack_from_reg(out, vreg_offset(node.result_id), rax);
-                    emit_movq_xmm_gpr(out, 0, rax);
-                    if (dst_xmm != 0) {
-                        emit_xmm_move_f64(out, dst_xmm, 0);
-                    }
-                    emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), 0);
-                } else {
-                    if (dst_xmm != 0) {
-                        emit_xmm_move_f64(out, dst_xmm, 0);
-                    }
-                    emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), 0);
-                    emit_movq_gpr_xmm(out, static_cast<uint8_t>(exec::X64Reg::RAX), 0);
-                    emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
-                }
-            } else {
-                const uint8_t dst = map_reg(node.result_id);
-                if (dst != static_cast<uint8_t>(exec::X64Reg::RAX)) {
-                    emit_reg_move(out, dst, static_cast<uint8_t>(exec::X64Reg::RAX));
-                }
-                emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
+    static void mir_load_gpr(const machine::MachineOperand& operand,
+                             std::uint8_t scratch,
+                             std::vector<std::uint8_t>& out) {
+        if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.valid()) {
+            return;
+        }
+        if (is_virtual_reg(operand.reg)) {
+            emit_mov_reg_from_stack(out, scratch, mir_vreg_offset(operand.reg));
+        } else {
+            const std::uint8_t src = static_cast<std::uint8_t>(operand.reg.id & 0xFFu);
+            if (src != scratch) {
+                emit_reg_move(out, scratch, src);
             }
         }
     }
 
-    static bool emit_call_fastpath(const lowering::SelectedInstruction& selected, std::vector<uint8_t>& out) {
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-        switch (original_opcode) {
-            case ir::OpCode::ACQUIRE_FENCE:
-                out.push_back(0x0F); out.push_back(0xAE); out.push_back(0xE8); // LFENCE
-                return true;
-            case ir::OpCode::RELEASE_FENCE:
-                out.push_back(0x0F); out.push_back(0xAE); out.push_back(0xF8); // SFENCE
-                return true;
-            case ir::OpCode::ATOMIC_FENCE:
-            case ir::OpCode::MEMORY_FENCE:
-            case ir::OpCode::BARRIER_SYNC:
-            case ir::OpCode::SYNC_BARRIER:
-                out.push_back(0x0F); out.push_back(0xAE); out.push_back(0xF0); // MFENCE
-                return true;
+    static void mir_store_gpr(const machine::MachineOperand& operand,
+                              std::uint8_t source,
+                              std::vector<std::uint8_t>& out) {
+        if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.valid()) {
+            return;
+        }
+        if (is_virtual_reg(operand.reg)) {
+            emit_mov_stack_from_reg(out, mir_vreg_offset(operand.reg), source);
+        } else {
+            const std::uint8_t dst = static_cast<std::uint8_t>(operand.reg.id & 0xFFu);
+            if (dst != source) {
+                emit_reg_move(out, dst, source);
+            }
+        }
+    }
+
+    static void mir_load_f32(const machine::MachineOperand& operand,
+                             std::uint8_t scratch,
+                             std::vector<std::uint8_t>& out) {
+        if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.valid()) {
+            return;
+        }
+        if (is_virtual_reg(operand.reg)) {
+            emit_movss_xmm_from_stack(out, scratch, mir_vreg_offset(operand.reg));
+        } else {
+            const std::uint8_t src = static_cast<std::uint8_t>(operand.reg.id & 0xFFu);
+            if (src != scratch) {
+                emit_xmm_move(out, scratch, src);
+            }
+        }
+    }
+
+    static void mir_store_f32(const machine::MachineOperand& operand,
+                              std::uint8_t source,
+                              std::vector<std::uint8_t>& out) {
+        if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.valid()) {
+            return;
+        }
+        if (is_virtual_reg(operand.reg)) {
+            emit_movss_stack_from_xmm(out, mir_vreg_offset(operand.reg), source);
+        } else {
+            const std::uint8_t dst = static_cast<std::uint8_t>(operand.reg.id & 0xFFu);
+            if (dst != source) {
+                emit_xmm_move(out, dst, source);
+            }
+        }
+    }
+
+    static void mir_load_f64(const machine::MachineOperand& operand,
+                             std::uint8_t scratch,
+                             std::vector<std::uint8_t>& out) {
+        if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.valid()) {
+            return;
+        }
+        if (is_virtual_reg(operand.reg)) {
+            emit_movsd_xmm_from_stack(out, scratch, mir_vreg_offset(operand.reg));
+        } else {
+            const std::uint8_t src = static_cast<std::uint8_t>(operand.reg.id & 0xFFu);
+            if (src != scratch) {
+                emit_xmm_move_f64(out, scratch, src);
+            }
+        }
+    }
+
+    static void mir_store_f64(const machine::MachineOperand& operand,
+                              std::uint8_t source,
+                              std::vector<std::uint8_t>& out) {
+        if (operand.kind != machine::MachineOperandKind::Register || !operand.reg.valid()) {
+            return;
+        }
+        if (is_virtual_reg(operand.reg)) {
+            emit_movsd_stack_from_xmm(out, mir_vreg_offset(operand.reg), source);
+        } else {
+            const std::uint8_t dst = static_cast<std::uint8_t>(operand.reg.id & 0xFFu);
+            if (dst != source) {
+                emit_xmm_move_f64(out, dst, source);
+            }
+        }
+    }
+
+    static const machine::MachineOperand* mir_def(const machine::MachineInstruction& instr) noexcept {
+        for (const auto& operand : instr.operands) {
+            if (operand.is_def()) return &operand;
+        }
+        return nullptr;
+    }
+
+    static const machine::MachineOperand* mir_use(const machine::MachineInstruction& instr,
+                                                  std::size_t ordinal) noexcept {
+        std::size_t seen = 0u;
+        for (const auto& operand : instr.operands) {
+            if (!operand.is_use()) continue;
+            if (operand.kind == machine::MachineOperandKind::BasicBlock) continue;
+            if (seen++ == ordinal) return &operand;
+        }
+        return nullptr;
+    }
+
+    static const machine::MachineOperand* mir_block_operand(const machine::MachineInstruction& instr,
+                                                            std::size_t ordinal) noexcept {
+        std::size_t seen = 0u;
+        for (const auto& operand : instr.operands) {
+            if (operand.kind != machine::MachineOperandKind::BasicBlock) continue;
+            if (seen++ == ordinal) return &operand;
+        }
+        return nullptr;
+    }
+
+    static std::uint8_t x64_condition_code(machine::ComparisonPredicate pred) noexcept {
+        switch (pred) {
+            case machine::ComparisonPredicate::Equal:
+                return 0x4; // E
+            case machine::ComparisonPredicate::NotEqual:
+                return 0x5; // NE
+            case machine::ComparisonPredicate::SignedLessThan:
+                return 0xC; // L
+            case machine::ComparisonPredicate::SignedLessEqual:
+                return 0xE; // LE
+            case machine::ComparisonPredicate::SignedGreaterThan:
+                return 0xF; // G
+            case machine::ComparisonPredicate::SignedGreaterEqual:
+                return 0xD; // GE
+            case machine::ComparisonPredicate::UnsignedLessThan:
+                return 0x2; // B
+            case machine::ComparisonPredicate::UnsignedLessEqual:
+                return 0x6; // BE
+            case machine::ComparisonPredicate::UnsignedGreaterThan:
+                return 0x7; // A
+            case machine::ComparisonPredicate::UnsignedGreaterEqual:
+                return 0x3; // AE
+            case machine::ComparisonPredicate::Ordered:
+                return 0xB; // NP
+            case machine::ComparisonPredicate::Unordered:
+                return 0xA; // P
             default:
+                return 0x5;
+        }
+    }
+
+    static std::uint8_t x64_condition_code(const machine::MachineInstruction& instr) noexcept {
+        return x64_condition_code(instr.comparison_predicate());
+    }
+
+    static std::uint8_t x64_condition_code(machine::MachineOpcode opcode) noexcept {
+        switch (opcode) {
+            case machine::GM_ICMP32_EQ: case machine::GM_ICMP64_EQ:
+            case machine::GM_FCMP32_EQ: case machine::GM_FCMP64_EQ:
+            case machine::GM_BR_COMPARE_EQ:
+                return 0x4;
+            case machine::GM_ICMP32_NE: case machine::GM_ICMP64_NE:
+            case machine::GM_FCMP32_NE: case machine::GM_FCMP64_NE:
+            case machine::GM_BR_COMPARE_NE:
+                return 0x5;
+            case machine::GM_ICMP32_LT: case machine::GM_ICMP64_LT:
+            case machine::GM_FCMP32_LT: case machine::GM_FCMP64_LT:
+            case machine::GM_BR_COMPARE_LT:
+                return 0xC;
+            case machine::GM_ICMP32_LE: case machine::GM_ICMP64_LE:
+            case machine::GM_FCMP32_LE: case machine::GM_FCMP64_LE:
+            case machine::GM_BR_COMPARE_LE:
+                return 0xE;
+            case machine::GM_ICMP32_GT: case machine::GM_ICMP64_GT:
+            case machine::GM_FCMP32_GT: case machine::GM_FCMP64_GT:
+            case machine::GM_BR_COMPARE_GT:
+                return 0xF;
+            case machine::GM_ICMP32_GE: case machine::GM_ICMP64_GE:
+            case machine::GM_FCMP32_GE: case machine::GM_FCMP64_GE:
+            case machine::GM_BR_COMPARE_GE:
+                return 0xD;
+            case machine::GM_ICMP32:
+            case machine::GM_ICMP64:
+            case machine::GM_FCMP32:
+            case machine::GM_FCMP64:
+                return 0x5; // Default NE (not equal / true branch)
+            default: return 0x5;
+        }
+    }
+
+    static void emit_rel32_jump(std::vector<std::uint8_t>& out,
+                                std::uint8_t condition,
+                                std::vector<PendingBranchPatch>& patches,
+                                machine::BlockId target) {
+        if (condition == 0xFFu) {
+            out.push_back(0xE9);
+        } else {
+            out.push_back(0x0F);
+            out.push_back(static_cast<std::uint8_t>(0x80u | (condition & 0x0Fu)));
+        }
+        const std::size_t displacement_offset = out.size();
+        out.insert(out.end(), 4u, 0u);
+        patches.push_back(PendingBranchPatch{
+            displacement_offset, out.size(), target
+        });
+    }
+
+    static void emit_mir_i32_binary(machine::MachineSemanticKind semantic,
+                                    const machine::MachineOperand& dst,
+                                    const machine::MachineOperand& lhs,
+                                    const machine::MachineOperand& rhs,
+                                    std::vector<std::uint8_t>& out) {
+        constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+        constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+        constexpr std::uint8_t rcx = static_cast<std::uint8_t>(exec::X64Reg::RCX);
+
+        mir_load_gpr(lhs, r10, out);
+        if (rhs.kind == machine::MachineOperandKind::Immediate) {
+            emit_mov_imm32_signext(out, r11, static_cast<std::uint32_t>(rhs.immediate));
+        } else {
+            mir_load_gpr(rhs, r11, out);
+        }
+
+        switch (semantic) {
+            case machine::MachineSemanticKind::IntegerAdd:
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x01); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerSub:
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x29); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerMul:
+                out.push_back(exec::X64Encoding::rex(false, true, false, true));
+                out.push_back(0x0F); out.push_back(0xAF); emit_modrm_reg_reg(out, r10, r11); break;
+            case machine::MachineSemanticKind::IntegerAnd:
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x21); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerOr:
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x09); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerXor:
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x31); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerShl:
+                emit_reg_move32(out, rcx, r11);
+                out.push_back(0x41); out.push_back(0xD3); out.push_back(0xE2); break; // shl r10d,cl
+            case machine::MachineSemanticKind::IntegerShr:
+                emit_reg_move32(out, rcx, r11);
+                out.push_back(0x41); out.push_back(0xD3); out.push_back(0xEA); break; // shr r10d,cl
+            case machine::MachineSemanticKind::IntegerDiv:
+            case machine::MachineSemanticKind::IntegerMod:
+                emit_reg_move32(out, static_cast<std::uint8_t>(exec::X64Reg::RAX), r10);
+                out.push_back(0x99); // CDQ
+                out.push_back(exec::X64Encoding::rex(false, false, false, true));
+                out.push_back(0xF7); emit_modrm_reg_reg(out, 7u, r11); // idiv r/m32
+                if (semantic == machine::MachineSemanticKind::IntegerMod) {
+                    emit_reg_move32(out, r10, static_cast<std::uint8_t>(exec::X64Reg::RDX));
+                } else {
+                    emit_reg_move32(out, r10, static_cast<std::uint8_t>(exec::X64Reg::RAX));
+                }
+                break;
+            default:
+                break;
+        }
+        mir_store_gpr(dst, r10, out);
+    }
+
+    static void emit_mir_i64_binary(machine::MachineSemanticKind semantic,
+                                    const machine::MachineOperand& dst,
+                                    const machine::MachineOperand& lhs,
+                                    const machine::MachineOperand& rhs,
+                                    std::vector<std::uint8_t>& out) {
+        constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+        constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+        constexpr std::uint8_t rcx = static_cast<std::uint8_t>(exec::X64Reg::RCX);
+        mir_load_gpr(lhs, r10, out);
+        if (rhs.kind == machine::MachineOperandKind::Immediate) {
+            emit_mov_imm32_signext(out, r11, static_cast<std::uint32_t>(rhs.immediate));
+        } else {
+            mir_load_gpr(rhs, r11, out);
+        }
+        switch (semantic) {
+            case machine::MachineSemanticKind::IntegerAdd:
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x01); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerSub:
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x29); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerMul:
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x0F); out.push_back(0xAF); emit_modrm_reg_reg(out, r10, r11); break;
+            case machine::MachineSemanticKind::IntegerAnd:
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x21); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerOr:
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x09); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerXor:
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x31); emit_modrm_reg_reg(out, r11, r10); break;
+            case machine::MachineSemanticKind::IntegerShl:
+                emit_reg_move(out, rcx, r11);
+                out.push_back(0x49); out.push_back(0xD3); out.push_back(0xE2); break; // shl r10,cl
+            case machine::MachineSemanticKind::IntegerShr:
+                emit_reg_move(out, rcx, r11);
+                out.push_back(0x49); out.push_back(0xD3); out.push_back(0xEA); break; // shr r10,cl
+            case machine::MachineSemanticKind::IntegerDiv:
+            case machine::MachineSemanticKind::IntegerMod:
+                emit_reg_move(out, static_cast<std::uint8_t>(exec::X64Reg::RAX), r10);
+                out.push_back(0x48); out.push_back(0x99); // CQO
+                out.push_back(0x49); out.push_back(0xF7); emit_modrm_reg_reg(out, 7u, r11);
+                if (semantic == machine::MachineSemanticKind::IntegerMod) {
+                    emit_reg_move(out, r10, static_cast<std::uint8_t>(exec::X64Reg::RDX));
+                } else {
+                    emit_reg_move(out, r10, static_cast<std::uint8_t>(exec::X64Reg::RAX));
+                }
+                break;
+            default:
+                break;
+        }
+        mir_store_gpr(dst, r10, out);
+    }
+
+    static void emit_mir_float_binary(machine::MachineSemanticKind semantic,
+                                      bool is_f64,
+                                      const machine::MachineOperand& dst,
+                                      const machine::MachineOperand& lhs,
+                                      const machine::MachineOperand& rhs,
+                                      std::vector<std::uint8_t>& out) {
+        constexpr std::uint8_t xmm0 = 0u;
+        constexpr std::uint8_t xmm1 = 1u;
+        if (is_f64) {
+            mir_load_f64(lhs, xmm0, out);
+            mir_load_f64(rhs, xmm1, out);
+        } else {
+            mir_load_f32(rhs, xmm1, out);
+        }
+        const std::uint8_t prefix = is_f64 ? 0xF2u : 0xF3u;
+        std::uint8_t opcode_byte = 0x58u;
+        switch (semantic) {
+            case machine::MachineSemanticKind::FloatAdd: opcode_byte = 0x58u; break;
+            case machine::MachineSemanticKind::FloatSub: opcode_byte = 0x5Cu; break;
+            case machine::MachineSemanticKind::FloatMul: opcode_byte = 0x59u; break;
+            case machine::MachineSemanticKind::FloatDiv: opcode_byte = 0x5Eu; break;
+            default: break;
+        }
+        out.push_back(prefix);
+        out.push_back(0x0F); out.push_back(opcode_byte);
+        emit_modrm_reg_reg(out, xmm0, xmm1);
+        if (is_f64) mir_store_f64(dst, xmm0, out);
+        else mir_store_f32(dst, xmm0, out);
+    }
+
+    bool emit_mir_native_instruction(
+        const machine::MachineInstruction& instr,
+        std::vector<std::uint8_t>& out,
+        std::vector<PendingBranchPatch>& patches) const {
+        const machine::MachineSemanticKind semantic = instr.semantic_kind;
+        const machine::MachineOpcode opcode = instr.opcode;
+        const machine::MachineOperand* def = mir_def(instr);
+
+        switch (instr.form) {
+            case machine::MachineForm::NoOp:
+                return true;
+            case machine::MachineForm::Move: {
+                if (opcode == machine::GM_LOAD || opcode == machine::GM_LOAD_STACK) {
+                    const auto* memory = mir_use(instr, 0u);
+                    if (!def || !memory || memory->kind != machine::MachineOperandKind::Memory ||
+                        !memory->memory.base.valid()) {
+                        mark_error("MIR LOAD requires a memory operand", opcode);
+                        return false;
+                    }
+                    constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+                    constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                    const std::uint32_t width = memory->memory.size_bytes;
+                    mir_load_gpr(machine::MachineOperand::use(memory->memory.base), r11, out);
+                    if (def->reg.reg_class == machine::RegisterClassKind::FloatingPoint) {
+                        if (width == 8u) {
+                            out.push_back(0xF2); out.push_back(0x41); out.push_back(0x0F); out.push_back(0x10); out.push_back(0x03);
+                            mir_store_f64(*def, 0u, out);
+                        } else if (width == 4u) {
+                            out.push_back(0xF3); out.push_back(0x41); out.push_back(0x0F); out.push_back(0x10); out.push_back(0x03);
+                            mir_store_f32(*def, 0u, out);
+                        } else {
+                            mark_error("MIR floating LOAD width is unsupported", opcode);
+                            return false;
+                        }
+                    } else if (width == 8u) {
+                        out.push_back(0x4D); out.push_back(0x8B); out.push_back(0x13);
+                        mir_store_gpr(*def, r10, out);
+                    } else if (width == 4u) {
+                        out.push_back(0x45); out.push_back(0x8B); out.push_back(0x13);
+                        mir_store_gpr(*def, r10, out);
+                    } else if (width == 2u) {
+                        out.push_back(0x45); out.push_back(0x0F); out.push_back(0xB7); out.push_back(0x13);
+                        mir_store_gpr(*def, r10, out);
+                    } else if (width == 1u) {
+                        out.push_back(0x45); out.push_back(0x0F); out.push_back(0xB6); out.push_back(0x13);
+                        mir_store_gpr(*def, r10, out);
+                    } else {
+                        mark_error("MIR LOAD width is not supported by the X64 scalar encoder", opcode);
+                        return false;
+                    }
+                    return true;
+                }
+                if (opcode == machine::GM_STORE || opcode == machine::GM_STORE_STACK) {
+                    const auto* value = mir_use(instr, 0u);
+                    const auto* memory = mir_use(instr, 1u);
+                    if (!value || !memory || memory->kind != machine::MachineOperandKind::Memory ||
+                        !memory->memory.base.valid()) {
+                        mark_error("MIR STORE requires value and memory operands", opcode);
+                        return false;
+                    }
+                    constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+                    constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                    const std::uint32_t width = memory->memory.size_bytes;
+                    mir_load_gpr(machine::MachineOperand::use(memory->memory.base), r11, out);
+                    mir_load_gpr(*value, r10, out);
+                    if (value->reg.reg_class == machine::RegisterClassKind::FloatingPoint) {
+                        if (width == 8u) {
+                            if (value->subregister == 32u) {
+                            mir_load_f32(*value, 0u, out);
+                        } else {
+                            mir_load_f64(*value, 0u, out);
+                        }
+                            out.push_back(0xF2); out.push_back(0x41); out.push_back(0x0F); out.push_back(0x11); out.push_back(0x03);
+                        } else if (width == 4u) {
+                            mir_load_f32(*value, 0u, out);
+                            out.push_back(0xF3); out.push_back(0x41); out.push_back(0x0F); out.push_back(0x11); out.push_back(0x03);
+                        } else {
+                            mark_error("MIR floating STORE width is unsupported", opcode);
+                            return false;
+                        }
+                    } else if (width == 8u) {
+                        out.push_back(0x4D); out.push_back(0x89); out.push_back(0x13);
+                    } else if (width == 4u) {
+                        out.push_back(0x45); out.push_back(0x89); out.push_back(0x13);
+                    } else if (width == 2u) {
+                        out.push_back(0x66); out.push_back(0x45); out.push_back(0x89); out.push_back(0x13);
+                    } else if (width == 1u) {
+                        out.push_back(0x45); out.push_back(0x88); out.push_back(0x13);
+                    } else {
+                        mark_error("MIR STORE width is not supported by the X64 scalar encoder", opcode);
+                        return false;
+                    }
+                    return true;
+                }
+                const auto* src = mir_use(instr, 0u);
+                if (!def || !src) {
+                    mark_error("MIR Move requires destination and source", opcode);
+                    return false;
+                }
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                mir_load_gpr(*src, r10, out);
+                mir_store_gpr(*def, r10, out);
+                return true;
+            }
+            case machine::MachineForm::LoadImmediate: {
+                if (!def) {
+                    mark_error("MIR LoadImmediate requires a destination", opcode);
+                    return false;
+                }
+                const auto* imm = mir_use(instr, 0u);
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                if (imm && imm->kind == machine::MachineOperandKind::Immediate) {
+                    const std::uint64_t value = static_cast<std::uint64_t>(imm->immediate);
+                    out.push_back(exec::X64Encoding::rex(true, false, false, true));
+                    out.push_back(static_cast<std::uint8_t>(0xB8u + (r10 & 7u)));
+                    append_u64(out, value);
+                    mir_store_gpr(*def, r10, out);
+                    return true;
+                }
+                if (imm && imm->kind == machine::MachineOperandKind::FloatingImmediate) {
+                    const std::uint64_t bits = std::bit_cast<std::uint64_t>(imm->floating_immediate);
+                    out.push_back(exec::X64Encoding::rex(true, false, false, true));
+                    out.push_back(static_cast<std::uint8_t>(0xB8u + (r10 & 7u)));
+                    append_u64(out, bits);
+                    if (bits >> 32u != 0u) {
+                        emit_movq_xmm_gpr(out, 0u, r10);
+                        mir_store_f64(*def, 0u, out);
+                    } else {
+                        emit_movq_xmm_gpr(out, 0u, r10);
+                        mir_store_f32(*def, 0u, out);
+                    }
+                    return true;
+                }
+                mark_error("MIR LoadImmediate has no encodable immediate operand", opcode);
+                return false;
+            }
+            case machine::MachineForm::IntegerBinary32: {
+                const auto* lhs = mir_use(instr, 0u); const auto* rhs = mir_use(instr, 1u);
+                if (!def || !lhs || !rhs) { mark_error("MIR i32 binary operand contract violated", opcode); return false; }
+                emit_mir_i32_binary(semantic, *def, *lhs, *rhs, out); return true;
+            }
+            case machine::MachineForm::IntegerBinary64: {
+                const auto* lhs = mir_use(instr, 0u); const auto* rhs = mir_use(instr, 1u);
+                if (!def || !lhs || !rhs) { mark_error("MIR i64 binary operand contract violated", opcode); return false; }
+                emit_mir_i64_binary(semantic, *def, *lhs, *rhs, out); return true;
+            }
+            case machine::MachineForm::FloatBinary32: {
+                const auto* lhs = mir_use(instr, 0u); const auto* rhs = mir_use(instr, 1u);
+                if (!def || !lhs || !rhs) { mark_error("MIR f32 binary operand contract violated", opcode); return false; }
+                emit_mir_float_binary(semantic, false, *def, *lhs, *rhs, out); return true;
+            }
+            case machine::MachineForm::FloatBinary64: {
+                const auto* lhs = mir_use(instr, 0u); const auto* rhs = mir_use(instr, 1u);
+                if (!def || !lhs || !rhs) { mark_error("MIR f64 binary operand contract violated", opcode); return false; }
+                emit_mir_float_binary(semantic, true, *def, *lhs, *rhs, out); return true;
+            }
+            case machine::MachineForm::FloatTernaryFma32: {
+                const auto* a = mir_use(instr, 0u); const auto* b = mir_use(instr, 1u); const auto* c = mir_use(instr, 2u);
+                if (!def || !a || !b || !c) { mark_error("MIR FMA operand contract violated", opcode); return false; }
+                // Semantically exact scalar fallback until the dedicated EVEX/FMA
+                // target instruction contract carries operand ordering explicitly.
+                mir_load_f32(*a, 0u, out); mir_load_f32(*b, 1u, out); mir_load_f32(*c, 2u, out);
+                out.push_back(0xF3); out.push_back(0x0F); out.push_back(0x59); emit_modrm_reg_reg(out, 0u, 1u);
+                out.push_back(0xF3); out.push_back(0x0F); out.push_back(0x58); emit_modrm_reg_reg(out, 0u, 2u);
+                mir_store_f32(*def, 0u, out); return true;
+            }
+            case machine::MachineForm::Compare32: {
+                const auto* lhs = mir_use(instr, 0u); const auto* rhs = mir_use(instr, 1u);
+                if (!def || !lhs || !rhs) { mark_error("MIR compare operand contract violated", opcode); return false; }
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+                mir_load_gpr(*lhs, r10, out); mir_load_gpr(*rhs, r11, out);
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x39); emit_modrm_reg_reg(out, r11, r10);
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x0F); out.push_back(0x90u | x64_condition_code(instr)); emit_modrm_reg_reg(out, 0u, r10);
+                // setcc writes only the low byte; zero-extend it before storing the i32 result.
+                out.push_back(exec::X64Encoding::rex(false, false, false, true)); out.push_back(0x0F); out.push_back(0xB6); emit_modrm_reg_reg(out, r10, r10);
+                mir_store_gpr(*def, r10, out); return true;
+            }
+            case machine::MachineForm::Goto: {
+                const auto* target = mir_block_operand(instr, 0u);
+                if (!target) { mark_error("MIR GOTO has no basic-block operand", opcode); return false; }
+                emit_rel32_jump(out, 0xFFu, patches, target->block); return true;
+            }
+            case machine::MachineForm::BranchCond: {
+                const auto* cond = mir_use(instr, 0u);
+                const auto* true_target = mir_block_operand(instr, 0u);
+                const auto* false_target = mir_block_operand(instr, 1u);
+                if (!cond || !true_target || !false_target) { mark_error("MIR BranchCond operand contract violated", opcode); return false; }
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                mir_load_gpr(*cond, r10, out);
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x85); emit_modrm_reg_reg(out, r10, r10);
+                emit_rel32_jump(out, 0x5u, patches, true_target->block); // JNE true
+                emit_rel32_jump(out, 0xFFu, patches, false_target->block); // JMP false
+                return true;
+            }
+            case machine::MachineForm::BranchCompare: {
+                const auto* lhs = mir_use(instr, 0u); const auto* rhs = mir_use(instr, 1u); const auto* target = mir_block_operand(instr, 0u);
+                if (!lhs || !rhs || !target) { mark_error("MIR BranchCompare operand contract violated", opcode); return false; }
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+                mir_load_gpr(*lhs, r10, out); mir_load_gpr(*rhs, r11, out);
+                out.push_back(exec::X64Encoding::rex(false, true, false, true)); out.push_back(0x39); emit_modrm_reg_reg(out, r11, r10);
+                const std::uint8_t cc = x64_condition_code(instr);
+                emit_rel32_jump(out, cc, patches, target->block);
+                const auto* false_target = mir_block_operand(instr, 1u);
+                if (false_target) {
+                    emit_rel32_jump(out, 0xFFu, patches, false_target->block);
+                }
+                return true;
+            }
+            case machine::MachineForm::Return: {
+                const auto* value = mir_use(instr, 0u);
+                if (value) {
+                    if (value->reg.reg_class == machine::RegisterClassKind::FloatingPoint) {
+                        // The current MIR return contract carries register class,
+                        // so floating returns can be emitted through XMM0 without
+                        // consulting the source IR type.
+                        mir_load_f64(*value, 0u, out);
+                    } else {
+                        constexpr std::uint8_t rax = static_cast<std::uint8_t>(exec::X64Reg::RAX);
+                        mir_load_gpr(*value, rax, out);
+                    }
+                } else {
+                    out.push_back(0x31); out.push_back(0xC0); // xor eax,eax
+                }
+                emit_add_rsp(out, current_frame_size_);
+                out.push_back(0xC3);
+                emitted_return_ = true;
+                return true;
+            }
+            case machine::MachineForm::VectorBinary512:
+            case machine::MachineForm::VectorGather512:
+            case machine::MachineForm::VectorStore512:
+                mark_error("MIR vector form requires dedicated EVEX operand encoding", opcode);
+                return false;
+            case machine::MachineForm::Call: {
+                const char* symbol = dgtl::mir::runtime_contract::runtime_symbol_for_semantic_kind(semantic);
+                uintptr_t target_addr = 0;
+                if (symbol != nullptr) {
+                    target_addr = resolve_runtime_function(symbol);
+                }
+                const auto* tgt_op = mir_use(instr, 0u);
+                if (tgt_op && tgt_op->is_immediate()) {
+                    target_addr = static_cast<uintptr_t>(tgt_op->immediate);
+                }
+
+                constexpr std::uint8_t arg_gprs[4] = {
+                    static_cast<std::uint8_t>(exec::X64Reg::RCX),
+                    static_cast<std::uint8_t>(exec::X64Reg::RDX),
+                    static_cast<std::uint8_t>(exec::X64Reg::R8),
+                    static_cast<std::uint8_t>(exec::X64Reg::R9)
+                };
+                const std::size_t start_arg = (tgt_op && (tgt_op->is_immediate() || tgt_op->is_register())) ? 1u : 0u;
+                std::size_t gpr_idx = 0;
+                for (std::size_t ai = start_arg; ai < instr.operands.size() && gpr_idx < 4; ++ai) {
+                    const auto& op = instr.operands[ai];
+                    if (op.is_register()) {
+                        if (op.reg.reg_class == machine::RegisterClassKind::FloatingPoint) {
+                            mir_load_f64(op, static_cast<std::uint8_t>(gpr_idx), out);
+                        } else {
+                            mir_load_gpr(op, arg_gprs[gpr_idx], out);
+                        }
+                        ++gpr_idx;
+                    }
+                }
+
+                if (target_addr != 0) {
+                    constexpr std::uint8_t rax = static_cast<std::uint8_t>(exec::X64Reg::RAX);
+                    out.push_back(exec::X64Encoding::rex(true, false, false, false));
+                    out.push_back(static_cast<std::uint8_t>(0xB8u + rax));
+                    append_u64(out, static_cast<uint64_t>(target_addr));
+                    out.push_back(0xFF);
+                    out.push_back(0xD0);
+                } else if (tgt_op && tgt_op->is_register()) {
+                    constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+                    mir_load_gpr(*tgt_op, r11, out);
+                    out.push_back(exec::X64Encoding::rex(false, false, false, true));
+                    out.push_back(0xFF);
+                    out.push_back(static_cast<std::uint8_t>(0xD0u | (r11 & 7u)));
+                } else {
+                    mark_error("MIR Call target cannot be resolved", opcode);
+                    return false;
+                }
+
+                if (def && def->is_register()) {
+                    if (def->reg.reg_class == machine::RegisterClassKind::FloatingPoint) {
+                        mir_store_f64(*def, 0u, out);
+                    } else {
+                        constexpr std::uint8_t rax = static_cast<std::uint8_t>(exec::X64Reg::RAX);
+                        mir_store_gpr(*def, rax, out);
+                    }
+                }
+                return true;
+            }
+            case machine::MachineForm::Syscall: {
+                const auto* sys_nr = mir_use(instr, 0u);
+                if (sys_nr) {
+                    constexpr std::uint8_t rax = static_cast<std::uint8_t>(exec::X64Reg::RAX);
+                    if (sys_nr->is_immediate()) {
+                        out.push_back(exec::X64Encoding::rex(true, false, false, false));
+                        out.push_back(static_cast<std::uint8_t>(0xB8u + rax));
+                        append_u64(out, static_cast<uint64_t>(sys_nr->immediate));
+                    } else {
+                        mir_load_gpr(*sys_nr, rax, out);
+                    }
+                }
+                out.push_back(0x0F);
+                out.push_back(0x05);
+                if (def && def->is_register()) {
+                    constexpr std::uint8_t rax = static_cast<std::uint8_t>(exec::X64Reg::RAX);
+                    mir_store_gpr(*def, rax, out);
+                }
+                return true;
+            }
+            case machine::MachineForm::HardwareFence: {
+                out.push_back(0x0F);
+                out.push_back(0xAE);
+                if (opcode == machine::GM_ACQUIRE_FENCE) {
+                    out.push_back(0xE8);
+                } else if (opcode == machine::GM_RELEASE_FENCE) {
+                    out.push_back(0xF8);
+                } else {
+                    out.push_back(0xF0);
+                }
+                return true;
+            }
+            case machine::MachineForm::ConcurrentSync: {
+                out.push_back(0x0F);
+                out.push_back(0xAE);
+                out.push_back(0xF0);
+                return true;
+            }
+            case machine::MachineForm::AtomicOp: {
+                const auto* ptr = mir_use(instr, 0u);
+                const auto* val = mir_use(instr, 1u);
+                if (!ptr || !val) { mark_error("MIR AtomicOp operand contract violated", opcode); return false; }
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                constexpr std::uint8_t r11 = static_cast<std::uint8_t>(exec::X64Reg::R11);
+                mir_load_gpr(*ptr, r11, out);
+                mir_load_gpr(*val, r10, out);
+                out.push_back(0xF0);
+                out.push_back(exec::X64Encoding::rex(true, true, false, true));
+                out.push_back(0x0F);
+                out.push_back(0xC1);
+                emit_modrm_reg_reg(out, r10, r11);
+                if (def && def->is_register()) {
+                    mir_store_gpr(*def, r10, out);
+                }
+                return true;
+            }
+            case machine::MachineForm::LoadStack: {
+                if (!def) { mark_error("MIR LoadStack has no def operand", opcode); return false; }
+                const auto* slot = mir_use(instr, 0u);
+                const std::int32_t offset = slot && slot->is_immediate() ? static_cast<std::int32_t>(slot->immediate) : 0;
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                emit_mov_reg_from_stack(out, r10, offset);
+                mir_store_gpr(*def, r10, out);
+                return true;
+            }
+            case machine::MachineForm::StoreStack: {
+                const auto* val = mir_use(instr, 0u);
+                const auto* slot = mir_use(instr, 1u);
+                if (!val) { mark_error("MIR StoreStack has no value operand", opcode); return false; }
+                const std::int32_t offset = slot && slot->is_immediate() ? static_cast<std::int32_t>(slot->immediate) : 0;
+                constexpr std::uint8_t r10 = static_cast<std::uint8_t>(exec::X64Reg::R10);
+                mir_load_gpr(*val, r10, out);
+                emit_mov_stack_from_reg(out, offset, r10);
+                return true;
+            }
+            case machine::MachineForm::TensorOp:
+            case machine::MachineForm::Unhandled:
+            default:
+                mark_error("Unsupported MIR form at X64 byte-emission boundary", opcode);
                 return false;
         }
     }
 
-    void emit_call_slot(const lowering::SelectedInstruction& selected,
-                        size_t node_index,
-                        std::vector<uint8_t>& out,
-                        std::vector<PendingBranchPatch>& patches,
-                        const std::unordered_map<uint32_t, size_t>& label_to_node_index,
-                        const ir::IRStream& stream) const {
-        if (emit_call_fastpath(selected, out)) {
-            return;
-        }
+    bool emit_mir_native_function(
+        const machine::MachineFunction& function,
+        std::uint32_t frame_size,
+        std::vector<std::uint8_t>& out,
+        std::unordered_map<machine::BlockId, std::size_t>& block_offsets,
+        std::vector<PendingBranchPatch>& patches) const {
+        current_frame_size_ = frame_size;
+        emitted_return_ = false;
+        block_offsets.clear();
 
-        const ir::IRNode& node = selected.node;
-        const auto original_opcode = static_cast<ir::OpCode>(selected.semantic_opcode);
-
-        if (original_opcode == ir::OpCode::STRING_LENGTH ||
-            original_opcode == ir::OpCode::STRING_COMPARE ||
-            original_opcode == ir::OpCode::STRING_CONCAT ||
-            original_opcode == ir::OpCode::STRING_SUBSTRING) {
-            const char* symbol = nullptr;
-            switch (original_opcode) {
-                case ir::OpCode::STRING_LENGTH: symbol = "__dgtl_rt_string_length"; break;
-                case ir::OpCode::STRING_COMPARE: symbol = "__dgtl_rt_string_compare"; break;
-                case ir::OpCode::STRING_CONCAT: symbol = "__dgtl_rt_string_concat"; break;
-                case ir::OpCode::STRING_SUBSTRING: symbol = "__dgtl_rt_string_substring"; break;
-                default: break;
-            }
-
-            const uintptr_t target = (symbol != nullptr) ? resolve_runtime_function(symbol) : 0;
-            if (target == 0) {
-                mark_error("Missing runtime string intrinsic registration", original_opcode);
-                out.push_back(0x90);
-                return;
-            }
-
-            const uint8_t rcx = static_cast<uint8_t>(exec::X64Reg::RCX);
-            const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
-            const uint8_t r8 = static_cast<uint8_t>(exec::X64Reg::R8);
-
-            if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_a));
-            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_b));
-            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_reg_from_stack(out, r8, vreg_offset(node.op_c));
-
-            emit_call_address(target, node, node_index, out, stream);
-            return;
-        }
-
-        if (const char* symbol = runtime_symbol_for_opcode(original_opcode); symbol != nullptr) {
-            const uintptr_t target = resolve_runtime_function(symbol);
-            if (target == 0) {
-                mark_error("Missing runtime intrinsic registration", original_opcode);
-                out.push_back(0x90);
-                return;
-            }
-
-            const uint8_t rcx = static_cast<uint8_t>(exec::X64Reg::RCX);
-            const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
-            const uint8_t r8 = static_cast<uint8_t>(exec::X64Reg::R8);
-
-            if (node.op_a != ir::INVALID_SLOT && node.op_a != 0u) emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_a));
-            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_b));
-            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) emit_mov_reg_from_stack(out, r8, vreg_offset(node.op_c));
-
-            emit_call_address(target, node, node_index, out, stream);
-            return;
-        }
-
-        const auto it = runtime_slots_.find(node.op_a);
-        if (it == runtime_slots_.end() || it->second == 0) {
-            const uint32_t target_label = node.op_a;
-
-#if defined(_WIN32)
-            const uint8_t rcx = static_cast<uint8_t>(exec::X64Reg::RCX);
-            const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
-            const uint8_t r8  = static_cast<uint8_t>(exec::X64Reg::R8);
-            const uint8_t r9  = static_cast<uint8_t>(exec::X64Reg::R9);
-
-            if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-                const ir::TypeCode tc = stream.get_result_type_code(node.op_b);
-                if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
-                    emit_movq_gpr_xmm(out, rcx, 0);
-                } else {
-                    emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_b));
-                    emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
-                }
-            }
-            if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
-                const ir::TypeCode tc = stream.get_result_type_code(node.op_c);
-                if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
-                    emit_movq_gpr_xmm(out, rdx, 1);
-                } else {
-                    emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_c));
-                    emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
-                }
-            }
-            if (node.logic_flags != 0 && node.logic_flags != ir::INVALID_SLOT) {
-                const ir::TypeCode tc = stream.get_result_type_code(node.logic_flags);
-                if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
-                    emit_movq_gpr_xmm(out, r8, 2);
-                } else {
-                    emit_mov_reg_from_stack(out, r8, vreg_offset(node.logic_flags));
-                    emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
-                }
-            }
-            const auto overflow = stream.get_call_overflow_args(node_index);
-            if (!overflow.empty() && overflow[0] != ir::INVALID_SLOT && overflow[0] != 0u) {
-                const ir::TypeCode tc = stream.get_result_type_code(overflow[0]);
-                if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                    emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow[0]));
-                    emit_movq_gpr_xmm(out, r9, 3);
-                } else {
-                    emit_mov_reg_from_stack(out, r9, vreg_offset(overflow[0]));
-                    emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow[0]));
-                }
-            } else {
-                out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC9); // xor r9, r9
-            }
-            const size_t num_stack_args = (overflow.size() > 1) ? (overflow.size() - 1) : 0;
-            const size_t stack_alloc = 32 + ((num_stack_args + 1) / 2) * 16;
-            emit_sub_rsp(out, static_cast<uint32_t>(stack_alloc));
-
-            for (size_t k = 1; k < overflow.size(); ++k) {
-                if (overflow[k] != ir::INVALID_SLOT && overflow[k] != 0u) {
-                    const uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
-                    emit_mov_reg_from_stack(out, r10, static_cast<int32_t>(vreg_offset(overflow[k]) + stack_alloc));
-                    emit_mov_stack_from_reg(out, static_cast<int32_t>(32 + (k - 1) * 8), r10);
-                }
-            }
-#endif
-            const bool is_internal_label = (label_to_node_index.find(target_label) != label_to_node_index.end());
-            if (is_internal_label) {
-                out.push_back(0xE8); // CALL rel32
-                const size_t disp_offset = out.size();
-                out.push_back(0x00);
-                out.push_back(0x00);
-                out.push_back(0x00);
-                out.push_back(0x00);
-                const size_t instr_end = out.size();
-#if defined(_WIN32)
-                emit_add_rsp(out, static_cast<uint32_t>(stack_alloc));
-#endif
-                if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                    const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
-                    if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                        const uint8_t dst_xmm = map_xmm_reg(node.result_id);
-                        if (dst_xmm != 0) {
-                            emit_xmm_move_f64(out, dst_xmm, 0);
-                        }
-                        emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), 0);
-                        emit_movq_gpr_xmm(out, static_cast<uint8_t>(exec::X64Reg::RAX), 0);
-                        emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
-                    } else {
-                        const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
-                        const uint8_t dst = map_reg(node.result_id);
-                        if (dst != rax) emit_reg_move(out, dst, rax);
-                        emit_mov_stack_from_reg(out, vreg_offset(node.result_id), rax);
-                    }
-                }
-                patches.push_back(PendingBranchPatch{disp_offset, instr_end, target_label});
-                return;
-            } else {
-                // Dynamic function pointer in virtual register / stack slot
-                const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
-                emit_mov_reg_from_stack(out, rax, static_cast<int32_t>(vreg_offset(node.op_a) + stack_alloc));
-                out.push_back(0xFF);
-                out.push_back(0xD0); // CALL rax
-#if defined(_WIN32)
-                emit_add_rsp(out, static_cast<uint32_t>(stack_alloc));
-#endif
-                if (node.result_id != ir::INVALID_SLOT && node.result_id != 0u) {
-                    const ir::TypeCode tc = stream.get_result_type_code(node.result_id);
-                    if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) {
-                        const uint8_t dst_xmm = map_xmm_reg(node.result_id);
-                        if (dst_xmm != 0) {
-                            emit_xmm_move_f64(out, dst_xmm, 0);
-                        }
-                        emit_movsd_stack_from_xmm(out, vreg_offset(node.result_id), 0);
-                        emit_movq_gpr_xmm(out, static_cast<uint8_t>(exec::X64Reg::RAX), 0);
-                        emit_mov_stack_from_reg(out, vreg_offset(node.result_id), static_cast<uint8_t>(exec::X64Reg::RAX));
-                    } else {
-                        const uint8_t dst = map_reg(node.result_id);
-                        if (dst != rax) emit_reg_move(out, dst, rax);
-                        emit_mov_stack_from_reg(out, vreg_offset(node.result_id), rax);
-                    }
-                }
-                return;
-            }
-        }
-
-#if defined(_WIN32)
-        const uint8_t rcx = static_cast<uint8_t>(exec::X64Reg::RCX);
-        const uint8_t rdx = static_cast<uint8_t>(exec::X64Reg::RDX);
-        const uint8_t r8  = static_cast<uint8_t>(exec::X64Reg::R8);
-        const uint8_t r9  = static_cast<uint8_t>(exec::X64Reg::R9);
-
-        std::string callee_name;
-        for (const auto& [name, addr] : runtime_functions_) {
-            if (addr == it->second) {
-                callee_name = name;
-                break;
-            }
-        }
-
-        const bool is_gpr_float_helper = (!callee_name.empty() && 
-            (callee_name == "__myzon_async_push_f64_bits" ||
-             callee_name == "__myzon_async_push_f32_bits" ||
-             callee_name == "__myzon_async_push_c64_bits" ||
-             callee_name == "__myzon_f64_add_bits" ||
-             callee_name == "__myzon_f64_sub_bits" ||
-             callee_name == "__myzon_f64_mul_bits" ||
-             callee_name == "__myzon_f64_div_bits" ||
-             callee_name == "__myzon_f64_pow_bits" ||
-             callee_name == "__myzon_i64_to_f64_bits"));
-
-        auto is_float_slot = [&](uint32_t slot) -> bool {
-            if (slot == ir::INVALID_SLOT || slot == 0u) return false;
-            const ir::TypeCode tc = stream.get_result_type_code(slot);
-            if (tc == ir::TypeCode::F64 || tc == ir::TypeCode::F32) return true;
-            for (size_t k = 0; k < stream.size(); ++k) {
-                const auto& src_node = stream.get_node(k);
-                if (src_node.result_id == slot) {
-                    if (src_node.opcode == ir::OpCode::ADD_F64 || src_node.opcode == ir::OpCode::SUB_F64 ||
-                        src_node.opcode == ir::OpCode::MUL_F64 || src_node.opcode == ir::OpCode::DIV_F64 ||
-                        src_node.opcode == ir::OpCode::ADD_F32 || src_node.opcode == ir::OpCode::SUB_F32 ||
-                        src_node.opcode == ir::OpCode::MUL_F32 || src_node.opcode == ir::OpCode::DIV_F32 ||
-                        (src_node.opcode == ir::OpCode::CONST && (src_node.flags & ir::Flags::IS_SPEC_CONST))) {
-                        return true;
-                    }
-                    break;
-                }
-            }
+        const auto blocks = function.blocks();
+        if (blocks.empty()) {
+            mark_error("MIR function has no basic blocks", machine::GM_NOOP);
             return false;
-        };
-
-        if (node.op_b != ir::INVALID_SLOT && node.op_b != 0u) {
-            emit_mov_reg_from_stack(out, rcx, vreg_offset(node.op_b));
-            emit_movsd_xmm_from_stack(out, 0, vreg_offset(node.op_b));
-        } else {
-            out.push_back(0x48); out.push_back(0x31); out.push_back(0xC9); // xor rcx, rcx
-        }
-        if (node.op_c != ir::INVALID_SLOT && node.op_c != 0u) {
-            emit_mov_reg_from_stack(out, rdx, vreg_offset(node.op_c));
-            emit_movsd_xmm_from_stack(out, 1, vreg_offset(node.op_c));
-        } else {
-            out.push_back(0x48); out.push_back(0x31); out.push_back(0xD2); // xor rdx, rdx
-        }
-        if (node.logic_flags != 0 && node.logic_flags != ir::INVALID_SLOT) {
-            emit_mov_reg_from_stack(out, r8, vreg_offset(node.logic_flags));
-            emit_movsd_xmm_from_stack(out, 2, vreg_offset(node.logic_flags));
-        } else {
-            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC0); // xor r8, r8
         }
 
-        const auto overflow_args = stream.get_call_overflow_args(node_index);
-        if (!overflow_args.empty() && overflow_args[0] != ir::INVALID_SLOT && overflow_args[0] != 0u) {
-            emit_mov_reg_from_stack(out, r9, vreg_offset(overflow_args[0]));
-            emit_movsd_xmm_from_stack(out, 3, vreg_offset(overflow_args[0]));
-        } else {
-            out.push_back(0x4D); out.push_back(0x31); out.push_back(0xC9); // xor r9, r9
+        if (!function.is_phase_at_least(machine::MachinePhase::FrameLowered) ||
+            function.has_virtual_registers() ||
+            !function.properties().registers_allocated ||
+            !function.properties().frame_lowered) {
+            mark_error(
+                "X64 MIR encoder requires physical registers and a lowered MachineFrameInfo",
+                machine::GM_NOOP);
+            return false;
         }
 
-#endif
+        // The frame size now comes from MachineFrameInfo.  The encoder does not
+        // derive stack storage from IR result ids.
+        emit_sub_rsp(out, frame_size);
 
-        emit_call_address(static_cast<uintptr_t>(it->second), node, node_index, out, stream, is_gpr_float_helper);
+        for (const auto& block : blocks) {
+            block_offsets[block.id] = out.size();
+            for (const machine::InstrId instruction_id : block.instructions) {
+                const machine::MachineInstruction* instruction = function.instruction(instruction_id);
+                if (instruction == nullptr) {
+                    mark_error("MIR block references an invalid instruction", machine::GM_NOOP);
+                    return false;
+                }
+                if (!emit_mir_native_instruction(*instruction, out, patches)) {
+                    return false;
+                }
+            }
+        }
+
+        if (!emitted_return_) {
+            emit_add_rsp(out, frame_size);
+            out.push_back(0xC3);
+        }
+        return !had_error_;
     }
 
-    void mark_error(const char* msg, ir::OpCode opcode) const {
+    static uint64_t combine_u64_from_ops(const machine::MachineOperand& op_a, const machine::MachineOperand& op_b) noexcept {
+        return (static_cast<uint64_t>(op_b.immediate) << 32u) | static_cast<uint64_t>(op_a.immediate);
+    }
+
+    static uint64_t immediate_from_instruction(const machine::MachineInstruction& inst) noexcept {
+        for (const auto& op : inst.operands) {
+            if (op.kind == machine::MachineOperandKind::Immediate) {
+                return static_cast<uint64_t>(op.immediate);
+            }
+        }
+        return 0ull;
+    }
+
+    static void emit_load_imm(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        if (!def) return;
+        const uint64_t imm = immediate_from_instruction(inst);
+        if (def->kind == machine::MachineOperandKind::Register && def->reg.valid()) {
+            constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+            out.push_back(exec::X64Encoding::rex(true, false, false, (r10 >= 8u)));
+            out.push_back(static_cast<uint8_t>(0xB8u + (r10 & 0x7u)));
+            append_u64(out, imm);
+            mir_store_gpr(*def, r10, out);
+        }
+    }
+
+    static void emit_load_imm_f64(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        if (!def) return;
+        const uint64_t imm = immediate_from_instruction(inst);
+        const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
+        out.push_back(exec::X64Encoding::rex(true, false, false, false));
+        out.push_back(static_cast<uint8_t>(0xB8u + (rax & 0x7u)));
+        append_u64(out, imm);
+        out.push_back(0x66);
+        out.push_back(exec::X64Encoding::rex(true, false, false, false));
+        out.push_back(0x0F);
+        out.push_back(0x6E);
+        emit_modrm_reg_reg(out, 0u, rax);
+        mir_store_f64(*def, 0u, out);
+    }
+
+    void emit_function_prologue_params(const machine::MachineFunction& function,
+                                       std::vector<uint8_t>& out,
+                                       uint32_t frame_size) const {
+        (void)function; (void)out; (void)frame_size;
+    }
+
+    static void emit_move(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* src = mir_use(inst, 0u);
+        if (!def || !src) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        mir_load_gpr(*src, r10, out);
+        mir_store_gpr(*def, r10, out);
+    }
+
+    static void emit_memory_store(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* val = mir_use(inst, 0u);
+        const auto* ptr = mir_use(inst, 1u);
+        if (!val || !ptr) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        constexpr uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        mir_load_gpr(*val, r10, out);
+        mir_load_gpr(*ptr, r11, out);
+        out.push_back(0x4D); out.push_back(0x89); out.push_back(0x13);
+    }
+
+    static void emit_memory_load(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* ptr = mir_use(inst, 0u);
+        if (!def || !ptr) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        constexpr uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        mir_load_gpr(*ptr, r11, out);
+        out.push_back(0x4D); out.push_back(0x8B); out.push_back(0x13);
+        mir_store_gpr(*def, r10, out);
+    }
+
+    static void emit_load_stack(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* src = mir_use(inst, 0u);
+        if (!def || !src) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        mir_load_gpr(*src, r10, out);
+        mir_store_gpr(*def, r10, out);
+    }
+
+    static void emit_store_stack(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* src = mir_use(inst, 0u);
+        if (!def || !src) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        mir_load_gpr(*src, r10, out);
+        mir_store_gpr(*def, r10, out);
+    }
+
+    static void emit_select(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* cond = mir_use(inst, 0u);
+        const auto* true_val = mir_use(inst, 1u);
+        const auto* false_val = mir_use(inst, 2u);
+        if (!def || !cond || !true_val || !false_val) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        constexpr uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        constexpr uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
+        mir_load_gpr(*cond, rax, out);
+        mir_load_gpr(*true_val, r10, out);
+        mir_load_gpr(*false_val, r11, out);
+        out.push_back(0x48); out.push_back(0x85); out.push_back(0xC0);
+        out.push_back(0x4D); out.push_back(0x0F); out.push_back(0x45); out.push_back(0xD3);
+        mir_store_gpr(*def, r10, out);
+    }
+
+    static void emit_gep(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* base = mir_use(inst, 0u);
+        const auto* offset = mir_use(inst, 1u);
+        if (!def || !base) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        constexpr uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        mir_load_gpr(*base, r10, out);
+        if (offset) {
+            mir_load_gpr(*offset, r11, out);
+            out.push_back(exec::X64Encoding::rex(true, true, false, true));
+            out.push_back(0x01); emit_modrm_reg_reg(out, r11, r10);
+        }
+        mir_store_gpr(*def, r10, out);
+    }
+
+    static void emit_i32_binary(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* lhs = mir_use(inst, 0u);
+        const auto* rhs = mir_use(inst, 1u);
+        if (def && lhs && rhs) {
+            emit_mir_i32_binary(inst.semantic_kind, *def, *lhs, *rhs, out);
+        }
+    }
+
+    static void emit_i64_binary(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* lhs = mir_use(inst, 0u);
+        const auto* rhs = mir_use(inst, 1u);
+        if (def && lhs && rhs) {
+            emit_mir_i64_binary(inst.semantic_kind, *def, *lhs, *rhs, out);
+        }
+    }
+
+    static void emit_f32_binary(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* lhs = mir_use(inst, 0u);
+        const auto* rhs = mir_use(inst, 1u);
+        if (def && lhs && rhs) {
+            emit_mir_float_binary(inst.semantic_kind, false, *def, *lhs, *rhs, out);
+        }
+    }
+
+    static void emit_f64_binary(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* lhs = mir_use(inst, 0u);
+        const auto* rhs = mir_use(inst, 1u);
+        if (def && lhs && rhs) {
+            emit_mir_float_binary(inst.semantic_kind, true, *def, *lhs, *rhs, out);
+        }
+    }
+
+    static void emit_f32_fma(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* def = mir_def(inst);
+        const auto* a = mir_use(inst, 0u);
+        const auto* b = mir_use(inst, 1u);
+        const auto* c = mir_use(inst, 2u);
+        if (!def || !a || !b || !c) return;
+        mir_load_f32(*a, 0u, out);
+        mir_load_f32(*b, 1u, out);
+        mir_load_f32(*c, 2u, out);
+        out.push_back(0xC4); out.push_back(0xE2); out.push_back(0x71); out.push_back(0xA9);
+        emit_modrm_reg_reg(out, 0u, 2u);
+        mir_store_f32(*def, 0u, out);
+    }
+
+    static void emit_cmp_i32(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        const auto* lhs = mir_use(inst, 0u);
+        const auto* rhs = mir_use(inst, 1u);
+        if (!lhs || !rhs) return;
+        constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+        constexpr uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+        mir_load_gpr(*lhs, r10, out);
+        mir_load_gpr(*rhs, r11, out);
+        out.push_back(exec::X64Encoding::rex(false, true, false, true));
+        out.push_back(0x39); emit_modrm_reg_reg(out, r11, r10);
+    }
+
+    void emit_vec_binary512(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        (void)inst; (void)out;
+    }
+
+    void emit_vec_gather512(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        (void)inst; (void)out;
+    }
+
+    void emit_vec_store512(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        (void)inst; (void)out;
+    }
+
+    static void emit_goto(const machine::MachineInstruction& inst, std::vector<uint8_t>& out, std::vector<PendingBranchPatch>& patches) {
+        const auto* target = mir_block_operand(inst, 0u);
+        if (target) {
+            emit_rel32_jump(out, 0xFFu, patches, target->block);
+        }
+    }
+
+    static void emit_branch_cond(const machine::MachineInstruction& inst, std::vector<uint8_t>& out, std::vector<PendingBranchPatch>& patches) {
+        const auto* cond = mir_use(inst, 0u);
+        const auto* target = mir_block_operand(inst, 1u);
+        if (cond && target) {
+            constexpr uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
+            mir_load_gpr(*cond, rax, out);
+            out.push_back(0x48); out.push_back(0x85); out.push_back(0xC0);
+            emit_rel32_jump(out, 0x05u, patches, target->block);
+        }
+    }
+
+    static void emit_branch_compare_fused(const machine::MachineInstruction& inst, std::vector<uint8_t>& out, std::vector<PendingBranchPatch>& patches) {
+        const auto* lhs = mir_use(inst, 0u);
+        const auto* rhs = mir_use(inst, 1u);
+        const auto* target = mir_block_operand(inst, 2u);
+        if (lhs && rhs && target) {
+            constexpr uint8_t r10 = static_cast<uint8_t>(exec::X64Reg::R10);
+            constexpr uint8_t r11 = static_cast<uint8_t>(exec::X64Reg::R11);
+            mir_load_gpr(*lhs, r10, out);
+            mir_load_gpr(*rhs, r11, out);
+            out.push_back(exec::X64Encoding::rex(true, true, false, true));
+            out.push_back(0x39); emit_modrm_reg_reg(out, r11, r10);
+            const uint8_t cc = x64_condition_code(inst);
+            emit_rel32_jump(out, cc, patches, target->block);
+        }
+    }
+
+    static void emit_syscall(const machine::MachineInstruction&, std::vector<uint8_t>& out) {
+        out.push_back(0x0F);
+        out.push_back(0x05);
+    }
+
+    void emit_call_address(uintptr_t address, const machine::MachineInstruction& inst, std::vector<uint8_t>& out) const {
+        (void)inst;
+        const uint8_t rax = static_cast<uint8_t>(exec::X64Reg::RAX);
+        out.push_back(exec::X64Encoding::rex(true, false, false, false));
+        out.push_back(static_cast<uint8_t>(0xB8u + (rax & 0x7u)));
+        append_u64(out, static_cast<uint64_t>(address));
+        out.push_back(0xFF);
+        out.push_back(static_cast<uint8_t>(0xD0u | (rax & 0x7u)));
+    }
+
+    static bool emit_call_fastpath(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        (void)inst; (void)out;
+        return false;
+    }
+
+    void emit_call_slot(const machine::MachineInstruction& inst, std::vector<uint8_t>& out) {
+        (void)inst; (void)out;
+    }
+
+    void mark_error(const char* msg, machine::MachineOpcode opcode = machine::GM_NOOP) const {
         if (!had_error_) [[unlikely]] {
             had_error_ = true;
             last_error_ = msg;
@@ -2190,89 +2195,27 @@ private:
         }
     }
 
+    template <typename T>
+    requires (!std::is_same_v<T, machine::MachineOpcode>)
+    void mark_error(const char* msg, T) const {
+        mark_error(msg, machine::GM_NOOP);
+    }
+
 private:
     core::TargetMachine target_machine_;
-    mutable lowering::MachineLegalizer legalizer_{};
-    lowering::InstructionSelectorProgram selector_;
     std::unordered_map<std::string, uintptr_t> runtime_functions_;
     std::unordered_map<uint32_t, uintptr_t> runtime_slots_;
     mutable std::unordered_map<uint32_t, size_t> label_offsets_;
     mutable bool had_error_ = false;
     mutable std::string last_error_;
-    mutable ir::OpCode last_failed_opcode_ = ir::OpCode::NOP;
+    mutable machine::MachineOpcode last_failed_opcode_ = machine::GM_NOOP;
+    mutable std::uint32_t current_frame_size_ = 0u;
+    mutable bool emitted_return_ = false;
 };
 
-enum class X64Register : uint8_t {
-    RAX = 0, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
-    R8, R9, R10, R11, R12, R13, R14, R15
-};
-
-struct FrameAllocationPlan {
-    uint32_t total_stack_bytes = 0;
-    uint32_t local_and_spill_offset = 0;
-    uint32_t shadow_space_bytes = 32;
-    uint32_t alignment_pad_bytes = 0;
-    std::vector<X64Register> saved_non_volatile_regs;
-};
-
-class Win64FrameCalculator {
-public:
-    static constexpr bool is_callee_saved(X64Register reg) noexcept {
-        switch (reg) {
-            case X64Register::RBX:
-            case X64Register::RBP:
-            case X64Register::RDI:
-            case X64Register::RSI:
-            case X64Register::R12:
-            case X64Register::R13:
-            case X64Register::R14:
-            case X64Register::R15:
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    [[nodiscard]] static FrameAllocationPlan compute_plan(
-        uint32_t local_storage_bytes,
-        uint32_t spill_slot_bytes,
-        uint32_t max_outgoing_args_bytes,
-        const std::vector<X64Register>& clobbered_registers,
-        bool makes_external_calls
-    ) noexcept {
-        FrameAllocationPlan plan;
-
-        for (const auto reg : clobbered_registers) {
-            if (is_callee_saved(reg)) {
-                if (std::find(plan.saved_non_volatile_regs.begin(), 
-                              plan.saved_non_volatile_regs.end(), reg) == plan.saved_non_volatile_regs.end()) {
-                    plan.saved_non_volatile_regs.push_back(reg);
-                }
-            }
-        }
-
-        std::sort(plan.saved_non_volatile_regs.begin(), plan.saved_non_volatile_regs.end());
-
-        const uint32_t callee_saved_bytes = static_cast<uint32_t>(plan.saved_non_volatile_regs.size()) * 8;
-        plan.shadow_space_bytes = makes_external_calls ? std::max<uint32_t>(32, max_outgoing_args_bytes) : 0;
-        
-        const uint32_t raw_locals = local_storage_bytes + spill_slot_bytes;
-        plan.local_and_spill_offset = plan.shadow_space_bytes;
-
-        const uint32_t raw_body = raw_locals + plan.shadow_space_bytes;
-
-        const uint32_t total_pushed_before_sub = 8 + 8 + callee_saved_bytes;
-        const uint32_t remainder = (total_pushed_before_sub + raw_body) % 16;
-        if (remainder != 0) {
-            plan.alignment_pad_bytes = 16 - remainder;
-        } else {
-            plan.alignment_pad_bytes = 0;
-        }
-
-        plan.total_stack_bytes = raw_body + plan.alignment_pad_bytes;
-        return plan;
-    }
-};
+using FrameAllocationPlan = dgtl::isa::lowering::x64::FrameAllocationPlan;
+using Win64FrameCalculator = dgtl::isa::lowering::x64::Win64FrameCalculator;
+using X64Register = dgtl::isa::lowering::x64::X64Register;
 
 class X64CodeBuffer {
 public:
@@ -2380,4 +2323,25 @@ inline bool verify_frame_alignment_invariant() {
     return true;
 }
 
-} // namespace dgtl::isa
+class X64MachineCodeEmitter final : public dgtl::machine::MachineCodeEmitter {
+public:
+    void emit_instruction(const dgtl::machine::MachineInstruction& inst,
+                          std::vector<std::uint8_t>& out) override {
+        switch (inst.form) {
+            case dgtl::machine::MachineForm::Return:
+                out.push_back(0xC3); // ret
+                break;
+            case dgtl::machine::MachineForm::NoOp:
+                out.push_back(0x90); // nop
+                break;
+            default:
+                break;
+        }
+    }
+};
+
+} // namespace dgtl::isa::x64
+
+export namespace dgtl::isa {
+    using x64::X64StrikeEmitter;
+}

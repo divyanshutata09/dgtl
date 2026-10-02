@@ -7,9 +7,9 @@ $deps = @{}
 foreach ($f in $files) {
     $content = Get-Content $f.FullName -Raw
     $modName = $null
-    if ($content -match '^\s*export\s+module\s+([a-zA-Z0-9_\.]+)\s*;') {
+    if ($content -match '(?m)^\s*export\s+module\s+([a-zA-Z0-9_\.]+)\s*;') {
         $modName = $matches[1]
-    } elseif ($content -match '^\s*module\s+([a-zA-Z0-9_\.]+)\s*;') {
+    } elseif ($content -match '(?m)^\s*module\s+([a-zA-Z0-9_\.]+)\s*;') {
         $modName = $matches[1]
     }
     if ($modName) {

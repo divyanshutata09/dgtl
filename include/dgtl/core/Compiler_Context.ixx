@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -37,12 +37,14 @@ module;
 export module dgtl.compiler_context;
 
 // Dependency Ordered Named Module Imports
-import dgtl.config;
+import dgtl.api.config;
 import dgtl.arena;
 import dgtl.ir_enums;
+import dgtl.ir_node;
+import dgtl.ir.stream;
 
 // ============================================================================
-// SECTION 1 â€” INTERNAL COMPILER CONTEXT  (dgtl::core)
+// SECTION 1 Ã¢â‚¬â€ INTERNAL COMPILER CONTEXT  (dgtl::core)
 // ============================================================================
 
 export namespace dgtl::core {
@@ -84,56 +86,26 @@ struct PolyhedralConfig {
 // PILLAR 2: THREAD-LOCAL BUFFER  (64-byte cache-line aligned)
 // ----------------------------------------------------------------------------
 
-namespace fallback_ir {
-    struct IRAtom { std::uint32_t raw_bits = 0u; };
-    struct IRCore {
-        std::uint32_t result_id;
-        std::uint32_t op_a;
-        std::uint32_t op_b;
-        std::uint32_t op_c;
-        std::uint64_t intent_hash;
-        std::uint16_t logic_flags;
-        std::uint16_t aux_flags;
-        std::uint32_t debug_id;
-        std::uint64_t epoch;
-    };
-    
-    struct IRNode {
-        OpCode opcode = OpCode::NOP;
-        std::uint16_t flags = 0;
-        std::uint32_t result_id = 0;
-        std::uint32_t op_a = 0;
-        std::uint32_t op_b = 0;
-        std::uint32_t op_c = 0;
-        std::uint64_t intent_hash = 0;
-
-        [[nodiscard]] static constexpr std::uint64_t calculate_hash(OpCode, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) noexcept {
-            return 0x9e3779b97f4a7c15ULL;
-        }
-    };
-    
-    struct AtomSplitter {
-        [[nodiscard]] static constexpr IRAtom pack(OpCode op, std::uint16_t flg) noexcept {
-            return IRAtom{ static_cast<std::uint32_t>((static_cast<std::uint32_t>(op) << 16) | flg) };
-        }
-    };
-}
+// Canonical HIR representation: staging uses the same IRAtom/IRCore/IRNode types as IRStorage.
+using HIRAtom = dgtl::ir::IRAtom;
+using HIRCore = dgtl::ir::IRCore;
+using HIRNode = dgtl::ir::IRNode;
 
 struct alignas(64) ThreadLocalBuffer {
-    fallback_ir::IRAtom* base_atom_ptr       = nullptr;
-    fallback_ir::IRCore* base_core_ptr       = nullptr;
-    fallback_ir::IRAtom* atom_ptr            = nullptr;
-    fallback_ir::IRCore* core_ptr            = nullptr;
+    HIRAtom* base_atom_ptr       = nullptr;
+    HIRCore* base_core_ptr       = nullptr;
+    HIRAtom* atom_ptr            = nullptr;
+    HIRCore* core_ptr            = nullptr;
     std::size_t       remaining_primary   = 0u;
 
-    fallback_ir::IRAtom* base_shadow_atom_ptr = nullptr;
-    fallback_ir::IRCore* base_shadow_core_ptr = nullptr;
-    fallback_ir::IRAtom* shadow_atom_ptr      = nullptr;
-    fallback_ir::IRCore* shadow_core_ptr      = nullptr;
+    HIRAtom* base_shadow_atom_ptr = nullptr;
+    HIRCore* base_shadow_core_ptr = nullptr;
+    HIRAtom* shadow_atom_ptr      = nullptr;
+    HIRCore* shadow_core_ptr      = nullptr;
     std::size_t       remaining_shadow     = 0u;
 
-    fallback_ir::IRAtom* checkpoint_atom              = nullptr;
-    fallback_ir::IRCore* checkpoint_core              = nullptr;
+    HIRAtom* checkpoint_atom              = nullptr;
+    HIRCore* checkpoint_core              = nullptr;
     std::size_t       checkpoint_remaining_shadow  = 0u;
 
     bool in_strike = false;
@@ -185,8 +157,8 @@ public:
             }
         }
 
-        fallback_ir::IRAtom* atom;
-        fallback_ir::IRCore* core;
+        HIRAtom* atom;
+        HIRCore* core;
 
         if (tls.in_strike) {
             atom = tls.shadow_atom_ptr++;
@@ -198,21 +170,21 @@ public:
             --tls.remaining_primary;
         }
 
-        *atom = fallback_ir::AtomSplitter::pack(op, flg);
+        *atom = dgtl::ir::AtomSplitter::pack(op, flg);
 
         core->result_id   = res;
         core->op_a        = a;
         core->op_b        = b;
         core->op_c        = c;
-        core->intent_hash = (hash != 0ull) ? hash : fallback_ir::IRNode::calculate_hash(op, res, a, b, c);
+        core->intent_hash = (hash != 0ull) ? hash : HIRNode::calculate_hash(op, res, a, b, c);
         core->logic_flags = 0u;
         core->aux_flags   = 0u;
         core->debug_id    = 0u;
         core->epoch       = 0ull;
     }
 
-    [[nodiscard]] fallback_ir::IRNode* create_node_atomic() noexcept {
-        temp_node_buffer_ = fallback_ir::IRNode{};
+    [[nodiscard]] HIRNode* create_node_atomic() noexcept {
+        temp_node_buffer_ = HIRNode{};
         temp_node_buffer_.result_id = INVALID_SLOT;
         temp_node_buffer_.op_a = INVALID_SLOT;
         temp_node_buffer_.op_b = INVALID_SLOT;
@@ -220,7 +192,7 @@ public:
         return &temp_node_buffer_;
     }
 
-    void commit_node(const fallback_ir::IRNode& node) noexcept {
+    void commit_node(const HIRNode& node) noexcept {
         emit_node_fast(node.opcode, node.flags,
                        node.result_id,
                        node.op_a, node.op_b, node.op_c,
@@ -275,7 +247,7 @@ public:
 
 private:
     DGTL_Arena&      global_arena_;
-    mutable fallback_ir::IRNode temp_node_buffer_{}; 
+    mutable HIRNode temp_node_buffer_{}; 
     PolyhedralConfig   polyhedral_config_{}; 
 
 #ifdef _MSC_VER
@@ -287,16 +259,16 @@ private:
         auto& tls = g_tls_buffer;
 
         if (tls.remaining_primary == 0u) {
-            tls.base_atom_ptr     = global_arena_.allocate<fallback_ir::IRAtom>(PageSizeNodes);
-            tls.base_core_ptr     = global_arena_.allocate<fallback_ir::IRCore>(PageSizeNodes);
+            tls.base_atom_ptr     = global_arena_.allocate<HIRAtom>(PageSizeNodes);
+            tls.base_core_ptr     = global_arena_.allocate<HIRCore>(PageSizeNodes);
             tls.atom_ptr          = tls.base_atom_ptr;
             tls.core_ptr          = tls.base_core_ptr;
             tls.remaining_primary = PageSizeNodes;
         }
 
         if (tls.remaining_shadow == 0u) {
-            tls.base_shadow_atom_ptr = global_arena_.allocate<fallback_ir::IRAtom>(PageSizeNodes);
-            tls.base_shadow_core_ptr = global_arena_.allocate<fallback_ir::IRCore>(PageSizeNodes);
+            tls.base_shadow_atom_ptr = global_arena_.allocate<HIRAtom>(PageSizeNodes);
+            tls.base_shadow_core_ptr = global_arena_.allocate<HIRCore>(PageSizeNodes);
             tls.shadow_atom_ptr      = tls.base_shadow_atom_ptr;
             tls.shadow_core_ptr      = tls.base_shadow_core_ptr;
             tls.remaining_shadow     = PageSizeNodes;
@@ -316,7 +288,7 @@ private:
 } // namespace dgtl::core
 
 // ============================================================================
-// SECTION 2 â€” PUBLIC API WRAPPER  (dgtl::api)
+// SECTION 2 Ã¢â‚¬â€ PUBLIC API WRAPPER  (dgtl::api)
 // ============================================================================
 
 export namespace dgtl::api {
@@ -372,3 +344,4 @@ private:
 };
 
 } // namespace dgtl::api
+

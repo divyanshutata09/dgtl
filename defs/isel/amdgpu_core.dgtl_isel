@@ -1,0 +1,27 @@
+# ============================================================================
+# DGTL version 2.2.0  |  amdgpu_core.dgtl_isel  (AMD ROCm / GCN)
+# Architecture:  AMD GCN / CDNA / RDNA (gfx90a, gfx942, gfx1100)
+# Model:         Wavefront Execution (Wave32 / Wave64)
+# ============================================================================
+
+include "common_runtime_forms.dgtl_isel"
+include "core_base.dgtl_isel"
+
+# ----------------------------------------------------------------------------
+# AMDGCN PEEPHOLE REWRITE & FUSED VECTOR INSTRUCTIONS
+# ----------------------------------------------------------------------------
+
+# V_FMA_F32 / V_FMA_F64 native GCN instructions
+rule amdgcn_fma_f32:              AddF32(MulF32($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=rocm|amdgcn|hip, benefit=100]
+rule amdgcn_fma_f32_rev:          AddF32($c, MulF32($a, $b)) -> FMA_F32($a, $b, $c) [targets=rocm|amdgcn|hip, benefit=100]
+rule amdgcn_fma_f64:              AddF64(MulF64($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=rocm|amdgcn|hip, benefit=100]
+
+# V_CNDMASK_B32 (conditional move from EXEC mask)
+rule amdgcn_fold_cndmask:         Select(CmpEqI32($a, $b), $t, $f) -> SELECT($a, $t, $f) [targets=rocm|amdgcn|hip, benefit=30]
+
+# ----------------------------------------------------------------------------
+# AMD GCN form override
+# GCN/CDNA/RDNA all have native V_FMA_F32 and V_FMA_F64.
+# ----------------------------------------------------------------------------
+
+form fma_f32:                     opcode=FMA_F32,               machine_form=FloatTernaryFma32

@@ -148,8 +148,8 @@ extern "C" {
     export void dgtl_gpu_pop_clip_rect(void* ctx_ptr);
 
     // Geometry & Texture Batch Submissions
-    export void dgtl_gpu_render_quad_instances(void* ctx_ptr, const dgtl::gpu::QuadInstance* instances, uint32_t count);
-    export void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const dgtl::gpu::GlyphGPUInstance* instances, uint32_t count);
+    export void dgtl_gpu_render_quads(void* ctx_ptr, const dgtl::gpu::QuadInstance* instances, uint32_t count);
+    export void dgtl_gpu_render_glyphs(void* ctx_ptr, uint32_t atlas_slot, const dgtl::gpu::GlyphGPUInstance* instances, uint32_t count);
     export void dgtl_gpu_render_vector_paths(void* ctx_ptr, const dgtl::gpu::VectorPathInstance* instances, uint32_t count);
 
     // Texture Asset Uploads
@@ -157,7 +157,7 @@ extern "C" {
     export void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot);
 
     // Platform Input & Timer Queries
-    export bool dgtl_platform_poll_events(void* ctx_ptr, dgtl::gpu::RawInputEvent* out_event);
-    export uint64_t dgtl_platform_get_time_us(void);
+    export bool dgtl_platform_poll_event(void* ctx_ptr, dgtl::gpu::RawInputEvent* out_event);
+    export uint64_t dgtl_platform_time_us(void);
     export void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type);
 }

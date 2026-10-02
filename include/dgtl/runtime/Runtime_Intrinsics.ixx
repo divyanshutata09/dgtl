@@ -34,9 +34,10 @@ module;
 #include <unordered_map>
 #include <vector>
 
-export module dgtl.runtime_intrinsics;
+export module dgtl.runtime.intrinsics;
 
-import dgtl.dgtl_bulletins;
+import dgtl.runtime.bulletins;
+export import dgtl.runtime.maths;
 
 export namespace dgtl::runtime::intrinsics_detail {
 
@@ -428,6 +429,50 @@ inline uint64_t __dgtl_rt_string_substring(uint64_t s, uint64_t start, uint64_t 
     } catch (...) {
         return 0u;
     }
+}
+
+inline uint64_t __dgtl_rt_string_copy(uint64_t dest_ptr, uint64_t src_ptr, uint64_t max_len) noexcept {
+    const char* src = dgtl::runtime::intrinsics_detail::resolve_string_arg(src_ptr);
+    if (src == nullptr || dest_ptr == 0u) return 0u;
+    char* dst = reinterpret_cast<char*>(dest_ptr);
+    const std::size_t len = std::strlen(src);
+    if (max_len == 0u) {
+        std::memcpy(dst, src, len + 1u);
+        return static_cast<uint64_t>(len);
+    }
+    const std::size_t to_copy = std::min(len, static_cast<std::size_t>(max_len - 1u));
+    std::memcpy(dst, src, to_copy);
+    dst[to_copy] = '\0';
+    return static_cast<uint64_t>(to_copy);
+}
+
+inline uint64_t __dgtl_rt_string_equals(uint64_t a, uint64_t b, uint64_t = 0) noexcept {
+    const char* lhs = dgtl::runtime::intrinsics_detail::resolve_string_arg(a);
+    const char* rhs = dgtl::runtime::intrinsics_detail::resolve_string_arg(b);
+    if (lhs == nullptr || rhs == nullptr) return (lhs == rhs) ? 1ull : 0ull;
+    return (std::strcmp(lhs, rhs) == 0) ? 1ull : 0ull;
+}
+
+inline uint64_t __dgtl_rt_string_find(uint64_t haystack, uint64_t needle, uint64_t start_pos) noexcept {
+    const char* h = dgtl::runtime::intrinsics_detail::resolve_string_arg(haystack);
+    const char* n = dgtl::runtime::intrinsics_detail::resolve_string_arg(needle);
+    if (h == nullptr || n == nullptr) return static_cast<uint64_t>(-1);
+    const std::string_view sv(h);
+    const std::string_view sub(n);
+    const auto pos = sv.find(sub, static_cast<std::size_t>(start_pos));
+    return (pos == std::string_view::npos) ? static_cast<uint64_t>(-1) : static_cast<uint64_t>(pos);
+}
+
+inline uint64_t __dgtl_rt_string_hash(uint64_t s, uint64_t seed, uint64_t = 0) noexcept {
+    const char* p = dgtl::runtime::intrinsics_detail::resolve_string_arg(s);
+    if (p == nullptr) return seed;
+    uint64_t hash = (seed != 0u) ? seed : 0xcbf29ce484222325ull;
+    const unsigned char* u = reinterpret_cast<const unsigned char*>(p);
+    while (*u != '\0') {
+        hash ^= static_cast<uint64_t>(*u++);
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
 }
 
 inline uint64_t __dgtl_rt_bool_select(uint64_t cond, uint64_t on_true, uint64_t on_false) noexcept {

@@ -1,155 +1,125 @@
-/*
- * Copyright (c) 2026 TataG Systems. All rights reserved.
+﻿/*
+ * DGTL HIR operation traits.
  *
- * Project:     DGTL (Deep General-purpose Transformation Layer)
- * Owner:       Divyanshu Tata
- * Repository:  github.com/TataG-Systems/DGTL
+ * Canonical semantic classification is generated from:
+ *   gen/defs/phase1_core_ops.dgtl_def
  *
- * This software is the proprietary property of TataG Systems.
- * Unauthorized copying, modification, or distribution is strictly prohibited.
+ * This file contains no canonical opcode switch tables. If a semantic
+ * property belongs to an operation, it must be represented by the DSL and
+ * projected through DGTL-Gen.
  */
-
 module;
 
-#include <cstdlib>
-
-// Global Module Fragment: Include standard sizing layers
 #include <cstdint>
+#include <string_view>
 
 export module dgtl.ir_traits;
 
-// Modern Named Module Ingestion
 import dgtl.ir_enums;
+import dgtl.ir_schema;
+import dgtl.ir.gen;
 
 export namespace dgtl::ir {
 
-/**
- * @class IRTraits
- * @brief Static utility traits for rapid semantic analysis of OpCodes and Flags.
- * Guaranteed zero-overhead as all functions are constexpr/inline.
- */
 struct IRTraits {
+    [[nodiscard]] static constexpr bool is_canonical(OpCode op) noexcept {
+        return schema::is_canonical(op);
+    }
+
+    [[nodiscard]] static constexpr std::uint32_t schema_traits(OpCode op) noexcept {
+        return schema::trait_bits(op);
+    }
+
+    [[nodiscard]] static constexpr std::uint32_t schema_interfaces(OpCode op) noexcept {
+        return schema::interface_bits(op);
+    }
+
+    [[nodiscard]] static constexpr std::uint32_t schema_attributes(OpCode op) noexcept {
+        return schema::attribute_bits(op);
+    }
+
+    [[nodiscard]] static constexpr bool has_trait(OpCode op, gen::GenTrait trait) noexcept {
+        return gen::op_has_trait(op, trait);
+    }
+
+    [[nodiscard]] static constexpr bool has_interface(OpCode op, gen::GenInterface iface) noexcept {
+        return gen::op_implements_interface(op, iface);
+    }
+
+    [[nodiscard]] static constexpr bool has_attribute(OpCode op, gen::GenAttribute attr) noexcept {
+        return gen::op_has_attribute(op, attr);
+    }
+
+    [[nodiscard]] static constexpr bool has_result(OpCode op) noexcept {
+        if (auto d = schema::lookup(op)) return d->has_result;
+        return false;
+    }
+
+    [[nodiscard]] static constexpr std::uint8_t operand_count(OpCode op) noexcept {
+        if (auto d = schema::lookup(op)) return d->operand_count;
+        return 0;
+    }
+
+    [[nodiscard]] static constexpr std::string_view name(OpCode op) noexcept {
+        return schema::name(op);
+    }
 
     [[nodiscard]] static constexpr bool is_branch(OpCode op) noexcept {
-        return op == OpCode::BRANCH ||
-               op == OpCode::BRANCH_COND ||
-               op == OpCode::BRANCH_COMPARE_FUSED ||
-               op == OpCode::BRANCH_LIKELY ||
-               op == OpCode::BRANCH_UNLIKELY ||
-               op == OpCode::SWITCH_DISPATCH ||
-               op == OpCode::GOTO;
+        return has_trait(op, gen::GenTrait::IsTerminator) &&
+               has_interface(op, gen::GenInterface::ControlFlow);
     }
 
     [[nodiscard]] static constexpr bool is_terminator(OpCode op) noexcept {
-        return is_branch(op) ||
-               op == OpCode::RET || op == OpCode::RETURN ||
-               op == OpCode::RESUME_CTX;
+        return has_trait(op, gen::GenTrait::IsTerminator);
     }
 
     [[nodiscard]] static constexpr bool is_memory_op(OpCode op) noexcept {
-        return op == OpCode::LOAD ||
-               op == OpCode::ATOMIC_LOAD ||
-               op == OpCode::STORE ||
-               op == OpCode::ATOMIC_STORE ||
-               op == OpCode::ATOMIC_FENCE ||
-               op == OpCode::GATHER_F32_512 ||
-               op == OpCode::GATHER_16 ||
-               op == OpCode::STORE_V512 ||
-               op == OpCode::LEA ||
-               op == OpCode::VEC_LOAD ||
-               op == OpCode::VEC_STORE ||
-               op == OpCode::PREFETCH;
+        return has_trait(op, gen::GenTrait::IsMemoryOp) ||
+               has_trait(op, gen::GenTrait::IsMemoryRead) ||
+               has_trait(op, gen::GenTrait::IsMemoryWrite) ||
+               has_interface(op, gen::GenInterface::Memory);
     }
 
-    [[nodiscard]] static constexpr bool has_side_effects(OpCode op, std::uint16_t flags) noexcept {
-        if (flags & Flags::HAS_SIDE_EFFECTS) return true;
-        if (flags & Flags::IS_VOLATILE)       return true;
-        switch (op) {
-            case OpCode::STORE:
-            case OpCode::VOLATILE_STORE:
-            case OpCode::ATOMIC_STORE:
-            case OpCode::ATOMIC_FENCE:
-            case OpCode::ACQUIRE_FENCE:
-            case OpCode::RELEASE_FENCE:
-            case OpCode::MEMORY_FENCE:
-            case OpCode::STORE_V512:
-            case OpCode::CALL:
-            case OpCode::CALL_VARIADIC:
-            case OpCode::SYSCALL:
-            case OpCode::RET:
-            case OpCode::BRANCH:
-            case OpCode::BRANCH_COND:
-            case OpCode::BRANCH_LIKELY:
-            case OpCode::BRANCH_UNLIKELY:
-            case OpCode::SWITCH_DISPATCH:
-            case OpCode::GOTO:
-            case OpCode::ASYNC_SPAWN:
-            case OpCode::ASYNC_AWAIT:
-            case OpCode::THREAD_SPAWN:
-            case OpCode::BARRIER_SYNC:
-            case OpCode::LOCK_ACQUIRE:
-            case OpCode::LOCK_RELEASE:
-            case OpCode::CHAN_SEND:
-            case OpCode::CHAN_RECV:
-            case OpCode::GUARD_ALIAS:
-            case OpCode::GUARD_VALUE:
-            case OpCode::RESUME_CTX:
-                return true;
-            default:
-                return false;
-        }
+    [[nodiscard]] static constexpr bool has_side_effects(OpCode op,
+                                                         std::uint16_t flags) noexcept {
+        if ((flags & Flags::HAS_SIDE_EFFECTS) != 0u) return true;
+        if ((flags & Flags::IS_VOLATILE) != 0u) return true;
+        if (!is_canonical(op)) return true; // invalid HIR operations are conservatively effectful until rejected by verification
+        return !has_trait(op, gen::GenTrait::HasNoSideEffects);
     }
 
     [[nodiscard]] static constexpr bool is_simd(OpCode op) noexcept {
-        return op == OpCode::GATHER_F32_512 ||
-               op == OpCode::GATHER_16 ||
-               op == OpCode::STORE_V512 ||
-               op == OpCode::VEC_ADD_F32_512 ||
-               op == OpCode::VEC_MUL_F32_512 ||
-               op == OpCode::VEC_LOAD ||
-               op == OpCode::VEC_STORE ||
-               op == OpCode::VEC_SHUFFLE ||
-               op == OpCode::VEC_REDUCE_ADD ||
-               op == OpCode::FCVTL_F16_TO_F32 ||
-               op == OpCode::FCVTN_F32_TO_F16 ||
-               op == OpCode::SIMD_BSL_PREDICATE;
+        return has_interface(op, gen::GenInterface::SIMD) ||
+               has_trait(op, gen::GenTrait::IsVectorizable);
     }
 
     [[nodiscard]] static constexpr bool is_integer_op(OpCode op) noexcept {
-        return (op >= OpCode::ADD_I32 && op <= OpCode::SHR_I32) ||
-               (op >= OpCode::ADD_I64 && op <= OpCode::SHR_I64) ||
-               op == OpCode::BIT_FIELD_INSERT ||
-               op == OpCode::BIT_FIELD_EXTRACT;
+        const auto d = schema::lookup(op);
+        if (!d) return false;
+        return d->result_type.starts_with("I") &&
+               (has_interface(op, gen::GenInterface::Arithmetic) ||
+                has_interface(op, gen::GenInterface::BitwiseOp));
     }
 
     [[nodiscard]] static constexpr bool is_float_op(OpCode op) noexcept {
-        return (op >= OpCode::ADD_F32 && op <= OpCode::FMA_WIDEN_F16_F32) ||
-               (op >= OpCode::ADD_F64 && op <= OpCode::DIV_F64);
+        const auto d = schema::lookup(op);
+        if (!d) return false;
+        return d->result_type.starts_with("F") ||
+               d->result_type == "BF16";
     }
 
     [[nodiscard]] static constexpr bool is_compare_op(OpCode op) noexcept {
-        return (op >= OpCode::CMP_EQ_I32 && op <= OpCode::CMP_GE_I32) ||
-               op == OpCode::STRING_COMPARE;
+        return has_interface(op, gen::GenInterface::Comparison);
     }
 
     [[nodiscard]] static constexpr bool is_string_op(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::STRING_CONST:
-            case OpCode::STRING_LENGTH:
-            case OpCode::STRING_COMPARE:
-            case OpCode::STRING_CONCAT:
-            case OpCode::STRING_SUBSTRING:
-                return true;
-            default:
-                return false;
-        }
+        const auto d = schema::lookup(op);
+        return d && (d->result_type == "StringHandle" ||
+                     d->name.starts_with("String"));
     }
 
     [[nodiscard]] static constexpr bool is_control_flow(OpCode op) noexcept {
-         return is_branch(op) ||
-               op == OpCode::RET || op == OpCode::RETURN || op == OpCode::RESUME_CTX ||
-               op == OpCode::CALL || op == OpCode::CALL_VARIADIC ||
-               op == OpCode::SYSCALL || op == OpCode::LABEL;
+        return has_interface(op, gen::GenInterface::ControlFlow);
     }
 
     [[nodiscard]] static constexpr bool is_valid_slot(std::uint32_t slot_id) noexcept {
@@ -157,224 +127,82 @@ struct IRTraits {
     }
 
     [[nodiscard]] static constexpr double get_inline_weight(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return 50.0;
+        // Cost is deliberately a neutral HIR heuristic. Target-specific costs
+        // belong after legalization in the target backend.
         if (is_branch(op)) return 5.0;
-        if (op == OpCode::SYSCALL) return 100.0;
         if (is_simd(op)) return 3.0;
         return 1.0;
     }
 
-    [[nodiscard]] static constexpr bool supports_on_x64_avx512(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return true;
-        if (op == OpCode::STORE_V512) return true;
-        if (op == OpCode::FCVTL_F16_TO_F32 || op == OpCode::FCVTN_F32_TO_F16) return true;
-        return !is_compare_op(op) || op <= OpCode::CMP_GE_I32;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_arm64_sve(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512) return true;
-        if (op == OpCode::GATHER_16) return true;
-        if (op == OpCode::VEC_ADD_F32_512 || op == OpCode::VEC_MUL_F32_512) return true;
-        if (op == OpCode::FMA_F32) return true;
-        return true;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_arm32_neon(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return false;
-        if (op == OpCode::STORE_V512) return false;
-        if (op == OpCode::VEC_ADD_F32_512 || op == OpCode::VEC_MUL_F32_512) return false;
-        if (op == OpCode::FCVTL_F16_TO_F32 || op == OpCode::FCVTN_F32_TO_F16) return true;
-        return true;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_riscv64_rv64gc(OpCode op) noexcept {
-        if (is_simd(op) && op != OpCode::FCVTL_F16_TO_F32 && op != OpCode::FCVTN_F32_TO_F16) return false;
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return false;
-        return true;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_wasm(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return false;
-        if (op == OpCode::STORE_V512) return false;
-        if (op == OpCode::FCVTL_F16_TO_F32 || op == OpCode::FCVTN_F32_TO_F16) return false;
-        if (is_simd(op)) return false;
-        return true;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_cuda_ptx(OpCode op) noexcept {
-        if (is_control_flow(op) && op != OpCode::LABEL) return false;
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return true;
-        return true;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_rocm_llvmir(OpCode op) noexcept {
-        if (is_control_flow(op) && op != OpCode::LABEL) return false;
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return true;
-        return true;
-    }
-
-    [[nodiscard]] static constexpr bool supports_on_nasm_x64() noexcept { return true; }
-    [[nodiscard]] static constexpr bool supports_on_fpga_verilog() noexcept { return true; }
-
-    [[nodiscard]] static constexpr bool is__friendly(OpCode op) noexcept {
-        return !(is_simd(op) && op != OpCode::FCVTL_F16_TO_F32 && op != OpCode::FCVTN_F32_TO_F16);
-    }
-
-    [[nodiscard]] static constexpr bool is__intensive(OpCode op) noexcept {
-        return is_simd(op) || op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16;
-    }
-
     [[nodiscard]] static constexpr bool is_commutative(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::ADD_I32: case OpCode::ADD_I64:
-            case OpCode::ADD_F32: case OpCode::ADD_F64:
-            case OpCode::MUL_I32: case OpCode::MUL_I64:
-            case OpCode::MUL_F32: case OpCode::MUL_F64:
-            case OpCode::AND_I32: case OpCode::OR_I32: case OpCode::XOR_I32:
-            case OpCode::AND_I64: case OpCode::OR_I64: case OpCode::XOR_I64:
-                return true;
-            default:
-                return false;
-        }
+        return has_trait(op, gen::GenTrait::Commutative);
     }
 
     [[nodiscard]] static constexpr bool is_associative(OpCode op) noexcept {
-        return is_commutative(op) && op != OpCode::ADD_F32 && op != OpCode::ADD_F64 &&
-               op != OpCode::MUL_F32 && op != OpCode::MUL_F64;
+        return has_trait(op, gen::GenTrait::Associative);
     }
 
     [[nodiscard]] static constexpr bool is_single_def_use(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::LOAD_IMM: case OpCode::IMMEDIATE:
-            case OpCode::LEA:      case OpCode::LOAD:
-            case OpCode::ATOMIC_LOAD:
-            case OpCode::PTR_CAST:
-            case OpCode::PTR_DIFF:
-            case OpCode::STRING_CONST:
-                return true;
-            default:
-                return false;
-        }
+        return has_trait(op, gen::GenTrait::SingleDefUse);
     }
 
     [[nodiscard]] static constexpr bool can_fold_constants(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::ADD_I32: case OpCode::SUB_I32: case OpCode::MUL_I32: case OpCode::DIV_I32:
-            case OpCode::AND_I32: case OpCode::OR_I32:  case OpCode::XOR_I32: case OpCode::SHL_I32:
-            case OpCode::SHR_I32: case OpCode::MOD_I32:
-            case OpCode::ADD_I64: case OpCode::SUB_I64: case OpCode::MUL_I64: case OpCode::DIV_I64:
-            case OpCode::MOD_I64: case OpCode::AND_I64: case OpCode::OR_I64: case OpCode::XOR_I64:
-            case OpCode::SHL_I64: case OpCode::SHR_I64:
-            case OpCode::BIT_FIELD_INSERT: case OpCode::BIT_FIELD_EXTRACT:
-                return true;
-            default:
-                return false;
-        }
+        return has_trait(op, gen::GenTrait::ConstantFoldable);
     }
 
     [[nodiscard]] static constexpr bool is_memory_barrier(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::CALL: case OpCode::SYSCALL:
-            case OpCode::LOAD: case OpCode::ATOMIC_LOAD:
-            case OpCode::STORE: case OpCode::ATOMIC_STORE:
-            case OpCode::ATOMIC_FENCE:
-            case OpCode::STORE_V512:
-                return true;
-            default:
-                return false;
-        }
+        return has_trait(op, gen::GenTrait::MemoryBarrier);
     }
 
-    [[nodiscard]] static constexpr bool can_be_reordered(OpCode op1, OpCode op2) noexcept {
-        if (is_memory_barrier(op1) || is_memory_barrier(op2)) return false;
-        if (has_side_effects(op1, Flags::NONE) || has_side_effects(op2, Flags::NONE)) return false;
-        return true;
+    [[nodiscard]] static constexpr bool can_be_reordered(OpCode a, OpCode b) noexcept {
+        return !is_memory_barrier(a) && !is_memory_barrier(b) &&
+               !has_side_effects(a, Flags::NONE) &&
+               !has_side_effects(b, Flags::NONE);
     }
 
     [[nodiscard]] static constexpr double estimate_latency_cycles(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return 6.0;
-        if (op == OpCode::DIV_I32 || op == OpCode::DIV_I64 || op == OpCode::DIV_F32 || op == OpCode::DIV_F64) return 15.0;
-        if (op == OpCode::MUL_I32 || op == OpCode::MUL_I64) return 3.0;
-        if (op == OpCode::FMA_F32) return 4.0;
-        if (op == OpCode::MUL_F32 || op == OpCode::MUL_F64) return 4.0;
-        if (op == OpCode::LOAD || op == OpCode::ATOMIC_LOAD ||
-            op == OpCode::STORE || op == OpCode::ATOMIC_STORE) return 2.5;
-        if (is_branch(op)) return 0.5;
+        // HIR deliberately does not encode target microarchitecture latency.
+        // This is a stable structural estimate only.
+        if (is_branch(op)) return 1.0;
         return 1.0;
     }
 
     [[nodiscard]] static constexpr std::uint32_t estimate_throughput_slots(OpCode op) noexcept {
-        if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return 1u;
-        if (op == OpCode::STORE_V512) return 1u;
-        if (op == OpCode::DIV_I32 || op == OpCode::DIV_I64) return 1u;
-        if (op == OpCode::MUL_I32 || op == OpCode::MUL_I64 || op == OpCode::FMA_F32) return 1u;
-        if (is_branch(op)) return 0u;
-        return 1u;
+        return is_branch(op) ? 0u : 1u;
     }
 
     [[nodiscard]] static constexpr bool is_ownership_op(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::OWNERSHIP_ACQUIRE: case OpCode::OWNERSHIP_RELEASE:
-            case OpCode::OWNERSHIP_TRANSFER: case OpCode::ATOMIC_SNAPSHOT:
-                return true;
-            default: return false;
-        }
+        return has_interface(op, gen::GenInterface::Ownership);
     }
 
     [[nodiscard]] static constexpr bool is_concurrency_op(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::ASYNC_SPAWN:  case OpCode::ASYNC_AWAIT:
-            case OpCode::FIBER_YIELD:  case OpCode::BARRIER_SYNC:
-            case OpCode::CHAN_SEND:    case OpCode::CHAN_RECV:
-            case OpCode::LOCK_ACQUIRE: case OpCode::LOCK_RELEASE:
-            case OpCode::MEMORY_FENCE: case OpCode::THREAD_SPAWN:
-                return true;
-            default: return false;
-        }
+        return has_interface(op, gen::GenInterface::Concurrency);
     }
 
     [[nodiscard]] static constexpr bool is_dsa_op(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::GRAPH_BUILD:  case OpCode::GRAPH_TRAVERSE:
-            case OpCode::TREE_BUILD:   case OpCode::TREE_TRAVERSE:
-            case OpCode::TRIE_BUILD:   case OpCode::TRIE_LOOKUP:   case OpCode::TRIE_INSERT:
-            case OpCode::DSA_ALLOCATE: case OpCode::DSA_DEALLOCATE: case OpCode::SCOP_ANALYZE:
-                return true;
-            default: return false;
-        }
+        return has_interface(op, gen::GenInterface::DSA);
     }
 
     [[nodiscard]] static constexpr bool is_tensor_op(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::TENSOR_RESHAPE: case OpCode::TENSOR_REDUCE:
-            case OpCode::TENSOR_TRANSPOSE: case OpCode::TENSOR_SLICE:
-            case OpCode::TENSOR_CONCAT: case OpCode::TENSOR_BROADCAST:
-            case OpCode::TENSOR_GEMM: case OpCode::TENSOR_CONV:
-            case OpCode::TENSOR_POOL: case OpCode::TENSOR_SOFTMAX:
-                return true;
-            default: return false;
-        }
+        return has_interface(op, gen::GenInterface::Tensor);
     }
 
     [[nodiscard]] static constexpr bool must_synchronize(OpCode op) noexcept {
-        switch (op) {
-            case OpCode::ASYNC_SPAWN: case OpCode::THREAD_SPAWN:
-            case OpCode::BARRIER_SYNC: case OpCode::CHAN_SEND:
-            case OpCode::CHAN_RECV: case OpCode::MEMORY_FENCE:
-                return true;
-            default: return false;
-        }
+        return has_interface(op, gen::GenInterface::Concurrency) &&
+               !has_trait(op, gen::GenTrait::IsAsyncSpawnable);
     }
 
     [[nodiscard]] static constexpr bool may_create_deadlock(OpCode op) noexcept {
-        return op == OpCode::LOCK_ACQUIRE || op == OpCode::BARRIER_SYNC ||
-               op == OpCode::CHAN_SEND   || op == OpCode::CHAN_RECV;
+        return has_interface(op, gen::GenInterface::Concurrency) &&
+               !has_trait(op, gen::GenTrait::HasNoSideEffects);
     }
 
     [[nodiscard]] static constexpr bool is_frontend_specific(OpCode op) noexcept {
-         return is_ownership_op(op) || is_concurrency_op(op) ||
-                is_dsa_op(op)       || is_tensor_op(op);
+        return is_ownership_op(op) || is_concurrency_op(op) ||
+               is_dsa_op(op) || is_tensor_op(op);
     }
 };
 
 } // namespace dgtl::ir
+
+

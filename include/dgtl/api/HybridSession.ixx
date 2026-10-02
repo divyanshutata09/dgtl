@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -22,21 +22,24 @@ module;
 #include <mutex>        
 #include <shared_mutex> 
 
-export module dgtl.internal.api_hybrid_session;
+export module dgtl.api.hybrid_session;
 
 // Import external monolithic module architectures natively
-import dgtl.ir_core;
-import dgtl.numa_runtime;
+import dgtl.ir;
+import dgtl.runtime.numa;
 import dgtl.compiler_context;
-import dgtl.dgtl_bulletins;
-import dgtl.ir_core.pass_manager_orchestrator;
-import dgtl.ir_core.jit_orchestrator;
-import dgtl.ir_core.runtime;
+import dgtl.runtime.bulletins;
+import dgtl.ir.pipeline.pass_manager_orchestrator;
+import dgtl.jit.jit_orchestrator;
+import dgtl.runtime.tls;
 import dgtl.flat_map; 
 import dgtl.sync;     
+import dgtl.mir;
+import dgtl.mir.machine_ir;
 
 // Import local base class definition safely via its sibling API partition shortcut
-import dgtl.internal.api_execution_engine;
+import dgtl.api.execution_engine;
+import dgtl.formal;
 
 export namespace dgtl {
 namespace api {
@@ -57,7 +60,7 @@ public:
      * @brief Create a Hybrid session for the given context.
      * @param context The execution context
      */
-    explicit HybridSession(Context& context) noexcept
+    explicit HybridSession(Context& context)
         : context_(context),
           pipeline_(),
           orchestrator_(*context.get_impl(), context.get_impl()->get_arena()) {
@@ -71,47 +74,65 @@ public:
      * @param stream The IR to compile
      * @return true if compilation succeeded
      */
-    [[nodiscard]] bool compile(ir::IRStream& stream) noexcept override {
-        std::cout << "[DGTL-HYBRID-CHECKPOINT] H1. Entering HybridSession::compile" << std::endl;
+    [[nodiscard]] bool compile(ir::IRStream& stream) override {
+
         if (stream.is_null()) return false;
 
-        std::cout << "[DGTL-HYBRID-CHECKPOINT] H2. Calling flusher.merge_concurrent" << std::endl;
         dgtl::runtime::TLSFlushMerge flusher;
         flusher.merge_concurrent(stream);
 
-        std::cout << "[DGTL-HYBRID-CHECKPOINT] H3. Executing hybrid optimization pipeline" << std::endl;
         auto status = pipeline_.execute(stream);
         if (status != dgtl::pipeline::HybridStatus::Success) {
-            std::cout << "[DGTL-HYBRID-CHECKPOINT] H3-FAIL. Hybrid pipeline execution failed" << std::endl;
+
             return false;
         }
 
-        std::cout << "[DGTL-HYBRID-CHECKPOINT] H4. Checking execution tier" << std::endl;
         if (pipeline_.get_current_tier() == dgtl::pipeline::ExecutionTier::JIT_Fast) {
-            std::cout << "[DGTL-HYBRID-CHECKPOINT] H5. Tier is JIT_Fast. Compiling stream to address (StrikeOrchestrator)" << std::endl;
+
             uintptr_t addr = orchestrator_.compile_to_address(stream);
-            std::cout << "[DGTL-HYBRID-CHECKPOINT] H5a. Obtained address: " << addr << std::endl;
+
             if (addr != 0) {
                 std::unique_lock<dgtl::utils::sync::FastSharedSpinLock> lock(symbol_mutex_);
                 
                 uint64_t logic_hash = stream.generate_logic_hash();
                 symbol_map_.insert_or_assign(std::to_string(logic_hash), addr);
 
-                std::cout << "[DGTL-HYBRID-CHECKPOINT] H6. Mapping symbols" << std::endl;
                 for (size_t i = 0; i < stream.size(); ++i) {
                     const auto node = stream.get_node_readonly(i);
                     if (node.opcode == ir::OpCode::LABEL) {
                         std::string_view name = dgtl::runtime::try_lookup_string(node.result_id);
                         if (!name.empty()) {
-                            symbol_map_.insert_or_assign(std::string(name), addr);
+                            const uint32_t label_id = node.result_id != ir::INVALID_SLOT ? node.result_id : node.op_a;
+                            const size_t offset = orchestrator_.get_label_offset(label_id);
+                            symbol_map_.insert_or_assign(std::string(name), addr + offset);
                         }
                     }
                 }
             }
+            if (symbol_map_.find("DGTL_kernel_entry") == nullptr) {
+                symbol_map_.insert_or_assign("DGTL_kernel_entry", addr);
+                symbol_map_.insert_or_assign("main", addr);
+            }
         } else {
-            std::cout << "[DGTL-HYBRID-CHECKPOINT] H4a. Tier is NOT JIT_Fast" << std::endl;
+
         }
-        std::cout << "[DGTL-HYBRID-CHECKPOINT] H6-SUCCESS. Hybrid compile complete" << std::endl;
+
+        return true;
+    }
+
+    /**
+     * @brief Sovereign MIR MachineFunction compilation.
+     */
+    [[nodiscard]] bool compile_mir(const machine::MachineFunction& fn) override {
+        uintptr_t addr = orchestrator_.compile_mir_to_address(fn);
+        if (addr == 0) return false;
+        std::unique_lock<dgtl::utils::sync::FastSharedSpinLock> lock(symbol_mutex_);
+        const std::string name_key = fn.name().empty()
+            ? ("dgtl_mf_" + std::to_string(reinterpret_cast<uintptr_t>(&fn)))
+            : std::string(fn.name());
+        symbol_map_.insert_or_assign(name_key, addr);
+        symbol_map_.insert_or_assign("DGTL_kernel_entry", addr);
+        symbol_map_.insert_or_assign("main", addr);
         return true;
     }
 
@@ -131,11 +152,11 @@ public:
         return orchestrator_.lookup_global_symbol(symbol_name);
     }
 
-    void register_host_symbol(const std::string& symbol_name, uint64_t address) noexcept override {
+    void register_host_symbol(const std::string& symbol_name, uint64_t address) override {
         orchestrator_.register_runtime_function(symbol_name, static_cast<uintptr_t>(address));
     }
 
-    void register_host_symbol_slot(uint32_t slot, uint64_t address) noexcept override {
+    void register_host_symbol_slot(uint32_t slot, uint64_t address) override {
         orchestrator_.register_runtime_function_slot(slot, static_cast<uintptr_t>(address));
     }
 
@@ -163,7 +184,7 @@ public:
         const ir::IRStream& optimized_stream,
         std::string_view pass_name,
         std::string_view solver_name = "z3"
-    ) noexcept override {
+    ) override {
         formal::DGTLFormalVerificationSMT verifier;
         const std::string script = verifier.export_to_smtlib2(original_stream, optimized_stream, pass_name);
         return verifier.verify_with_external_solver(script, solver_name);
@@ -175,7 +196,7 @@ public:
     [[nodiscard]] bool specialize_stream(
         ir::IRStream& stream,
         const ir::evolution::ExecutionFeedback& feedback
-    ) noexcept override {
+    ) override {
         ir::evolution::IREvolver evolver;
         auto res = evolver.apply_specialization(stream, feedback);
         return res.succeeded;

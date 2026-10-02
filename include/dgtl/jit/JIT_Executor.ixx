@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -11,10 +11,9 @@
 
 /* * DGTL (Deep General-purpose Transformation Layer) version 2.0.0 : THE COMPILER SPEC
  * STEP 42: ZERO-LATENCY EXECUTOR
- * FINAL FIX: Hardened W^X Memory Protection, 178 Canonical OpCode Trace Mapping, and I-Cache Sync.
- * INTEGRATION: Synchronized with Bit-Packed IR Trace-Mapping.
- * LOCATION: include/dgtl/runtime/ (Namespace: dgtl::runtime)
+ * FINAL FIX: Hardened W^X Memory Protection, MIR Trace Mapping, and I-Cache Sync.
  * ARCHITECTURE: Upgraded to HFT-grade Read-Write Locks and Module-Level mapping.
+ * ZERO-LEAK: Fully isolated from Mid-End IR and HIR AST nodes. MIR is SSOT.
  */
 
 module;
@@ -54,21 +53,25 @@ module;
 #endif
 
 // Named module interface declaration MUST be the first statement after header fragment closes
-export module dgtl.ir_core.jit_executor;
+export module dgtl.jit.executor;
 
-// Import external monolithic core module layers natively
-import dgtl.ir_enums;
-import dgtl.ir_node;
+// Import ONLY execution, memory, target, and machine-IR layers
 import dgtl.arena;
 import dgtl.flat_map;
 import dgtl.sync;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.ai_cost_model;
 import dgtl.target;
+import dgtl.mir.machine_ir;
 
-export namespace dgtl::runtime {
+export namespace dgtl::jit {
 
 using Function = uint64_t (*)(void*);
+
+struct JITFeedback {
+    double actual_latency = 0.0;
+    double cache_miss_rate = 0.0;
+    double branch_mispredict_rate = 0.0;
+    uint64_t execution_count = 0;
+};
 
 class alignas(64) DGTLExecutor {
     static constexpr size_t kTraceMapCapacity = 16384;
@@ -79,7 +82,7 @@ class alignas(64) DGTLExecutor {
     
     // Upgraded to shared_mutex to allow concurrent telemetry feedback in sub-microsecond bounds
     mutable dgtl::utils::sync::FastSharedSpinLock _mtx;
-    dgtl::utils::FastFlatMap<uintptr_t, std::shared_ptr<dgtl::ir::IRStream>, kTraceMapCapacity> ir_trace_map;
+    dgtl::utils::FastFlatMap<uintptr_t, std::shared_ptr<dgtl::machine::MachineFunction>, kTraceMapCapacity> mir_trace_map;
 
     struct TraceMeta {
         size_t code_size = 0;
@@ -135,7 +138,7 @@ public:
         code_buffer = other.code_buffer;
         buffer_size = other.buffer_size;
         cursor = other.cursor;
-        ir_trace_map = std::move(other.ir_trace_map);
+        mir_trace_map = std::move(other.mir_trace_map);
         trace_meta_map = std::move(other.trace_meta_map);
 
         other.code_buffer = nullptr;
@@ -168,61 +171,7 @@ public:
         return target_machine_;
     }
 
-    // =========================================================================
-    // MULTI-STREAM MODULE REGISTRATION
-    // Integrates with StrikeOrchestrator's `fire_module_strike`
-    // =========================================================================
-    Function load_and_prepare_module(std::span<const uint8_t> binary, 
-                                        const std::vector<std::pair<std::string, dgtl::ir::IRStream>>& module_streams) {
-        dgtl::utils::sync::UniqueLockGuard lock(_mtx);
-
-        if (binary.empty()) [[unlikely]] return nullptr;
-        if (binary.size() < 2) [[unlikely]] return nullptr;
-
-        cursor = (cursor + 63) & ~static_cast<size_t>(63);
-        
-        if (binary.size() > buffer_size || cursor > buffer_size - binary.size()) [[unlikely]] {
-            std::cerr << "[DGTL-FATAL] buffer overflow during module load\n";
-            std::cerr.flush();
-            return nullptr;
-        }
-
-        uint8_t* target_ptr = &code_buffer[cursor];
-        uintptr_t target_addr = reinterpret_cast<uintptr_t>(target_ptr);
-
-        make_page_writable(target_ptr, binary.size());
-        std::memcpy(target_ptr, binary.data(), binary.size());
-        
-        // Register the primary module trace
-        if (!module_streams.empty()) {
-            auto cloned_ptr = std::make_shared<dgtl::ir::IRStream>(module_streams.back().second.clone());
-            if (!this->ir_trace_map.insert_or_assign(target_addr, cloned_ptr)) [[unlikely]] {
-                std::cerr << "[DGTL-FATAL] IR trace map capacity exhausted\n";
-                finalize_page_protection(target_ptr, binary.size());
-                return nullptr;
-            }
-        }
-        
-        TraceMeta meta;
-        meta.code_size = binary.size();
-        meta.loaded_at = std::chrono::steady_clock::now();
-        meta.execution_count = 0;
-        if (!this->trace_meta_map.insert_or_assign(target_addr, meta)) [[unlikely]] {
-            std::cerr << "[DGTL-FATAL] trace metadata capacity exhausted\n";
-            finalize_page_protection(target_ptr, binary.size());
-            return nullptr;
-        }
-        
-        cursor += binary.size();
-
-        sync_caches(target_ptr, binary.size());
-        finalize_page_protection(target_ptr, binary.size());
-
-        Function fn = reinterpret_cast<Function>(target_ptr);
-        return fn;
-    }
-
-    Function load_and_prepare(std::span<const uint8_t> binary, const dgtl::ir::IRStream& source_ir) {
+    Function load_and_prepare(std::span<const uint8_t> binary, const dgtl::machine::MachineFunction* source_mir = nullptr) {
         dgtl::utils::sync::UniqueLockGuard lock(_mtx);
 
         if (binary.empty()) [[unlikely]] {
@@ -264,11 +213,9 @@ public:
         make_page_writable(target_ptr, binary.size());
         std::memcpy(target_ptr, binary.data(), binary.size());
         
-        auto cloned_ptr = std::make_shared<dgtl::ir::IRStream>(source_ir.clone());
-        if (!this->ir_trace_map.insert_or_assign(target_addr, cloned_ptr)) [[unlikely]] {
-            std::cerr << "[DGTL-FATAL] IR trace map capacity exhausted\n";
-            finalize_page_protection(target_ptr, binary.size());
-            return nullptr;
+        if (source_mir) {
+            auto cloned_mir = std::make_shared<dgtl::machine::MachineFunction>(*source_mir);
+            (void)this->mir_trace_map.insert_or_assign(target_addr, cloned_mir);
         }
         
         TraceMeta meta;
@@ -296,48 +243,43 @@ public:
         return fn;
     }
 
-    dgtl::ir::IRStream get_ir_from_address(uintptr_t address) const {
+    Function load_and_prepare(std::span<const uint8_t> binary, const dgtl::machine::MachineFunction& source_mir) {
+        return load_and_prepare(binary, &source_mir);
+    }
+
+    Function load_and_prepare_mir(std::span<const uint8_t> binary, const dgtl::machine::MachineFunction& source_mir) {
+        return load_and_prepare(binary, &source_mir);
+    }
+
+    [[nodiscard]] std::shared_ptr<const dgtl::machine::MachineFunction> get_mir_from_address(uintptr_t address) const {
         dgtl::utils::sync::SharedLockGuard lock(_mtx);
 
-        // Validate address is within code buffer range
         uintptr_t buffer_start = reinterpret_cast<uintptr_t>(code_buffer);
         uintptr_t buffer_end = buffer_start + buffer_size;
         if (address < buffer_start || address >= buffer_end) [[unlikely]] {
-            std::cerr << "[DGTL-WARN] Address out of bounds: 0x" << std::hex << address << std::dec << "\n";
-            return dgtl::ir::IRStream();
+            return nullptr;
         }
 
-        auto* trace = ir_trace_map.find(address);
+        auto* trace = mir_trace_map.find(address);
         if (!trace || !(*trace)) [[unlikely]] {
-            std::cerr << "[DGTL-WARN] No IR Trace mapped to: 0x" << std::hex << address << std::dec << "\n";
-            return dgtl::ir::IRStream();
+            return nullptr;
         }
         
-        // Clone while holding lock to prevent concurrent map modification
-        return (*trace)->clone();
+        return *trace;
     }
 
-    dgtl::analysis::RuntimeFeedback collect_feedback(uintptr_t function_id) {
+    JITFeedback collect_feedback(uintptr_t function_id) {
         dgtl::utils::sync::UniqueLockGuard lock(_mtx);
-        dgtl::analysis::RuntimeFeedback feedback;
+        JITFeedback feedback;
 
-        // Validate function_id is within buffer range
         uintptr_t buffer_start = reinterpret_cast<uintptr_t>(code_buffer);
         uintptr_t buffer_end = buffer_start + buffer_size;
         if (function_id < buffer_start || function_id >= buffer_end) [[unlikely]] {
-            feedback.actual_latency = 0.0;
-            feedback.cache_miss_rate = 0.0;
-            feedback.branch_mispredict_rate = 0.0;
-            feedback.execution_count = 0;
             return feedback;
         }
 
         auto* meta = trace_meta_map.find(function_id);
         if (!meta) [[unlikely]] {
-            feedback.actual_latency = 0.0;
-            feedback.cache_miss_rate = 0.0;
-            feedback.branch_mispredict_rate = 0.0;
-            feedback.execution_count = 0;
             return feedback;
         }
 
@@ -363,33 +305,16 @@ public:
             return;
         }
 
-        auto* trace = ir_trace_map.find(function_id);
         auto* meta = trace_meta_map.find(function_id);
-        if (!trace || !(*trace) || !meta) [[unlikely]] {
+        if (!meta) [[unlikely]] {
             return;
         }
 
         meta->execution_count += 1;
-        const auto now = std::chrono::steady_clock::now();
-        const double age_ms = std::chrono::duration<double, std::milli>(now - meta->loaded_at).count();
-        const double size_term = static_cast<double>(meta->code_size) / 64.0;
-
-        dgtl::analysis::RuntimeFeedback feedback;
-        feedback.actual_latency = std::max(1.0, 2.0 + size_term);
-        feedback.cache_miss_rate = std::min(0.30, 0.01 + (static_cast<double>(meta->code_size) / 65536.0));
-        feedback.branch_mispredict_rate = std::max(0.005, 0.05 - std::min(40.0, age_ms) / 1000.0);
-        feedback.execution_count = meta->execution_count;
-
-        (*trace)->ingest_runtime_feedback(0,
-                                  feedback.actual_latency,
-                                  feedback.cache_miss_rate,
-                                  feedback.branch_mispredict_rate,
-                                  feedback.execution_count);
     }
 
 private:
     void assign_from_locked(DGTLExecutor&& other) noexcept {
-
         if (code_buffer && code_buffer != (void*)-1) {
 #ifdef DGTL_OS_WINDOWS
             VirtualFree(code_buffer, 0, 0x8000);  // MEM_RELEASE = 0x8000
@@ -401,7 +326,7 @@ private:
         code_buffer = other.code_buffer;
         buffer_size = other.buffer_size;
         cursor = other.cursor;
-        ir_trace_map = std::move(other.ir_trace_map);
+        mir_trace_map = std::move(other.mir_trace_map);
         trace_meta_map = std::move(other.trace_meta_map);
         target_machine_ = other.target_machine_;
 
@@ -479,7 +404,23 @@ private:
     }
 };
 
-} // namespace dgtl::runtime
+} // namespace dgtl::jit
+
+export namespace dgtl::runtime {
+    using DGTLExecutor = dgtl::jit::DGTLExecutor;
+    using Function = dgtl::jit::Function;
+    using JITFeedback = dgtl::jit::JITFeedback;
+}
+
+export namespace dgtl::isa {
+    using DGTLExecutor = dgtl::runtime::DGTLExecutor;
+    using Function = dgtl::runtime::Function;
+} // namespace dgtl::isa
+
+export namespace dgtl::exec {
+    using DGTLExecutor = dgtl::runtime::DGTLExecutor;
+    using Function = dgtl::runtime::Function;
+} // namespace dgtl::exec
 
 export namespace dgtl::jit {
 
@@ -547,12 +488,8 @@ public:
 
 } // namespace dgtl::jit
 
-export namespace dgtl::isa {
-    using DGTLExecutor = dgtl::runtime::DGTLExecutor;
-    using Function = dgtl::runtime::Function;
-} // namespace dgtl::isa
-
-export namespace dgtl::exec {
-    using DGTLExecutor = dgtl::runtime::DGTLExecutor;
-    using Function = dgtl::runtime::Function;
-} // namespace dgtl::exec
+export namespace dgtl::runtime {
+    using StrikeRunner = dgtl::jit::StrikeRunner;
+    using StrikeMetrics = dgtl::jit::StrikeMetrics;
+    using StrikeStatus = dgtl::jit::StrikeStatus;
+}

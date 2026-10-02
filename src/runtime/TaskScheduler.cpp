@@ -18,9 +18,9 @@ module;
 #include <map>
 #include <vector>
 
-module dgtl.task_scheduler;
+module dgtl.runtime.task_scheduler;
 
-import dgtl.numa_runtime;
+import dgtl.runtime.numa;
 import dgtl.arena;
 
 namespace dgtl::runtime {

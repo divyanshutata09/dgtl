@@ -34,7 +34,7 @@ module;
 #include <mutex>         // std::lock_guard
 #include <thread>        // std::thread, hardware_concurrency
 #include <vector>        // vector<thread>, vector<pair<>>, vector<int32_t>
-#include <unordered_map> // g_backend_profiles, guard_regions, addr_accesses
+#include <unordered_map> // profile/analysis maps
 #include <iostream>      // std::cerr for fatal diagnostic paths
 #include <cassert>
 #include <limits>
@@ -47,12 +47,12 @@ module;
 #endif
 
 // Binds this translation unit to the primary module definition interface
-module dgtl.ir_core.stream;
+module dgtl.ir.stream;
 
 import dgtl.ir_node;
 import dgtl.ir_traits;
 import dgtl.arena;
-import dgtl.numa_runtime;
+import dgtl.runtime.numa;
 import dgtl.assertions;
 import dgtl.flat_map;
 import dgtl.hashing;
@@ -608,7 +608,7 @@ void IRStream::copy_from(const IRStream& other) {
     
     /* CRITICAL FIX P0: Preserve all sidecars during copy_from.
      * Sidecars contain essential metadata (call parameters, result IDs, ABI info).
-     * Failure to copy them breaks subsequent backend emission and ABI lowering.
+     * Failure to copy them breaks subsequent HIR transformations and downstream lowering.
      */
     call_overflow_args_ = other.call_overflow_args_;
     call_abi_layout_words_ = other.call_abi_layout_words_;
@@ -973,13 +973,6 @@ void IRStream::push_to_shadow(const IRNode& node) noexcept {
         begin_transaction();
     }
     push_back(node);
-}
-
-void IRStream::push_shadow_fold(const IRNode& node) noexcept {
-    IRNode folded = node.clone();
-    folded.fold_if_possible();
-    if (!in_transaction.load(std::memory_order_acquire)) begin_transaction();
-    push_to_shadow(folded);
 }
 
 // ===========================================================================
@@ -1362,139 +1355,90 @@ uint64_t IRStream::generate_logic_hash() const noexcept {
 }
 
 // ===========================================================================
-// SECTION 7: BACKEND PROFILING
+// SECTION 7: TARGET-NEUTRAL COMPILATION PROFILE
 // ===========================================================================
 
-/// Process-wide backend profile cache keyed by stream_id.
-/// Phase E requires cross-thread stability; thread-local state fragments tiering data.
-static std::unordered_map<uint32_t, dgtl::ir::BackendProfile> g_backend_profiles;
-static std::mutex g_backend_profiles_mutex;
+static std::unordered_map<uint32_t, dgtl::ir::CompilationProfile> g_compilation_profiles;
+static std::mutex g_compilation_profiles_mutex;
 
-BackendProfile IRStream::get_backend_profile(uint32_t stream_id) const noexcept {
-    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
-    if (const auto it = g_backend_profiles.find(stream_id); it != g_backend_profiles.end()) {
+CompilationProfile IRStream::get_compilation_profile(uint32_t stream_id) const noexcept {
+    std::lock_guard<std::mutex> lock(g_compilation_profiles_mutex);
+    if (const auto it = g_compilation_profiles.find(stream_id); it != g_compilation_profiles.end()) {
         return it->second;
     }
-    return BackendProfile{};
-}
-
-void IRStream::set_backend_target(uint32_t stream_id,
-                                  BackendProfile::TargetISA target) noexcept {
-    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
-    g_backend_profiles[stream_id].target = target;
+    return CompilationProfile{};
 }
 
 void IRStream::record_function_call(uint32_t function_id) noexcept {
-    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
-    g_backend_profiles[function_id].calls_count++;
+    std::lock_guard<std::mutex> lock(g_compilation_profiles_mutex);
+    ++g_compilation_profiles[function_id].calls_count;
 }
 
 void IRStream::record_block_hotness(uint32_t block_id) noexcept {
     std::lock_guard<std::recursive_mutex> guard(stream_mutex);
-    // Mark block as hot for PGO analysis.
-    // Guard with an explicit bounds check — raw array access is not an exception.
     if (!atoms || block_id >= static_cast<uint32_t>(size())) return;
     DGTL_ASSERT_BOUNDS(block_id, size());
     atoms[block_id].flags |= Flags::IS_OPTIMIZED;
 }
 
-void IRStream::update_backend_stats(uint32_t stream_id,
-                                    uint64_t compilation_time_us) noexcept {
-    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
-    auto& profile = g_backend_profiles[stream_id];
-
-    // Exponential moving average (α = 0.3) for compilation latency.
+void IRStream::update_compilation_stats(uint32_t stream_id, uint64_t compilation_time_us) noexcept {
+    std::lock_guard<std::mutex> lock(g_compilation_profiles_mutex);
+    auto& profile = g_compilation_profiles[stream_id];
     if (profile.avg_compilation_latency_us == 0.0f) {
         profile.avg_compilation_latency_us = static_cast<float>(compilation_time_us);
     } else {
         constexpr float kAlpha = 0.3f;
         profile.avg_compilation_latency_us =
-            kAlpha * static_cast<float>(compilation_time_us)
-            + (1.0f - kAlpha) * profile.avg_compilation_latency_us;
+            kAlpha * static_cast<float>(compilation_time_us) +
+            (1.0f - kAlpha) * profile.avg_compilation_latency_us;
     }
 
-    // Tier switch decision based on compilation time thresholds.
-    using Tier = BackendProfile::CompilationTier;
-    if (compilation_time_us > 5000u) {
-        if (profile.current_tier == Tier::JIT_FAST) {
-            profile.current_tier = Tier::AOT_INTENSIVE;
-            profile.tier_switch_count++;
-        }
-    } else if (compilation_time_us < 1000u) {
-        if (profile.current_tier == Tier::AOT_INTENSIVE) {
-            profile.current_tier = Tier::JIT_FAST;
-            profile.tier_switch_count++;
-        }
+    using Tier = CompilationProfile::CompilationTier;
+    if (compilation_time_us > 5000u && profile.current_tier == Tier::Fast) {
+        profile.current_tier = Tier::Intensive;
+        ++profile.tier_switch_count;
+    } else if (compilation_time_us < 1000u && profile.current_tier == Tier::Intensive) {
+        profile.current_tier = Tier::Fast;
+        ++profile.tier_switch_count;
     }
 }
 
-void IRStream::record_cache_access(uint32_t stream_id, bool hit) noexcept {
-    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
-    auto& profile = g_backend_profiles[stream_id];
-    if (hit) ++profile.cache_hits;
-    else     ++profile.cache_misses;
+void IRStream::record_compilation_cache_access(uint32_t stream_id, bool hit) noexcept {
+    std::lock_guard<std::mutex> lock(g_compilation_profiles_mutex);
+    auto& profile = g_compilation_profiles[stream_id];
+    if (hit) ++profile.cache_hits; else ++profile.cache_misses;
 }
 
-void IRStream::ingest_runtime_feedback(uint32_t stream_id,
-                                       double actual_latency,
-                                       double cache_miss_rate,
-                                       double branch_mispredict_rate,
-                                       uint64_t execution_count) noexcept {
-    std::lock_guard<std::mutex> lock(g_backend_profiles_mutex);
-    auto& profile = g_backend_profiles[stream_id];
-
-    if (execution_count == 0) {
-        return;
-    }
-
+void IRStream::ingest_compilation_feedback(uint32_t stream_id,
+                                           double actual_latency,
+                                           double cache_miss_rate,
+                                           double branch_mispredict_rate,
+                                           uint64_t execution_count) noexcept {
+    std::lock_guard<std::mutex> lock(g_compilation_profiles_mutex);
+    if (execution_count == 0) return;
+    auto& profile = g_compilation_profiles[stream_id];
     const double miss_rate = std::clamp(cache_miss_rate, 0.0, 1.0);
-    const uint64_t samples = execution_count;
-    const uint64_t misses = static_cast<uint64_t>(miss_rate * static_cast<double>(samples));
-    const uint64_t hits = samples - misses;
-
+    const uint64_t misses = static_cast<uint64_t>(miss_rate * static_cast<double>(execution_count));
+    const uint64_t hits = execution_count - misses;
     profile.cache_misses += static_cast<uint32_t>(std::min<uint64_t>(misses, UINT32_MAX));
     profile.cache_hits += static_cast<uint32_t>(std::min<uint64_t>(hits, UINT32_MAX));
-    profile.calls_count += samples;
+    profile.calls_count += execution_count;
     profile.execution_time_us += static_cast<uint64_t>(std::max(0.0, actual_latency));
-
-    if (branch_mispredict_rate > 0.20) {
-        profile.speculation.deopt_triggers++;
-    }
+    if (branch_mispredict_rate > 0.20) ++profile.speculation.deopt_triggers;
 }
 
-BackendProfile::CompilationTier
-IRStream::compute_adaptive_tier(uint32_t function_id, const dgtl::core::TargetDescription* target_desc) noexcept {
-    using Tier = BackendProfile::CompilationTier;
-    const BackendProfile profile = get_backend_profile(function_id);
-
+CompilationProfile::CompilationTier
+IRStream::compute_adaptive_tier(uint32_t function_id) const noexcept {
+    using Tier = CompilationProfile::CompilationTier;
+    const CompilationProfile profile = get_compilation_profile(function_id);
     const uint32_t complexity = estimate_complexity_score();
-    const uint64_t total_accesses = profile.cache_hits + profile.cache_misses;
-    const float cache_hit_rate = (total_accesses > 0)
-        ? static_cast<float>(profile.cache_hits) / static_cast<float>(total_accesses)
-        : 0.0f;
-
-    // Use target metrics for thresholds
-    float avg_latency = 1.0f;
-    float avg_throughput = 1.0f;
-    (void)target_desc;
-
-    // Calibrate thresholds based on target metrics
-    uint32_t jit_complexity_threshold = static_cast<uint32_t>(40.0f * avg_throughput + 10.0f * avg_latency);
-    uint32_t aot_complexity_threshold = static_cast<uint32_t>(120.0f * avg_throughput + 20.0f * avg_latency);
-    uint64_t hot_call_threshold = static_cast<uint64_t>(80.0f * avg_throughput + 8.0f * avg_latency);
-    float poor_cache_threshold = 0.5f + 0.1f * (avg_latency / (avg_throughput + 1.0f));
-
-    if (profile.avg_compilation_latency_us > 8000.0f * avg_latency) {
-        return Tier::AOT_INTENSIVE;
-    }
-
-    if (complexity < jit_complexity_threshold && cache_hit_rate > 0.8f && profile.calls_count < hot_call_threshold)
-        return Tier::JIT_FAST;
-
-    if (complexity > aot_complexity_threshold || cache_hit_rate < poor_cache_threshold)
-        return Tier::AOT_INTENSIVE;
-
-    return Tier::ADAPTIVE_HYBRID;
+    const uint64_t total_accesses = static_cast<uint64_t>(profile.cache_hits) + profile.cache_misses;
+    const float cache_hit_rate = total_accesses == 0 ? 0.0f
+        : static_cast<float>(profile.cache_hits) / static_cast<float>(total_accesses);
+    if (profile.avg_compilation_latency_us > 8000.0f) return Tier::Intensive;
+    if (complexity < 50 && cache_hit_rate > 0.8f && profile.calls_count < 80) return Tier::Fast;
+    if (complexity > 140 || cache_hit_rate < 0.45f) return Tier::Intensive;
+    return Tier::Adaptive;
 }
 
 // ===========================================================================
@@ -1535,7 +1479,7 @@ void IRStream::perform_speculative_optimization() noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// 8.4  Loop Unrolling (profile-guided unroll factor, backend-aware)
+// 8.4  Loop Unrolling (profile-guided bounded loop unrolling)
 // ---------------------------------------------------------------------------
 void IRStream::perform_loop_unrolling(uint8_t unroll_factor) noexcept {
     if (unroll_factor <= 1 || count == 0) return;
@@ -1659,39 +1603,6 @@ void IRStream::optimize_branch_prediction() noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// 8.6  Backend-Specific Optimization Selection
-// ---------------------------------------------------------------------------
-void IRStream::apply_backend_specific_optimizations(
-        BackendProfile::TargetISA target) noexcept
-{
-    begin_transaction();
-    if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
-
-    using ISA = BackendProfile::TargetISA;
-    switch (target) {
-        case ISA::X64_AVX512:
-            perform_loop_unrolling(4);
-            optimize_branch_prediction();
-            break;
-        case ISA::ARM64_SVE:
-            // Vectorization pass would go here.
-            break;
-        case ISA::ARM32_NEON:
-            optimize_branch_prediction();
-            break;
-        case ISA::WASM:
-            break;
-        case ISA::CUDA_PTX:
-            // Thread-block size analysis would go here.
-            break;
-        default:
-            break;
-    }
-
-    validate_shadow_integrity() ? commit_transaction() : rollback_transaction();
-}
-
-// ---------------------------------------------------------------------------
 // 8.7  Profile-Guided Optimization (PGO)
 // ---------------------------------------------------------------------------
 void IRStream::perform_profile_guided_optimization(
@@ -1752,138 +1663,6 @@ void IRStream::optimize_memory_access_patterns() noexcept {
                     shadow_atoms[idx].flags |= Flags::IS_LOOP_INVARIANT;
             }
         }
-    }
-
-    validate_shadow_integrity() ? commit_transaction() : rollback_transaction();
-}
-
-// ---------------------------------------------------------------------------
-// 8.9  Backend-Specific Instruction Selection
-// ---------------------------------------------------------------------------
-void IRStream::apply_backend_instruction_selection(
-        BackendProfile::TargetISA target) noexcept
-{
-    begin_transaction();
-    if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
-
-    using ISA = BackendProfile::TargetISA;
-    for (size_t i = 0; i < shadow_count; ++i) {
-        IRAtom& atom = shadow_atoms[i];
-        IRCore& core = shadow_cores[i];
-
-        switch (target) {
-            case ISA::X64_AVX512:
-                if ((atom.opcode >= OpCode::ADD_F32 && atom.opcode <= OpCode::DIV_F32) ||
-                    (atom.opcode >= OpCode::ADD_F64 && atom.opcode <= OpCode::DIV_F64)) {
-                    if (atom.flags & Flags::IS_SIMD_BURST)
-                        atom.flags |= Flags::IS_OPTIMIZED;
-                }
-                break;
-
-            case ISA::ARM64_SVE:
-                if (atom.opcode == OpCode::LOAD && (atom.flags & Flags::IS_VECTOR_LANE))
-                    atom.opcode = OpCode::GATHER_F32_512;
-                break;
-
-            case ISA::ARM32_NEON:
-                if ((atom.opcode >= OpCode::ADD_F32 && atom.opcode <= OpCode::DIV_F32) &&
-                    (atom.flags & Flags::IS_SIMD_BURST)) {
-                    atom.opcode  = OpCode::ADD_F32;
-                    atom.flags  &= ~Flags::IS_SIMD_BURST;
-                }
-                break;
-
-            case ISA::RISCV64_RV64GC:
-                if (atom.opcode >= OpCode::ADD_F32 && atom.opcode <= OpCode::DIV_F32)
-                    atom.flags &= ~Flags::IS_SIMD_BURST;
-                break;
-
-            case ISA::CUDA_PTX:
-                if (atom.opcode >= OpCode::ADD_I32 && atom.opcode <= OpCode::DIV_I32)
-                    atom.flags |= Flags::IS_VECTOR_LANE;
-                break;
-
-            default: break;
-        }
-
-        core.intent_hash = IRNode::calculate_hash(
-            atom.opcode, core.result_id, core.op_a, core.op_b, core.op_c);
-    }
-
-    validate_shadow_integrity() ? commit_transaction() : rollback_transaction();
-}
-
-// ---------------------------------------------------------------------------
-// 8.10  SIMD Operation Dispatcher
-// ---------------------------------------------------------------------------
-void IRStream::dispatch_simd_operations(BackendProfile::TargetISA target) noexcept {
-    begin_transaction();
-    if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
-
-    using ISA = BackendProfile::TargetISA;
-    for (size_t i = 0; i < shadow_count; ++i) {
-        IRAtom& atom = shadow_atoms[i];
-        IRCore& core = shadow_cores[i];
-
-        if (!(atom.flags & Flags::IS_SIMD_BURST)) continue;
-        if (!(atom.opcode >= OpCode::VEC_ADD_F32_512 &&
-              atom.opcode <= OpCode::VEC_REDUCE_ADD))  continue;
-
-        switch (target) {
-            case ISA::X64_AVX512:
-            case ISA::ARM64_SVE:
-                atom.flags |= Flags::IS_OPTIMIZED;
-                break;
-            case ISA::ARM32_NEON:
-                if (atom.opcode == OpCode::VEC_MUL_F32_512)
-                    atom.opcode = OpCode::MUL_F32;
-                break;
-            case ISA::WASM:
-                atom.flags &= ~Flags::IS_SIMD_BURST;
-                break;
-            default: break;
-        }
-
-        core.intent_hash = IRNode::calculate_hash(
-            atom.opcode, core.result_id, core.op_a, core.op_b, core.op_c);
-    }
-
-    validate_shadow_integrity() ? commit_transaction() : rollback_transaction();
-}
-
-// ---------------------------------------------------------------------------
-// 8.11  Gather/Scatter Pattern Optimization
-// ---------------------------------------------------------------------------
-void IRStream::optimize_gather_scatter_patterns(
-        BackendProfile::TargetISA target) noexcept
-{
-    begin_transaction();
-    if (!shadow_atoms || !shadow_cores) { rollback_transaction(); return; }
-
-    using ISA = BackendProfile::TargetISA;
-    const bool backend_supports =
-        target == ISA::X64_AVX512 || target == ISA::ARM64_SVE;
-
-    for (size_t i = 0; i + 1u < shadow_count; ++i) {
-        IRAtom& atom1 = shadow_atoms[i];
-        IRAtom& atom2 = shadow_atoms[i + 1u];
-        IRCore& core1 = shadow_cores[i];
-        IRCore& core2 = shadow_cores[i + 1u];
-
-        const bool can_gather  = atom1.opcode == OpCode::LOAD  &&
-                                 (atom1.flags & Flags::IS_VECTOR_LANE);
-        const bool can_scatter = atom2.opcode == OpCode::STORE &&
-                                 (atom2.flags & Flags::IS_VECTOR_LANE);
-
-        if (!can_gather || !can_scatter || !backend_supports) continue;
-
-        atom1.opcode = OpCode::VEC_LOAD;  atom1.flags |= Flags::IS_OPTIMIZED;
-        atom2.opcode = OpCode::VEC_STORE; atom2.flags |= Flags::IS_OPTIMIZED;
-
-        core1.intent_hash = IRNode::calculate_hash(
-            atom1.opcode, core1.result_id, core1.op_a, core1.op_b, core1.op_c);
-        core2.intent_hash = IRNode::calculate_hash(
-            atom2.opcode, core2.result_id, core2.op_a, core2.op_b, core2.op_c);
     }
 
     validate_shadow_integrity() ? commit_transaction() : rollback_transaction();
@@ -2357,14 +2136,7 @@ uint32_t IRStream::get_max_id() const noexcept {
     return max_id;
 }
 
-void IRStream::evolve_node(IRNode* node) {
-    if (!node) return;
-    // a + a  →  a << 1  (strength reduction pattern)
-    if (node->opcode == OpCode::ADD_I32 && node->op_a == node->op_b) {
-        node->opcode = OpCode::SHL_I32;
-        node->op_b   = 1u;
-        node->refresh_intent_hash();
-    }
-}
 
 } // namespace dgtl::ir
+
+

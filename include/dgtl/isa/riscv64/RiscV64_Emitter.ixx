@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -17,10 +17,9 @@ module;
 #include <cstdint>
 #include <string>
 #include <vector>
+export module dgtl.isa.riscv64.riscv64_emitter;
 
-export module dgtl.ir_core.riscv64_emitter;
-
-export namespace dgtl::isa::emitter {
+export namespace dgtl::isa::riscv64::emitter {
 
 class RiscV64GatherScatter {
 public:
@@ -251,12 +250,14 @@ private:
     }
 };
 
-} // namespace dgtl::isa::emitter
+} // namespace dgtl::isa::riscv64::riscv64::emitter
 
-export namespace dgtl::isa {
-using RiscV64GatherScatter = dgtl::isa::emitter::RiscV64GatherScatter;
+export namespace dgtl::isa::riscv64 {
+using RiscV64GatherScatter = dgtl::isa::riscv64::emitter::RiscV64GatherScatter;
 }
-
+export namespace dgtl::isa {
+using RiscV64GatherScatter = dgtl::isa::riscv64::emitter::RiscV64GatherScatter;
+}
 
 
 /*
@@ -280,7 +281,7 @@ using RiscV64GatherScatter = dgtl::isa::emitter::RiscV64GatherScatter;
 
 // export module dgtl.ir_core.riscv64_emitter;
 
-// export namespace dgtl::isa::emitter {
+// export namespace dgtl::isa::riscv64::emitter {
 
 // /**
 //  * RISC-V RV64/RVV gather/scatter assembly emitter.
@@ -1612,10 +1613,9 @@ using RiscV64GatherScatter = dgtl::isa::emitter::RiscV64GatherScatter;
 //     }
 // };
 
-// export namespace dgtl::isa {
+// export namespace dgtl::isa::riscv64 {
 
 // using RiscV64GatherScatter =
 //     dgtl::isa::emitter::RiscV64GatherScatter;
 
-// } // namespace dgtl::isa
-
+// } // namespace dgtl::isa::riscv64

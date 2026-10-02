@@ -83,28 +83,33 @@ module;
     #endif
 #endif
 
-export module dgtl.ir_core.jit_orchestrator;
+export module dgtl.jit.jit_orchestrator;
 
 // Runtime intrinsic facade dependency anchor: include/dgtl/runtime/Runtime_Intrinsics.ixx
-import dgtl.runtime_intrinsics;
+import dgtl.runtime.intrinsics;
 import dgtl.ir_enums;
 import dgtl.ir_node;
 import dgtl.arena;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.ai_cost_model;
+import dgtl.ir.stream;
+import dgtl.ir.analysis.cost_model;
 import dgtl.compiler_context;
 import dgtl.target;
-import dgtl.ir_core.stack_spiller;
-import dgtl.ir_core.backend_driver_api;
-import dgtl.ir_core.transform_scalar_core;
-import dgtl.ir_core.transform_poly_loop;
+import dgtl.mir.stack_spiller;
+import dgtl.linker.driver;
+import dgtl.linker.driver.api;
+import dgtl.ir.pass.transform_scalar_core;
+import dgtl.ir.pass.transform_poly_loop;
 
-import dgtl.ir_core.jit_executor;
-import dgtl.ir_core.async_dopt_tiered;
-import dgtl.ir_core.hardware_scheduler;
-import dgtl.ir_core.x64_lowering;
-import dgtl.ir_core.x64_reg_map;
-import dgtl.ir_core.x64_graphcoloring_regalloc;
+import dgtl.jit.executor;
+import dgtl.jit.tiered_optimizer;
+import dgtl.jit.hardware_scheduler;
+import dgtl.isa.x64.nasm_emitter;
+import dgtl.isa.x64.x64_reg_map;
+import dgtl.isa.x64.x64_machine_form_lowering;
+import dgtl.isa.x64.x64_graphcoloring_regalloc;
+import dgtl.mir;
+import dgtl.isa.x64.x64_instruction_info;
+import dgtl.isa.x64.x64_abi;
 
 extern "C" {
     void* dgtl_gpu_init_pipeline(uint32_t width, uint32_t height, float dpi_scale, const char* window_title) noexcept;
@@ -114,13 +119,13 @@ extern "C" {
     void dgtl_gpu_end_frame(void* ctx_ptr) noexcept;
     uint32_t dgtl_gpu_push_clip_rect(void* ctx_ptr, float x, float y, float w, float h) noexcept;
     void dgtl_gpu_pop_clip_rect(void* ctx_ptr) noexcept;
-    void dgtl_gpu_render_quad_instances(void* ctx_ptr, const void* instances, uint32_t count) noexcept;
-    void dgtl_gpu_render_glyph_instances(void* ctx_ptr, uint32_t atlas_slot, const void* instances, uint32_t count) noexcept;
+    void dgtl_gpu_render_quads(void* ctx_ptr, const void* instances, uint32_t count) noexcept;
+    void dgtl_gpu_render_glyphs(void* ctx_ptr, uint32_t atlas_slot, const void* instances, uint32_t count) noexcept;
     void dgtl_gpu_render_vector_paths(void* ctx_ptr, const void* instances, uint32_t count) noexcept;
     uint32_t dgtl_gpu_upload_texture(void* ctx_ptr, uint32_t width, uint32_t height, const uint8_t* rgba_data) noexcept;
     void dgtl_gpu_destroy_texture(void* ctx_ptr, uint32_t texture_slot) noexcept;
-    bool dgtl_platform_poll_events(void* ctx_ptr, void* out_event) noexcept;
-    uint64_t dgtl_platform_get_time_us(void) noexcept;
+    bool dgtl_platform_poll_event(void* ctx_ptr, void* out_event) noexcept;
+    uint64_t dgtl_platform_time_us(void) noexcept;
     void dgtl_platform_set_cursor(void* ctx_ptr, uint32_t cursor_type) noexcept;
 }
 
@@ -276,6 +281,38 @@ inline void map_core_symbols(auto& session) {
     session.map_symbol("__dgtl_rt_print_str", reinterpret_cast<uint64_t>(&__dgtl_rt_print_str));
     session.map_symbol("__dgtl_rt_println_bool", reinterpret_cast<uint64_t>(&__dgtl_rt_println_bool));
     session.map_symbol("__dgtl_rt_print_bool", reinterpret_cast<uint64_t>(&__dgtl_rt_print_bool));
+
+    session.map_symbol("__dgtl_rt_string_length", reinterpret_cast<uint64_t>(&__dgtl_rt_string_length));
+    session.map_symbol("__dgtl_rt_string_compare", reinterpret_cast<uint64_t>(&__dgtl_rt_string_compare));
+    session.map_symbol("__dgtl_rt_string_concat", reinterpret_cast<uint64_t>(&__dgtl_rt_string_concat));
+    session.map_symbol("__dgtl_rt_string_substring", reinterpret_cast<uint64_t>(&__dgtl_rt_string_substring));
+    session.map_symbol("__dgtl_rt_string_copy", reinterpret_cast<uint64_t>(&__dgtl_rt_string_copy));
+    session.map_symbol("__dgtl_rt_string_equals", reinterpret_cast<uint64_t>(&__dgtl_rt_string_equals));
+    session.map_symbol("__dgtl_rt_string_find", reinterpret_cast<uint64_t>(&__dgtl_rt_string_find));
+    session.map_symbol("__dgtl_rt_string_hash", reinterpret_cast<uint64_t>(&__dgtl_rt_string_hash));
+
+    session.map_symbol("__dgtl_rt_sin", reinterpret_cast<uint64_t>(&__dgtl_rt_sin));
+    session.map_symbol("__dgtl_rt_cos", reinterpret_cast<uint64_t>(&__dgtl_rt_cos));
+    session.map_symbol("__dgtl_rt_tan", reinterpret_cast<uint64_t>(&__dgtl_rt_tan));
+    session.map_symbol("__dgtl_rt_asin", reinterpret_cast<uint64_t>(&__dgtl_rt_asin));
+    session.map_symbol("__dgtl_rt_acos", reinterpret_cast<uint64_t>(&__dgtl_rt_acos));
+    session.map_symbol("__dgtl_rt_atan", reinterpret_cast<uint64_t>(&__dgtl_rt_atan));
+    session.map_symbol("__dgtl_rt_atan2", reinterpret_cast<uint64_t>(&__dgtl_rt_atan2));
+    session.map_symbol("__dgtl_rt_sinh", reinterpret_cast<uint64_t>(&__dgtl_rt_sinh));
+    session.map_symbol("__dgtl_rt_cosh", reinterpret_cast<uint64_t>(&__dgtl_rt_cosh));
+    session.map_symbol("__dgtl_rt_tanh", reinterpret_cast<uint64_t>(&__dgtl_rt_tanh));
+
+    session.map_symbol("__dgtl_rt_log", reinterpret_cast<uint64_t>(&__dgtl_rt_log));
+    session.map_symbol("__dgtl_rt_log2", reinterpret_cast<uint64_t>(&__dgtl_rt_log2));
+    session.map_symbol("__dgtl_rt_log10", reinterpret_cast<uint64_t>(&__dgtl_rt_log10));
+    session.map_symbol("__dgtl_rt_log1p", reinterpret_cast<uint64_t>(&__dgtl_rt_log1p));
+    session.map_symbol("__dgtl_rt_exp", reinterpret_cast<uint64_t>(&__dgtl_rt_exp));
+    session.map_symbol("__dgtl_rt_exp2", reinterpret_cast<uint64_t>(&__dgtl_rt_exp2));
+    session.map_symbol("__dgtl_rt_exp10", reinterpret_cast<uint64_t>(&__dgtl_rt_exp10));
+    session.map_symbol("__dgtl_rt_expm1", reinterpret_cast<uint64_t>(&__dgtl_rt_expm1));
+    session.map_symbol("__dgtl_rt_pow", reinterpret_cast<uint64_t>(&__dgtl_rt_pow));
+    session.map_symbol("__dgtl_rt_cbrt", reinterpret_cast<uint64_t>(&__dgtl_rt_cbrt));
+    session.map_symbol("__dgtl_rt_hypot", reinterpret_cast<uint64_t>(&__dgtl_rt_hypot));
 }
 
 /**
@@ -298,20 +335,20 @@ public:
           }()) 
     {}
 
-    void compile_to_binary(std::string_view output_path, const dgtl::ir::IRStream& stream) {
+    void compile_to_binary(std::string_view output_path, const dgtl::machine::MachineFunction& function) {
         last_report = CompilationReport{};
 
         if (output_path.empty()) [[unlikely]] {
             trigger_fatal_trap("INVALID_OUTPUT_PATH", "Output path for binary emission cannot be empty.");
         }
 
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] {
+        if (function.instructions().empty()) [[unlikely]] {
             return;
         }
 
-        if (!stream.validate_shadow_integrity()) [[unlikely]] {
-            trigger_fatal_trap("TRANSACTION_NOT_COMMITTED", 
-                "Attempted to emit binary from an unvalidated Shadow Stream.");
+        const auto verify_result = dgtl::machine::MachineVerifier::verify(function);
+        if (!verify_result.ok()) [[unlikely]] {
+            trigger_fatal_trap("MIR_VERIFICATION_FAILED", "MachineVerifier rejected MachineFunction prior to binary emission.");
         }
 
         last_report.validation_opted = true;
@@ -349,44 +386,81 @@ public:
         }
 
         if (ext_lower == ".wasm") {
-            this->dispatch_to_wasm(output_path, stream);
+            this->dispatch_to_wasm(output_path, function);
         }
         else if (ext_lower == ".o") {
-            this->dispatch_to_relocatable(output_path, stream);
+            this->dispatch_to_relocatable(output_path, function);
         }
         else if (ext_lower == ".obj") {
-            this->dispatch_to_coff_relocatable(output_path, stream);
+            this->dispatch_to_coff_relocatable(output_path, function);
         }
         else if (ext_lower == ".a") {
-            this->dispatch_to_archive(output_path, stream);
+            this->dispatch_to_archive(output_path, function);
         }
         else if (ext_lower == ".lib") {
-            this->dispatch_to_coff_archive(output_path, stream);
+            this->dispatch_to_coff_archive(output_path, function);
         }
         else if (ext_lower == ".macho") {
-            this->dispatch_to_macho(output_path, stream);
+            this->dispatch_to_macho(output_path, function);
         }
         else if (ext_lower == ".exe") {
-            this->dispatch_to_pe_executable(output_path, stream);
+            this->dispatch_to_pe_executable(output_path, function);
         }
         else if (ext_lower == ".s" || ext_lower == ".asm") {
-            this->dispatch_to_assembly(output_path, stream);
+            this->dispatch_to_assembly(output_path, function);
         }
         else {
-            this->dispatch_to_linker(output_path, stream);
+            this->dispatch_to_linker(output_path, function);
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
         
         last_report.total_ms = elapsed.count();
-        last_report.nodes_processed = stream.size();
+        last_report.nodes_processed = function.instructions().size();
 
         if (last_report.total_ms > 1e-9) {
-            last_report.throughput_nodes_sec = (static_cast<double>(stream.size()) / (last_report.total_ms / 1000.0));
+            last_report.throughput_nodes_sec = (static_cast<double>(function.instructions().size()) / (last_report.total_ms / 1000.0));
         } else {
-            last_report.throughput_nodes_sec = static_cast<double>(stream.size()) * 1000000.0; 
+            last_report.throughput_nodes_sec = static_cast<double>(function.instructions().size()) * 1000000.0; 
         }
+    }
+
+    void compile_to_binary(std::string_view output_path, const dgtl::ir::IRStream& stream) {
+        if (output_path.empty()) [[unlikely]] {
+            trigger_fatal_trap("INVALID_OUTPUT_PATH", "Output path for binary emission cannot be empty.");
+        }
+
+        if (stream.is_null() || stream.size() == 0) [[unlikely]] {
+            return;
+        }
+
+        if (!stream.validate_shadow_integrity()) [[unlikely]] {
+            trigger_fatal_trap("TRANSACTION_NOT_COMMITTED", 
+                "Attempted to emit binary from an unvalidated Shadow Stream.");
+        }
+
+        dgtl::machine::MachineFunction function;
+        dgtl::isa::X64TargetRegisterInfo reg_info;
+        dgtl::isa::X64TargetInstructionInfo instr_info;
+        dgtl::isa::X64FrameInfo frame_info;
+        dgtl::isa::Win64ABI abi;
+
+        const auto mir_result = dgtl::mir::MachinePipeline::compile(
+            function,
+            stream,
+            target,
+            reg_info,
+            &instr_info,
+            &frame_info,
+            &abi,
+            dgtl::mir::make_builtin_instruction_selector_program());
+
+        if (!mir_result.success) {
+            trigger_fatal_trap("MIR_COMPILATION_FAILED", "Failed to lower IRStream to MachineFunction");
+        }
+
+        compile_to_binary(output_path, function);
     }
 
     [[nodiscard]] const CompilationReport& get_last_report() const noexcept {
@@ -410,15 +484,15 @@ private:
         #endif
     }
 
-    void dispatch_to_linker(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_pe_executable(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_assembly(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_relocatable(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_archive(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_coff_relocatable(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_coff_archive(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_macho(std::string_view path, const dgtl::ir::IRStream& stream);
-    void dispatch_to_wasm(std::string_view path, const dgtl::ir::IRStream& stream);
+    void dispatch_to_linker(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_pe_executable(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_assembly(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_relocatable(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_archive(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_coff_relocatable(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_coff_archive(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_macho(std::string_view path, const dgtl::machine::MachineFunction& function);
+    void dispatch_to_wasm(std::string_view path, const dgtl::machine::MachineFunction& function);
 };
 
 struct RelocationPatch {
@@ -500,6 +574,7 @@ class StrikeOrchestrator {
         std::unordered_set<uint32_t> pointer_virtuals;
         StackMapTable stack_maps;
         Phase3Stats stats;
+        std::shared_ptr<dgtl::machine::MachineFunction> mir_function{nullptr};
     };
 
     mutable std::mutex tiered_mtx_;
@@ -533,6 +608,33 @@ public:
             m["__dgtl_rt_string_compare"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_compare);
             m["__dgtl_rt_string_concat"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_concat);
             m["__dgtl_rt_string_substring"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_substring);
+            m["__dgtl_rt_string_copy"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_copy);
+            m["__dgtl_rt_string_equals"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_equals);
+            m["__dgtl_rt_string_find"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_find);
+            m["__dgtl_rt_string_hash"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_string_hash);
+
+            m["__dgtl_rt_sin"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_sin);
+            m["__dgtl_rt_cos"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_cos);
+            m["__dgtl_rt_tan"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tan);
+            m["__dgtl_rt_asin"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_asin);
+            m["__dgtl_rt_acos"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_acos);
+            m["__dgtl_rt_atan"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_atan);
+            m["__dgtl_rt_atan2"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_atan2);
+            m["__dgtl_rt_sinh"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_sinh);
+            m["__dgtl_rt_cosh"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_cosh);
+            m["__dgtl_rt_tanh"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_tanh);
+
+            m["__dgtl_rt_log"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_log);
+            m["__dgtl_rt_log2"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_log2);
+            m["__dgtl_rt_log10"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_log10);
+            m["__dgtl_rt_log1p"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_log1p);
+            m["__dgtl_rt_exp"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_exp);
+            m["__dgtl_rt_exp2"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_exp2);
+            m["__dgtl_rt_exp10"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_exp10);
+            m["__dgtl_rt_expm1"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_expm1);
+            m["__dgtl_rt_pow"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_pow);
+            m["__dgtl_rt_cbrt"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_cbrt);
+            m["__dgtl_rt_hypot"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_hypot);
             m["__dgtl_rt_acquire_fence"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_acquire_fence);
             m["__dgtl_rt_async_await"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_async_await);
             m["__dgtl_rt_async_launch"] = reinterpret_cast<uintptr_t>(&__dgtl_rt_async_launch);
@@ -646,13 +748,13 @@ public:
             m["dgtl_gpu_end_frame"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_end_frame);
             m["dgtl_gpu_push_clip_rect"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_push_clip_rect);
             m["dgtl_gpu_pop_clip_rect"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_pop_clip_rect);
-            m["dgtl_gpu_render_quad_instances"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_quad_instances);
-            m["dgtl_gpu_render_glyph_instances"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_glyph_instances);
+            m["dgtl_gpu_render_quads"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_quads);
+            m["dgtl_gpu_render_glyphs"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_glyphs);
             m["dgtl_gpu_render_vector_paths"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_render_vector_paths);
             m["dgtl_gpu_upload_texture"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_upload_texture);
             m["dgtl_gpu_destroy_texture"] = reinterpret_cast<uintptr_t>(&dgtl_gpu_destroy_texture);
-            m["dgtl_platform_poll_events"] = reinterpret_cast<uintptr_t>(&dgtl_platform_poll_events);
-            m["dgtl_platform_get_time_us"] = reinterpret_cast<uintptr_t>(&dgtl_platform_get_time_us);
+            m["dgtl_platform_poll_event"] = reinterpret_cast<uintptr_t>(&dgtl_platform_poll_event);
+            m["dgtl_platform_time_us"] = reinterpret_cast<uintptr_t>(&dgtl_platform_time_us);
             m["dgtl_platform_set_cursor"] = reinterpret_cast<uintptr_t>(&dgtl_platform_set_cursor);
             return m;
         }();
@@ -717,23 +819,42 @@ public:
     }
 
     /**
-     * @brief Relocation Linker (Module-Level Strike) with verified cross-module symbol resolution.
+     * @brief Relocation Linker (Module-Level Strike) directly across authoritative MachineFunctions.
      */
-    StrikeMetrics fire_module_strike(const std::vector<std::pair<std::string, dgtl::ir::IRStream>>& module_streams) {
+    StrikeMetrics fire_module_strike(const std::vector<std::pair<std::string, const dgtl::machine::MachineFunction*>>& module_functions) {
         machine_code_buffer.clear();
         buffer_symbol_offsets.clear();
         pending_patches.clear();
 
+        dgtl::linker::driver::DGTLAOTLinker linker;
+
         // 1. LINEAR EMISSION PHASE & SYMBOL GATHERING
-        for (const auto& [name, stream] : module_streams) {
-            if (stream.is_null() || stream.size() == 0) continue;
+        for (const auto& [name, fn_ptr] : module_functions) {
+            if (!fn_ptr || fn_ptr->instructions().empty()) continue;
+
+            const auto verify_result = dgtl::machine::MachineVerifier::verify(*fn_ptr);
+            if (!verify_result.ok()) {
+                return {STRIKE_EMIT_EMPTY};
+            }
 
             buffer_symbol_offsets[name] = machine_code_buffer.size();
 
-            const bool emit_ok = emitter.process_stream(stream, machine_code_buffer);
-            if (!emit_ok) {
+            size_t emitted_size = 0;
+            const size_t prev_size = machine_code_buffer.size();
+            machine_code_buffer.resize(prev_size + fn_ptr->instructions().size() * 64 + 1024, 0);
+
+            if (!linker.emit_aot_machine_code(machine_code_buffer.data() + prev_size, 
+                                              machine_code_buffer.size() - prev_size, 
+                                              *fn_ptr, 
+                                              &emitted_size, 
+                                              runtime_slots_)) {
                 return {STRIKE_EMIT_EMPTY};
             }
+            machine_code_buffer.resize(prev_size + emitted_size);
+        }
+
+        if (machine_code_buffer.empty()) {
+            return {STRIKE_EMIT_EMPTY};
         }
 
         // 2. INJECTION PHASE
@@ -748,32 +869,20 @@ public:
             global_symbol_table[name] = module_base_address + offset;
         }
 
-        // 3. SECURE BACKPATCH PHASE
-        for (const auto& patch : pending_patches) {
-            auto it = global_symbol_table.find(patch.target_symbol);
-            if (it == global_symbol_table.end()) {
-                std::fprintf(stderr, "[DGTL Linker] Fatal: Unresolved external symbol: %s\n", patch.target_symbol.c_str());
-                return {STRIKE_LINK_FAILED};
+        // 3. Register with executor
+        for (const auto& [name, fn_ptr] : module_functions) {
+            if (fn_ptr) {
+                auto it = buffer_symbol_offsets.find(name);
+                if (it != buffer_symbol_offsets.end()) {
+                    auto next_it = std::next(it);
+                    size_t fn_size = (next_it != buffer_symbol_offsets.end()) 
+                                        ? (next_it->second - it->second) 
+                                        : (machine_code_buffer.size() - it->second);
+                    (void)executor.load_and_prepare_mir(
+                        std::span<const uint8_t>(machine_code_buffer.data() + it->second, fn_size),
+                        *fn_ptr);
+                }
             }
-
-            uintptr_t target_address = it->second;
-            uintptr_t instruction_end_addr = module_base_address + patch.instruction_end_offset;
-            uintptr_t patch_ptr = module_base_address + patch.buffer_offset;
-
-            int32_t relative_offset = static_cast<int32_t>(target_address - instruction_end_addr);
-
-            // W^X Relocation Protection
-#if defined(_WIN32) || defined(_WIN64)
-            DWORD old_protect = 0;
-            VirtualProtect(reinterpret_cast<void*>(patch_ptr), sizeof(int32_t), PAGE_READWRITE, &old_protect);
-            std::memcpy(reinterpret_cast<void*>(patch_ptr), &relative_offset, sizeof(int32_t));
-            VirtualProtect(reinterpret_cast<void*>(patch_ptr), sizeof(int32_t), old_protect, &old_protect);
-#else
-            uintptr_t page_addr = patch_ptr & ~0xFFFULL;
-            mprotect(reinterpret_cast<void*>(page_addr), 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
-            std::memcpy(reinterpret_cast<void*>(patch_ptr), &relative_offset, sizeof(int32_t));
-            mprotect(reinterpret_cast<void*>(page_addr), 4096, PROT_READ | PROT_EXEC);
-#endif
         }
 
         // 4. EXECUTION PHASE
@@ -790,42 +899,65 @@ public:
     }
 
     /**
-     * @brief Single-Stream Strike.
+     * @brief Relocation Linker (Module-Level Strike) with verified cross-module symbol resolution.
+     * Lowers IRStreams to MachineFunctions before dispatch.
      */
-    StrikeMetrics fire_strike(dgtl::ir::IRStream& stream, void* data_payload = nullptr) {
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] {
+    StrikeMetrics fire_module_strike(const std::vector<std::pair<std::string, dgtl::ir::IRStream>>& module_streams) {
+        std::vector<dgtl::machine::MachineFunction> lowered_functions;
+        lowered_functions.reserve(module_streams.size());
+
+        for (const auto& [name, stream] : module_streams) {
+            dgtl::machine::MachineFunction mf;
+            if (!stream.is_null() && stream.size() > 0) {
+                auto res = compile_mir_function(stream, mf);
+                if (!res.success) {
+                    return {STRIKE_EMIT_EMPTY};
+                }
+            }
+            lowered_functions.push_back(std::move(mf));
+        }
+
+        std::vector<std::pair<std::string, const dgtl::machine::MachineFunction*>> mir_modules;
+        mir_modules.reserve(module_streams.size());
+        for (size_t i = 0; i < module_streams.size(); ++i) {
+            mir_modules.emplace_back(module_streams[i].first, &lowered_functions[i]);
+        }
+
+        return fire_module_strike(mir_modules);
+    }
+
+    /**
+     * @brief Single MachineFunction Strike.
+     * Direct binary emission and execution strictly from MachineFunction.
+     */
+    StrikeMetrics fire_strike(const dgtl::machine::MachineFunction& function, void* data_payload = nullptr) {
+        if (function.instructions().empty()) [[unlikely]] {
             return {STRIKE_INVALID_STREAM};
         }
 
-        machine_code_buffer.clear(); 
-        const bool emit_ok = emitter.process_stream(stream, machine_code_buffer);
-        if (!emit_ok || machine_code_buffer.empty()) {
-            if (emitter.had_emission_error()) {
-                std::fprintf(stderr, "[DGTL] Emission failed: %s (opcode=%u)\n", 
-                    emitter.last_emission_error(), 
-                    static_cast<uint32_t>(emitter.last_failed_opcode()));
-            }
+        const auto verify_result = dgtl::machine::MachineVerifier::verify(function);
+        if (!verify_result.ok()) [[unlikely]] {
             return {STRIKE_EMIT_EMPTY};
         }
+
+        machine_code_buffer.clear();
+        dgtl::linker::driver::DGTLAOTLinker linker;
+        size_t emitted_size = 0;
+        machine_code_buffer.resize(function.instructions().size() * 64 + 1024, 0);
+
+        if (!linker.emit_aot_machine_code(machine_code_buffer.data(), machine_code_buffer.size(), function, &emitted_size, runtime_slots_)) {
+            return {STRIKE_EMIT_EMPTY};
+        }
+        machine_code_buffer.resize(emitted_size);
 
         size_t injected_size = strike_runner.inject_code(arena, machine_code_buffer);
         if (injected_size == 0) {
             return {STRIKE_INJECT_FAILED};
         }
 
+        (void)executor.load_and_prepare_mir(machine_code_buffer, function);
+
         auto metrics = strike_runner.execute(arena, injected_size, data_payload);
-
-        if (!stream.is_null() && stream.size() > 0) {
-            uintptr_t function_id = strike_runner.last_injected_address();
-            if (function_id != 0) {
-                auto feedback = executor.collect_feedback(function_id);
-                for (size_t i = 0; i < stream.size(); ++i) {
-                    const auto node = stream.get_node_readonly(i);
-                    cost_model.update_with_feedback(node, feedback);
-                }
-            }
-        }
-
         if (metrics.status_code == static_cast<uint32_t>(StrikeStatus::Ok)) {
             metrics.status_code = STRIKE_OK;
         }
@@ -833,11 +965,132 @@ public:
         return metrics;
     }
 
+    /**
+     * @brief Single-Stream Strike.
+     * Lowers stream to MachineFunction before execution.
+     */
+    StrikeMetrics fire_strike(dgtl::ir::IRStream& stream, void* data_payload = nullptr) {
+        if (stream.is_null() || stream.size() == 0) [[unlikely]] {
+            return {STRIKE_INVALID_STREAM};
+        }
+
+        dgtl::machine::MachineFunction mf;
+        auto res = compile_mir_function(stream, mf);
+        if (!res.success) {
+            return {STRIKE_EMIT_EMPTY};
+        }
+
+        auto metrics = fire_strike(mf, data_payload);
+
+        uintptr_t function_id = strike_runner.last_injected_address();
+        if (function_id != 0) {
+            auto feedback = executor.collect_feedback(function_id);
+            const dgtl::ir::analysis::RuntimeFeedback rt_fb{
+                feedback.actual_latency,
+                feedback.cache_miss_rate,
+                feedback.branch_mispredict_rate,
+                feedback.execution_count
+            };
+            for (size_t i = 0; i < stream.size(); ++i) {
+                const auto node = stream.get_node_readonly(i);
+                cost_model.update_with_feedback(node, rt_fb);
+            }
+        }
+
+        return metrics;
+    }
+
+    /**
+     * @brief High-performance JIT Compilation via the Unified MIR Machine Pipeline.
+     * Executes Legalization -> ISel -> SSA Phi Lowering -> Two-Address Normalization ->
+     * Universal Graph-Coloring RegAlloc -> Frame & ABI Lowering -> MachineVerifier Validation.
+     */
+    [[nodiscard]] dgtl::mir::MachinePipelineResult compile_mir_function(
+        const dgtl::ir::IRStream& stream,
+        dgtl::machine::MachineFunction& machine_function,
+        const dgtl::mir::MachinePipelineOptions& options = {}) {
+
+        const auto& target = executor.get_target_machine();
+        dgtl::isa::X64TargetRegisterInfo reg_info;
+        dgtl::isa::X64TargetInstructionInfo instr_info;
+        dgtl::isa::X64FrameInfo frame_info;
+        dgtl::isa::Win64ABI abi;
+
+        return dgtl::mir::MachinePipeline::compile(
+            machine_function,
+            stream,
+            target,
+            reg_info,
+            &instr_info,
+            &frame_info,
+            &abi,
+            dgtl::mir::make_builtin_instruction_selector_program(),
+            options);
+    }
+
+    [[nodiscard]] uint64_t compile_tiered_function(const dgtl::machine::MachineFunction& function,
+                                                   bool queue_tier2 = true) {
+        if (function.instructions().empty()) {
+            return 0;
+        }
+
+        const auto verify_result = dgtl::machine::MachineVerifier::verify(function);
+        if (!verify_result.ok()) {
+            return 0;
+        }
+
+        auto state = std::make_shared<TieredFunctionState>();
+        state->mir_function = std::make_shared<dgtl::machine::MachineFunction>(function);
+
+        dgtl::linker::driver::DGTLAOTLinker linker;
+        std::vector<uint8_t> tier1_code(function.instructions().size() * 64 + 1024, 0);
+        size_t emitted_size = 0;
+
+        if (!linker.emit_aot_machine_code(tier1_code.data(), tier1_code.size(), function, &emitted_size, runtime_slots_)) {
+            return 0;
+        }
+        tier1_code.resize(emitted_size);
+
+        dgtl::runtime::Function tier1_fn = executor.load_and_prepare_mir(tier1_code, function);
+        if (!tier1_fn) {
+            return 0;
+        }
+
+        state->tier1_fn.store(tier1_fn, std::memory_order_release);
+        state->active_fn.store(tier1_fn, std::memory_order_release);
+        state->active_tier.store(TierKind::Tier1_Baseline, std::memory_order_release);
+        state->stats.tier1_under_1ms = true;
+
+        const uint64_t id = next_tiered_id_.fetch_add(1, std::memory_order_relaxed);
+
+        {
+            std::lock_guard<std::mutex> lock(tiered_mtx_);
+            tiered_functions_[id] = state;
+        }
+
+        return id;
+    }
+
     [[nodiscard]] uint64_t compile_tiered_function(const dgtl::ir::IRStream& stream,
                                                    bool queue_tier2 = true,
                                                    const std::vector<uint32_t>& gc_pointer_virtuals = {}) {
         if (stream.is_null() || stream.size() == 0) {
             return 0;
+        }
+
+        dgtl::machine::MachineFunction mf;
+        auto res = compile_mir_function(stream, mf);
+        if (res.success && !mf.instructions().empty()) {
+            uint64_t id = compile_tiered_function(mf, queue_tier2);
+            if (id != 0 && queue_tier2) {
+                std::lock_guard<std::mutex> lock(tiered_mtx_);
+                ensure_tier2_worker_started();
+                tier2_streams_[id] = std::make_shared<dgtl::ir::IRStream>(stream.clone());
+                tier2_queue_.push(id);
+                tier2_cv_.notify_one();
+                async_speculator_.speculate_branch(stream, 0);
+            }
+            return id;
         }
 
         auto state = std::make_shared<TieredFunctionState>();
@@ -853,7 +1106,7 @@ public:
             return 0;
         }
 
-        dgtl::runtime::Function tier1_fn = executor.load_and_prepare(tier1_code, stream);
+        dgtl::runtime::Function tier1_fn = executor.load_and_prepare(tier1_code);
         if (!tier1_fn) {
             return 0;
         }
@@ -1122,7 +1375,9 @@ private:
             }
         }
 
-        if (!emitter.process_stream(stream, out) || out.empty()) {
+        dgtl::machine::MachineFunction tier1_mf("dgtl.jit.tier1");
+        const auto tier1_mir_res = compile_mir_function(stream, tier1_mf);
+        if (!tier1_mir_res.success || !emitter.process_function(tier1_mf, out) || out.empty()) {
             return false;
         }
 
@@ -1162,32 +1417,40 @@ private:
             dgtl::ir::IRStream optimized = stream_ptr->clone();
             const auto t0 = std::chrono::high_resolution_clock::now();
 
-            dgtl::pass::transform::DGTLLoopFusion loop_fusion_pass{};
+            dgtl::ir::pass::transform::DGTLLoopFusion loop_fusion_pass{};
             loop_fusion_pass.execute(optimized);
-            dgtl::pass::transform::GlobalValueNumbering().execute(optimized);
-            dgtl::pass::transform::DeadCodeElimination().execute(optimized);
+            dgtl::ir::pass::transform::GlobalValueNumbering().execute(optimized);
+            dgtl::ir::pass::transform::DeadCodeElimination().execute(optimized);
             float predicted_tier2_cost = 0.0f;
             for (size_t i = 0; i < optimized.size(); ++i) {
                 predicted_tier2_cost += cost_model.predict_node_cost(optimized.get_node_readonly(i));
             }
             (void)predicted_tier2_cost;
 
-            const auto alloc = tier2_regalloc_.allocate(optimized);
-            if (!alloc.spilled_virtuals.empty()) {
-                for (size_t i = 0; i < optimized.size(); ++i) {
-                    auto node = optimized.get_node(i);
-                    if (std::find(alloc.spilled_virtuals.begin(), alloc.spilled_virtuals.end(), node.result_id)
-                        != alloc.spilled_virtuals.end()) {
-                        node.logic_flags |= dgtl::ir::HintFlags::IsSpillCandidate;
-                        node.refresh_intent_hash();
-                        optimized.set_node(i, node);
-                    }
-                }
+            auto mir_func = std::make_shared<dgtl::machine::MachineFunction>();
+            const auto mir_result = compile_mir_function(optimized, *mir_func);
+
+            if (mir_result.success && mir_func) {
+                const auto alloc = tier2_regalloc_.allocate(*mir_func);
+                (void)alloc;
             }
 
             std::vector<uint8_t> tier2_code;
-            const bool emit_ok = emitter.process_stream(optimized, tier2_code);
-            auto tier2_fn = emit_ok ? executor.load_and_prepare(tier2_code, optimized) : nullptr;
+            dgtl::runtime::Function tier2_fn = nullptr;
+            if (mir_result.success && !mir_func->instructions().empty()) {
+                dgtl::linker::driver::DGTLAOTLinker aot_linker;
+                size_t emitted_size = 0;
+                tier2_code.resize(mir_func->instructions().size() * 64 + 1024, 0);
+                if (aot_linker.emit_aot_machine_code(tier2_code.data(), tier2_code.size(), *mir_func, &emitted_size, runtime_slots_)) {
+                    tier2_code.resize(emitted_size);
+                    tier2_fn = executor.load_and_prepare_mir(tier2_code, *mir_func);
+                }
+            }
+
+            if (!tier2_fn && mir_result.success && mir_func) {
+                const bool emit_ok = emitter.process_function(*mir_func, tier2_code);
+                tier2_fn = emit_ok ? executor.load_and_prepare(tier2_code, mir_func.get()) : nullptr;
+            }
 
             const auto t1 = std::chrono::high_resolution_clock::now();
             const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -1201,23 +1464,58 @@ private:
                 st_it->second->tier2_fn.store(tier2_fn, std::memory_order_release);
                 st_it->second->tier2_ready.store(true, std::memory_order_release);
                 st_it->second->stats.tier2_compile_ms = ms;
+                if (mir_result.success) {
+                    st_it->second->mir_function = mir_func;
+                }
             }
         }
     }
 
 public:
-    [[nodiscard]] uintptr_t compile_to_address(dgtl::ir::IRStream& stream) {
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] return 0;
-        
+    [[nodiscard]] std::shared_ptr<const dgtl::machine::MachineFunction> get_tiered_mir_function(uint64_t function_id) const {
+        std::lock_guard<std::mutex> lock(tiered_mtx_);
+        auto it = tiered_functions_.find(function_id);
+        if (it != tiered_functions_.end() && it->second) {
+            return it->second->mir_function;
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] uintptr_t compile_mir_to_address(const dgtl::machine::MachineFunction& function) {
+        if (function.instructions().empty()) [[unlikely]] return 0;
+
         machine_code_buffer.clear();
+        dgtl::linker::driver::DGTLAOTLinker linker;
+        size_t emitted_size = 0;
+        machine_code_buffer.resize(function.instructions().size() * 64 + 1024, 0);
         
-        const bool emit_ok = emitter.process_stream(stream, machine_code_buffer);
-        if (!emit_ok || machine_code_buffer.empty()) return 0;
-        
+        if (!linker.emit_aot_machine_code(machine_code_buffer.data(), machine_code_buffer.size(), function, &emitted_size, runtime_slots_)) {
+            return 0;
+        }
+        machine_code_buffer.resize(emitted_size);
+
         size_t injected = strike_runner.inject_code(arena, machine_code_buffer);
         if (injected == 0) return 0;
-        
+
+        (void)executor.load_and_prepare_mir(machine_code_buffer, function);
+
         return strike_runner.last_injected_address();
+    }
+
+    [[nodiscard]] uintptr_t compile_mir_to_address(const dgtl::ir::IRStream& stream) {
+        if (stream.is_null() || stream.size() == 0) [[unlikely]] return 0;
+        dgtl::machine::MachineFunction function;
+        auto result = compile_mir_function(stream, function);
+        if (!result.success) return 0;
+        return compile_mir_to_address(function);
+    }
+
+    [[nodiscard]] uintptr_t compile_to_address(const dgtl::machine::MachineFunction& function) {
+        return compile_mir_to_address(function);
+    }
+
+    [[nodiscard]] uintptr_t compile_to_address(dgtl::ir::IRStream& stream) {
+        return compile_mir_to_address(stream);
     }
 
     void hard_reset() {

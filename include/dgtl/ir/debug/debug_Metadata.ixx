@@ -27,7 +27,7 @@ module;
 #include <cstring>
 #include <algorithm>
 
-export module dgtl.ir_core.debug;
+export module dgtl.ir.debug;
 
 // Import native compiler sub-systems and types
 
@@ -295,3 +295,6 @@ public:
 };
 
 } // namespace dgtl::ir::debug
+
+
+

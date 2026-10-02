@@ -16,7 +16,7 @@ module;
 #include <cstdint>
 #include <string_view>
 
-export module dgtl.config;
+export module dgtl.api.config;
 
 export namespace dgtl {
 namespace api {
@@ -51,13 +51,25 @@ enum class OptimizationLevel : uint8_t {
 struct Config {
     ExecutionMode mode = ExecutionMode::JIT;
     OptimizationLevel opt_level = OptimizationLevel::O3;
-    uint64_t _timeout_us = 1000000;
+    uint64_t timeout_us = 1000000;
     bool enable_temporal_fusion = true;
     bool enable_polyhedral_scop = true;
     bool enable_speculation = true;
     bool enable_vectorization = true;
     uint32_t thread_count = 0;
 };
+
+/**
+ * @brief Validate configuration invariants before constructing an execution engine.
+ *
+ * This is deliberately constexpr so callers can validate static configurations
+ * without introducing runtime machinery into the API layer.
+ */
+[[nodiscard]] inline constexpr bool is_valid(const Config& config) noexcept {
+    return config.timeout_us > 0 &&
+           (config.opt_level <= OptimizationLevel::OStrike) &&
+           true;
+}
 
 /**
  * @brief Default configuration for HFT workloads (low latency critical).
@@ -67,7 +79,7 @@ struct Config {
     return Config{
         .mode = ExecutionMode::JIT,
         .opt_level = OptimizationLevel::OStrike,
-        ._timeout_us = 500000,  // 500us for HFT
+        .timeout_us = 500000,  // 500us for HFT
         .enable_temporal_fusion = true,
         .enable_polyhedral_scop = false,
         .enable_speculation = true,
@@ -84,7 +96,7 @@ struct Config {
     return Config{
         .mode = ExecutionMode::AOT,
         .opt_level = OptimizationLevel::O3,
-        ._timeout_us = 10000000, // 10 seconds for 
+        .timeout_us = 10000000, // 10 seconds for 
         .enable_temporal_fusion = true,
         .enable_polyhedral_scop = true,
         .enable_speculation = true,
@@ -101,7 +113,7 @@ struct Config {
     return Config{
         .mode = ExecutionMode::Adaptive,
         .opt_level = OptimizationLevel::O3,
-        ._timeout_us = 1000000, // 1 second
+        .timeout_us = 1000000, // 1 second
         .enable_temporal_fusion = true,
         .enable_polyhedral_scop = true,
         .enable_speculation = true,

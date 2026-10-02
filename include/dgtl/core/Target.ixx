@@ -18,80 +18,18 @@
 
 module;
 
-#include <cstdlib>
-
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <string_view>
 #include <span>
-#include <chrono>
+#include <string_view>
 #include <numeric>
-
-#if defined(__linux__)
-#   include <sched.h>
-#   include <unistd.h>
-#endif
-
-#ifdef _WIN32
-#   ifndef WIN32_LEAN_AND_MEAN
-#       define WIN32_LEAN_AND_MEAN
-#   endif
-#   include <windows.h>
-#endif
-
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-#   if defined(_MSC_VER)
-#       include <intrin.h>
-#   else
-#       include <x86intrin.h>
-#   endif
-#endif
-
-#ifdef CONST
-#undef CONST
-#endif
-#ifdef INVALID_ATOM
-#undef INVALID_ATOM
-#endif
-#ifdef RELEASE
-#undef RELEASE
-#endif
-#ifdef MEM_RELEASE
-#undef MEM_RELEASE
-#endif
-#ifdef OPAQUE
-#undef OPAQUE
-#endif
-#ifdef MOV
-#undef MOV
-#endif
-#ifdef REGISTER
-#undef REGISTER
-#endif
 
 export module dgtl.target;
 
 import dgtl.ir_enums;
-
-#if defined(__GNUC__) || defined(__clang__)
-#   define DGTL_HW_FORCEINLINE inline __attribute__((always_inline))
-#   define DGTL_HW_AVX2_TARGET __attribute__((target("avx2")))
-#elif defined(_MSC_VER)
-#   define DGTL_HW_FORCEINLINE __forceinline
-#   define DGTL_HW_AVX2_TARGET
-#else
-#   define DGTL_HW_FORCEINLINE inline
-#   define DGTL_HW_AVX2_TARGET
-#endif
-
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-#   define DGTL_HAS_X86 1
-#else
-#   define DGTL_HAS_X86 0
-#endif
-
 
 export namespace dgtl::core {
 
@@ -102,12 +40,153 @@ using OpCode = dgtl::ir::OpCode;
 // ============================================================
 
 enum class ArchType : uint8_t {
-    X86_64_AVX512,  // Tier-1: HFT / AI Infrastructure (Primary)
-    X86_64_AVX2,    // Tier-1b: Maximum compatibility on x86 hosts
-    AARCH64_SVE,    // Tier-2: Mobile/Edge Performance
-    FPGA_VERILOG,   // Low-Latency Custom Silicon
-    WASM_SIMD       // High-Performance Web
+    X86_64_AVX512,
+    X86_64_AVX2,
+    AARCH64_SVE,
+    ARM32_NEON,
+    RISCV64_RVV,
+    WASM_SIMD,
+    CUDA_PTX,
+    ROCM_AMDGCN,
+    FPGA_VERILOG
 };
+
+enum class TargetFamily : uint8_t {
+    X64,
+    ARM64,
+    ARM32,
+    WASM,
+    RISCV64,
+    CUDA,
+    ROCm,
+    FPGA
+};
+
+[[nodiscard]] constexpr std::string_view target_family_name(TargetFamily family) noexcept {
+    switch (family) {
+        case TargetFamily::X64:    return "x64";
+        case TargetFamily::ARM64:  return "arm64";
+        case TargetFamily::ARM32:  return "arm32";
+        case TargetFamily::WASM:   return "wasm";
+        case TargetFamily::RISCV64:return "riscv64";
+        case TargetFamily::CUDA:   return "cuda";
+        case TargetFamily::ROCm:   return "rocm";
+        case TargetFamily::FPGA:   return "fpga";
+    }
+    return "unknown";
+}
+
+/**
+ * @brief Semantic target capability contract shared by target consumers.
+ *
+ * These features describe the compilation target, not the host CPU on which
+ * DGTL itself is running. Host detection remains represented by
+ * HardwareFeatures below. Keeping the two concepts separate prevents
+ * accidental host-feature leakage into cross-compilation.
+ */
+enum class TargetFeature : uint8_t {
+    Scalar32 = 0,
+    Scalar64,
+    Vector,
+    VectorMemory,
+    FMA,
+    Atomics,
+    Concurrency,
+    Syscall,
+    AVX2,
+    AVX512,
+    BMI2,
+    SVE,
+    NEON,
+    VFP,
+    RVV,
+    CUDA,
+    ROCm,
+    Tensor,
+    WasmSIMD,
+    ObjectMachO,
+    AMX,
+    Count
+};
+
+class TargetFeatureSet {
+public:
+    using mask_type = uint64_t;
+
+    constexpr TargetFeatureSet() noexcept = default;
+    constexpr explicit TargetFeatureSet(mask_type mask) noexcept : mask_(mask) {}
+
+    [[nodiscard]] constexpr bool has(TargetFeature feature) const noexcept {
+        const auto bit = static_cast<unsigned>(feature);
+        return bit < static_cast<unsigned>(TargetFeature::Count)
+            && ((mask_ >> bit) & 1ull) != 0ull;
+    }
+
+    constexpr void add(TargetFeature feature) noexcept {
+        const auto bit = static_cast<unsigned>(feature);
+        if (bit < static_cast<unsigned>(TargetFeature::Count)) {
+            mask_ |= (1ull << bit);
+        }
+    }
+
+    constexpr void remove(TargetFeature feature) noexcept {
+        const auto bit = static_cast<unsigned>(feature);
+        if (bit < static_cast<unsigned>(TargetFeature::Count)) {
+            mask_ &= ~(1ull << bit);
+        }
+    }
+
+    [[nodiscard]] constexpr mask_type mask() const noexcept { return mask_; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return mask_ == 0; }
+
+    friend constexpr bool operator==(TargetFeatureSet, TargetFeatureSet) noexcept = default;
+
+private:
+    mask_type mask_ = 0;
+};
+
+/**
+ * @brief Distinguishes the target endpoint from its ISA identity.
+ *
+ * Object format is deliberately separate from architecture. For example,
+ * Mach-O is an object format, not a CPU ISA.
+ */
+enum class TargetKind : uint8_t {
+    CPU = 0,
+    GPU = 1,
+    Accelerator = 2,
+    VirtualMachine = 3,
+    FPGA = 4
+};
+
+enum class ObjectFormat : uint8_t {
+    None = 0,
+    ELF,
+    PE,
+    MachO,
+    Wasm
+};
+
+/**
+ * @brief Stable target identity carried by TargetMachine.
+ *
+ * Strings are non-owning and intended for static target descriptors.
+ */
+struct TargetIdentity {
+    TargetKind kind = TargetKind::CPU;
+    ObjectFormat object_format = ObjectFormat::None;
+    ArchType arch = ArchType::X86_64_AVX2;
+    TargetFamily family = TargetFamily::X64;
+    std::string_view canonical_name{};
+    std::string_view cpu{};
+    std::string_view subtarget{};
+    TargetFeatureSet features{};
+
+    [[nodiscard]] constexpr bool has(TargetFeature feature) const noexcept {
+        return features.has(feature);
+    }
+};
+
 
 enum class SimdTier : uint8_t {
     Scalar = 0,  // No SIMD or non-x86
@@ -146,14 +225,14 @@ struct HardwareFeatures {
     bool     has_bmi2  = false;
     bool     has_amx   = false;
     uint32_t cache_line_size = 64;
-    uint64_t preferred_affinity_mask = 0x4ull;
-    uint32_t preferred_core_index = 2;
+    uint64_t preferred_affinity_mask = 0x1ull;
+    uint32_t preferred_core_index = 0;
 };
 
 struct AffinityPolicy {
-    uint64_t mask = 0x4ull;
-    uint32_t preferred_core = 2;
-    bool realtime_priority = true;
+    uint64_t mask = 0x1ull;
+    uint32_t preferred_core = 0;
+    bool realtime_priority = false;
 };
 
 [[nodiscard]] AffinityPolicy default_high_performance_affinity() noexcept;
@@ -180,11 +259,12 @@ void prime_preferred_simd_units(std::size_t iterations = 2048) noexcept;
 
 [[nodiscard]] inline SimdExecutionProfile preferred_simd_execution_profile() noexcept {
     const HardwareFeatures hw = detect_hardware();
-    if (hw.has_avx2) {
-        return SimdExecutionProfile::AVX2DualPump;
-    }
+    // AVX-512 is the wider profile; test it before AVX2.
     if (hw.has_avx512) {
         return SimdExecutionProfile::AVX512Wide;
+    }
+    if (hw.has_avx2) {
+        return SimdExecutionProfile::AVX2DualPump;
     }
     return SimdExecutionProfile::Scalar;
 }
@@ -209,9 +289,7 @@ void prime_preferred_simd_units(std::size_t iterations = 2048) noexcept;
 [[nodiscard]] inline ArchType select_preferred_x86_arch() noexcept {
     return preferred_simd_tier() == SimdTier::AVX512 ? ArchType::X86_64_AVX512 : ArchType::X86_64_AVX2;
 }
-// prime_preferred_simd_units is declared above; defined out-of-line in Target.cpp
-
-
+// prime_preferred_simd_units is defined out-of-line in Target.cpp.
 
 // ============================================================
 // TargetMachine Class (Merged Architecture Awareness)
@@ -234,10 +312,14 @@ enum class RegisterBank : uint8_t {
 
 enum class CallingConventionKind : uint8_t {
     SystemV_x64 = 0,
-    Windows_x64 = 1,
-    AAPCS64 = 2,
-    WasmCABI = 3,
-    BareMetal = 4,
+    Windows_x64,
+    AAPCS64,
+    AAPCS32,
+    RiscV64,
+    WasmCABI,
+    CUDADevice,
+    ROCmDevice,
+    BareMetal,
 };
 
 struct TargetRegisterInfo {
@@ -286,9 +368,14 @@ public:
     static constexpr uint16_t kWidth256 = 1u << 3;
     static constexpr uint16_t kWidth512 = 1u << 4;
 
-    [[nodiscard]] static TargetDescription for_arch(ArchType arch);
+    [[nodiscard]] static TargetDescription for_arch(
+        ArchType arch,
+        CallingConventionKind calling_convention = CallingConventionKind::SystemV_x64);
 
     [[nodiscard]] ArchType arch() const noexcept { return arch_; }
+    [[nodiscard]] CallingConventionKind calling_convention_kind() const noexcept {
+        return calling_convention_.kind;
+    }
     [[nodiscard]] std::span<const TargetRegisterInfo> general_purpose_registers() const noexcept {
         return std::span<const TargetRegisterInfo>(gp_registers_.data(), gp_register_count_);
     }
@@ -329,6 +416,22 @@ public:
     [[nodiscard]] bool supports_fma() const noexcept {
         return supports_fma_;
     }
+
+    /**
+     * @brief Returns whether the target has a direct instruction-table entry.
+     *
+     * This is the canonical target-local opcode legality query. Higher-level
+     * legalization may still lower an opcode to another form; a false result
+     * therefore means "not directly supported by this target description".
+     */
+    [[nodiscard]] bool supports_opcode(OpCode opcode) const noexcept {
+        return instruction_desc(opcode).has_value();
+    }
+
+    /** @brief True when the vector ISA uses a scalable vector length. */
+    [[nodiscard]] bool has_scalable_vectors() const noexcept {
+        return scalable_vectors_;
+    }
     [[nodiscard]] float average_instruction_latency() const noexcept {
         if (instruction_count_ == 0) return 1.0f;
         const uint32_t total = std::accumulate(instruction_table_.begin(), instruction_table_.begin() + instruction_count_, 0u,
@@ -354,6 +457,7 @@ private:
     uint16_t supported_scalar_widths_ = kWidth64;
     uint16_t supported_vector_widths_ = 0;
     bool supports_fma_ = false;
+    bool scalable_vectors_ = false;
 
     [[nodiscard]] static constexpr uint16_t width_to_mask(uint32_t bits) noexcept {
         switch (bits) {
@@ -367,48 +471,150 @@ private:
     }
 
     void add_gp(uint16_t id, std::string_view name, bool caller_saved) noexcept {
-        gp_registers_[gp_register_count_++] = TargetRegisterInfo{id, name, RegisterBank::GeneralPurpose, 64, caller_saved, true};
+        if (gp_register_count_ >= gp_registers_.size()) return;
+        gp_registers_[gp_register_count_++] = TargetRegisterInfo{
+            id, name, RegisterBank::GeneralPurpose, 64, caller_saved, true};
     }
 
     void add_vec(uint16_t id, std::string_view name, uint16_t bit_width, bool caller_saved) noexcept {
-        vector_registers_[vector_register_count_++] = TargetRegisterInfo{id, name, RegisterBank::Vector, bit_width, caller_saved, true};
+        if (vector_register_count_ >= vector_registers_.size()) return;
+        vector_registers_[vector_register_count_++] = TargetRegisterInfo{
+            id, name, RegisterBank::Vector, bit_width, caller_saved, true};
     }
 
-    void add_instruction(OpCode opcode, uint8_t latency, uint8_t throughput, uint16_t widths, bool fusion) noexcept {
-        instruction_table_[instruction_count_++] = InstructionDesc{opcode, latency, throughput, widths, fusion};
+    void add_instruction(OpCode opcode, uint8_t latency, uint8_t throughput,
+                         uint16_t widths, bool fusion) noexcept {
+        if (instruction_count_ >= instruction_table_.size()) return;
+        instruction_table_[instruction_count_++] = InstructionDesc{
+            opcode, latency, throughput, widths, fusion};
     }
 
     void setup_registers() noexcept;
-    void setup_calling_convention() noexcept;
+    void setup_calling_convention(CallingConventionKind calling_convention) noexcept;
     void setup_instruction_table() noexcept;
 };
 
 class alignas(64) TargetMachine {
 public:
+    /**
+     * @brief Target capabilities used by legalization, ISel and scheduling.
+     *
+     * The generic fields use the same semantic vocabulary as the generated
+     * ISel target contract. Architecture-specific capability fields are retained as explicit target capability state.
+     */
     struct Capabilities {
-        bool has_avx2   = false;
+        bool scalar32 = false;
+        bool scalar64 = false;
+        bool vector = false;
+        bool vector_memory = false;
+        bool atomics = false;
+        bool concurrency = false;
+        bool syscall = false;
+        bool tensor = false;
+        bool wasm_simd = false;
+        bool object_macho = false;
+
+        bool has_avx2 = false;
         bool has_avx512 = false;
-        bool has_amx    = false;
-        bool has_fma    = false;
-        bool has_bmi2   = false;
+        bool has_amx = false;
+        bool has_fma = false;
+        bool has_bmi2 = false;
+        bool has_sve = false;
+        bool has_neon = false;
+        bool has_vfp = false;
+        bool has_rvv = false;
+        bool has_cuda = false;
+        bool has_rocm = false;
+
         uint32_t cache_line_size = 64;
-        uint64_t preferred_affinity_mask = 0x4ull;
-        uint32_t preferred_core_index = 2;
+        uint64_t preferred_affinity_mask = 0x1ull;
+        uint32_t preferred_core_index = 0;
+
+        [[nodiscard]] constexpr TargetFeatureSet feature_set() const noexcept {
+            TargetFeatureSet result;
+            if (scalar32)       result.add(TargetFeature::Scalar32);
+            if (scalar64)       result.add(TargetFeature::Scalar64);
+            if (vector)         result.add(TargetFeature::Vector);
+            if (vector_memory)  result.add(TargetFeature::VectorMemory);
+            if (has_fma)        result.add(TargetFeature::FMA);
+            if (atomics)        result.add(TargetFeature::Atomics);
+            if (concurrency)    result.add(TargetFeature::Concurrency);
+            if (syscall)        result.add(TargetFeature::Syscall);
+            if (has_avx2)       result.add(TargetFeature::AVX2);
+            if (has_avx512)     result.add(TargetFeature::AVX512);
+            if (has_bmi2)       result.add(TargetFeature::BMI2);
+            if (has_sve)        result.add(TargetFeature::SVE);
+            if (has_neon)       result.add(TargetFeature::NEON);
+            if (has_vfp)        result.add(TargetFeature::VFP);
+            if (has_rvv)        result.add(TargetFeature::RVV);
+            if (has_cuda)       result.add(TargetFeature::CUDA);
+            if (has_rocm)       result.add(TargetFeature::ROCm);
+            if (tensor)         result.add(TargetFeature::Tensor);
+            if (wasm_simd)      result.add(TargetFeature::WasmSIMD);
+            if (object_macho)   result.add(TargetFeature::ObjectMachO);
+            if (has_amx)        result.add(TargetFeature::AMX);
+            return result;
+        }
+
+        [[nodiscard]] constexpr bool has(TargetFeature feature) const noexcept {
+            return feature_set().has(feature);
+        }
     };
 
-    explicit TargetMachine(ArchType arch) : m_arch(arch) {
+    TargetMachine()
+        : TargetMachine(ArchType::X86_64_AVX2, CallingConventionKind::SystemV_x64) {}
+
+    explicit TargetMachine(
+        ArchType arch,
+        CallingConventionKind calling_convention = CallingConventionKind::SystemV_x64)
+        : TargetMachine(arch, ObjectFormat::None, calling_convention) {}
+
+    explicit TargetMachine(
+        ArchType arch,
+        ObjectFormat object_format,
+        CallingConventionKind calling_convention = CallingConventionKind::SystemV_x64)
+        : m_arch(arch),
+          object_format_(object_format),
+          requested_calling_convention_(calling_convention),
+          identity_(identity_for_arch(arch, object_format)) {
         initialize_target();
+        finalize_capabilities();
+        host_features_ = detect_hardware();
+        identity_.features = m_caps.feature_set();
     }
 
     [[nodiscard]] ArchType get_arch() const noexcept { return m_arch; }
+
+    [[nodiscard]] static std::optional<ArchType> arch_from_target_name(
+        std::string_view name) noexcept;
+
+    [[nodiscard]] static std::optional<ObjectFormat> object_format_from_target_name(
+        std::string_view name) noexcept;
     
     [[nodiscard]] bool supports_native(OpCode op) const noexcept {
-        if (m_arch == ArchType::X86_64_AVX512 || m_arch == ArchType::X86_64_AVX2) {
-            if (op == OpCode::VEC_ADD_F32_512 || op == OpCode::GATHER_F32_512)
-                return m_caps.has_avx512;
-            if (op == OpCode::STORE_V512 || op == OpCode::GATHER_16)
-                return m_caps.has_avx2 || m_caps.has_avx512;
-            return true;
+        // The target description is the single source of truth for direct
+        // opcode legality. Feature-specific checks are represented there too,
+        // so Legalizer and ISel do not observe contradictory target contracts.
+        return description_.supports_opcode(op);
+    }
+
+    [[nodiscard]] bool host_supports_target() const noexcept {
+        switch (m_arch) {
+            case ArchType::X86_64_AVX512:
+                return host_features_.has_avx512;
+            case ArchType::X86_64_AVX2:
+                return host_features_.has_avx2;
+            case ArchType::AARCH64_SVE:
+            case ArchType::ARM32_NEON:
+            case ArchType::RISCV64_RVV:
+                // Host ISA probing for non-x86 targets is platform-specific and
+                // must not be inferred from x86 feature detection.
+                return false;
+            case ArchType::WASM_SIMD:
+            case ArchType::CUDA_PTX:
+            case ArchType::ROCM_AMDGCN:
+            case ArchType::FPGA_VERILOG:
+                return false;
         }
         return false;
     }
@@ -418,7 +624,46 @@ public:
     }
 
     [[nodiscard]] const Capabilities& get_caps() const noexcept { return m_caps; }
+
+    // Host capabilities are intentionally separate from the compilation target.
+    // This is essential for cross-compilation and for JIT policy decisions that
+    // depend on the machine executing DGTL rather than the code being emitted.
+    [[nodiscard]] const HardwareFeatures& host_features() const noexcept {
+        return host_features_;
+    }
+
     [[nodiscard]] const TargetDescription& description() const noexcept { return description_; }
+
+    [[nodiscard]] const TargetIdentity& identity() const noexcept { return identity_; }
+    [[nodiscard]] TargetFamily family() const noexcept { return identity_.family; }
+    [[nodiscard]] ObjectFormat object_format() const noexcept { return object_format_; }
+    [[nodiscard]] bool emits_macho() const noexcept {
+        return object_format_ == ObjectFormat::MachO;
+    }
+    [[nodiscard]] std::string_view canonical_target_name() const noexcept {
+        return identity_.canonical_name;
+    }
+    [[nodiscard]] std::string_view cpu() const noexcept { return identity_.cpu; }
+    [[nodiscard]] std::string_view subtarget() const noexcept { return identity_.subtarget; }
+
+    [[nodiscard]] TargetFeatureSet target_features() const noexcept {
+        return m_caps.feature_set();
+    }
+    [[nodiscard]] bool has_feature(TargetFeature feature) const noexcept {
+        return m_caps.has(feature);
+    }
+    [[nodiscard]] bool supports_scalar_width(uint32_t bits) const noexcept {
+        return description_.supports_scalar_width(bits);
+    }
+    [[nodiscard]] bool supports_vector_width(uint32_t bits) const noexcept {
+        return description_.supports_vector_width(bits);
+    }
+    [[nodiscard]] bool supports_fma() const noexcept {
+        return m_caps.has_fma || description_.supports_fma();
+    }
+    [[nodiscard]] bool supports_vector_memory() const noexcept {
+        return m_caps.vector_memory;
+    }
 
     [[nodiscard]] static size_t get_preferred_alignment(OpCode op) noexcept {
         if (op == OpCode::STORE_V512 || op == OpCode::LOAD) return 64;
@@ -426,7 +671,7 @@ public:
     }
 
     [[nodiscard]] bool prefer_branchless() const noexcept {
-        return m_caps.has_avx512 || m_caps.has_avx2;
+        return m_caps.has_avx512 || m_caps.has_avx2 || m_arch == ArchType::AARCH64_SVE;
     }
 
     [[nodiscard]] bool prefers_vector_heavy_schedule() const noexcept {
@@ -456,14 +701,205 @@ public:
         return description_.default_calling_convention();
     }
 
+    [[nodiscard]] CallingConventionKind requested_calling_convention() const noexcept {
+        return requested_calling_convention_;
+    }
+
+    [[nodiscard]] CallingConventionKind calling_convention() const noexcept {
+        return requested_calling_convention_;
+    }
+
 
 
 private:
-    ArchType m_arch;
-    Capabilities m_caps;
+    ArchType m_arch = ArchType::X86_64_AVX2;
+    ObjectFormat object_format_ = ObjectFormat::None;
+    Capabilities m_caps{};
+    HardwareFeatures host_features_{};
+    CallingConventionKind requested_calling_convention_ = CallingConventionKind::SystemV_x64;
     TargetDescription description_{};
+    TargetIdentity identity_{};
+
+    [[nodiscard]] static constexpr TargetIdentity identity_for_arch(
+        ArchType arch,
+        ObjectFormat object_format = ObjectFormat::None) noexcept {
+        TargetIdentity identity{};
+        identity.arch = arch;
+        identity.object_format = object_format;
+
+        switch (arch) {
+            case ArchType::X86_64_AVX512:
+                identity.kind = TargetKind::CPU;
+                identity.family = TargetFamily::X64;
+                identity.canonical_name = "x64";
+                identity.cpu = "x86-64";
+                identity.subtarget = "avx512";
+                break;
+            case ArchType::X86_64_AVX2:
+                identity.kind = TargetKind::CPU;
+                identity.family = TargetFamily::X64;
+                identity.canonical_name = "x64";
+                identity.cpu = "x86-64";
+                identity.subtarget = "avx2";
+                break;
+            case ArchType::AARCH64_SVE:
+                identity.kind = TargetKind::CPU;
+                identity.family = TargetFamily::ARM64;
+                identity.canonical_name = "arm64";
+                identity.cpu = "aarch64";
+                identity.subtarget = "sve";
+                break;
+            case ArchType::ARM32_NEON:
+                identity.kind = TargetKind::CPU;
+                identity.family = TargetFamily::ARM32;
+                identity.canonical_name = "arm32";
+                identity.cpu = "armv7a";
+                identity.subtarget = "neon-vfp";
+                break;
+            case ArchType::RISCV64_RVV:
+                identity.kind = TargetKind::CPU;
+                identity.family = TargetFamily::RISCV64;
+                identity.canonical_name = "riscv64";
+                identity.cpu = "riscv64";
+                identity.subtarget = "rv64gc";
+                break;
+            case ArchType::WASM_SIMD:
+                identity.kind = TargetKind::VirtualMachine;
+                identity.family = TargetFamily::WASM;
+                identity.object_format = ObjectFormat::Wasm;
+                identity.canonical_name = "wasm";
+                identity.cpu = "wasm";
+                identity.subtarget = "simd";
+                break;
+            case ArchType::CUDA_PTX:
+                identity.kind = TargetKind::GPU;
+                identity.family = TargetFamily::CUDA;
+                identity.canonical_name = "cuda";
+                identity.cpu = "nvptx";
+                identity.subtarget = "ptx";
+                break;
+            case ArchType::ROCM_AMDGCN:
+                identity.kind = TargetKind::GPU;
+                identity.family = TargetFamily::ROCm;
+                identity.canonical_name = "rocm";
+                identity.cpu = "amdgcn";
+                identity.subtarget = "amdgcn-gfx";
+                break;
+            case ArchType::FPGA_VERILOG:
+                identity.kind = TargetKind::FPGA;
+                identity.family = TargetFamily::FPGA;
+                identity.canonical_name = "fpga";
+                identity.cpu = "verilog";
+                identity.subtarget = "generic";
+                break;
+        }
+        return identity;
+    }
 
     void initialize_target();
+
+    void finalize_capabilities() noexcept {
+        // Capabilities describe the requested compilation target. Host probing
+        // never upgrades or downgrades this contract.
+        m_caps = Capabilities{};
+        m_caps.scalar32 = true;
+        m_caps.scalar64 = true;
+
+        switch (m_arch) {
+            case ArchType::X86_64_AVX512:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.syscall = true;
+                m_caps.has_avx2 = true;
+                m_caps.has_avx512 = true;
+                m_caps.has_fma = true;
+                m_caps.has_bmi2 = true;
+                break;
+
+            case ArchType::X86_64_AVX2:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.syscall = true;
+                m_caps.has_avx2 = true;
+                m_caps.has_fma = true;
+                m_caps.has_bmi2 = true;
+                break;
+
+            case ArchType::AARCH64_SVE:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.syscall = true;
+                m_caps.has_fma = true;
+                m_caps.has_sve = true;
+                break;
+
+            case ArchType::ARM32_NEON:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.syscall = true;
+                m_caps.has_fma = true;
+                m_caps.has_neon = true;
+                m_caps.has_vfp = true;
+                break;
+
+            case ArchType::RISCV64_RVV:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.syscall = true;
+                m_caps.has_fma = true;
+                m_caps.has_rvv = true;
+                break;
+
+            case ArchType::WASM_SIMD:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.wasm_simd = true;
+                break;
+
+            case ArchType::CUDA_PTX:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.has_fma = true;
+                m_caps.has_cuda = true;
+                m_caps.tensor = true;
+                break;
+
+            case ArchType::ROCM_AMDGCN:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.has_fma = true;
+                m_caps.has_rocm = true;
+                m_caps.tensor = true;
+                break;
+
+            case ArchType::FPGA_VERILOG:
+                break;
+        }
+
+        if (object_format_ == ObjectFormat::MachO) {
+            m_caps.object_macho = true;
+        }
+
+        m_caps.cache_line_size = 64;
+        m_caps.preferred_affinity_mask = default_high_performance_affinity().mask;
+        m_caps.preferred_core_index = default_high_performance_affinity().preferred_core;
+    }
 };
 
 // ============================================================
@@ -494,19 +930,3 @@ struct TargetPipeline {
 };
 
 } // namespace dgtl::core
-
-// ============================================================
-// Backward Compatibility & Global Accessors
-// ============================================================
-
-export namespace dgtl {
-    using core::SimdTier;
-    using core::HardwareFeatures;
-    using core::detect_hardware;
-}
-
-export namespace dgtl::ir {
-    using ArchType       = dgtl::core::ArchType;
-    using TargetMachine  = dgtl::core::TargetMachine;
-    using TargetPipeline = dgtl::core::TargetPipeline;
-}

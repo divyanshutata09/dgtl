@@ -76,14 +76,15 @@ DGTL Compiler Infrastructure
 │
 ├── 3. Intermediate Representation (include/dgtl/ir/)
 │   ├── base/
-│   │   ├── IR_Enums.ixx        # 178 canonical opcodes and flag definitions
 │   │   ├── IR_Node.ixx         # 64-byte canonical IR node representation
 │   │   ├── IR_Stream.ixx       # Transactional shadow stream & instruction buffer
 │   │   ├── IR_SSA.ixx          # SSA form invariants & dominance frontiers
 │   │   ├── IR_Storage.ixx      # Compressed bit-packed IR arrays
 │   │   └── IR_PrintSerialDumper.ixx # Textual IR dumper & format serializer
 │   ├── gen/
-│   │   └── DGTL_Gen_Ops.ixx    # 178 typed dialect builder wrappers
+│   │   ├── DGTL_Gen_Enums.ixx  # 183 canonical opcodes and flag definitions (auto-generated)
+│   │   ├── DGTL_Gen_Ops.ixx    # 183 operation metadata descriptors & lookup helpers (auto-generated)
+│   │   └── DGTL_Gen_Op_Wrappers.ixx # Strongly-typed dialect builder wrappers (auto-generated)
 │   └── Global_IR.ixx           # Whole-program translation units
 │
 ├── 4. Analysis & Cost Modeling (include/dgtl/analysis/)

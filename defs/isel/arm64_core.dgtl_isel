@@ -1,0 +1,29 @@
+# ============================================================================
+# DGTL version 2.2.0  |  arm64_core.dgtl_isel  (AArch64 / ARMv8-A / ARMv9-A)
+# Architecture:  ARMv8-A / ARMv9-A â€” NEON, SVE, SVE2, LSE Atomics
+# ABI:           AAPCS64 / Apple Silicon AArch64
+# ============================================================================
+
+include "common_runtime_forms.dgtl_isel"
+include "core_base.dgtl_isel"
+
+# ----------------------------------------------------------------------------
+# AArch64 PEEPHOLE REWRITE & FUSION RULES
+# ----------------------------------------------------------------------------
+
+# Shifted-register addressing (ADD Xd, Xn, Xm, LSL #shift)
+rule arm64_fold_lsl_add:          AddI64($a, ShlI64($b, $shift)) -> ADD_I64($a, $b) [targets=arm64|aarch64, benefit=35]
+rule arm64_fold_lsr_sub:          SubI64($a, ShrI64($b, $shift)) -> SUB_I64($a, $b) [targets=arm64|aarch64, benefit=35]
+
+# NEON / Advanced SIMD FMA (FMLA Vd.4S, Vn.4S, Vm.S[lane])
+rule arm64_neon_fma_f32:          AddF32(MulF32($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=arm64|aarch64, benefit=80]
+
+# Conditional select (CSEL Xd, Xn, Xm, cond)
+rule arm64_fold_csel:             Select(CmpEqI32($a, $b), $t, $f) -> SELECT($a, $t, $f) [targets=arm64|aarch64, benefit=25]
+
+# ----------------------------------------------------------------------------
+# AArch64-specific form override
+# AArch64 supports native hardware FMA via FMADD / FMLA instructions.
+# ----------------------------------------------------------------------------
+
+form fma_f32:                     opcode=FMA_F32,               machine_form=FloatTernaryFma32

@@ -87,34 +87,6 @@ bool emit_backend(BackendKind backend,
     return false;
 }
 
-[[nodiscard]] dgtl::ir::BackendProfile::TargetISA backend_profile_target(BackendKind backend) noexcept {
-    using TargetISA = dgtl::ir::BackendProfile::TargetISA;
-    switch (backend) {
-        case BackendKind::arm64:
-        case BackendKind::macho:
-            return TargetISA::ARM64_SVE;
-        case BackendKind::arm32:
-            return TargetISA::ARM32_NEON;
-        case BackendKind::riscv64:
-            return TargetISA::RISCV64_RV64GC;
-        case BackendKind::wasm:
-            return TargetISA::WASM;
-        case BackendKind::cuda:
-            return TargetISA::CUDA_PTX;
-        case BackendKind::rocm:
-            return TargetISA::ROCM_LLVMIR;
-        case BackendKind::x64:
-            return TargetISA::X64_AVX512;
-        case BackendKind::nasm:
-        case BackendKind::elfobj:
-        case BackendKind::staticlib:
-        case BackendKind::coffobj:
-        case BackendKind::cofflib:
-        default:
-            return TargetISA::NASM_X64;
-    }
-}
-
 inline dgtl::core::TargetMachine target_machine_for_backend(BackendKind backend) {
     switch (backend) {
         case BackendKind::arm64:
@@ -169,8 +141,6 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
     if (!build_ir_for_profile(stream, profile, pressure_vars)) {
         return timed;
     }
-    stream.set_backend_target(0, backend_profile_target(backend));
-
     timed.hot_swap_mode = profile_name(profile);
     timed.nodes_built = stream.size();
     stream.record_function_call(0);
@@ -187,17 +157,17 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
 
     // 1. Profile-Specific Pass (Gated by Decision Engine)
     if (profile == BenchmarkProfile::fusion) {
-        dgtl::core::DGTLFormalVerifier verifier;
-        dgtl::pass::transform::DGTLInstructionFusionSynth fusion_pass(verifier);
+        dgtl::ir::DGTLFormalVerifier verifier;
+        dgtl::ir::pass::transform::DGTLInstructionFusionSynth fusion_pass(verifier);
         dgtl::graph::Region region;
         if (pde.should_run_pass(&fusion_pass, &region, am, ai_model)) {
             fusion_pass.execute(stream);
         }
     } else if (profile == BenchmarkProfile::simd) {
-        dgtl::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+        dgtl::ir::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
         legalizer.legalize(stream);
     } else if (profile == BenchmarkProfile::predication) {
-        dgtl::pass::transform::DGTLMaskedPredicationLowering predication_pass;
+        dgtl::ir::pass::transform::DGTLMaskedPredicationLowering predication_pass;
         predication_pass.execute(stream);
     } else if (profile == BenchmarkProfile::replay) {
         dgtl::runtime::TaskScheduler replay_scheduler(1);
@@ -231,11 +201,11 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
 
     // 2. Hot-Swap Logic for ARM64 high-pressure kernels
     if (backend == BackendKind::arm64 && timed.ai_predicted_cost_pre > 35.0f) {
-        dgtl::pass::DGTLTemporalVectorFusion temporal_fusion;
+        dgtl::ir::pass::DGTLTemporalVectorFusion temporal_fusion;
         temporal_fusion.execute(stream);
         
         if (timed.ai_predicted_cost_pre > 65.0f) {
-            dgtl::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
+            dgtl::ir::pass::simd::DGTLSIMDLegalizer legalizer(target_arch_for_backend(backend));
             legalizer.legalize(stream);
             timed.hot_swap_mode = "int->float-simd/predication";
         } else {
@@ -258,16 +228,16 @@ TimedEmissionResult time_backend_pipeline(dgtl::core::DGTL_Arena& arena,
 
     const auto optimize_end = std::chrono::high_resolution_clock::now();
     const uint64_t optimize_time_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(optimize_end - optimize_start).count());
-    stream.update_backend_stats(0, optimize_time_us);
-    stream.record_cache_access(0, timed.ai_predicted_cost_post <= timed.ai_predicted_cost_pre);
+    stream.update_compilation_stats(0, optimize_time_us);
+    stream.record_compilation_cache_access(0, timed.ai_predicted_cost_post <= timed.ai_predicted_cost_pre);
     switch (stream.compute_adaptive_tier(0)) {
-        case dgtl::ir::BackendProfile::CompilationTier::JIT_FAST:
+        case dgtl::ir::CompilationProfile::CompilationTier::Fast:
             timed.adaptive_tier = "-fast";
             break;
-        case dgtl::ir::BackendProfile::CompilationTier::AOT_INTENSIVE:
+        case dgtl::ir::CompilationProfile::CompilationTier::Intensive:
             timed.adaptive_tier = "-intensive";
             break;
-        case dgtl::ir::BackendProfile::CompilationTier::ADAPTIVE_HYBRID:
+        case dgtl::ir::CompilationProfile::CompilationTier::Adaptive:
         default:
             timed.adaptive_tier = "adaptive-";
             break;

@@ -16,7 +16,7 @@ module;
 #include <string_view>
 #include <vector>
 
-export module dgtl.dgtl_bulletins;
+export module dgtl.runtime.bulletins;
 
 export namespace dgtl::runtime {
 

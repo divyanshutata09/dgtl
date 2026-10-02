@@ -12,28 +12,30 @@
 module;
 
 #include <cstdlib>
-
 #include <memory>
 
-export module dgtl.internal;
+export module dgtl.api;
 
 // --- CORE SYSTEM RE-EXPORTS ---
-export import dgtl.ir_core;
+export import dgtl.ir;
+export import dgtl.mir;
+export import dgtl.object.file;
+export import dgtl.execution;
+export import dgtl.formal;
 
 // --- API PARTITION AGGREGATION ---
-export import dgtl.internal.api_execution_engine;
-export import dgtl.internal.api_runtime;
-export import dgtl.internal.api_ir_builder;
-export import dgtl.internal.api_jit_session;
-export import dgtl.internal.api_hybrid_session;
-export import dgtl.internal.api_aot_session;
-export import dgtl.internal.api_abi;
-export import dgtl.internal.api_abi_lowering;
-export import dgtl.internal.api_backend_driver_api;
-export import dgtl.internal.api_backend_driver_shared_utils;
-export import dgtl.config;
+export import dgtl.api.execution_engine;
+export import dgtl.api.runtime;
+export import dgtl.api.ir_builder;
+export import dgtl.api.jit_session;
+export import dgtl.api.hybrid_session;
+export import dgtl.api.aot_session;
+export import dgtl.api.abi;
+export import dgtl.api.abi_lowering;
+export import dgtl.api.backend_driver;
+export import dgtl.api.backend_driver_shared;
+export import dgtl.api.config;
 
-// Import local build dependency pre-requisites
 import dgtl.compiler_context;
 
 export namespace dgtl::api {
@@ -42,8 +44,7 @@ export namespace dgtl::api {
  * @brief Factory function for session creation.
  * Resolves the requested execution mode and returns the appropriate implementation.
  */
-std::unique_ptr<ExecutionEngine> ExecutionEngine::create(Context& context) noexcept {
-    // Note: Assuming ExecutionMode is defined within dgtl::api or accessible via Context
+std::unique_ptr<ExecutionEngine> ExecutionEngine::create(Context& context) {
     switch (context.get_config().mode) {
         case ExecutionMode::JIT:
             return std::make_unique<JITSession>(context);

@@ -7,29 +7,27 @@
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
+ 
+ * Canonical operation metadata is generated exclusively from
+ * gen/defs/phase1_core_ops.dgtl_def. No handwritten fallback table is allowed.
  */
-
 module;
 
-#include <algorithm>
-#include <array>
-#include <cstdlib>
 #include <cstdint>
 #include <optional>
 #include <string_view>
 
 export module dgtl.op_traits;
 
-// Dependency Ordered Module Imports
 import dgtl.ir_enums;
-import dgtl.ir_core.gen;
+import dgtl.ir_schema;
+import dgtl.ir.gen;
 
 export namespace dgtl::ir::interfaces {
 
 enum class OpTrait : std::uint32_t {
     None = 0,
     Commutative = 1u << 0,
-    IsCommutative = Commutative,
     HasNoSideEffects = 1u << 1,
     IsTerminator = 1u << 2,
     IsMemoryRead = 1u << 3,
@@ -43,14 +41,26 @@ enum class OpTrait : std::uint32_t {
     IsTensor = 1u << 11,
     IsGraph = 1u << 12,
     IsAsyncSpawnable = 1u << 13,
+    IsLatencyCritical = 1u << 14,
+    IsHardwareIntrinsic = 1u << 15,
+    Associative = 1u << 16,
+    ConstantFoldable = 1u << 17,
+    MemoryBarrier = 1u << 18,
+    SingleDefUse = 1u << 19,
 };
 
-// Inline bitwise utilities to make module usage semantic without casting pollution
-[[nodiscard]] constexpr OpTrait operator|(OpTrait lhs, OpTrait rhs) noexcept {
-    return static_cast<OpTrait>(static_cast<std::uint32_t>(lhs) | static_cast<std::uint32_t>(rhs));
+[[nodiscard]] constexpr OpTrait operator|(OpTrait a, OpTrait b) noexcept {
+    return static_cast<OpTrait>(
+        static_cast<std::uint32_t>(a) |
+        static_cast<std::uint32_t>(b)
+    );
 }
-[[nodiscard]] constexpr OpTrait operator&(OpTrait lhs, OpTrait rhs) noexcept {
-    return static_cast<OpTrait>(static_cast<std::uint32_t>(lhs) & static_cast<std::uint32_t>(rhs));
+
+[[nodiscard]] constexpr OpTrait operator&(OpTrait a, OpTrait b) noexcept {
+    return static_cast<OpTrait>(
+        static_cast<std::uint32_t>(a) &
+        static_cast<std::uint32_t>(b)
+    );
 }
 
 enum class OpInterface : std::uint32_t {
@@ -67,127 +77,111 @@ enum class OpInterface : std::uint32_t {
     Concurrency = 1u << 9,
     DSA = 1u << 10,
     Ownership = 1u << 11,
+    PointerMath = 1u << 12,
+    NeuralNet = 1u << 13,
+    SpatialMath = 1u << 14,
 };
 
-[[nodiscard]] constexpr OpInterface operator|(OpInterface lhs, OpInterface rhs) noexcept {
-    return static_cast<OpInterface>(static_cast<std::uint32_t>(lhs) | static_cast<std::uint32_t>(rhs));
+[[nodiscard]] constexpr OpInterface operator|(OpInterface a, OpInterface b) noexcept {
+    return static_cast<OpInterface>(
+        static_cast<std::uint32_t>(a) |
+        static_cast<std::uint32_t>(b)
+    );
 }
-[[nodiscard]] constexpr OpInterface operator&(OpInterface lhs, OpInterface rhs) noexcept {
-    return static_cast<OpInterface>(static_cast<std::uint32_t>(lhs) & static_cast<std::uint32_t>(rhs));
+
+[[nodiscard]] constexpr OpInterface operator&(OpInterface a, OpInterface b) noexcept {
+    return static_cast<OpInterface>(
+        static_cast<std::uint32_t>(a) &
+        static_cast<std::uint32_t>(b)
+    );
 }
 
 struct OpMetadata {
     OpCode opcode = OpCode::NOP;
-    std::uint32_t trait_bits = 0u;
-    std::uint32_t interface_bits = 0u;
-    std::uint8_t operand_count = 0u;
+    std::uint16_t stable_id = 0;
+
+    // Canonical schema uses uint64_t for these bitfields.
+    std::uint64_t trait_bits = 0;
+    std::uint64_t interface_bits = 0;
+    std::uint64_t attribute_bits = 0;
+
+    std::uint8_t operand_count = 0;
     bool has_result = false;
+
     std::string_view name = "UnknownOp";
+    std::string_view dialect = {};
+    std::string_view result_type = {};
 };
 
-[[nodiscard]] constexpr std::uint32_t to_bits(OpTrait trait) noexcept {
-    return static_cast<std::uint32_t>(trait);
-}
-
-[[nodiscard]] constexpr std::uint32_t to_bits(OpInterface iface) noexcept {
-    return static_cast<std::uint32_t>(iface);
-}
-
-// Global lookup maps injected dynamically from tablegen targets (like DGTL_Gen_Ops)
-namespace fallback_detail {
-    struct GeneratedOpDef {
-        std::uint32_t trait_bits;
-        std::uint32_t interface_bits;
-        std::uint8_t operand_count;
-        bool has_result;
-        const char* result_type;
-        const char* name;
-        dgtl::ir::TypeCode result_type_code;
-    };
-    
-    // Complete fallback table covering all standard core opcodes
-    inline constexpr std::array<GeneratedOpDef, 64> kCoreFallbackDefs = {{
-        { 0u, to_bits(OpInterface::ControlFlow), 0u, false, "void", "Nop", TypeCode::VOID_T },
-        { to_bits(OpTrait::IsMemoryRead) | to_bits(OpTrait::IsMemoryOp), to_bits(OpInterface::Memory), 1u, true, "I32", "Load", TypeCode::I32 },
-        { to_bits(OpTrait::IsMemoryWrite) | to_bits(OpTrait::IsMemoryOp), to_bits(OpInterface::Memory), 2u, false, "void", "Store", TypeCode::VOID_T },
-        { to_bits(OpTrait::HasNoSideEffects), to_bits(OpInterface::Arithmetic), 1u, true, "I32", "RegMove", TypeCode::I32 },
-        { to_bits(OpTrait::HasNoSideEffects), to_bits(OpInterface::Arithmetic), 0u, true, "I32", "LoadImm", TypeCode::I32 },
-        { to_bits(OpTrait::HasNoSideEffects) | to_bits(OpTrait::IsCommutative), to_bits(OpInterface::Arithmetic), 2u, true, "I32", "AddI32", TypeCode::I32 },
-        { to_bits(OpTrait::HasNoSideEffects), to_bits(OpInterface::Arithmetic), 2u, true, "I32", "SubI32", TypeCode::I32 },
-        { to_bits(OpTrait::HasNoSideEffects) | to_bits(OpTrait::IsCommutative), to_bits(OpInterface::Arithmetic), 2u, true, "I32", "MulI32", TypeCode::I32 },
-        { to_bits(OpTrait::HasNoSideEffects), to_bits(OpInterface::Arithmetic), 2u, true, "I32", "DivI32", TypeCode::I32 },
-        { to_bits(OpTrait::IsTerminator), to_bits(OpInterface::ControlFlow) | to_bits(OpInterface::Terminator), 1u, false, "void", "Return", TypeCode::VOID_T },
-        { to_bits(OpTrait::IsTerminator), to_bits(OpInterface::ControlFlow) | to_bits(OpInterface::Terminator), 0u, false, "void", "Goto", TypeCode::VOID_T },
-        { to_bits(OpTrait::IsTerminator), to_bits(OpInterface::ControlFlow) | to_bits(OpInterface::Terminator), 1u, false, "void", "BranchCond", TypeCode::VOID_T }
-    }};
-
-    [[nodiscard]] constexpr std::optional<GeneratedOpDef> find_generated_op_def(OpCode opcode) noexcept {
-        // First try finding the op in the module-imported DSL generated metadata table
-        if (const auto* gen_def = dgtl::ir::gen::find_generated_op_def(opcode)) {
-            GeneratedOpDef def{};
-            def.trait_bits = static_cast<std::uint32_t>(gen_def->trait_bits);
-            def.interface_bits = static_cast<std::uint32_t>(gen_def->interface_bits);
-            def.operand_count = static_cast<std::uint8_t>(gen_def->operand_count);
-            def.has_result = gen_def->has_result;
-            def.result_type = gen_def->result_type.data();
-            def.name = gen_def->name.data();
-            def.result_type_code = gen_def->result_type_code;
-            return def;
-        }
-
-        // Secondary fallback lookup using index
-        const auto index = static_cast<size_t>(opcode);
-        if (index < kCoreFallbackDefs.size()) {
-            return kCoreFallbackDefs[index];
-        }
-        return std::nullopt;
-    }
-    
-    struct IRTraits {
-        [[nodiscard]] static constexpr bool is_terminator(OpCode opcode) noexcept {
-            if (const auto def = find_generated_op_def(opcode)) {
-                return (def->trait_bits & to_bits(OpTrait::IsTerminator)) != 0u;
-            }
-            return false;
-        }
-    };
-} // namespace fallback_detail
-
-[[nodiscard]] constexpr OpMetadata get_metadata(OpCode opcode) noexcept {
-    if (const auto def = fallback_detail::find_generated_op_def(opcode)) {
+[[nodiscard]] constexpr std::optional<OpMetadata>
+canonical_schema_metadata(OpCode op) noexcept {
+    if (const auto d = schema::lookup(op)) {
         return OpMetadata{
-            .opcode = opcode,
-            .trait_bits = def->trait_bits,
-            .interface_bits = def->interface_bits,
-            .operand_count = def->operand_count,
-            .has_result = def->has_result,
-            .name = def->name
+            d->opcode,
+            d->stable_id,
+            d->trait_bits,
+            d->interface_bits,
+            d->attribute_bits,
+            d->operand_count,
+            d->has_result,
+            d->name,
+            d->dialect,
+            d->result_type
         };
     }
 
-    return OpMetadata{
-        .opcode = opcode,
-        .name = "Unknown"
-    };
+    return std::nullopt;
 }
 
-[[nodiscard]] constexpr bool has_trait(OpCode opcode, OpTrait trait) noexcept {
-    return (get_metadata(opcode).trait_bits & to_bits(trait)) != 0u;
+[[nodiscard]] constexpr bool is_canonical(OpCode op) noexcept {
+    return schema::is_canonical(op);
 }
 
-[[nodiscard]] constexpr bool implements_interface(OpCode opcode, OpInterface iface) noexcept {
-    return (get_metadata(opcode).interface_bits & to_bits(iface)) != 0u;
-}
+[[nodiscard]] constexpr std::optional<TypeCode>
+expected_result_type_code(OpCode op) noexcept {
+    const auto* def = gen::find_generated_op_def(op);
+    if (!def || !def->has_result) {
+        return std::nullopt;
+    }
+    const std::string_view rt = def->result_type;
+    if (rt == "void") return TypeCode::VOID_T;
+    if (rt == "Bool") return TypeCode::BOOL;
+    if (rt == "Predicate") return TypeCode::PREDICATE;
+    if (rt == "AddressSpace") return TypeCode::ADDRESS_SPACE;
+    if (rt == "Ptr") return TypeCode::PTR;
+    if (rt == "StringHandle") return TypeCode::STRING_HANDLE;
 
-[[nodiscard]] constexpr std::optional<TypeCode> expected_result_type_code(OpCode opcode) noexcept {
-    const auto def = fallback_detail::find_generated_op_def(opcode);
-    if (!def) return std::nullopt;
-    return def->result_type_code;
-}
+    if (rt == "I4") return TypeCode::I4;
+    if (rt == "I8") return TypeCode::I8;
+    if (rt == "I16") return TypeCode::I16;
+    if (rt == "I32") return TypeCode::I32;
+    if (rt == "I64") return TypeCode::I64;
+    if (rt == "I128") return TypeCode::I128;
+    if (rt == "I256") return TypeCode::I256;
+    if (rt == "I512") return TypeCode::I512;
 
-[[nodiscard]] constexpr bool has_expected_result_type(OpCode opcode) noexcept {
-    const auto expected = expected_result_type_code(opcode);
-    return expected.has_value() && *expected != TypeCode::VOID_T;
+    if (rt == "F8") return TypeCode::F8;
+    if (rt == "BF16") return TypeCode::BF16;
+    if (rt == "F16") return TypeCode::F16;
+    if (rt == "F32") return TypeCode::F32;
+    if (rt == "F64") return TypeCode::F64;
+    if (rt == "F128") return TypeCode::F128;
+
+    if (rt == "Vec3xF32") return TypeCode::VEC3_F32;
+    if (rt == "Vec4xF32") return TypeCode::VEC4_F32;
+    if (rt == "Mat4x4F32") return TypeCode::MAT4X4_F32;
+    if (rt == "QuatF32") return TypeCode::QUAT_F32;
+    if (rt == "VectorF32x16") return TypeCode::VECTOR_F32X16;
+    if (rt == "VectorI32x16") return TypeCode::VECTOR_I32X16;
+    if (rt == "VectorF16x32") return TypeCode::VECTOR_F16X32;
+
+    if (rt == "TensorFP8") return TypeCode::TENSOR_FP8;
+    if (rt == "TensorBF16") return TypeCode::TENSOR_BF16;
+    if (rt == "TensorF32") return TypeCode::TENSOR_F32;
+    if (rt == "TensorI64") return TypeCode::TENSOR_I64;
+
+    return std::nullopt;
 }
 
 } // namespace dgtl::ir::interfaces
+

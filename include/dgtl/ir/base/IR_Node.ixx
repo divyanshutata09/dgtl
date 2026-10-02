@@ -23,6 +23,11 @@ export module dgtl.ir_node;
 
 // Dependency Ordered Named Module Imports
 export import dgtl.ir_enums;
+import dgtl.ir_schema;
+import dgtl.ir.gen;
+
+// HIR representation only: target lowering/MIR state must not be stored here.
+// Semantic classification is derived exclusively from canonical schema metadata.
 
 export namespace dgtl::ir {
 
@@ -86,74 +91,22 @@ struct AtomSplitter {
 namespace detail {
 
 [[nodiscard]] inline constexpr bool irnode_is_branch(OpCode op) noexcept {
-    return op == OpCode::BRANCH ||
-           op == OpCode::BRANCH_COND ||
-           op == OpCode::BRANCH_COMPARE_FUSED ||
-           op == OpCode::BRANCH_LIKELY ||
-           op == OpCode::BRANCH_UNLIKELY ||
-           op == OpCode::SWITCH_DISPATCH ||
-           op == OpCode::GOTO;
+    return gen::op_has_trait(op, gen::GenTrait::IsTerminator) &&
+           gen::op_implements_interface(op, gen::GenInterface::ControlFlow);
 }
 
-[[nodiscard]] inline constexpr bool irnode_is_simd(OpCode op) noexcept {
-    return op == OpCode::GATHER_F32_512 ||
-           op == OpCode::GATHER_16 ||
-           op == OpCode::STORE_V512 ||
-           op == OpCode::VEC_ADD_F32_512 ||
-           op == OpCode::VEC_MUL_F32_512 ||
-           op == OpCode::VEC_LOAD ||
-           op == OpCode::VEC_STORE ||
-           op == OpCode::VEC_SHUFFLE ||
-           op == OpCode::VEC_REDUCE_ADD ||
-           op == OpCode::FCVTL_F16_TO_F32 ||
-           op == OpCode::FCVTN_F32_TO_F16 ||
-           op == OpCode::SIMD_BSL_PREDICATE;
-}
-
-[[nodiscard]] inline constexpr bool irnode_has_side_effects(OpCode op, std::uint16_t flags) noexcept {
-    if (flags & Flags::HAS_SIDE_EFFECTS) return true;
-    if (flags & Flags::IS_VOLATILE)       return true;
-
-    switch (op) {
-        case OpCode::STORE:
-        case OpCode::VOLATILE_STORE:
-        case OpCode::ATOMIC_STORE:
-        case OpCode::ATOMIC_FENCE:
-        case OpCode::ACQUIRE_FENCE:
-        case OpCode::RELEASE_FENCE:
-        case OpCode::MEMORY_FENCE:
-        case OpCode::STORE_V512:
-        case OpCode::CALL:
-        case OpCode::CALL_VARIADIC:
-        case OpCode::SYSCALL:
-        case OpCode::RET:
-        case OpCode::BRANCH:
-        case OpCode::BRANCH_COND:
-        case OpCode::BRANCH_LIKELY:
-        case OpCode::BRANCH_UNLIKELY:
-        case OpCode::SWITCH_DISPATCH:
-        case OpCode::GOTO:
-        case OpCode::ASYNC_SPAWN:
-        case OpCode::ASYNC_AWAIT:
-        case OpCode::THREAD_SPAWN:
-        case OpCode::BARRIER_SYNC:
-        case OpCode::LOCK_ACQUIRE:
-        case OpCode::LOCK_RELEASE:
-        case OpCode::CHAN_SEND:
-        case OpCode::CHAN_RECV:
-        case OpCode::GUARD_ALIAS:
-        case OpCode::GUARD_VALUE:
-            return true;
-        default:
-            return false;
-    }
+[[nodiscard]] inline constexpr bool irnode_has_side_effects(
+    OpCode op, std::uint16_t flags) noexcept {
+    if ((flags & Flags::HAS_SIDE_EFFECTS) != 0u) return true;
+    if ((flags & Flags::IS_VOLATILE) != 0u) return true;
+    if (!schema::is_canonical(op)) return true;
+    return !gen::op_has_trait(op, gen::GenTrait::HasNoSideEffects);
 }
 
 [[nodiscard]] inline constexpr double irnode_inline_weight(OpCode op) noexcept {
-    if (op == OpCode::GATHER_F32_512 || op == OpCode::GATHER_16) return 50.0;
     if (irnode_is_branch(op)) return 5.0;
-    if (op == OpCode::SYSCALL) return 100.0;
-    if (irnode_is_simd(op)) return 3.0;
+    if (gen::op_implements_interface(op, gen::GenInterface::SIMD) ||
+        gen::op_has_trait(op, gen::GenTrait::IsVectorizable)) return 3.0;
     return 1.0;
 }
 
@@ -173,10 +126,8 @@ struct alignas(32) IRNode {
     std::uint32_t logic_flags = 0;
 
     [[nodiscard]] constexpr bool is_terminator() const noexcept {
-        if (flags & Flags::IS_RETURN) return true;
-        return detail::irnode_is_branch(opcode) ||
-               opcode == OpCode::RET || opcode == OpCode::RETURN ||
-               opcode == OpCode::RESUME_CTX;
+        return (flags & Flags::IS_RETURN) != 0u ||
+               gen::op_has_trait(opcode, gen::GenTrait::IsTerminator);
     }
 
     [[nodiscard]] constexpr bool is_volatile() const noexcept {
@@ -197,6 +148,27 @@ struct alignas(32) IRNode {
 
     [[nodiscard]] constexpr double predict_inlined_benefit() const noexcept {
         return detail::irnode_inline_weight(opcode);
+    }
+
+    [[nodiscard]] constexpr bool is_memory_read() const noexcept {
+        return gen::op_has_trait(opcode, gen::GenTrait::IsMemoryRead);
+    }
+
+    [[nodiscard]] constexpr bool is_memory_write() const noexcept {
+        return gen::op_has_trait(opcode, gen::GenTrait::IsMemoryWrite);
+    }
+
+    [[nodiscard]] constexpr bool is_constant_foldable() const noexcept {
+        return gen::op_has_trait(opcode, gen::GenTrait::ConstantFoldable);
+    }
+
+    [[nodiscard]] constexpr bool has_result() const noexcept {
+        if (const auto* def = gen::find_generated_op_def(opcode)) return def->has_result;
+        return false;
+    }
+
+    [[nodiscard]] constexpr std::uint16_t stable_opcode_id() const noexcept {
+        return schema::stable_id(opcode);
     }
 
     [[nodiscard]] constexpr IRNode clone() const noexcept { return *this; }
@@ -232,101 +204,28 @@ struct alignas(32) IRNode {
         intent_hash = calculate_hash(opcode, result_id, op_a, op_b, op_c);
     }
 
-    constexpr void fold_if_possible() noexcept {
-        if (!(flags & Flags::IS_SPEC_CONST)) return;
+    // Constant folding is intentionally implemented by HIR transformation passes.
+    // IRNode is a passive representation and never owns rewrite semantics.
 
-        bool folded = true;
-        std::uint64_t result = 0ull;
 
-        switch (opcode) {
-            case OpCode::ADD_I32: result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) + static_cast<std::int32_t>(op_b)); break;
-            case OpCode::SUB_I32: result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) - static_cast<std::int32_t>(op_b)); break;
-            case OpCode::MUL_I32: result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) * static_cast<std::int32_t>(op_b)); break;
-            case OpCode::DIV_I32:
-                if (static_cast<std::int32_t>(op_b) == 0) { folded = false; }
-                else { result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) / static_cast<std::int32_t>(op_b)); }
-                break;
-            case OpCode::AND_I32: result = static_cast<std::uint64_t>(op_a & op_b); break;
-            case OpCode::OR_I32:  result = static_cast<std::uint64_t>(op_a | op_b); break;
-            case OpCode::XOR_I32: result = static_cast<std::uint64_t>(op_a ^ op_b); break;
-            case OpCode::SHL_I32: result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) << (op_b & 31U)); break;
-            case OpCode::SHR_I32: result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) >> (op_b & 31U)); break;
-            case OpCode::MOD_I32:
-                if (static_cast<std::int32_t>(op_b) == 0) { folded = false; }
-                else { result = static_cast<std::uint64_t>(static_cast<std::int32_t>(op_a) % static_cast<std::int32_t>(op_b)); }
-                break;
-            case OpCode::ADD_I64:
-            case OpCode::SUB_I64:
-            case OpCode::MUL_I64:
-            case OpCode::DIV_I64:
-            case OpCode::BIT_FIELD_INSERT:
-            case OpCode::BIT_FIELD_EXTRACT:
-                folded = false;
-                break;
-            case OpCode::ADD_F32: {
-                float a = std::bit_cast<float>(op_a), b = std::bit_cast<float>(op_b);
-                result = std::bit_cast<std::uint32_t>(a + b);
-                break;
-            }
-            case OpCode::SUB_F32: {
-                float a = std::bit_cast<float>(op_a), b = std::bit_cast<float>(op_b);
-                result = std::bit_cast<std::uint32_t>(a - b);
-                break;
-            }
-            case OpCode::MUL_F32: {
-                float a = std::bit_cast<float>(op_a), b = std::bit_cast<float>(op_b);
-                result = std::bit_cast<std::uint32_t>(a * b);
-                break;
-            }
-            case OpCode::DIV_F32: {
-                float a = std::bit_cast<float>(op_a), b = std::bit_cast<float>(op_b);
-                if (b == 0.0f) { folded = false; }
-                else { result = std::bit_cast<std::uint32_t>(a / b); }
-                break;
-            }
-            case OpCode::FMA_F32: {
-                float a = std::bit_cast<float>(op_a);
-                float b = std::bit_cast<float>(op_b);
-                float c = std::bit_cast<float>(op_c);
-                result = std::bit_cast<std::uint32_t>(a * b + c);
-                break;
-            }
-            case OpCode::ADD_F64: case OpCode::SUB_F64:
-            case OpCode::MUL_F64: case OpCode::DIV_F64:
-                folded = false;
-                break;
-            default:
-                folded = false;
-                break;
-        }
-
-        if (!folded) return;
-
-        opcode = OpCode::IMMEDIATE;
-        op_a = 0u;
-        op_b = static_cast<std::uint32_t>(result & 0xFFFFFFFFu);
-        op_c = 0u;
-        flags |= Flags::IS_CONST;
-        refresh_intent_hash();
-    }
 };
 
 #pragma pack(pop)
 
-static_assert(sizeof(IRNode) == 32,      "IRNode must be exactly 32 bytes for AVX-512 alignment - BIR 1.0.0 backend parity contract");
-static_assert(alignof(IRNode) == 32,     "IRNode must have 32-byte alignment for cache-line and AVX-512 compatibility");
-static_assert(std::is_trivially_copyable_v<IRNode>,  "IRNode must be trivially copyable for transactional streaming across all backends");
-static_assert(std::is_standard_layout_v<IRNode>,     "IRNode must be standard-layout for deterministic cross-platform ABI (x64/ARM64/WASM)");
-static_assert(offsetof(IRNode, opcode)      ==  0,   "IRNode::opcode must be at offset 0 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, flags)       ==  2,   "IRNode::flags must be at offset 2 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, result_id)   ==  4,   "IRNode::result_id must be at offset 4 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, op_a)        ==  8,   "IRNode::op_a must be at offset 8 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, op_b)        == 12,   "IRNode::op_b must be at offset 12 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, op_c)        == 16,   "IRNode::op_c must be at offset 16 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, intent_hash) == 20,   "IRNode::intent_hash must be at offset 20 - BIR 1.0.0 backend parity");
-static_assert(offsetof(IRNode, logic_flags) == 28,   "IRNode::logic_flags must be at offset 28 - BIR 1.0.0 backend parity");
-static_assert(sizeof(float)  == 4, "float must be 32-bit IEEE 754 on all backends");
-static_assert(sizeof(double) == 8, "double must be 64-bit IEEE 754 on all backends");
+static_assert(sizeof(IRNode) == 32,      "IRNode must be exactly 32 bytes for cache-line aligned HIR storage contract");
+static_assert(alignof(IRNode) == 32,     "IRNode must have 32-byte alignment for cache-line-aligned canonical HIR storage");
+static_assert(std::is_trivially_copyable_v<IRNode>,  "IRNode must be trivially copyable for transactional HIR storage");
+static_assert(std::is_standard_layout_v<IRNode>,     "IRNode must be standard-layout for deterministic HIR object layout");
+static_assert(offsetof(IRNode, opcode)      ==  0,   "IRNode::opcode must be at offset 0 - stable HIR layout");
+static_assert(offsetof(IRNode, flags)       ==  2,   "IRNode::flags must be at offset 2 - stable HIR layout");
+static_assert(offsetof(IRNode, result_id)   ==  4,   "IRNode::result_id must be at offset 4 - stable HIR layout");
+static_assert(offsetof(IRNode, op_a)        ==  8,   "IRNode::op_a must be at offset 8 - stable HIR layout");
+static_assert(offsetof(IRNode, op_b)        == 12,   "IRNode::op_b must be at offset 12 - stable HIR layout");
+static_assert(offsetof(IRNode, op_c)        == 16,   "IRNode::op_c must be at offset 16 - stable HIR layout");
+static_assert(offsetof(IRNode, intent_hash) == 20,   "IRNode::intent_hash must be at offset 20 - stable HIR layout");
+static_assert(offsetof(IRNode, logic_flags) == 28,   "IRNode::logic_flags must be at offset 28 - stable HIR layout");
+static_assert(sizeof(float)  == 4, "float must be 32-bit IEEE 754 on conforming IEEE-754 C++ implementations");
+static_assert(sizeof(double) == 8, "double must be 64-bit IEEE 754 on conforming IEEE-754 C++ implementations");
 static_assert(sizeof(int)    == 4, "int must be 32-bit on all DGTL-supported platforms");
 
 static_assert(sizeof(IRAtom)  == 4,  "IRAtom must be exactly 4 bytes - SoA stream width contract");
@@ -335,6 +234,10 @@ static_assert(std::is_trivially_copyable_v<IRAtom>, "IRAtom must be trivially co
 
 static_assert(sizeof(IRCore)  == 40, "IRCore must be exactly 40 bytes - tier-2 SoA stride contract");
 static_assert(std::is_trivially_copyable_v<IRCore>, "IRCore must be trivially copyable for shadow-buffer streaming");
-static_assert(std::is_standard_layout_v<IRCore>,    "IRCore must be standard-layout for cross-backend ABI parity");
+static_assert(std::is_standard_layout_v<IRCore>,    "IRCore must be standard-layout for stable HIR layout");
 
 } // namespace dgtl::ir
+
+
+
+

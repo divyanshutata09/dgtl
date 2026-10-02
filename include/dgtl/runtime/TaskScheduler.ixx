@@ -23,7 +23,7 @@ module;
 #include <thread>
 #include <vector>
 
-export module dgtl.task_scheduler;
+export module dgtl.runtime.task_scheduler;
 
 import dgtl.arena;
 

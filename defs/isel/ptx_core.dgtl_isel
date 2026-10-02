@@ -1,0 +1,27 @@
+# ============================================================================
+# DGTL version 2.2.0  |  ptx_core.dgtl_isel  (NVIDIA PTX / CUDA)
+# Architecture:  NVIDIA GPU Virtual Architecture (sm_70 through sm_90a)
+# Model:         SIMT (Single Instruction Multiple Threads)
+# ============================================================================
+
+include "common_runtime_forms.dgtl_isel"
+include "core_base.dgtl_isel"
+
+# ----------------------------------------------------------------------------
+# PTX PEEPHOLE REWRITE & FMA RULES
+# ----------------------------------------------------------------------------
+
+# FMA.RN.F32 / FMA.RN.F64 native PTX instructions (all SM >= 2.0)
+rule ptx_fma_f32:                 AddF32(MulF32($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=cuda|ptx|nvptx, benefit=100]
+rule ptx_fma_f32_rev:             AddF32($c, MulF32($a, $b)) -> FMA_F32($a, $b, $c) [targets=cuda|ptx|nvptx, benefit=100]
+rule ptx_fma_f64:                 AddF64(MulF64($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=cuda|ptx|nvptx, benefit=100]
+
+# SELP instruction (predicated selection)
+rule ptx_fold_select_eq:          Select(CmpEqI32($a, $b), $t, $f) -> SELECT($a, $t, $f) [targets=cuda|ptx|nvptx, benefit=30]
+
+# ----------------------------------------------------------------------------
+# CUDA/PTX form override
+# PTX supports native FMA via FMA.RN.F32 on all Volta+ devices.
+# ----------------------------------------------------------------------------
+
+form fma_f32:                     opcode=FMA_F32,               machine_form=FloatTernaryFma32

@@ -228,18 +228,18 @@ int verify_internal_api_artifacts() {
         return 1;
     }
 
-    const std::vector<std::string> required_semantic_gcms = {
-        "dgtl.ir_core.semantic.gcm",
-        "dgtl.ir_core.type_system.gcm",
-        "dgtl.ir_core.type_checker.gcm",
-        "dgtl.ir_core.borrow_checker.gcm",
-        "dgtl.ir_core.name_resolver.gcm",
-        "dgtl.ir_core.constant_evaluator.gcm",
-        "dgtl.ir_core.semantic_analyzer.gcm"
+    const std::vector<std::pair<std::string, std::string>> required_semantic_gcms = {
+        {"dgtl.hir.semantic.gcm", "dgtl.ir_core.semantic.gcm"},
+        {"dgtl.hir.type_system.gcm", "dgtl.ir_core.type_system.gcm"},
+        {"dgtl.hir.type_checker.gcm", "dgtl.ir_core.type_checker.gcm"},
+        {"dgtl.hir.borrow_checker.gcm", "dgtl.ir_core.borrow_checker.gcm"},
+        {"dgtl.hir.name_resolver.gcm", "dgtl.ir_core.name_resolver.gcm"},
+        {"dgtl.hir.constant_evaluator.gcm", "dgtl.ir_core.constant_evaluator.gcm"},
+        {"dgtl.hir.semantic_analyzer.gcm", "dgtl.ir_core.semantic_analyzer.gcm"}
     };
-    for (const auto& gcm_name : required_semantic_gcms) {
-        if (!file_exists(gcm_cache / gcm_name)) {
-            std::cerr << "[api] Internal API not ready: missing semantic module " << gcm_name << "\n";
+    for (const auto& [canonical_gcm, legacy_gcm] : required_semantic_gcms) {
+        if (!file_exists(gcm_cache / canonical_gcm) && !file_exists(gcm_cache / legacy_gcm)) {
+            std::cerr << "[api] Internal API not ready: missing semantic module " << canonical_gcm << "\n";
             return 1;
         }
     }
@@ -473,16 +473,45 @@ int compile_all_modules() {
     const std::vector<std::string> bootstrap_roots{
         "dgtl.ir_enums",
         "dgtl.ir_node",
+        "dgtl.ir.stream",
         "dgtl.ir_core.stream",
         "dgtl.op_traits",
         "dgtl.target",
+        "dgtl.hir.semantic",
         "dgtl.ir_core.semantic",
+        "dgtl.hir.type_system",
         "dgtl.ir_core.type_system",
+        "dgtl.hir.type_checker",
         "dgtl.ir_core.type_checker",
+        "dgtl.hir.borrow_checker",
         "dgtl.ir_core.borrow_checker",
+        "dgtl.hir.name_resolver",
         "dgtl.ir_core.name_resolver",
+        "dgtl.hir.constant_evaluator",
         "dgtl.ir_core.constant_evaluator",
-        "dgtl.ir_core.semantic_analyzer"
+        "dgtl.hir.semantic_analyzer",
+        "dgtl.ir_core.semantic_analyzer",
+        "dgtl.backend.driver",
+        "dgtl.backend.driver.shared",
+        "dgtl.runtime.numa",
+        "dgtl.runtime.task_scheduler",
+        "dgtl.runtime.intrinsics",
+        "dgtl.api",
+        "dgtl.api.config",
+        "dgtl.ir",
+        "dgtl.ir_core.arm32neon_emitter",
+        "dgtl.ir_core.riscv64_emitter",
+        "dgtl.ir_core.wasmsimd_fma_emitter",
+        "dgtl.backend.isa.win64_frame_lowering",
+        "dgtl.backend.linker.pe",
+        "dgtl.isa.x64.isel_gen",
+        "dgtl.isa.x64.isel_rules",
+        "dgtl.isa.arm64.isel_gen",
+        "dgtl.isa.arm64.isel_rules",
+        "dgtl.isa.wasm.isel_gen",
+        "dgtl.isa.wasm.isel_rules",
+        "dgtl.ir_core.isel_gen",
+        "dgtl.ir_core.isel_rules"
     };
     for (const auto& root_key : bootstrap_roots) {
         if (module_database.count(root_key)) {
@@ -681,7 +710,7 @@ int compile_all_modules() {
 void show_usage() {
     std::cout << "DGTL C++ Orchestrator (dgtl-orchestrator)\n"
               << "Usage: dgtl-orchestrator <command> [args...]\n"
-              << "Commands: build, build-tools, run, test, gen, gen-validate, gen-build, header-check, api-policy, dup-gate, api-status\n"
+              << "Commands: build, build-tools, run, test, gen, isel-gen, gen-validate, gen-build, header-check, api-policy, dup-gate, api-status\n"
               << "  api-status --api internal|public|both  Verify DGTL API lane readiness\n"
               << "(Implements all orchestration, build, validation, and policy gates deterministically)\n";
 }
@@ -753,6 +782,7 @@ int main(int argc, char** argv) {
     if (command == "gen-build") {
         if (compile_all_modules() != 0) return 1;
         if (invoke_tool("gen", tool_map["gen"].src) != 0) return 1;
+        if (invoke_tool("isel-gen", tool_map["isel-gen"].src) != 0) return 1;
         if (invoke_tool("gen-validate", tool_map["gen-validate"].src) != 0) return 1;
         if (invoke_tool("api-policy", tool_map["api-policy"].src, tool_map["api-policy"].default_args) != 0) return 1;
         if (invoke_tool("dup-gate", tool_map["dup-gate"].src, tool_map["dup-gate"].default_args) != 0) return 1;
@@ -779,3 +809,4 @@ int main(int argc, char** argv) {
     show_usage();
     return 1;
 }
+

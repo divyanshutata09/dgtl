@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-export module dgtl.internal.api_abi;
+export module dgtl.api.abi;
 
 // 🚀 FIXED: Re-export the ABI specification parameters straight from the unified consolidated pass layers
-export import dgtl.ir_core;
+export import dgtl.ir;

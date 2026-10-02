@@ -12,7 +12,6 @@
 module;
 
 #include <cstdlib>
-
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -20,166 +19,189 @@ module;
 #include <string>
 #include <unordered_map>
 
-export module dgtl.internal.api_aot_session;
+export module dgtl.api.aot_session;
 
-// FIXED: Native structural dependencies pulled from unified core frameworks
-import dgtl.ir_core;
-import dgtl.numa_runtime;
+import dgtl.ir;
+import dgtl.runtime.numa;
 import dgtl.compiler_context;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.pass_manager_orchestrator;
-import dgtl.ir_core.jit_orchestrator;
-import dgtl.backend.aot_linker;
-import dgtl.backend.aot_orchestrator;
-import dgtl.ir_core.runtime;
+import dgtl.ir.stream;
+import dgtl.ir.pipeline.pass_manager_orchestrator;
+import dgtl.jit.jit_orchestrator;
+import dgtl.linker.aot_orchestrator;
+import dgtl.object.writers.elf;
+import dgtl.object.writers.pe;
+import dgtl.object.writers.macho;
+import dgtl.object.writers.wasm;
+import dgtl.runtime.tls;
+import dgtl.mir;
+import dgtl.mir.machine_ir;
+import dgtl.object.file;
+import dgtl.formal.smt;
 
-// Import public interface parent securely 
-import dgtl.internal.api_execution_engine;
+import dgtl.api.execution_engine;
 
 export namespace dgtl {
 namespace api {
 
 /**
  * @class AOTSession
- * @brief Ahead-Of-Time (AOT) execution engine.
- * Compiles entire programs offline with maximum optimization intensity.
- * Suitable for Cloud/HPC workloads where compilation latency is amortized
- * over long-running computations. Supports static binary and object emission.
+ * @brief Ahead-Of-Time (AOT) execution and binary synthesis engine.
+ * Coordinates multi-target compilation, MIR lowering, and direct file synthesis.
  */
 class AOTSession : public ExecutionEngine {
 public:
     using ExecutionEngine::get_symbol_address;
 
-    /**
-     * @brief Create an AOT session for the given context.
-     * @param context The execution context
-     */
-    explicit AOTSession(Context& context) noexcept
+    explicit AOTSession(Context& context)
         : context_(context) {
         (void)pipeline_.initialize();
     }
 
     ~AOTSession() override = default;
 
-    /**
-     * @brief Compile IRStream with maximum AOT optimizations.
-     * @param stream The IR to compile
-     * @return true if compilation succeeded
-     */
-    [[nodiscard]] bool compile(ir::IRStream& stream) noexcept override {
+    [[nodiscard]] bool compile(ir::IRStream& stream) override {
         if (stream.is_null()) return false;
-
-        // 1. Flush thread-local buffers
         dgtl::runtime::TLSFlushMerge flusher;
         flusher.merge_concurrent(stream);
 
-        // 2. AOT optimization pipeline
         if (pipeline_.execute(stream) != dgtl::pipeline::AOTStatus::Success) {
             return false;
         }
 
-        // 3. Clone optimized stream
         optimized_stream_ = stream.clone();
+
+        dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+        dgtl::jit::StrikeOrchestrator orch(*context_.get_impl(), context_.get_impl()->get_arena());
+        auto result = orch.compile_mir_function(optimized_stream_, mf);
+        if (result.success) {
+            cached_mir_function_ = std::make_unique<machine::MachineFunction>(std::move(mf));
+        }
         return true;
     }
 
-    /**
-     * @brief Resolve a symbol by name from AOT compiled code.
-     * @param symbol_name The name of the symbol
-     * @return Address of compiled code (0 if not found)
-     */
-    [[nodiscard]] uint64_t get_symbol_address([[maybe_unused]] const char* symbol_name) noexcept override {
-        // AOT compiled code is written to disk and not executed in-memory directly by AOTSession.
-        return 0;
+    [[nodiscard]] bool compile_mir(const machine::MachineFunction& fn) override {
+        cached_mir_function_ = std::make_unique<machine::MachineFunction>(fn);
+        return true;
     }
 
-    void register_host_symbol(const std::string& symbol_name, uint64_t address) noexcept override {
-        host_symbols_[symbol_name] = address;
+    [[nodiscard]] bool compile_object(const dgtl::object::ObjectFile& obj) override {
+        cached_object_file_ = std::make_unique<dgtl::object::ObjectFile>(obj);
+        return true;
     }
-    void register_host_symbol_slot(uint32_t slot, uint64_t address) noexcept override {
+
+    [[nodiscard]] uint64_t get_symbol_address([[maybe_unused]] const char* symbol_name) noexcept override {
+        auto it = host_symbols_.find(symbol_name ? symbol_name : "");
+        return it != host_symbols_.end() ? it->second : 0;
+    }
+
+    void register_host_symbol(const std::string& symbol_name, uint64_t address) override {
+        host_symbols_.insert_or_assign(symbol_name, address);
+    }
+
+    void register_host_symbol_slot(uint32_t slot, uint64_t address) override {
         host_symbol_slots_[slot] = address;
     }
 
-    /**
-     * @brief Emit compiled code as relocatable object file.
-     * @param output_path Path to write .o file
-     * @return true if emission succeeded
-     */
     [[nodiscard]] bool emit_object(std::string_view output_path) noexcept {
-        if (optimized_stream_.is_null()) return false;
+        if (cached_mir_function_) {
+            return emit_mir_object(output_path, *cached_mir_function_);
+        }
+        if (cached_object_file_) {
+            return emit_object_file(output_path, *cached_object_file_);
+        }
+        if (optimized_stream_.is_null() || optimized_stream_.size() == 0) return false;
         try {
-            dgtl::backend::aot::DGTLAOTOrchestrator orchestrator;
-            return orchestrator.compile_and_emit(output_path, optimized_stream_, "DGTL_kernel_entry");
+            dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+            dgtl::jit::StrikeOrchestrator orch(*context_.get_impl(), context_.get_impl()->get_arena());
+            auto result = orch.compile_mir_function(optimized_stream_, mf);
+            if (!result.success) return false;
+            return emit_mir_object(output_path, mf);
         } catch (...) {
             return false;
         }
     }
 
-    /**
-     * @brief Emit compiled code as standalone executable binary.
-     * @param output_path Path to write binary executable
-     * @return true if emission succeeded
-     */
     [[nodiscard]] bool emit_binary(std::string_view output_path) noexcept {
-        if (optimized_stream_.is_null()) return false;
+        if (cached_mir_function_) {
+            return emit_mir_binary(output_path, *cached_mir_function_);
+        }
+        if (cached_object_file_) {
+            return emit_object_file(output_path, *cached_object_file_);
+        }
+        if (optimized_stream_.is_null() || optimized_stream_.size() == 0) return false;
         try {
-            dgtl::backend::aot::DGTLAOTOrchestrator orchestrator;
-            return orchestrator.compile_and_emit(output_path, optimized_stream_, "DGTL_kernel_entry");
+            dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+            dgtl::jit::StrikeOrchestrator orch(*context_.get_impl(), context_.get_impl()->get_arena());
+            auto result = orch.compile_mir_function(optimized_stream_, mf);
+            if (!result.success) return false;
+            return emit_mir_binary(output_path, mf);
         } catch (...) {
             return false;
         }
     }
 
-    /**
-     * @brief Support compiling a multi-stream module.
-     */
+    [[nodiscard]] bool emit_mir_object(std::string_view output_path, const machine::MachineFunction& fn) noexcept {
+        try {
+            dgtl::backend::aot::DGTLAOTOrchestrator orchestrator;
+            return orchestrator.compile_and_emit(output_path, fn, fn.name());
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool emit_mir_binary(std::string_view output_path, const machine::MachineFunction& fn) noexcept {
+        return emit_mir_object(output_path, fn);
+    }
+
+    [[nodiscard]] bool emit_object_file(std::string_view output_path, const dgtl::object::ObjectFile& obj) noexcept {
+        try {
+            dgtl::backend::aot::DGTLAOTOrchestrator orchestrator;
+            return orchestrator.compile_and_emit(output_path, obj);
+        } catch (...) {
+            return false;
+        }
+    }
+
     [[nodiscard]] bool compile_module(std::vector<std::pair<std::string, ir::IRStream>>& module_streams) noexcept {
         dgtl::runtime::TLSFlushMerge flusher;
         for (auto& [name, stream] : module_streams) {
             flusher.merge_concurrent(stream);
-            (void)pipeline_.execute(stream);
+            if (pipeline_.execute(stream) != dgtl::pipeline::AOTStatus::Success) return false;
         }
         if (!module_streams.empty()) {
-            optimized_stream_ = module_streams[0].second.clone();
+            return compile(module_streams[0].second);
         }
         return true;
     }
 
-    /**
-     * @brief Verify equivalence using external SMT solver.
-     */
     [[nodiscard]] formal::VerificationResult verify_semantics(
         const ir::IRStream& original_stream,
         const ir::IRStream& optimized_stream,
         std::string_view pass_name,
         std::string_view solver_name = "z3"
-    ) noexcept override {
+    ) override {
         formal::DGTLFormalVerificationSMT verifier;
         const std::string script = verifier.export_to_smtlib2(original_stream, optimized_stream, pass_name);
         return verifier.verify_with_external_solver(script, solver_name);
     }
 
-    /**
-     * @brief Specialize an IR stream using evolutionary optimization.
-     */
     [[nodiscard]] bool specialize_stream(
         ir::IRStream& stream,
         const ir::evolution::ExecutionFeedback& feedback
-    ) noexcept override {
+    ) override {
         ir::evolution::IREvolver evolver;
         auto res = evolver.apply_specialization(stream, feedback);
         return res.succeeded;
     }
 
-    /**
-     * @brief Get internal AOT pipeline for advanced tuning.
-     */
     [[nodiscard]] dgtl::pipeline::AOT_Pipeline& get_pipeline() noexcept { return pipeline_; }
 
 private:
     Context& context_;
     dgtl::pipeline::AOT_Pipeline pipeline_;
     ir::IRStream optimized_stream_;
+    std::unique_ptr<machine::MachineFunction> cached_mir_function_;
+    std::unique_ptr<dgtl::object::ObjectFile> cached_object_file_;
     std::unordered_map<std::string, uint64_t> host_symbols_;
     std::unordered_map<uint32_t, uint64_t> host_symbol_slots_;
 

@@ -167,7 +167,6 @@ void append_text_file(const fs::path& path, std::string_view text) {
     return fs::exists(p, ec) && !ec;
 }
 
-// Fixed: Native file_time_type prevents cross-filesystem epoch crashes
 [[nodiscard]] auto get_file_mtime(const fs::path& p) -> fs::file_time_type {
     if (!file_exists(p)) return fs::file_time_type::min();
     std::error_code ec;
@@ -206,6 +205,17 @@ void touch_file(const fs::path& p) {
     f.close();
 }
 
+bool copy_file_if_exists(const fs::path& src, const fs::path& dst) {
+    if (!file_exists(src)) {
+        return false;
+    }
+
+    std::error_code ec;
+    ensure_directory(dst.parent_path());
+    fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+    return !ec;
+}
+
 int sync_sdk_public_headers() {
     const fs::path sdk_src_dir = g_config.include_dir / "dgtl_sdk";
     const fs::path sdk_include_root = g_config.build_dir / "DGTL_SDK" / "include";
@@ -234,7 +244,6 @@ int sync_sdk_public_headers() {
         }
     }
 
-    // Programmatically clean up legacy non-namespaced root headers and internal subdirectories
     std::error_code ec_clean;
     fs::remove_all(sdk_include_root / "dgtl", ec_clean);
     for (const auto& header : sdk_headers) {
@@ -583,21 +592,45 @@ int compile_all_modules() {
     const std::vector<std::string> bootstrap_roots{
         "dgtl.ir_enums",
         "dgtl.ir_node",
+        "dgtl.ir.stream",
         "dgtl.ir_core.stream",
         "dgtl.op_traits",
         "dgtl.target",
+        "dgtl.hir.semantic",
         "dgtl.ir_core.semantic",
+        "dgtl.hir.type_system",
         "dgtl.ir_core.type_system",
+        "dgtl.hir.type_checker",
         "dgtl.ir_core.type_checker",
+        "dgtl.hir.borrow_checker",
         "dgtl.ir_core.borrow_checker",
+        "dgtl.hir.name_resolver",
         "dgtl.ir_core.name_resolver",
+        "dgtl.hir.constant_evaluator",
         "dgtl.ir_core.constant_evaluator",
+        "dgtl.hir.semantic_analyzer",
         "dgtl.ir_core.semantic_analyzer",
+        "dgtl.backend.driver",
+        "dgtl.backend.driver.shared",
+        "dgtl.runtime.numa",
+        "dgtl.runtime.task_scheduler",
+        "dgtl.runtime.intrinsics",
+        "dgtl.api",
+        "dgtl.api.config",
+        "dgtl.ir",
         "dgtl.ir_core.arm32neon_emitter",
         "dgtl.ir_core.riscv64_emitter",
         "dgtl.ir_core.wasmsimd_fma_emitter",
         "dgtl.backend.isa.win64_frame_lowering",
-        "dgtl.backend.linker.pe"
+        "dgtl.backend.linker.pe",
+        "dgtl.isa.x64.isel_gen",
+        "dgtl.isa.x64.isel_rules",
+        "dgtl.isa.arm64.isel_gen",
+        "dgtl.isa.arm64.isel_rules",
+        "dgtl.isa.wasm.isel_gen",
+        "dgtl.isa.wasm.isel_rules",
+        "dgtl.ir_core.isel_gen",
+        "dgtl.ir_core.isel_rules"
     };
     for (const auto& root_key : bootstrap_roots) {
         if (module_database.count(root_key)) {
@@ -785,7 +818,8 @@ void append_core_sources_for_test_build(std::string& cmd) {
         fs::absolute(g_config.src_dir / "apps" / "smoke_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal(),
-        fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal()
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal()
     };
 
     std::error_code ec;
@@ -828,6 +862,7 @@ int build_test_suite_binary(const fs::path& output,
         fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal(),
         fs::absolute(entry_point).lexically_normal()
     };
 
@@ -960,6 +995,7 @@ int build_standalone_test_binary(const fs::path& output, const fs::path& entry_p
         fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal(),
         fs::absolute(entry_point).lexically_normal()
     };
 
@@ -1139,7 +1175,8 @@ int build_tools_optimized(const fs::path& prod_main,
         fs::absolute(smoke_main).lexically_normal(),
         fs::absolute(opt_main).lexically_normal(),
         fs::absolute(llc_main).lexically_normal(),
-        fs::absolute(verify_main).lexically_normal()
+        fs::absolute(verify_main).lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal()
     };
 
     std::vector<fs::path> common_sources;
@@ -1258,6 +1295,17 @@ int build_tools_optimized(const fs::path& prod_main,
     ec |= link_tool("dgtl-verify", verify_main, verify_exe);
     if (ec != 0) return ec;
 
+    const fs::path inspect_source = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
+    const fs::path inspect_exe = g_config.build_dir / "dgtl-inspect.exe";
+    const fs::path inspect_tools_exe = g_config.build_dir / "tools" / "dgtl-inspect.exe";
+    ensure_directory(inspect_exe.parent_path());
+    ensure_directory(inspect_tools_exe.parent_path());
+    const std::string inspect_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(inspect_source) + " -o " + quote_path(inspect_exe);
+    if (run_command(inspect_cmd) == 0) {
+        std::cout << "[build] Wrote " << inspect_exe.string() << std::endl;
+        copy_file_if_exists(inspect_exe, inspect_tools_exe);
+    }
+
     const fs::path rodata_source = g_config.tools_dir / "dgtl_rodata_maker_main.cpp";
     const fs::path rodata_exe = g_config.build_dir / "tools" / "dgtl-rodata-maker.exe";
     ensure_directory(rodata_exe.parent_path());
@@ -1299,8 +1347,9 @@ int build_sdk_static_library() {
     const fs::path opt_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal();
     const fs::path llc_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal();
     const fs::path verify_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal();
+    const fs::path inspect_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal();
 
-    const std::vector<fs::path> excluded = {prod_main, smoke_main, opt_main, llc_main, verify_main};
+    const std::vector<fs::path> excluded = {prod_main, smoke_main, opt_main, llc_main, verify_main, inspect_main};
 
     std::vector<fs::path> sdk_sources;
     std::error_code ec_dir;
@@ -1411,8 +1460,9 @@ int build_internal_static_library() {
     const fs::path opt_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal();
     const fs::path llc_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal();
     const fs::path verify_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal();
+    const fs::path inspect_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal();
 
-    const std::vector<fs::path> excluded = {prod_main, smoke_main, opt_main, llc_main, verify_main};
+    const std::vector<fs::path> excluded = {prod_main, smoke_main, opt_main, llc_main, verify_main, inspect_main};
 
     std::vector<fs::path> internal_sources;
     std::error_code ec_dir;
@@ -1519,6 +1569,7 @@ USAGE:
 QUICK START:
   dgtl build              Build production binary (optimized release)
   dgtl test               Run functional test suite
+  dgtl inspect <file>     Inspect object sections, memory budget, and unwinding
   dgtl header-check       Verify header compliance gates
   dgtl gen-build          Regenerate IR definitions and rebuild
   dgtl package            Create SDK distribution archive
@@ -1529,7 +1580,7 @@ BUILD COMMANDS:
   build, build-release    Build production binary -> build/dgtl_release.exe
   build-smoke             Build smoke/conformance test binary
   build-strict            Build with strict validation (Wall, Wextra, Werror)
-  build-tools             Compile optimizer tools (dgtl-opt, dgtl-llc, dgtl-verify)
+  build-tools             Compile optimizer tools (dgtl-opt, dgtl-llc, dgtl-verify, dgtl-inspect)
                           Optional: --api internal|public|both (default: both)
   build-verify            Compile verification tool (dgtl-verify)
   prepare-api             Prepare DGTL API surfaces explicitly
@@ -1538,6 +1589,25 @@ BUILD COMMANDS:
                                                     Usage: dgtl api-status --api internal|public|both
   clean, clean-all        Remove all build outputs and logs
   crun                    Full cycle: clean -> build -> run conformance tests
+
+================================================================================
+BINARY FORENSICS & SECTION INSPECTION:
+================================================================================
+  inspect <file>          Deep binary section analysis, memory budget & W^X audit
+                          Flags:
+                            --unwind   Decode SEH / DWARF / Compact Unwind call frames
+                            --symbols  Display detailed symbol table bindings
+                            --relocs   Display relocation targets and offsets
+                            --verify   Run strict enterprise W^X and ABI validation gates
+                            --json     Output metrics as machine-readable JSON
+  readobj <file>          Inspect object file (LLVM readobj / readelf parity)
+  objdump <file>          Inspect object file (Object dump and forensics)
+
+  Examples:
+    dgtl inspect build/out/module.obj
+    dgtl inspect --unwind build/out/module.obj
+    dgtl inspect --verify build/out/module.obj
+    dgtl inspect --json build/out/module.obj
 
 ================================================================================
 EXECUTION COMMANDS:
@@ -1558,6 +1628,7 @@ EXECUTION COMMANDS:
 CODE GENERATION & VALIDATION:
 ================================================================================
   gen                     Regenerate IR and ISel generated output from definitions
+  isel-gen                Run standalone Multi-Target ISel generator directly
   gen-validate            Validate DGTL-Gen output integrity
   gen-build               Full cycle: gen -> validate -> build
   header-check            Verify proprietary header compliance gates
@@ -1575,7 +1646,7 @@ BACKEND & DISTRIBUTION:
                                                     Public SDK headers: dgtl.h
 
 ================================================================================
-COMMAND ALIASES (Backward Compatibility):
+COMMAND ALIASES (Backward Aliasing):
 ================================================================================
   build-release           -> build
   build-smoke             -> smoke-build
@@ -1587,6 +1658,8 @@ COMMAND ALIASES (Backward Compatibility):
   clean-all               -> clean
   clean-build-and-run     -> crun
   run-strict-conformance  -> srun
+  readobj <file>          -> inspect <file>
+  objdump <file>          -> inspect <file>
 
 ================================================================================
 POLYHEDRAL PARALLELIZATION FLAGS (P0 Features):
@@ -1670,7 +1743,6 @@ EXIT CODES:
 
 For detailed documentation, see: docs/ or ./README.md
 Report issues at: https://github.com/TataG/DGTL
-
 )" << std::endl;
 }
 
@@ -1694,9 +1766,10 @@ int handle_build(std::vector<std::string> args = {}) {
     auto opt_main = g_config.src_dir / "apps" / "dgtl_opt_main.cpp";
     auto llc_main = g_config.src_dir / "apps" / "dgtl_llc_main.cpp";
     auto verify_main = g_config.src_dir / "apps" / "dgtl_verify_main.cpp";
+    auto inspect_main = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
     
     auto prod_exe = g_config.build_dir / "dgtl_release.exe";
-    std::vector<fs::path> exclude = {smoke_main, opt_main, llc_main, verify_main};
+    std::vector<fs::path> exclude = {smoke_main, opt_main, llc_main, verify_main, inspect_main};
     
     int ec = ensure_binary("dgtl_release", prod_exe, prod_main, exclude);
     if (ec != 0) return ec;
@@ -1773,9 +1846,10 @@ int handle_smoke_build() {
     auto opt_main = g_config.src_dir / "apps" / "dgtl_opt_main.cpp";
     auto llc_main = g_config.src_dir / "apps" / "dgtl_llc_main.cpp";
     auto verify_main = g_config.src_dir / "apps" / "dgtl_verify_main.cpp";
+    auto inspect_main = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
     
     auto smoke_exe = g_config.build_dir / "dgtl_main.exe";
-    return ensure_binary("dgtl_main", smoke_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main});
+    return ensure_binary("dgtl_main", smoke_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main, inspect_main});
 }
 
 int handle_strict() {
@@ -1784,9 +1858,10 @@ int handle_strict() {
     auto opt_main = g_config.src_dir / "apps" / "dgtl_opt_main.cpp";
     auto llc_main = g_config.src_dir / "apps" / "dgtl_llc_main.cpp";
     auto verify_main = g_config.src_dir / "apps" / "dgtl_verify_main.cpp";
+    auto inspect_main = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
     
     auto strict_exe = g_config.build_dir / "dgtl_main_strict.exe";
-    return ensure_binary("dgtl_main_strict", strict_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main}, true);
+    return ensure_binary("dgtl_main_strict", strict_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main, inspect_main}, true);
 }
 
 int handle_test_command(const std::vector<std::string>& args) {
@@ -1974,7 +2049,17 @@ int handle_test() {
     for (const auto& src : standalone_tests) {
         const fs::path out = g_config.build_dir / "tests" / (src.stem().string() + ".exe");
         std::cout << "[test] Running standalone " << src.filename().string() << std::endl;
-        ec = run_command(quote_path(out));
+
+        // Standalone tests retain their own CLI contracts.  Do not weaken,
+        // skip, or alter a test merely because it requires an execution root.
+        // The competitive production test explicitly requires <DGTL_ROOT>;
+        // provide that required argument from the orchestrator.
+        std::string standalone_cmd = quote_path(out);
+        if (src.stem() == "DGTL_Industry_Grade_Competitive_Test_UPDATED") {
+            standalone_cmd += " " + quote_path(g_config.root);
+        }
+
+        ec = run_command(standalone_cmd);
         if (ec != 0) {
             return ec;
         }
@@ -2081,17 +2166,6 @@ bool copy_tree_if_exists(const fs::path& src, const fs::path& dst) {
     fs::copy(src, dst,
              fs::copy_options::recursive | fs::copy_options::overwrite_existing,
              ec);
-    return !ec;
-}
-
-bool copy_file_if_exists(const fs::path& src, const fs::path& dst) {
-    if (!file_exists(src)) {
-        return false;
-    }
-
-    std::error_code ec;
-    ensure_directory(dst.parent_path());
-    fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
     return !ec;
 }
 
@@ -2305,6 +2379,7 @@ int main(int argc, char** argv) {
             return args.empty() ? handle_test() : handle_test_command(args);
         }
         if (command == "gen") return handle_gen(args);
+        if (command == "isel-gen") return invoke_dgtl_isel_gen(args);
         if (command == "gen-validate") return handle_gen_validate(args);
         if (command == "gen-build") return handle_gen_build();
         if (command == "debug") return invoke_dgtl_debugger(args);
@@ -2336,6 +2411,26 @@ int main(int argc, char** argv) {
                 return 1;
             }
             return handle_api_status(*parsed_mode);
+        }
+        if (command == "inspect" || command == "readobj" || command == "objdump") {
+            const fs::path inspect_exe = g_config.build_dir / "dgtl-inspect.exe";
+            const fs::path inspect_tools_exe = g_config.build_dir / "tools" / "dgtl-inspect.exe";
+            fs::path target_exe;
+            if (file_exists(inspect_exe)) target_exe = inspect_exe;
+            else if (file_exists(inspect_tools_exe)) target_exe = inspect_tools_exe;
+            else {
+                const fs::path inspect_source = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
+                ensure_directory(inspect_exe.parent_path());
+                const std::string compile_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(inspect_source) + " -o " + quote_path(inspect_exe);
+                if (run_command(compile_cmd) != 0) {
+                    std::cerr << "[inspect] Failed to compile dgtl-inspect tool.\n";
+                    return 1;
+                }
+                target_exe = inspect_exe;
+            }
+            std::string cmd = quote_path(target_exe);
+            for (const auto& a : args) cmd += " " + quote_path(a);
+            return run_command(cmd);
         }
         if (command == "run-backend") {
             return handle_run_backend(args);
@@ -2458,18 +2553,18 @@ int verify_internal_api_artifacts() {
         return 1;
     }
 
-    const std::vector<std::string> required_semantic_gcms = {
-        "dgtl.ir_core.semantic.gcm",
-        "dgtl.ir_core.type_system.gcm",
-        "dgtl.ir_core.type_checker.gcm",
-        "dgtl.ir_core.borrow_checker.gcm",
-        "dgtl.ir_core.name_resolver.gcm",
-        "dgtl.ir_core.constant_evaluator.gcm",
-        "dgtl.ir_core.semantic_analyzer.gcm"
+    const std::vector<std::pair<std::string, std::string>> required_semantic_gcms = {
+        {"dgtl.hir.semantic.gcm", "dgtl.ir_core.semantic.gcm"},
+        {"dgtl.hir.type_system.gcm", "dgtl.ir_core.type_system.gcm"},
+        {"dgtl.hir.type_checker.gcm", "dgtl.ir_core.type_checker.gcm"},
+        {"dgtl.hir.borrow_checker.gcm", "dgtl.ir_core.borrow_checker.gcm"},
+        {"dgtl.hir.name_resolver.gcm", "dgtl.ir_core.name_resolver.gcm"},
+        {"dgtl.hir.constant_evaluator.gcm", "dgtl.ir_core.constant_evaluator.gcm"},
+        {"dgtl.hir.semantic_analyzer.gcm", "dgtl.ir_core.semantic_analyzer.gcm"}
     };
-    for (const auto& gcm_name : required_semantic_gcms) {
-        if (!file_exists(gcm_cache / gcm_name)) {
-            std::cerr << "[api] Internal API not ready: missing semantic module " << gcm_name << std::endl;
+    for (const auto& [canonical_gcm, legacy_gcm] : required_semantic_gcms) {
+        if (!file_exists(gcm_cache / canonical_gcm) && !file_exists(gcm_cache / legacy_gcm)) {
+            std::cerr << "[api] Internal API not ready: missing semantic module " << canonical_gcm << std::endl;
             return 1;
         }
     }
@@ -2534,3 +2629,4 @@ int handle_prepare_api(ApiMode mode) {
 
     return 0;
 }
+

@@ -18,10 +18,10 @@ module;
 #include <thread>
 #include <algorithm>
 
-export module dgtl.runtime_context;
+export module dgtl.runtime.context;
 
 import dgtl.arena;
-import dgtl.task_scheduler;
+import dgtl.runtime.task_scheduler;
 
 export namespace dgtl::runtime {
 

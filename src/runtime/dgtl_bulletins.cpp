@@ -30,7 +30,7 @@ module;
 #   include <unistd.h>
 #endif
 
-module dgtl.dgtl_bulletins;
+module dgtl.runtime.bulletins;
 
 import dgtl.flat_map;
 

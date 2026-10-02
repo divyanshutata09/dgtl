@@ -43,18 +43,19 @@
 import dgtl.arena;
 import dgtl.ir_enums;
 import dgtl.ir_node;
-import dgtl.ir_core.stream;
-import dgtl.ir_core.io;
-import dgtl.ir_core.gen;
-import dgtl.ir_core.pass_manager;
-import dgtl.ir_core.transform_scalar_core;
-import dgtl.ir_core.transform_control_predication;
-import dgtl.ir_core.transform_inlining;
-import dgtl.ir_core.escape_analysis;
-import dgtl.ir_core.simd_gather_scatter;
-import dgtl.ir_core.transform_poly_loop;
-import dgtl.ir_core.hardware_scheduler;
-import dgtl.ir_core.binary_loader;
+import dgtl.ir.stream;
+import dgtl.ir.io;
+import dgtl.ir.gen;
+import dgtl.ir_schema;
+import dgtl.ir.pipeline.pass_manager;
+import dgtl.ir.pass.transform_scalar_core;
+import dgtl.ir.pass.transform_control_predication;
+import dgtl.ir.pass.transform_inlining;
+import dgtl.ir.analysis.escape_analysis;
+import dgtl.ir.pass.simd_gather_scatter;
+import dgtl.ir.pass.transform_poly_loop;
+import dgtl.jit.hardware_scheduler;
+import dgtl.execution.loader;
 import dgtl.testing.filecheck;
 
 namespace dgtl_opt {
@@ -576,7 +577,7 @@ int main(int argc, char** argv) {
     if (pass_name == "gvn" || pass_name == "all") {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: Global Value Numbering (GVN)\n";
         try {
-            dgtl::pass::transform::GlobalValueNumbering().execute(stream);
+            dgtl::ir::pass::transform::GlobalValueNumbering().execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
             std::cerr << "Error executing GVN pass: " << e.what() << "\n";
@@ -587,7 +588,7 @@ int main(int argc, char** argv) {
     if (pass_name == "dce" || pass_name == "all") {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: Dead Code Elimination (DCE)\n";
         try {
-            dgtl::pass::transform::DeadCodeElimination().execute(stream);
+            dgtl::ir::pass::transform::DeadCodeElimination().execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
             std::cerr << "Error executing DCE pass: " << e.what() << "\n";
@@ -598,7 +599,7 @@ int main(int argc, char** argv) {
     if (pass_name == "predication" || pass_name == "all") {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: Control Predication\n";
         try {
-            dgtl::pass::transform::DGTLMaskedPredicationLowering pred;
+            dgtl::ir::pass::transform::DGTLMaskedPredicationLowering pred;
             pred.execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
@@ -610,7 +611,7 @@ int main(int argc, char** argv) {
     if (pass_name == "inlining" || pass_name == "all") {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: Aggressive Inlining\n";
         try {
-            dgtl::pass::transform::DGTLAggressiveInliner inlining(nullptr, nullptr);
+            dgtl::ir::pass::transform::DGTLAggressiveInliner inlining(nullptr, nullptr);
             inlining.execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
@@ -622,7 +623,7 @@ int main(int argc, char** argv) {
     if (pass_name == "escape" || pass_name == "all") {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: Escape Analysis\n";
         try {
-            dgtl::pass::DGTLEscapeAnalysis escape;
+            dgtl::ir::pass::DGTLEscapeAnalysis escape;
             escape.execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
@@ -634,7 +635,7 @@ int main(int argc, char** argv) {
     if (pass_name == "fusion" || pass_name == "all" || opts.opt_level >= 3) {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: Loop Fusion & Unrolling\n";
         try {
-            dgtl::pass::transform::DGTLLoopFusion fusion;
+            dgtl::ir::pass::transform::DGTLLoopFusion fusion;
             fusion.execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
@@ -646,7 +647,7 @@ int main(int argc, char** argv) {
     if (pass_name == "simd" || pass_name == "all" || opts.opt_level >= 3) {
         if (opts.verbose) std::cerr << "[dgtl-opt] Running: SIMD Gather/Scatter Vectorization\n";
         try {
-            dgtl::pass::simd::DGTLAdvancedSIMDRecognizer simd_vectorizer;
+            dgtl::ir::pass::simd::DGTLAdvancedSIMDRecognizer simd_vectorizer;
             simd_vectorizer.execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {

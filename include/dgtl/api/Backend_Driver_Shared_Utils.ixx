@@ -9,7 +9,8 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-export module dgtl.internal.api_backend_driver_shared_utils;
+export module dgtl.api.backend_driver_shared;
 
 // 🚀 FIXED: Import and export directly from the unified consolidated pass/backend namespace infrastructure
-export import dgtl.ir_core;
+export import dgtl.ir;
+export import dgtl.linker.utils;

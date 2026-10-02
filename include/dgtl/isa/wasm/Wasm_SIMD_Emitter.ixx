@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -16,10 +16,9 @@ module;
 #include <cstdint>
 #include <string>
 #include <vector>
+export module dgtl.isa.wasm.simd_emitter;
 
-export module dgtl.ir_core.wasmsimd_fma_emitter;
-
-export namespace dgtl::isa::emitter {
+export namespace dgtl::isa::wasm::emitter {
 
 class WasmSIMDGatherScatterFMA {
 public:
@@ -266,8 +265,11 @@ private:
     }
 };
 
-} // namespace dgtl::isa::emitter
+} // namespace dgtl::isa::wasm::wasm::emitter
 
+export namespace dgtl::isa::wasm {
+using WasmSIMDGatherScatterFMA = dgtl::isa::wasm::emitter::WasmSIMDGatherScatterFMA;
+}
 export namespace dgtl::isa {
-using WasmSIMDGatherScatterFMA = dgtl::isa::emitter::WasmSIMDGatherScatterFMA;
+using WasmSIMDGatherScatterFMA = dgtl::isa::wasm::emitter::WasmSIMDGatherScatterFMA;
 }

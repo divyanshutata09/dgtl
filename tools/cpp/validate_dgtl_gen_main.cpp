@@ -1,222 +1,72 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
+ * Repository:  github.com/TataG-Systems/DGTL
+ *
+ * Component:   DGTL Canonical HIR Generator Validator
+ * Standards:   C++26 / Clang 18+ / MSVC 19.40+ / GCC 14+
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+// DGTL canonical HIR generator validator — C++26.
+// The validator checks the schema, generated projections and architectural
+// invariants. It does not encode operation semantics independently.
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <regex>
+#include <set>
 #include <string>
-#include <string_view>
 #include <vector>
-
 namespace fs = std::filesystem;
-
-namespace {
-
-[[nodiscard]] std::string read_all(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    if (!in.is_open()) return {};
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-}
-
-[[nodiscard]] bool contains(std::string_view text, std::string_view token) {
-    return text.find(token) != std::string_view::npos;
-}
-
-[[nodiscard]] bool file_omits(std::string_view text, std::string_view token) {
-    return text.find(token) == std::string_view::npos;
-}
-
-}  // namespace
-
-int main(int argc, char** argv) {
-    fs::path root = fs::current_path();
-    if (argc > 1) {
-        root = fs::path(argv[1]);
+static std::string read(const fs::path& p){ std::ifstream f(p); return {std::istreambuf_iterator<char>(f),{}}; }
+static bool contains(const std::string& s,std::string_view x){return s.find(x)!=std::string::npos;}
+static std::size_t count_re(const std::string&s,const std::regex&r){return std::distance(std::sregex_iterator(s.begin(),s.end(),r),std::sregex_iterator{});}
+int main(int argc,char**argv){
+    const fs::path root = argc>1 ? fs::path(argv[1]) : fs::path(".");
+    const fs::path ir = root/"include/dgtl/ir";
+    fs::path dsl = ir/"gen/defs/phase1_core_ops.dgtl_def";
+    if (!fs::exists(dsl)) {
+        dsl = root/"defs/ir/phase1_core_ops.dgtl_def";
     }
-    root = fs::weakly_canonical(root);
-
-    const fs::path gen_header = root / "include/dgtl/ir/gen/DGTL_Gen_Ops.ixx";
-    const fs::path ir_ssa = root / "include/dgtl/ir/base/IR_SSA.ixx";
-    const fs::path pattern_rewriter = root / "include/dgtl/ir/rewrite/Pattern_Rewriter.ixx";
-    if (!fs::exists(gen_header)) {
-        std::cerr << "Missing generated header: " << gen_header.string() << "\n";
-        return 1;
+    const fs::path meta = ir/"gen/DGTL_Gen_Ops.ixx";
+    fs::path en = ir/"gen/DGTL_Gen_Enums.ixx";
+    if (!fs::exists(en)) {
+        en = ir/"base/IR_Enums.ixx";
     }
-
-    std::cout << "\n[DGTL-Gen Validation]\n\n";
-    const std::uintmax_t bytes = fs::file_size(gen_header);
-    const double mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
-    std::cout << "[1] Validating generated header...\n";
-    std::cout << "    => Size: " << mb << " MB\n";
-
-    const std::string content = read_all(gen_header);
-    std::cout << "\n[2] Checking required generated API...\n";
-    const std::vector<std::string> required_checks = {
-        "GenTrait",
-        "GenInterface",
-        "GenAttribute",
-        "kGeneratedOpDefs",
-        "find_generated_op_def",
-        "op_has_attribute",
-        "op_has_trait",
-        "op_implements_interface",
-        "verify_generated_node",
-        "make_generated_node",
-        "kNumGeneratedOps",
-        "kNumTraits",
-        "kNumInterfaces",
-        "kNumAttributes",
-        "kNumDialects",
-        "kNumTypes",
-        "validate_generated_op_defs"
-    };
-
-    bool ok = true;
-    for (const auto& check : required_checks) {
-        if (contains(content, check)) {
-            std::cout << "    [OK] " << check << "\n";
-        } else {
-            std::cout << "    [FAIL] Missing: " << check << "\n";
-            ok = false;
-        }
+    const fs::path wrappers = ir/"gen/DGTL_Gen_Op_Wrappers.ixx";
+    bool ok=true;
+    auto fail=[&](const std::string&m){std::cerr<<"[FAIL] "<<m<<'\n';ok=false;};
+    if(!fs::exists(dsl)||!fs::exists(meta)||!fs::exists(en)||!fs::exists(wrappers)){fail("required generated artifacts are missing");return 2;}
+    const auto ds=read(dsl), ms=read(meta), es=read(en), ws=read(wrappers);
+    const std::regex op_re(R"(^\s*op\s+[A-Za-z_][A-Za-z0-9_]*:.*\bvalue=0x[0-9A-Fa-f]+\b)",std::regex::ECMAScript|std::regex::multiline);
+    const std::regex meta_re(R"DGTL(\{"([^"]+)",\s*dgtl::ir::OpCode::([A-Z0-9_]+),\s*static_cast<uint16_t>\((0x[0-9A-Fa-f]+)\))DGTL");
+    const std::regex wrap_re(R"(struct\s+[A-Za-z_][A-Za-z0-9_]*Op\s*:\s*public\s+OpWrapperBase)");
+    const auto n=count_re(ds,op_re), m=count_re(ms,meta_re), w=count_re(ws,wrap_re);
+    std::cout<<"[0] canonical operations: "<<n<<"\n";
+    std::cout<<"[1] generated metadata rows: "<<m<<"\n";
+    std::cout<<"[2] generated typed wrappers: "<<w<<"\n";
+    if(n!=183) fail("canonical schema operation count is not 183");
+    if(m!=n) fail("generated metadata count does not equal canonical schema count");
+    if(w!=n) fail("typed wrapper count does not equal canonical schema count");
+    for(const auto& d:{"canonical_source: true","opcode_values: explicit","stable_abi: preserve_existing_values"}) if(!contains(ds,d)) fail(std::string("missing directive: ")+d);
+    for(const auto& a:{"alias MOV = REG_MOVE","alias CONST = LOAD_IMM","alias OP_ADD = ADD_I32","alias RETURN = RET","alias ASYNC_LAUNCH = ASYNC_SPAWN","alias SYNC_BARRIER = BARRIER_SYNC"}) if(!contains(ds,a)) fail(std::string("missing canonical alias: ")+a);
+    if(contains(ds,"[opcode_aliases]")||contains(ds,"compat ")) fail("old compatibility grammar remains in the canonical DSL");
+    if(!contains(ms,"kGeneratedOpAliases")||!contains(ms,"find_op_alias")) fail("generated alias metadata API is missing");
+    if(!contains(ms,"kNumGeneratedOps = 183")) fail("generated operation count constant is stale");
+    if(!contains(es,"AND_I64 = 0x41")||!contains(es,"SHR_I64 = 0x45")) fail("canonicalized I64 bitwise operations are missing from generated enum");
+    if(fs::exists(ir/"base/IR_Verifier_stack_safe_from_uploaded.ixx")) fail("duplicate verifier artifact remains");
+    const auto schema=read(ir/"IR_Schema.ixx"), verifier=read(ir/"base/IR_Verifier.ixx");
+    if(contains(schema,"LegacyCompatibility")||contains(schema,"legacy")||contains(schema,"compatibility")) fail("schema contains a second semantic compatibility authority");
+    if(contains(verifier,"legacy")||contains(verifier,"Legacy")||contains(verifier,"compatibility")||contains(verifier,"Compatibility")) fail("verifier contains an alternate compatibility path");
+    for(const auto& f:{"IR_Node.ixx","IR_Stream.ixx","IR_SSA.ixx","IR_Verifier.ixx","IR_Traits_Static.ixx","Op_Traits.ixx"}){
+        const auto s=read(ir/"base"/f); if(std::regex_search(s,std::regex(R"(import\s+dgtl\.target)"))) fail(std::string("target dependency leaked into HIR core: ")+f);
     }
-
-    std::cout << "\n[3] Artifact Counts\n";
-    const std::regex builder_re(R"(struct\s+\w+Op(?:\s*:\s*[^{]+)?\s*\{)");
-    const auto begin = std::sregex_iterator(content.begin(), content.end(), builder_re);
-    const auto end = std::sregex_iterator();
-    const auto count = static_cast<std::size_t>(std::distance(begin, end));
-    std::cout << "    => Builders: " << count << "\n";
-
-    if (count == 0) {
-        std::cout << "    [FAIL] No generated typed wrappers were found\n";
-        ok = false;
-    }
-
-    std::cout << "\n[4] Semantic bit sanity checks\n";
-    const std::regex op_re(
-        R"DGTL(\{"([^"]+)",\s*dgtl::ir::OpCode::[A-Z0-9_]+,\s*"[^"]*",\s*([0-9]+)ULL,\s*([0-9]+)ULL,\s*([0-9]+)ULL,)DGTL"
-    );
-
-    bool saw_add_i32 = false;
-    bool saw_load = false;
-    bool saw_branch = false;
-    bool saw_string_const = false;
-    bool saw_string_concat = false;
-
-    for (auto it = std::sregex_iterator(content.begin(), content.end(), op_re); it != std::sregex_iterator(); ++it) {
-        const std::string op_name = (*it)[1].str();
-        const auto trait_bits = static_cast<unsigned long long>(std::stoull((*it)[2].str()));
-        const auto interface_bits = static_cast<unsigned long long>(std::stoull((*it)[3].str()));
-
-        if (op_name == "AddI32") {
-            saw_add_i32 = true;
-            if (trait_bits == 0ULL || interface_bits == 0ULL) {
-                std::cout << "    [FAIL] AddI32 has zero trait/interface bits\n";
-                ok = false;
-            }
-        }
-        if (op_name == "Load") {
-            saw_load = true;
-            if (trait_bits == 0ULL || interface_bits == 0ULL) {
-                std::cout << "    [FAIL] Load has zero trait/interface bits\n";
-                ok = false;
-            }
-        }
-        if (op_name == "Branch") {
-            saw_branch = true;
-            if (trait_bits == 0ULL || interface_bits == 0ULL) {
-                std::cout << "    [FAIL] Branch has zero trait/interface bits\n";
-                ok = false;
-            }
-        }
-        if (op_name == "StringConst") {
-            saw_string_const = true;
-        }
-        if (op_name == "StringConcat") {
-            saw_string_concat = true;
-        }
-    }
-
-    if (!saw_add_i32) {
-        std::cout << "    [FAIL] Could not find AddI32 metadata entry\n";
-        ok = false;
-    }
-    if (!saw_load) {
-        std::cout << "    [FAIL] Could not find Load metadata entry\n";
-        ok = false;
-    }
-    if (!saw_branch) {
-        std::cout << "    [FAIL] Could not find Branch metadata entry\n";
-        ok = false;
-    }
-
-    if (!saw_string_const) {
-        std::cout << "    [FAIL] Could not find StringConst metadata entry\n";
-        ok = false;
-    }
-    if (!saw_string_concat) {
-        std::cout << "    [FAIL] Could not find StringConcat metadata entry\n";
-        ok = false;
-    }
-
-    std::cout << "\n[5] Dialect propagation checks\n";
-    const std::vector<std::string> required_dialect_checks = {
-        "{\"Load\", dgtl::ir::OpCode::LOAD, \"core\"",
-        "{\"StringConst\", dgtl::ir::OpCode::STRING_CONST, \"core\"",
-        "{\"GpuLaunch\", dgtl::ir::OpCode::GPU_LAUNCH, \"gpu\"",
-        "{\"GatherF32x512\", dgtl::ir::OpCode::GATHER_F32_512, \"simd\""
-    };
-    for (const auto& check : required_dialect_checks) {
-        if (contains(content, check)) {
-            std::cout << "    [OK] " << check << "\n";
-        } else {
-            std::cout << "    [FAIL] Missing dialect marker: " << check << "\n";
-            ok = false;
-        }
-    }
-
-    std::cout << "\n[6] Ownership surface checks\n";
-    const std::string ssa_content = read_all(ir_ssa);
-    const std::string rewriter_content = read_all(pattern_rewriter);
-    const std::string shadow_lookup_decl = "[[nodiscard]] const OpDefMetadata* find_generated_op_def(dgtl::ir::OpCode opcode) noexcept;";
-    const std::string shadow_verify_decl = "[[nodiscard]] bool verify_generated_node(const dgtl::ir::IRNode& node) noexcept;";
-    const std::string ownership_marker = "Sole owning export surface for generated op metadata lookup helpers.";
-
-    if (contains(content, ownership_marker)) {
-        std::cout << "    [OK] Generated ownership marker present\n";
-    } else {
-        std::cout << "    [FAIL] Generated ownership marker missing\n";
-        ok = false;
-    }
-    if (file_omits(content, "import dgtl.op_traits;")) {
-        std::cout << "    [OK] Generated module avoids unused dgtl.op_traits dependency\n";
-    } else {
-        std::cout << "    [FAIL] Generated module still imports unused dgtl.op_traits\n";
-        ok = false;
-    }
-    if (contains(ssa_content, "import dgtl.ir_core.gen;") && file_omits(ssa_content, shadow_lookup_decl)) {
-        std::cout << "    [OK] IR_SSA imports generated lookup ownership cleanly\n";
-    } else {
-        std::cout << "    [FAIL] IR_SSA still shadows generated lookup ownership\n";
-        ok = false;
-    }
-    if (contains(rewriter_content, "import dgtl.ir_core.gen;") &&
-        file_omits(rewriter_content, shadow_lookup_decl) &&
-        file_omits(rewriter_content, shadow_verify_decl)) {
-        std::cout << "    [OK] Pattern_Rewriter imports generated lookup ownership cleanly\n";
-    } else {
-        std::cout << "    [FAIL] Pattern_Rewriter still shadows generated lookup APIs\n";
-        ok = false;
-    }
-
-    if (!ok) {
-        std::cout << "\n[FAIL] DGTL-Gen Validation Failed\n";
-        return 1;
-    }
-
-    std::cout << "\n[SUCCESS] DGTL-Gen Validation Complete\n";
-    return 0;
+    std::cout<<"[3] schema/alias invariants: "<<(ok?"OK":"FAIL")<<"\n";
+    if(ok){std::cout<<"DGTL-Gen Validation PASSED — canonical IR schema is the sole semantic authority.\n";return 0;}
+    return 1;
 }

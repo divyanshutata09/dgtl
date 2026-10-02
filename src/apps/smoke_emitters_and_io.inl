@@ -28,6 +28,23 @@ bool emit_arm64(const dgtl::ir::IRStream& stream,
 	return !out_text.empty();
 }
 
+static bool lower_stream_to_mir(const dgtl::ir::IRStream& stream,
+                                dgtl::machine::MachineFunction& out_mf,
+                                const dgtl::core::TargetMachine& target) {
+    if (stream.is_null() || stream.size() == 0) return false;
+    const dgtl::isa::x64::X64TargetSubtarget subtarget;
+    auto res = dgtl::mir::pipeline::MachinePipeline::compile(
+        out_mf,
+        stream,
+        target,
+        subtarget.reg_info,
+        &subtarget.instr_info,
+        &subtarget.frame_info,
+        &subtarget.abi(true),
+        dgtl::mir::isel::make_builtin_instruction_selector_program());
+    return res.success;
+}
+
 std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
 	return dgtl::backend::driver::shared::bytes_to_hex(bytes);
 }
@@ -41,12 +58,14 @@ bool emit_x64(const dgtl::ir::IRStream& stream,
 	if (out_fallback_ops != nullptr) {
 		*out_fallback_ops = 0;
 	}
-	dgtl::isa::X64StrikeEmitter emitter;
-	if (!emitter.process_stream(stream, out_bytes)) {
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
 		return false;
 	}
-	if (out_fallback_ops != nullptr) {
-		*out_fallback_ops = 0;
+	dgtl::isa::x64::X64StrikeEmitter emitter;
+	if (!emitter.process_stream(mf, out_bytes)) {
+		return false;
 	}
 	if (out_bytes.empty()) {
 		return false;
@@ -59,9 +78,14 @@ bool emit_nasm(const dgtl::ir::IRStream& stream,
 			   const dgtl::semantic::SymbolTable& symbols,
 			   std::string& out_text) {
 	out_text.clear();
-	dgtl::isa::DGTLNasmEmitter emitter;
-	emitter.emit(stream, symbols);
-	out_text = emitter.get_output();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::isa::x64::DGTLNasmEmitter emitter;
+	emitter.emit(mf, &symbols);
+	out_text = std::string(emitter.str());
 	return !out_text.empty();
 }
 
@@ -70,10 +94,13 @@ bool emit_wasm(const dgtl::ir::IRStream& stream,
 			   std::string& out_text) {
 	out_bytes.clear();
 	out_text.clear();
-	dgtl::exec::DGTLWasmEncoder encoder;
-	encoder.encode(stream);
-	out_bytes = encoder.get_binary();
-	if (out_bytes.empty()) {
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::WASM_SIMD);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::backend::linker::DGTLLinker linker;
+	if (!linker.build_wasm_binary(mf, out_bytes)) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -106,14 +133,26 @@ bool emit_riscv64(std::string& out_text) {
 // CUDA PTX: fuse IR stream into NVIDIA PTX source via GPGPUFusionEngine
 // ---------------------------------------------------------------------------
 bool emit_cuda(const dgtl::ir::IRStream& stream, std::string& out_text) {
-	return dgtl::backend::driver::shared::emit_cuda_text(stream, out_text);
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	return dgtl::backend::driver::shared::emit_cuda_text(mf, out_text);
 }
 
 // ---------------------------------------------------------------------------
 // ROCm AMD GCN CDNA: fuse IR stream into AMD kernel source via GPGPUFusionEngine
 // ---------------------------------------------------------------------------
 bool emit_rocm(const dgtl::ir::IRStream& stream, std::string& out_text) {
-	return dgtl::backend::driver::shared::emit_rocm_text(stream, out_text);
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	return dgtl::backend::driver::shared::emit_rocm_text(mf, out_text);
 }
 
 // ---------------------------------------------------------------------------
@@ -123,8 +162,16 @@ bool emit_macho(const dgtl::ir::IRStream& stream,
 				const dgtl::semantic::SymbolTable& symbols,
 				std::vector<uint8_t>& out_bytes,
 				std::string& out_text) {
-	dgtl::isa::MachOEmitter emitter(stream, symbols);
-	dgtl::isa::MachOEmitter::MachOResult result = emitter.emit_to_binary();
+	(void)symbols;
+	out_bytes.clear();
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::AARCH64_SVE);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::isa::MachOEmitter emitter(mf);
+	auto result = emitter.emit_to_binary();
 	if (!result.success || result.binary_data.empty()) {
 		return false;
 	}
@@ -139,8 +186,15 @@ bool emit_macho(const dgtl::ir::IRStream& stream,
 bool emit_elfobj(const dgtl::ir::IRStream& stream,
 				 std::vector<uint8_t>& out_bytes,
 				 std::string& out_text) {
-	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_elf_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
+	out_bytes.clear();
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::backend::linker::DGTLLinker linker;
+	if (!linker.build_elf_relocatable_binary(mf, out_bytes, "DGTL_kernel_entry")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -153,8 +207,15 @@ bool emit_elfobj(const dgtl::ir::IRStream& stream,
 bool emit_staticlib(const dgtl::ir::IRStream& stream,
 					std::vector<uint8_t>& out_bytes,
 					std::string& out_text) {
-	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_static_archive_binary(stream, out_bytes, "DGTL_kernel.o")) {
+	out_bytes.clear();
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::backend::linker::DGTLLinker linker;
+	if (!linker.build_static_archive_binary(mf, out_bytes, "module.o")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -167,8 +228,15 @@ bool emit_staticlib(const dgtl::ir::IRStream& stream,
 bool emit_coffobj(const dgtl::ir::IRStream& stream,
 				  std::vector<uint8_t>& out_bytes,
 				  std::string& out_text) {
-	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_coff_relocatable_binary(stream, out_bytes, "DGTL_kernel_entry")) {
+	out_bytes.clear();
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::backend::linker::DGTLLinker linker;
+	if (!linker.build_coff_relocatable_binary(mf, out_bytes, "DGTL_kernel_entry")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
@@ -181,8 +249,15 @@ bool emit_coffobj(const dgtl::ir::IRStream& stream,
 bool emit_cofflib(const dgtl::ir::IRStream& stream,
 				  std::vector<uint8_t>& out_bytes,
 				  std::string& out_text) {
-	dgtl::exec::DGTLLinker linker;
-	if (!linker.build_coff_archive_binary(stream, out_bytes, "DGTL_kernel.obj", "DGTL_kernel_entry")) {
+	out_bytes.clear();
+	out_text.clear();
+	dgtl::core::TargetMachine target(dgtl::core::ArchType::X86_64_AVX2);
+	dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+	if (!lower_stream_to_mir(stream, mf, target)) {
+		return false;
+	}
+	dgtl::backend::linker::DGTLLinker linker;
+	if (!linker.build_coff_archive_binary(mf, out_bytes, "module.obj", "DGTL_kernel_entry")) {
 		return false;
 	}
 	out_text = bytes_to_hex(out_bytes);
