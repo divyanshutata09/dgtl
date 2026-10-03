@@ -1,1 +1,1 @@
-﻿dgtl build-strict
+﻿dgtl api-status --api public
