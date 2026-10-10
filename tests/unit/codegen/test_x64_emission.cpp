@@ -11,12 +11,13 @@
 
 import dgtl;
 import dgtl.arena;
-import dgtl.ir.stream;
-import dgtl.ir_enums;
-import dgtl.ir_node;
+import dgtl.mir.machine_ir;
+import dgtl.isa.x64.mc_encoder;
+import dgtl.isa.x64.x64_instruction_info;
 
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <vector>
 
 void print_hex(const std::vector<uint8_t>& code) {
@@ -31,60 +32,70 @@ void print_hex(const std::vector<uint8_t>& code) {
 }
 
 void run_X64_Emitter_Test() {
-    dgtl::isa::X64StrikeEmitter emitter;
-    
-    // FIX: Explicitly initialize the stream with a capacity (e.g., 1024 nodes)
-    // opting nullptr as the first argument triggers internal allocation.
-    dgtl::ir::IRStream stream(nullptr, 1024);
-    
+    dgtl::isa::X64TargetRegisterInfo reg_info;
+
+    using dgtl::machine::MachineRegister;
+    using dgtl::machine::RegisterClassKind;
+    using dgtl::machine::RegisterKind;
+    const MachineRegister rax{0u, RegisterKind::Physical, RegisterClassKind::General};
+    const MachineRegister xmm0{0u, RegisterKind::Physical, RegisterClassKind::FloatingPoint};
+    const MachineRegister xmm4{4u, RegisterKind::Physical, RegisterClassKind::FloatingPoint};
+    const MachineRegister xmm5{5u, RegisterKind::Physical, RegisterClassKind::FloatingPoint};
+    const MachineRegister zmm0{16u, RegisterKind::Physical, RegisterClassKind::Vector};
+    if (reg_info.aliases(rax, xmm0) || !reg_info.aliases(xmm0, zmm0) ||
+        reg_info.is_reserved(xmm4) || reg_info.is_reserved(xmm5)) {
+        std::cerr << "[!] FAIL: x64 register-bank aliasing or reserved-register contract is invalid.\n";
+        return;
+    }
+
     std::vector<uint8_t> machine_code;
 
-    std::cout << "--- Starting DGTL Strike Test (BIR 1.0.0 x64) ---\n";
+    std::cout << "--- Starting DGTL Strike Test (X64 MC Encoder) ---\n";
+
+    dgtl::machine::MachineFunction mf("DGTL_test_entry");
+    auto& b0 = mf.create_block();
+    mf.set_entry_block(b0.id);
 
     // 1. LOAD_IMM: RAX = 0x1122334455667788
-    dgtl::ir::IRNode n1{};
-    n1.opcode = dgtl::ir::OpCode::LOAD_IMM;
-    n1.flags = dgtl::ir::Flags::NONE;
-    n1.result_id = 0;      // RAX
-    n1.op_a = 0x11223344; 
-    n1.op_b = 0x55667788; 
-    n1.op_c = dgtl::ir::INVALID_SLOT;
-    stream.push_back(n1);
+    auto& inst1 = mf.create_instruction(dgtl::machine::GM_IMMEDIATE);
+    inst1.form = dgtl::machine::MachineForm::LoadImmediate;
+    inst1.add_operand(dgtl::machine::MachineOperand::def(rax));
+    inst1.add_operand(dgtl::machine::MachineOperand::imm(0x1122334455667788LL));
+    b0.append_instruction(inst1.id);
+    inst1.parent_block = b0.id;
 
     // 2. ADD_I32: RAX += RCX
-    dgtl::ir::IRNode n2{};
-    n2.opcode = dgtl::ir::OpCode::ADD_I32;
-    n2.flags = dgtl::ir::Flags::NONE;
-    n2.result_id = 0;      // Dest: RAX
-    n2.op_a = 0;           // Src A: RAX
-    n2.op_b = 1;           // Src: RCX
-    n2.op_c = dgtl::ir::INVALID_SLOT;
-    stream.push_back(n2);
+    const MachineRegister rcx{1u, RegisterKind::Physical, RegisterClassKind::General};
+    auto& inst2 = mf.create_instruction(dgtl::machine::GM_IADD32);
+    inst2.form = dgtl::machine::MachineForm::IntegerBinary32;
+    inst2.semantic_kind = dgtl::machine::MachineSemanticKind::IntegerAdd;
+    inst2.add_operand(dgtl::machine::MachineOperand::def(rax));
+    inst2.add_operand(dgtl::machine::MachineOperand::use(rax));
+    inst2.add_operand(dgtl::machine::MachineOperand::use(rcx));
+    b0.append_instruction(inst2.id);
+    inst2.parent_block = b0.id;
 
     // 3. REG_MOVE: RDX = RAX
-    dgtl::ir::IRNode n3{};
-    n3.opcode = dgtl::ir::OpCode::REG_MOVE;
-    n3.flags = dgtl::ir::Flags::NONE;
-    n3.result_id = 2;      // Dest: RDX
-    n3.op_a = 0;           // Src: RAX
-    n3.op_b = dgtl::ir::INVALID_SLOT;
-    n3.op_c = dgtl::ir::INVALID_SLOT;
-    stream.push_back(n3);
+    const MachineRegister rdx{2u, RegisterKind::Physical, RegisterClassKind::General};
+    auto& inst3 = mf.create_instruction(dgtl::machine::GM_COPY);
+    inst3.form = dgtl::machine::MachineForm::Move;
+    inst3.add_operand(dgtl::machine::MachineOperand::def(rdx));
+    inst3.add_operand(dgtl::machine::MachineOperand::use(rax));
+    b0.append_instruction(inst3.id);
+    inst3.parent_block = b0.id;
 
     // 4. RET
-    dgtl::ir::IRNode n4{};
-    n4.opcode = dgtl::ir::OpCode::RET;
-    n4.flags = dgtl::ir::Flags::NONE;
-    n4.result_id = dgtl::ir::INVALID_SLOT;
-    n4.op_a = 0;
-    n4.op_b = dgtl::ir::INVALID_SLOT;
-    n4.op_c = dgtl::ir::INVALID_SLOT;
-    stream.push_back(n4);
+    auto& inst4 = mf.create_instruction(dgtl::machine::GM_RETURN);
+    inst4.form = dgtl::machine::MachineForm::Return;
+    b0.append_instruction(inst4.id);
+    inst4.parent_block = b0.id;
 
-    std::cout << "Stream size: " << stream.size() << " nodes.\n";
-
-    // Run Emission
-    emitter.process_stream(stream, machine_code);
+    // Run Emission via X64MCEncoder
+    std::string diag;
+    if (!dgtl::isa::x64::X64MCEncoder::encode_to_bytes(mf, machine_code, "DGTL_test_entry", {}, &diag)) {
+        std::cerr << "[!] FAIL: X64MCEncoder failed: " << diag << "\n";
+        return;
+    }
 
     if (machine_code.empty()) {
         std::cout << "[!] FAIL: Emitter returned 0 bytes.\n";

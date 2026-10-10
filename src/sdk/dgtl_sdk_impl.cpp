@@ -23,16 +23,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -77,24 +80,29 @@ import dgtl.ir.pass.transform_poly_loop;
 import dgtl.ir.pass.error_recovery;
 import dgtl.ir.analysis.escape_analysis;
 import dgtl.ir.pass.simd_gather_scatter;
-import dgtl.linker.backend;
 import dgtl.linker.driver;
-import dgtl.linker.aot_orchestrator;
+import dgtl.linker.pe;
+import dgtl.linker.elf;
+import dgtl.linker.wasm;
+import dgtl.linker.driver_api;
+import dgtl.object.archive;
 import dgtl.object.writers.elf;
 import dgtl.object.writers.pe;
 import dgtl.object.writers.macho;
 import dgtl.object.writers.wasm;
+import dgtl.object.readers.elf;
+import dgtl.object.readers.pe;
+import dgtl.object.file;
 import dgtl.jit.jit_orchestrator;
-import dgtl.execution.cache;
-import dgtl.execution;
-import dgtl.execution.dispatcher;
-import dgtl.execution.loader;
 import dgtl.jit.hardware_scheduler;
 import dgtl.api.execution_engine;
 import dgtl.api.aot_session;
 import dgtl.mir;
 import dgtl.mir.machine_ir;
 import dgtl.ir.gen;
+import dgtl.codegen.driver;
+import dgtl.codegen.target_registry;
+import dgtl.jit.object_loader;
 
 namespace dgtl::backend::writers {
     using namespace dgtl::object::writers;
@@ -155,8 +163,8 @@ struct dgtl_context {
 };
 
 struct dgtl_stream {
-    dgtl_context* ctx = nullptr;
     std::unique_ptr<dgtl_context> owned_ctx;
+    dgtl_context* ctx = nullptr;
     dgtl::ir::IRStream ir_stream;
     dgtl_ir_mode_t ir_mode = DGTL_IR_MODE_INT;
     dgtl_opt_level_t opt_level = DGTL_OPT_O2;
@@ -172,7 +180,8 @@ struct dgtl_stream {
     std::string current_source_file;
 
     dgtl_stream(dgtl_context* c, size_t reserved)
-        : ctx(c ? c : (owned_ctx = std::make_unique<dgtl_context>(0, 64)).get()),
+        : owned_ctx(c ? nullptr : std::make_unique<dgtl_context>(0, 64)),
+          ctx(c ? c : owned_ctx.get()),
           ir_stream(*ctx->arena, reserved == 0 ? 256 : reserved) {
         emit_options.inline_threshold = 50;
         emit_options.unroll_factor = 4;
@@ -240,10 +249,12 @@ struct dgtl_session {
     std::unique_ptr<dgtl::backend::aot::DGTLAOTLinker> aot_linker;
     std::unordered_map<std::string, uintptr_t> host_symbols;
     std::unordered_map<uint32_t, uintptr_t> slot_symbols;
+    std::unordered_map<uint32_t, std::string> slot_to_callee;
 
     void* jit_memory = nullptr;
     size_t jit_size = 0;
     uintptr_t entry_addr = 0;
+    std::optional<dgtl::object::ObjectFile> compiled_object;
 
     explicit dgtl_session(const dgtl_session_config_t& cfg)
         : config(cfg), aot_linker(std::make_unique<dgtl::backend::aot::DGTLAOTLinker>()) {}
@@ -282,12 +293,43 @@ static dgtl_runtime_context_t* get_global_runtime_ctx() noexcept {
     return ptr;
 }
 
+// static dgtl_value_t emit_raw_node(dgtl_stream_t* s, dgtl_opcode_t op, uint16_t flags,
+//                                  uint32_t a, uint32_t b, uint32_t c,
+//                                  uint32_t forced_result = DGTL_INVALID_SLOT,
+//                                  uint32_t logic_flags = 0) {
+//     if (!s) return DGTL_INVALID_VALUE;
+//     uint32_t rid = (forced_result != DGTL_INVALID_SLOT) ? forced_result : s->alloc_slot();
+
+//     dgtl::ir::IRNode node{};
+//     node.opcode = static_cast<dgtl::ir::OpCode>(op);
+//     node.flags = flags;
+//     node.result_id = rid;
+//     node.op_a = a;
+//     node.op_b = b;
+//     node.op_c = c;
+//     node.logic_flags = logic_flags;
+//     node.intent_hash = dgtl::ir::IRNode::calculate_hash(node.opcode, rid, a, b, c);
+
+//     s->ir_stream.push_back(node);
+//     return dgtl_value_t{rid};
+// }
+
+
 static dgtl_value_t emit_raw_node(dgtl_stream_t* s, dgtl_opcode_t op, uint16_t flags,
                                  uint32_t a, uint32_t b, uint32_t c,
                                  uint32_t forced_result = DGTL_INVALID_SLOT,
                                  uint32_t logic_flags = 0) {
     if (!s) return DGTL_INVALID_VALUE;
-    uint32_t rid = (forced_result != DGTL_INVALID_SLOT) ? forced_result : s->alloc_slot();
+
+    // FIX: Opcodes that produce void must never be assigned an active result register ID.
+    bool produces_void = (op == DGTL_OP_NOP || op == DGTL_OP_STORE || op == DGTL_OP_RET ||
+                          op == DGTL_OP_GOTO || op == DGTL_OP_BRANCH || op == DGTL_OP_BRANCH_COND ||
+                          op == DGTL_OP_BRANCH_FUSED || op == DGTL_OP_SWITCH_DISPATCH ||
+                          op == DGTL_OP_VOLATILE_STORE || op == DGTL_OP_OWNERSHIP_RELEASE ||
+                          op == DGTL_OP_BARRIER_SYNC || op == DGTL_OP_TRIE_INSERT ||
+                          op == DGTL_OP_DSA_DEALLOCATE || op == DGTL_OP_STORE_V512);
+
+    uint32_t rid = produces_void ? 0xFFFFFFFFu : ((forced_result != DGTL_INVALID_SLOT) ? forced_result : s->alloc_slot());
 
     dgtl::ir::IRNode node{};
     node.opcode = static_cast<dgtl::ir::OpCode>(op);
@@ -302,14 +344,70 @@ static dgtl_value_t emit_raw_node(dgtl_stream_t* s, dgtl_opcode_t op, uint16_t f
     s->ir_stream.push_back(node);
     return dgtl_value_t{rid};
 }
+static thread_local std::string g_tls_lower_detail;
+
+static void set_lower_failure_msg(const char* prefix) noexcept {
+    try {
+        std::string msg = prefix ? prefix : "failed to lower IR stream to Machine IR";
+        if (!g_tls_lower_detail.empty()) {
+            msg += " -- ";
+            msg += g_tls_lower_detail;
+        }
+        set_last_error_msg(msg.c_str());
+    } catch (...) {
+        set_last_error_msg(prefix);
+    }
+}
 
 static bool lower_stream_to_mir(dgtl_stream_t* s, dgtl::machine::MachineFunction& mf) {
-    if (!s || s->ir_stream.is_null() || s->ir_stream.size() == 0) return false;
+    g_tls_lower_detail.clear();
+    if (!s || s->ir_stream.is_null() || s->ir_stream.size() == 0) {
+        g_tls_lower_detail = "IR stream is empty (no instructions were emitted for this function)";
+        return false;
+    }
     try {
-        dgtl::jit::StrikeOrchestrator orch(*s->ctx->compiler_ctx, *s->ctx->arena);
-        auto res = orch.compile_mir_function(s->ir_stream, mf);
+        dgtl::core::TargetMachine target;
+#if defined(_WIN32) || defined(_WIN64)
+        const bool is_windows = true;
+#else
+        const bool is_windows = false;
+#endif
+        auto backend = dgtl::codegen::TargetRegistry::lookup(target.family(), is_windows);
+        if (!backend) {
+            g_tls_lower_detail = "Target backend not available";
+            return false;
+        }
+
+        dgtl::mir::MachinePipelineOptions options;
+        auto res = dgtl::mir::MachinePipeline::compile(
+            mf,
+            s->ir_stream,
+            target,
+            backend->register_info(),
+            &backend->instruction_info(),
+            &backend->frame_info(),
+            &backend->abi(),
+            dgtl::mir::make_builtin_instruction_selector_program(),
+            options
+        );
+
+        if (!res.success) {
+            std::string msg = "MIR pipeline: ";
+            msg += res.error_message.empty() ? std::string("unknown failure") : res.error_message;
+            if (res.error_instr != dgtl::machine::INVALID_INSTR_ID) {
+                msg += " (instr #" + std::to_string(static_cast<uint64_t>(res.error_instr)) + ")";
+            }
+            if (res.error_block != dgtl::machine::INVALID_BLOCK_ID) {
+                msg += " (block #" + std::to_string(static_cast<uint64_t>(res.error_block)) + ")";
+            }
+            g_tls_lower_detail = msg;
+        }
         return res.success;
+    } catch (const std::exception& e) {
+        g_tls_lower_detail = std::string("MIR pipeline exception: ") + e.what();
+        return false;
     } catch (...) {
+        g_tls_lower_detail = "MIR pipeline: unknown exception";
         return false;
     }
 }
@@ -1362,7 +1460,6 @@ dgtl_err_t DGTL_CALL dgtl_optimize(dgtl_stream_t* s) DGTL_NOEXCEPT {
     (void)dgtl_run_loop_fusion(s);
     (void)dgtl_run_inliner(s);
     (void)dgtl_run_escape_analysis(s);
-    (void)dgtl_run_error_recovery(s);
     return DGTL_OK;
 }
 
@@ -1379,7 +1476,6 @@ dgtl_err_t DGTL_CALL dgtl_optimize_with_profile(dgtl_stream_t* s, dgtl_opt_level
         (void)dgtl_run_inliner(s);
         (void)dgtl_run_escape_analysis(s);
     }
-    (void)dgtl_run_error_recovery(s);
     return DGTL_OK;
 }
 
@@ -1464,14 +1560,15 @@ dgtl_strike_result_t DGTL_CALL dgtl_strike_stream(dgtl_stream_t* s, dgtl_target_
         (void)dgtl_optimize_with_profile(s, s->opt_level);
     }
 
-    std::vector<uint8_t> code_buffer(s->ir_stream.size() * 64 + 1024);
     size_t emitted_size = 0;
-
-    dgtl::machine::MachineFunction mf("dgtl_kernel");
-    bool ok = lower_stream_to_mir(s, mf);
+    dgtl::core::TargetMachine target_mach;
+    auto codegen_res = dgtl::codegen::CodegenDriver::compile(s->ir_stream, target_mach, {}, "dgtl_kernel");
+    bool ok = codegen_res.success;
     if (ok) {
-        dgtl::backend::aot::DGTLAOTLinker aot;
-        ok = aot.emit_aot_machine_code(code_buffer.data(), code_buffer.size(), mf, &emitted_size);
+        const auto* sec = codegen_res.object.find_section(".text");
+        if (sec) {
+            emitted_size = sec->size();
+        }
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -1528,9 +1625,14 @@ dgtl_err_t DGTL_CALL dgtl_session_register_symbols(dgtl_session_t* session, cons
     if (!session || !symbols) return DGTL_ERR(1);
     for (size_t i = 0; i < count; ++i) {
         if (symbols[i].name) {
-            session->host_symbols[symbols[i].name] = symbols[i].address;
+            if (symbols[i].address != 0) {
+                session->host_symbols[symbols[i].name] = symbols[i].address;
+            }
+            if (symbols[i].slot != 0) {
+                session->slot_to_callee[symbols[i].slot] = symbols[i].name;
+            }
         }
-        if (symbols[i].slot != 0) {
+        if (symbols[i].slot != 0 && symbols[i].address != 0) {
             session->slot_symbols[symbols[i].slot] = symbols[i].address;
         }
     }
@@ -1541,6 +1643,7 @@ void DGTL_CALL dgtl_session_clear_symbols(dgtl_session_t* session) DGTL_NOEXCEPT
     if (session) {
         session->host_symbols.clear();
         session->slot_symbols.clear();
+        session->slot_to_callee.clear();
     }
 }
 
@@ -1561,85 +1664,86 @@ dgtl_err_t DGTL_CALL dgtl_session_compile(dgtl_session_t* session, dgtl_stream_t
             }
         }
 
-        constexpr size_t kBytesPerNode = 64;
-        constexpr size_t kCodeSlop = 1024;
-        const size_t node_count = stream->ir_stream.size();
-        if (node_count > (std::numeric_limits<size_t>::max() - kCodeSlop) / kBytesPerNode) {
-            set_last_error_msg("dgtl_session_compile: machine-code buffer size overflow");
-            return DGTL_ERR(2);
-        }
+        dgtl::core::TargetMachine target_machine;
 
-        dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
-        if (!lower_stream_to_mir(stream, mf)) {
-            set_last_error_msg("dgtl_session_compile: failed to lower IR stream to Machine IR");
-            return DGTL_ERR(2);
-        }
-
-        std::vector<uint8_t> machine_code(node_count * kBytesPerNode + kCodeSlop);
-        size_t emitted_size = 0;
-
-        const bool ok = session->aot_linker->emit_aot_machine_code(
-            machine_code.data(), machine_code.size(), mf, &emitted_size,
-            session->slot_symbols, nullptr, {}
+        // 1. Compile IR stream to ObjectFile via the pure DGTL pipeline (IR -> MIR -> ISA MC Encoder -> Object)
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(
+            stream->ir_stream,
+            target_machine,
+            session->slot_to_callee,
+            "DGTL_kernel_entry"
         );
-        if (!ok || emitted_size == 0) {
-            const size_t diag_count = stream->diags.size();
-            if (diag_count != 0) {
-                const auto& diag = stream->diags.back();
-                if (diag.message && diag.message[0] != '\0') {
-                    set_last_error_msg(diag.message);
-                }
-            }
-            if (!g_tls_err_msg[0]) {
-                set_last_error_msg("DGTL AOT linker rejected the IR stream (no backend diagnostic was produced)");
-            }
-            return DGTL_ERR(3);
+
+        if (!codegen_res.success) {
+            set_last_error_msg(codegen_res.error_message.c_str());
+            return DGTL_ERR(2);
         }
 
-    if (session->jit_memory) {
-#if defined(_WIN32) || defined(_WIN64)
-        VirtualFree(session->jit_memory, 0, MEM_RELEASE);
+        // Store the relocatable object in the session immediately
+        session->compiled_object = std::move(codegen_res.object);
+
+        // 2. In AOT mode, compilation completes here. No host JIT loading is performed,
+        // leaving external relocations for the static linker/archiver.
+        if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+            return DGTL_OK;
+        }
+
+        // 3. For JIT execution, verify target is compatible with host execution
+        const bool is_target_host_compatible =
+            (session->config.target == DGTL_TARGET_HOST) ||
+#if defined(__x86_64__) || defined(_M_X64)
+            (session->config.target == DGTL_TARGET_X86_64) ||
+            (session->config.target == DGTL_TARGET_X86_64_AVX512);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+            (session->config.target == DGTL_TARGET_ARM64) ||
+            (session->config.target == DGTL_TARGET_ARM64_SVE);
 #else
-        munmap(session->jit_memory, session->jit_size);
-#endif
-        session->jit_memory = nullptr;
-    }
-
-    session->jit_size = (emitted_size + 4095) & ~size_t(4095);
-
-#if defined(_WIN32) || defined(_WIN64)
-    session->jit_memory = VirtualAlloc(nullptr, session->jit_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!session->jit_memory) return DGTL_ERR(3);
-    std::memcpy(session->jit_memory, machine_code.data(), emitted_size);
-
-    DWORD old_protect;
-    if (!VirtualProtect(session->jit_memory, session->jit_size, PAGE_EXECUTE_READ, &old_protect)) {
-        VirtualFree(session->jit_memory, 0, MEM_RELEASE);
-        session->jit_memory = nullptr;
-        return DGTL_ERR(4);
-    }
-    FlushInstructionCache(GetCurrentProcess(), session->jit_memory, session->jit_size);
-#else
-    session->jit_memory = mmap(nullptr, session->jit_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (session->jit_memory == MAP_FAILED) {
-        session->jit_memory = nullptr;
-        return DGTL_ERR(3);
-    }
-    std::memcpy(session->jit_memory, machine_code.data(), emitted_size);
-    if (mprotect(session->jit_memory, session->jit_size, PROT_READ | PROT_EXEC) != 0) {
-        munmap(session->jit_memory, session->jit_size);
-        session->jit_memory = nullptr;
-        return DGTL_ERR(4);
-    }
+            false;
 #endif
 
-    session->entry_addr = reinterpret_cast<uintptr_t>(session->jit_memory);
-    return DGTL_OK;
+        if (!is_target_host_compatible && session->config.mode == DGTL_SESSION_MODE_JIT) {
+            set_last_error_msg("dgtl_session_compile: target architecture is not compatible with host for JIT execution");
+            return DGTL_ERR(4);
+        }
+
+        // 4. In JIT or HYBRID mode, attempt loading ObjectFile into executable memory
+        if (is_target_host_compatible) {
+            auto load_res = dgtl::jit::JITObjectLoader::load(
+                *session->compiled_object,
+                session->host_symbols,
+                "DGTL_kernel_entry"
+            );
+
+            if (!load_res.success) {
+                if (session->config.mode == DGTL_SESSION_MODE_HYBRID) {
+                    session->entry_addr = 0;
+                    return DGTL_OK;
+                }
+                set_last_error_msg(load_res.error_message.c_str());
+                return DGTL_ERR(3);
+            }
+
+            if (session->jit_memory) {
+#if defined(_WIN32) || defined(_WIN64)
+                VirtualFree(session->jit_memory, 0, MEM_RELEASE);
+#else
+                munmap(session->jit_memory, session->jit_size);
+#endif
+                session->jit_memory = nullptr;
+            }
+
+            session->jit_memory = load_res.module.memory();
+            session->jit_size = load_res.module.size();
+            session->entry_addr = load_res.module.entry_point();
+            load_res.module.release();
+        }
+
+        return DGTL_OK;
     } catch (const std::exception& e) {
         set_last_error_msg(e.what());
         return DGTL_ERR(5);
     } catch (...) {
-        set_last_error_msg("dgtl_session_compile: unknown exception during AOT compilation");
+        set_last_error_msg("dgtl_session_compile: unknown exception during compilation");
         return DGTL_ERR(6);
     }
 }
@@ -1661,7 +1765,14 @@ dgtl_err_t DGTL_CALL dgtl_session_run_marshalled(dgtl_session_t* session, const 
     if (!session || !out_result) return DGTL_ERR(1);
     uintptr_t addr = dgtl_session_get_symbol_address(session, entry_symbol ? entry_symbol : "main");
     if (addr == 0) addr = session->entry_addr;
-    if (addr == 0) return DGTL_ERR(2);
+    if (addr == 0) {
+        if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+            set_last_error_msg("dgtl_session_run_marshalled: cannot execute session compiled in DGTL_SESSION_MODE_AOT (use dgtl_session_emit_object or compile in JIT mode)");
+            return DGTL_ERR(7);
+        }
+        set_last_error_msg("dgtl_session_run_marshalled: entry symbol not found or JIT memory not loaded");
+        return DGTL_ERR(2);
+    }
 
     int64_t gpr[6] = {0};
     double  fpr[4] = {0.0};
@@ -1683,6 +1794,10 @@ dgtl_err_t DGTL_CALL dgtl_session_run_marshalled(dgtl_session_t* session, const 
         }
     }
 
+    // Preserve standard ABI registration and prevent -Wunused-but-set-variable warnings
+    (void)fpr;
+    (void)fpr_idx;
+
     auto fn = reinterpret_cast<int64_t(*)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t)>(addr);
     int64_t res = fn(gpr[0], gpr[1], gpr[2], gpr[3], gpr[4], gpr[5]);
     out_result->kind = DGTL_ARG_I64;
@@ -1694,7 +1809,14 @@ dgtl_err_t DGTL_CALL dgtl_session_run_i64(dgtl_session_t* session, const char* e
     if (!session || !out_result) return DGTL_ERR(1);
     uintptr_t addr = dgtl_session_get_symbol_address(session, entry_symbol ? entry_symbol : "main");
     if (addr == 0) addr = session->entry_addr;
-    if (addr == 0) return DGTL_ERR(2);
+    if (addr == 0) {
+        if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+            set_last_error_msg("dgtl_session_run_i64: cannot execute session compiled in DGTL_SESSION_MODE_AOT (use dgtl_session_emit_object or compile in JIT mode)");
+            return DGTL_ERR(7);
+        }
+        set_last_error_msg("dgtl_session_run_i64: entry symbol not found or JIT memory not loaded");
+        return DGTL_ERR(2);
+    }
 
     auto fn = reinterpret_cast<int64_t(*)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t)>(addr);
     int64_t a0 = arg_count > 0 ? args[0] : 0;
@@ -1711,7 +1833,14 @@ dgtl_err_t DGTL_CALL dgtl_session_run_f64(dgtl_session_t* session, const char* e
     if (!session || !out_result) return DGTL_ERR(1);
     uintptr_t addr = dgtl_session_get_symbol_address(session, entry_symbol ? entry_symbol : "main");
     if (addr == 0) addr = session->entry_addr;
-    if (addr == 0) return DGTL_ERR(2);
+    if (addr == 0) {
+        if (session->config.mode == DGTL_SESSION_MODE_AOT) {
+            set_last_error_msg("dgtl_session_run_f64: cannot execute session compiled in DGTL_SESSION_MODE_AOT (use dgtl_session_emit_object or compile in JIT mode)");
+            return DGTL_ERR(7);
+        }
+        set_last_error_msg("dgtl_session_run_f64: entry symbol not found or JIT memory not loaded");
+        return DGTL_ERR(2);
+    }
 
     auto fn = reinterpret_cast<double(*)(double, double, double, double)>(addr);
     double a0 = arg_count > 0 ? args[0] : 0.0;
@@ -1733,12 +1862,98 @@ dgtl_err_t DGTL_CALL dgtl_session_run_ptr(dgtl_session_t* session, const char* e
 
 dgtl_err_t DGTL_CALL dgtl_session_emit_object(dgtl_session_t* session, const char* output_path) DGTL_NOEXCEPT {
     if (!session || !output_path) return DGTL_ERR(1);
-    return DGTL_OK;
+    try {
+        if (!session->compiled_object.has_value()) {
+            set_last_error_msg("dgtl_session_emit_object: no compiled object in session (call dgtl_session_compile first)");
+            return DGTL_ERR(2);
+        }
+
+        std::vector<uint8_t> bytes;
+        const auto fmt = session->compiled_object->format();
+        bool ok = false;
+        const char* fmt_name = "object";
+
+        if (fmt == dgtl::object::ObjectFormat::WASM ||
+            session->config.target == DGTL_TARGET_WASM ||
+            session->config.target == DGTL_TARGET_WASM_SIMD) {
+            fmt_name = "WASM";
+            dgtl::backend::writers::WASMBinaryWriter writer;
+            ok = writer.write(*session->compiled_object, bytes);
+        } else if (fmt == dgtl::object::ObjectFormat::ELF) {
+            fmt_name = "ELF";
+            dgtl::backend::writers::ELFObjectWriter writer;
+            ok = writer.write(*session->compiled_object, bytes);
+        } else if (fmt == dgtl::object::ObjectFormat::MachO) {
+            fmt_name = "Mach-O";
+            dgtl::backend::writers::MachOObjectWriter writer;
+            ok = writer.write(*session->compiled_object, bytes);
+        } else {
+            fmt_name = "PE/COFF";
+            dgtl::backend::writers::PEObjectWriter writer;
+            ok = writer.write(*session->compiled_object, bytes);
+        }
+
+        if (!ok || bytes.empty()) {
+            std::string err = std::string("failed to synthesize ") + fmt_name + " object";
+            set_last_error_msg(err.c_str());
+            return DGTL_ERR(3);
+        }
+
+        FILE* f = std::fopen(output_path, "wb");
+        if (!f) {
+            set_last_error_msg("failed to open output object file for writing");
+            return DGTL_ERR(4);
+        }
+        std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(5);
+    } catch (...) {
+        set_last_error_msg("unknown error during object emission");
+        return DGTL_ERR(6);
+    }
 }
 
 dgtl_err_t DGTL_CALL dgtl_session_emit_binary(dgtl_session_t* session, const char* output_path) DGTL_NOEXCEPT {
     if (!session || !output_path) return DGTL_ERR(1);
-    return DGTL_OK;
+    try {
+        if (!session->compiled_object.has_value()) {
+            set_last_error_msg("dgtl_session_emit_binary: no compiled object in session (call dgtl_session_compile first)");
+            return DGTL_ERR(2);
+        }
+
+        std::vector<uint8_t> bytes;
+        if (session->config.target == DGTL_TARGET_WASM || session->config.target == DGTL_TARGET_WASM_SIMD) {
+            dgtl::backend::writers::WASMBinaryWriter writer;
+            if (!writer.write(*session->compiled_object, bytes) || bytes.empty()) {
+                set_last_error_msg("failed to synthesize WASM binary");
+                return DGTL_ERR(3);
+            }
+        } else {
+            dgtl::backend::writers::PEObjectWriter writer;
+            if (!writer.write_standalone_executable(*session->compiled_object, bytes) || bytes.empty()) {
+                set_last_error_msg("failed to synthesize PE binary in memory");
+                return DGTL_ERR(3);
+            }
+        }
+
+        FILE* f = std::fopen(output_path, "wb");
+        if (!f) {
+            set_last_error_msg("failed to open output binary file for writing");
+            return DGTL_ERR(4);
+        }
+        std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(5);
+    } catch (...) {
+        set_last_error_msg("unknown error during binary emission");
+        return DGTL_ERR(6);
+    }
 }
 
 /* ============================================================================
@@ -1760,16 +1975,17 @@ dgtl_err_t DGTL_CALL dgtl_emit_pe_binary_in_memory(
     *out_size = 0;
 
     try {
-        dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
-        if (!lower_stream_to_mir(s, mf)) {
-            set_last_error_msg("failed to lower IR stream to Machine IR for PE emission");
+        dgtl::core::TargetMachine target_mach;
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(s->ir_stream, target_mach, {}, "DGTL_kernel_entry");
+        if (!codegen_res.success) {
+            set_last_error_msg(codegen_res.error_message.c_str());
             return DGTL_ERR(2);
         }
 
-        dgtl::backend::aot::DGTLAOTLinker linker;
+        dgtl::backend::writers::PEObjectWriter writer;
 
         std::vector<uint8_t> bytes;
-        if (!linker.build_pe_executable_buffer(mf, bytes) || bytes.empty()) {
+        if (!writer.write_standalone_executable(codegen_res.object, bytes) || bytes.empty()) {
             set_last_error_msg("failed to synthesize PE binary in memory");
             return DGTL_ERR(2);
         }
@@ -1806,7 +2022,7 @@ dgtl_err_t DGTL_CALL dgtl_emit_wasm_binary_in_memory(
     try {
         dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
         if (!lower_stream_to_mir(s, mf)) {
-            set_last_error_msg("failed to lower IR stream to Machine IR for WASM emission");
+            set_lower_failure_msg("failed to lower IR stream to Machine IR for WASM emission");
             return DGTL_ERR(2);
         }
 
@@ -1834,6 +2050,104 @@ dgtl_err_t DGTL_CALL dgtl_emit_wasm_binary_in_memory(
     } catch (...) {
         set_last_error_msg("unknown WASM binary emission failure");
         return DGTL_ERR(5);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_emit_elf_binary_in_memory(
+    dgtl_stream_t* s,
+    void** out_buf,
+    size_t* out_size) DGTL_NOEXCEPT
+{
+    if (!s || !out_buf || !out_size) return DGTL_ERR(1);
+
+    *out_buf = nullptr;
+    *out_size = 0;
+
+    try {
+        dgtl::core::TargetMachine target_mach;
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(s->ir_stream, target_mach, {}, "DGTL_kernel_entry");
+        if (!codegen_res.success) {
+            set_last_error_msg(codegen_res.error_message.c_str());
+            return DGTL_ERR(2);
+        }
+
+        codegen_res.object.set_format(dgtl::object::ObjectFormat::ELF);
+        dgtl::object::writers::ELFObjectWriter writer;
+
+        std::vector<uint8_t> bytes;
+        if (!writer.write(codegen_res.object, bytes) || bytes.empty()) {
+            set_last_error_msg("failed to synthesize ELF binary in memory");
+            return DGTL_ERR(2);
+        }
+
+        void* buffer = std::malloc(bytes.size());
+        if (!buffer) {
+            set_last_error_msg("allocation failure for ELF binary buffer");
+            return DGTL_ERR(3);
+        }
+
+        std::memcpy(buffer, bytes.data(), bytes.size());
+        *out_buf = buffer;
+        *out_size = bytes.size();
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(4);
+    } catch (...) {
+        set_last_error_msg("unknown ELF binary emission failure");
+        return DGTL_ERR(5);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_emit_macho_binary_in_memory(
+    dgtl_stream_t* s,
+    void** out_buf,
+    size_t* out_size) DGTL_NOEXCEPT
+{
+    if (!s || !out_buf || !out_size) return DGTL_ERR(1);
+
+    *out_buf = nullptr;
+    *out_size = 0;
+
+    try {
+        dgtl::core::TargetMachine target_mach;
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(s->ir_stream, target_mach, {}, "DGTL_kernel_entry");
+        if (!codegen_res.success) {
+            set_last_error_msg(codegen_res.error_message.c_str());
+            return DGTL_ERR(2);
+        }
+
+        codegen_res.object.set_format(dgtl::object::ObjectFormat::MachO);
+        dgtl::object::writers::MachOObjectWriter writer;
+
+        std::vector<uint8_t> bytes;
+        if (!writer.write(codegen_res.object, bytes) || bytes.empty()) {
+            set_last_error_msg("failed to synthesize Mach-O binary in memory");
+            return DGTL_ERR(2);
+        }
+
+        void* buffer = std::malloc(bytes.size());
+        if (!buffer) {
+            set_last_error_msg("allocation failure for Mach-O binary buffer");
+            return DGTL_ERR(3);
+        }
+
+        std::memcpy(buffer, bytes.data(), bytes.size());
+        *out_buf = buffer;
+        *out_size = bytes.size();
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(4);
+    } catch (...) {
+        set_last_error_msg("unknown Mach-O binary emission failure");
+        return DGTL_ERR(5);
+    }
+}
+
+void DGTL_CALL dgtl_free_binary_buffer(void* buf) DGTL_NOEXCEPT {
+    if (buf) {
+        std::free(buf);
     }
 }
 
@@ -1896,6 +2210,86 @@ uint32_t DGTL_CALL dgtl_emit_raw_with_slot(
     uint32_t op_c) DGTL_NOEXCEPT
 {
     return emit_raw_node(s, opcode, flags, op_a, op_b, op_c, result_id).id;
+}
+
+/*
+ * Canonical CALL emission. Layout is identical to
+ * dgtl::api::IRBuilder::emit_call: op_a = callee, op_b = args[0],
+ * op_c = args[1], logic_flags = args[2], call-overflow sidecar = args[3..].
+ * Absent positional args are DGTL_INVALID_SLOT (including logic_flags).
+ */
+bool DGTL_CALL dgtl_emit_call(
+    dgtl_stream_t* s,
+    uint32_t callee_slot,
+    uint32_t result_slot,
+    const uint32_t* args,
+    size_t arg_count) DGTL_NOEXCEPT
+{
+    if (!s || callee_slot == DGTL_INVALID_SLOT) return false;
+    if (arg_count != 0 && args == nullptr) return false;
+
+    try {
+        const uint32_t a0 = arg_count > 0 ? args[0] : DGTL_INVALID_SLOT;
+        const uint32_t a1 = arg_count > 1 ? args[1] : DGTL_INVALID_SLOT;
+        const uint32_t a2 = arg_count > 2 ? args[2] : DGTL_INVALID_SLOT;
+        const uint32_t rid = (result_slot != DGTL_INVALID_SLOT) ? result_slot : s->alloc_slot();
+
+        const size_t node_idx = s->ir_stream.size();
+        const dgtl_value_t res = emit_raw_node(
+            s, DGTL_OP_CALL,
+            static_cast<uint16_t>(DGTL_FLAG_HAS_SIDE_EFFECTS | DGTL_FLAG_IS_VOLATILE),
+            callee_slot, a0, a1, rid, a2);
+        if (!dgtl_value_is_valid(res) || s->ir_stream.size() <= node_idx) return false;
+
+        if (arg_count > 3) {
+            s->ir_stream.set_call_overflow_args(
+                node_idx, std::span<const uint32_t>(args + 3, arg_count - 3));
+        }
+        return true;
+    } catch (...) {
+        set_last_error_msg("dgtl_emit_call: failed to emit CALL node");
+        return false;
+    }
+}
+
+/*
+ * Formal parameters: DGTL IR has no PARAM opcode, so the parameter list is
+ * attached to the function-entry LABEL (the last node emitted) through the
+ * multi-result sidecar: result_ids[i] == slot of formal parameter i.
+ */
+bool DGTL_CALL dgtl_emit_function_params(
+    dgtl_stream_t* s,
+    const uint32_t* param_slots,
+    size_t count) DGTL_NOEXCEPT
+{
+    if (!s) return false;
+    if (count == 0) return true;
+    if (param_slots == nullptr) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (param_slots[i] == DGTL_INVALID_SLOT) return false;
+    }
+
+    try {
+        const size_t n = s->ir_stream.size();
+        if (n == 0) {
+            s->add_diag(DGTL_SEV_ERROR, DGTL_DIAG_INVALID_OPERAND,
+                        "dgtl_emit_function_params: no function LABEL precedes the parameter list");
+            return false;
+        }
+        const size_t label_idx = n - 1;
+        const auto label = s->ir_stream.get_node(label_idx);
+        if (label.opcode != dgtl::ir::OpCode::LABEL) {
+            s->add_diag(DGTL_SEV_ERROR, DGTL_DIAG_INVALID_OPERAND,
+                        "dgtl_emit_function_params: last node is not a LABEL",
+                        static_cast<uint32_t>(label_idx));
+            return false;
+        }
+        s->ir_stream.set_result_ids(label_idx, std::span<const uint32_t>(param_slots, count));
+        return true;
+    } catch (...) {
+        set_last_error_msg("dgtl_emit_function_params: failed to attach parameters");
+        return false;
+    }
 }
 
 void DGTL_CALL dgtl_set_verbose(int32_t enabled) DGTL_NOEXCEPT
@@ -2202,5 +2596,1135 @@ void DGTL_CALL dgtl_yield(void) DGTL_NOEXCEPT {
     if (r) dgtl_runtime_yield(r);
 }
 
-// Close extern "C" block opened at line 298
+/* ============================================================================
+ * SECTION 35 â€” MODULAR SOVEREIGN SUBSYSTEM IMPLEMENTATIONS
+ * ========================================================================== */
+
+/* 1. Target Machine Subsystem */
+struct dgtl_target_machine {
+    dgtl::core::TargetMachine tm;
+    std::string triple_str;
+    std::string cpu_str;
+    std::string features_str;
+    dgtl_target_arch_t arch = DGTL_ARCH_X86_64;
+};
+
+dgtl_target_machine_t DGTL_CALL dgtl_target_machine_create(
+    const char* triple,
+    const char* cpu,
+    const char* features,
+    dgtl_opt_level_t opt_level,
+    dgtl_reloc_model_t reloc_model,
+    dgtl_code_model_t code_model) DGTL_NOEXCEPT {
+    (void)opt_level;
+    (void)reloc_model;
+    (void)code_model;
+    try {
+        auto* tm = new (std::nothrow) dgtl_target_machine();
+        if (!tm) return nullptr;
+        tm->triple_str = triple ? triple : "x86_64-pc-windows-msvc";
+        tm->cpu_str = cpu ? cpu : "generic";
+        tm->features_str = features ? features : "";
+        if (tm->triple_str.find("aarch64") != std::string::npos || tm->triple_str.find("arm64") != std::string::npos) {
+            tm->arch = DGTL_ARCH_ARM64;
+        } else if (tm->triple_str.find("wasm") != std::string::npos) {
+            tm->arch = DGTL_ARCH_WASM;
+        } else if (tm->triple_str.find("riscv") != std::string::npos) {
+            tm->arch = DGTL_ARCH_RISCV64;
+        } else {
+            tm->arch = DGTL_ARCH_X86_64;
+        }
+        return tm;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+dgtl_target_machine_t DGTL_CALL dgtl_target_machine_create_host(void) DGTL_NOEXCEPT {
+    return dgtl_target_machine_create("x86_64-pc-windows-msvc", "host", "", DGTL_OPT_O2, DGTL_RELOC_DEFAULT, DGTL_CODE_MODEL_DEFAULT);
+}
+
+void DGTL_CALL dgtl_target_machine_destroy(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    delete tm;
+}
+
+const char* DGTL_CALL dgtl_target_machine_get_triple(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    return tm ? tm->triple_str.c_str() : "unknown";
+}
+
+const char* DGTL_CALL dgtl_target_machine_get_cpu(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    return tm ? tm->cpu_str.c_str() : "generic";
+}
+
+bool DGTL_CALL dgtl_target_machine_has_feature(dgtl_target_machine_t tm, const char* feature) DGTL_NOEXCEPT {
+    if (!tm || !feature) return false;
+    if (tm->features_str.find(feature) != std::string::npos) return true;
+    return tm->tm.get_caps().has_avx2;
+}
+
+uint32_t DGTL_CALL dgtl_target_machine_get_pointer_size(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    return (tm && (tm->arch == DGTL_ARCH_WASM || tm->arch == DGTL_ARCH_ARM32)) ? 4u : 8u;
+}
+
+bool DGTL_CALL dgtl_target_machine_is_64bit(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    return dgtl_target_machine_get_pointer_size(tm) == 8u;
+}
+
+bool DGTL_CALL dgtl_target_machine_is_little_endian(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    (void)tm;
+    return true;
+}
+
+dgtl_target_arch_t DGTL_CALL dgtl_target_machine_get_arch(dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    return tm ? tm->arch : DGTL_ARCH_X86_64;
+}
+
+/* 2. Universal Object File Subsystem */
+struct dgtl_section {
+    dgtl_object* parent = nullptr;
+    size_t index = 0;
+};
+
+struct dgtl_symbol {
+    dgtl_object* parent = nullptr;
+    size_t index = 0;
+};
+
+struct dgtl_relocation {
+    dgtl_object* parent = nullptr;
+    size_t index = 0;
+};
+
+struct dgtl_object {
+    dgtl::object::ObjectFile obj;
+    std::vector<uint8_t> emitted_cache;
+    dgtl_object_format_t format = DGTL_OBJECT_FMT_PE;
+    std::vector<std::unique_ptr<dgtl_section>> section_wrappers;
+    std::vector<std::unique_ptr<dgtl_symbol>> symbol_wrappers;
+    std::vector<std::unique_ptr<dgtl_relocation>> relocation_wrappers;
+
+    explicit dgtl_object(dgtl_object_format_t fmt) : format(fmt) {
+        switch (fmt) {
+            case DGTL_OBJECT_FMT_PE:
+            case DGTL_OBJECT_FMT_COFF:
+                obj.set_format(dgtl::object::ObjectFormat::COFF);
+                break;
+            case DGTL_OBJECT_FMT_ELF:
+                obj.set_format(dgtl::object::ObjectFormat::ELF);
+                break;
+            case DGTL_OBJECT_FMT_MACHO:
+                obj.set_format(dgtl::object::ObjectFormat::MachO);
+                break;
+            case DGTL_OBJECT_FMT_WASM:
+                obj.set_format(dgtl::object::ObjectFormat::WASM);
+                break;
+        }
+    }
+
+    dgtl_section_t get_section_handle(size_t idx) {
+        if (idx >= obj.sections().size()) return nullptr;
+        while (section_wrappers.size() <= idx) {
+            auto w = std::make_unique<dgtl_section>();
+            w->parent = this;
+            w->index = section_wrappers.size();
+            section_wrappers.push_back(std::move(w));
+        }
+        return section_wrappers[idx].get();
+    }
+
+    dgtl_symbol_t get_symbol_handle(size_t idx) {
+        if (idx >= obj.symbols().size()) return nullptr;
+        while (symbol_wrappers.size() <= idx) {
+            auto w = std::make_unique<dgtl_symbol>();
+            w->parent = this;
+            w->index = symbol_wrappers.size();
+            symbol_wrappers.push_back(std::move(w));
+        }
+        return symbol_wrappers[idx].get();
+    }
+
+    dgtl_relocation_t get_relocation_handle(size_t idx) {
+        if (idx >= obj.relocations().size()) return nullptr;
+        while (relocation_wrappers.size() <= idx) {
+            auto w = std::make_unique<dgtl_relocation>();
+            w->parent = this;
+            w->index = relocation_wrappers.size();
+            relocation_wrappers.push_back(std::move(w));
+        }
+        return relocation_wrappers[idx].get();
+    }
+};
+
+dgtl_object_t DGTL_CALL dgtl_object_create(dgtl_object_format_t format) DGTL_NOEXCEPT {
+    try {
+        return new (std::nothrow) dgtl_object(format);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+dgtl_object_t DGTL_CALL dgtl_object_load_from_file(const char* path) DGTL_NOEXCEPT {
+    if (!path) return nullptr;
+    try {
+        auto loaded = std::make_unique<dgtl_object>(DGTL_OBJECT_FMT_PE);
+        dgtl::object::readers::PEObjectReader pe_reader;
+        if (pe_reader.read_file(path, loaded->obj)) {
+            loaded->format = DGTL_OBJECT_FMT_PE;
+            return loaded.release();
+        }
+        loaded->format = DGTL_OBJECT_FMT_ELF;
+        loaded->obj = dgtl::object::ObjectFile(dgtl::object::ObjectFormat::ELF);
+        dgtl::object::readers::ELFObjectReader elf_reader;
+        if (elf_reader.read_file(path, loaded->obj)) {
+            return loaded.release();
+        }
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+dgtl_object_t DGTL_CALL dgtl_object_load_from_memory(const uint8_t* bytes, size_t size) DGTL_NOEXCEPT {
+    if (!bytes || size == 0) return nullptr;
+    try {
+        auto loaded = std::make_unique<dgtl_object>(DGTL_OBJECT_FMT_PE);
+        dgtl::object::readers::PEObjectReader pe_reader;
+        if (pe_reader.read(bytes, size, loaded->obj)) {
+            loaded->format = DGTL_OBJECT_FMT_PE;
+            return loaded.release();
+        }
+        loaded->format = DGTL_OBJECT_FMT_ELF;
+        loaded->obj = dgtl::object::ObjectFile(dgtl::object::ObjectFormat::ELF);
+        dgtl::object::readers::ELFObjectReader elf_reader;
+        if (elf_reader.read(bytes, size, loaded->obj)) {
+            return loaded.release();
+        }
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void DGTL_CALL dgtl_object_destroy(dgtl_object_t obj) DGTL_NOEXCEPT {
+    delete obj;
+}
+
+dgtl_object_format_t DGTL_CALL dgtl_object_get_format(dgtl_object_t obj) DGTL_NOEXCEPT {
+    return obj ? obj->format : DGTL_OBJECT_FMT_PE;
+}
+
+size_t DGTL_CALL dgtl_object_get_section_count(dgtl_object_t obj) DGTL_NOEXCEPT {
+    return obj ? obj->obj.sections().size() : 0;
+}
+
+dgtl_section_t DGTL_CALL dgtl_object_get_section(dgtl_object_t obj, size_t index) DGTL_NOEXCEPT {
+    return obj ? obj->get_section_handle(index) : nullptr;
+}
+
+dgtl_section_t DGTL_CALL dgtl_object_find_section(dgtl_object_t obj, const char* name) DGTL_NOEXCEPT {
+    if (!obj || !name) return nullptr;
+    for (size_t i = 0; i < obj->obj.sections().size(); ++i) {
+        if (obj->obj.sections()[i].name == name) return obj->get_section_handle(i);
+    }
+    return nullptr;
+}
+
+dgtl_section_t DGTL_CALL dgtl_object_add_section(dgtl_object_t obj, const char* name, uint64_t align, uint32_t flags) DGTL_NOEXCEPT {
+    if (!obj || !name) return nullptr;
+    obj->obj.add_section(std::string(name), align, flags);
+    return obj->get_section_handle(obj->obj.sections().size() - 1);
+}
+
+const char* DGTL_CALL dgtl_section_get_name(dgtl_section_t sec) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return "";
+    return sec->parent->obj.sections()[sec->index].name.c_str();
+}
+
+size_t DGTL_CALL dgtl_section_get_size(dgtl_section_t sec) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return 0;
+    return sec->parent->obj.sections()[sec->index].size();
+}
+
+const uint8_t* DGTL_CALL dgtl_section_get_data(dgtl_section_t sec) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return nullptr;
+    return sec->parent->obj.sections()[sec->index].bytes.data();
+}
+
+uint32_t DGTL_CALL dgtl_section_get_flags(dgtl_section_t sec) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return 0;
+    return sec->parent->obj.sections()[sec->index].flags;
+}
+
+uint64_t DGTL_CALL dgtl_section_get_bss_size(dgtl_section_t sec) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return 0;
+    return sec->parent->obj.sections()[sec->index].bss_size;
+}
+
+dgtl_err_t DGTL_CALL dgtl_section_set_bss_size(dgtl_section_t sec, uint64_t size) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return DGTL_ERR(1);
+    sec->parent->obj.sections()[sec->index].bss_size = size;
+    return DGTL_OK;
+}
+
+uint64_t DGTL_CALL dgtl_section_get_alignment(dgtl_section_t sec) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size()) return 0;
+    return sec->parent->obj.sections()[sec->index].alignment;
+}
+
+dgtl_err_t DGTL_CALL dgtl_section_append_data(dgtl_section_t sec, const uint8_t* data, size_t size) DGTL_NOEXCEPT {
+    if (!sec || !sec->parent || sec->index >= sec->parent->obj.sections().size() || !data) return DGTL_ERR(1);
+    auto& s = sec->parent->obj.sections()[sec->index];
+    s.bytes.insert(s.bytes.end(), data, data + size);
+    return DGTL_OK;
+}
+
+size_t DGTL_CALL dgtl_object_get_symbol_count(dgtl_object_t obj) DGTL_NOEXCEPT {
+    return obj ? obj->obj.symbols().size() : 0;
+}
+
+dgtl_symbol_t DGTL_CALL dgtl_object_get_symbol(dgtl_object_t obj, size_t index) DGTL_NOEXCEPT {
+    return obj ? obj->get_symbol_handle(index) : nullptr;
+}
+
+dgtl_symbol_t DGTL_CALL dgtl_object_find_symbol(dgtl_object_t obj, const char* name) DGTL_NOEXCEPT {
+    if (!obj || !name) return nullptr;
+    for (size_t i = 0; i < obj->obj.symbols().size(); ++i) {
+        if (obj->obj.symbols()[i].name == name) return obj->get_symbol_handle(i);
+    }
+    return nullptr;
+}
+
+dgtl_symbol_t DGTL_CALL dgtl_object_add_symbol(
+    dgtl_object_t obj,
+    const char* name,
+    uint64_t value,
+    uint64_t size,
+    uint32_t section_idx,
+    uint8_t binding,
+    uint8_t type) DGTL_NOEXCEPT {
+    if (!obj || !name) return nullptr;
+    auto& sym = obj->obj.add_symbol(std::string(name), value, size, binding, type);
+    sym.section_index = section_idx;
+    return obj->get_symbol_handle(obj->obj.symbols().size() - 1);
+}
+
+const char* DGTL_CALL dgtl_symbol_get_name(dgtl_symbol_t sym) DGTL_NOEXCEPT {
+    if (!sym || !sym->parent || sym->index >= sym->parent->obj.symbols().size()) return "";
+    return sym->parent->obj.symbols()[sym->index].name.c_str();
+}
+
+uint64_t DGTL_CALL dgtl_symbol_get_value(dgtl_symbol_t sym) DGTL_NOEXCEPT {
+    if (!sym || !sym->parent || sym->index >= sym->parent->obj.symbols().size()) return 0;
+    return sym->parent->obj.symbols()[sym->index].value;
+}
+
+uint64_t DGTL_CALL dgtl_symbol_get_size(dgtl_symbol_t sym) DGTL_NOEXCEPT {
+    if (!sym || !sym->parent || sym->index >= sym->parent->obj.symbols().size()) return 0;
+    return sym->parent->obj.symbols()[sym->index].size;
+}
+
+uint32_t DGTL_CALL dgtl_symbol_get_section_index(dgtl_symbol_t sym) DGTL_NOEXCEPT {
+    if (!sym || !sym->parent || sym->index >= sym->parent->obj.symbols().size()) return 0;
+    return sym->parent->obj.symbols()[sym->index].section_index;
+}
+
+size_t DGTL_CALL dgtl_object_get_relocation_count(dgtl_object_t obj) DGTL_NOEXCEPT {
+    return obj ? obj->obj.relocations().size() : 0;
+}
+
+dgtl_relocation_t DGTL_CALL dgtl_object_get_relocation(dgtl_object_t obj, size_t index) DGTL_NOEXCEPT {
+    return obj ? obj->get_relocation_handle(index) : nullptr;
+}
+
+uint64_t DGTL_CALL dgtl_relocation_get_offset(dgtl_relocation_t rel) DGTL_NOEXCEPT {
+    if (!rel || !rel->parent || rel->index >= rel->parent->obj.relocations().size()) return 0;
+    return rel->parent->obj.relocations()[rel->index].offset;
+}
+
+const char* DGTL_CALL dgtl_relocation_get_symbol_name(dgtl_relocation_t rel) DGTL_NOEXCEPT {
+    if (!rel || !rel->parent || rel->index >= rel->parent->obj.relocations().size()) return "";
+    return rel->parent->obj.relocations()[rel->index].symbol_name.c_str();
+}
+
+uint32_t DGTL_CALL dgtl_relocation_get_symbol_index(dgtl_relocation_t rel) DGTL_NOEXCEPT {
+    if (!rel || !rel->parent || rel->index >= rel->parent->obj.relocations().size()) return 0;
+    return rel->parent->obj.relocations()[rel->index].symbol_index;
+}
+
+int64_t DGTL_CALL dgtl_relocation_get_addend(dgtl_relocation_t rel) DGTL_NOEXCEPT {
+    if (!rel || !rel->parent || rel->index >= rel->parent->obj.relocations().size()) return 0;
+    return rel->parent->obj.relocations()[rel->index].addend;
+}
+
+uint32_t DGTL_CALL dgtl_relocation_get_type(dgtl_relocation_t rel) DGTL_NOEXCEPT {
+    if (!rel || !rel->parent || rel->index >= rel->parent->obj.relocations().size()) return 0;
+    return rel->parent->obj.relocations()[rel->index].type;
+}
+
+uint32_t DGTL_CALL dgtl_relocation_get_section_index(dgtl_relocation_t rel) DGTL_NOEXCEPT {
+    if (!rel || !rel->parent || rel->index >= rel->parent->obj.relocations().size()) return 0;
+    return rel->parent->obj.relocations()[rel->index].section_index;
+}
+
+dgtl_err_t DGTL_CALL dgtl_object_emit_to_memory(
+    dgtl_object_t obj,
+    const uint8_t** out_bytes,
+    size_t* out_size) DGTL_NOEXCEPT {
+    if (!obj || !out_bytes || !out_size) return DGTL_ERR(1);
+    obj->emitted_cache.clear();
+    bool ok = false;
+    try {
+        if (obj->format == DGTL_OBJECT_FMT_WASM) {
+            dgtl::backend::writers::WASMBinaryWriter writer;
+            ok = writer.write(obj->obj, obj->emitted_cache);
+        } else if (obj->format == DGTL_OBJECT_FMT_ELF) {
+            dgtl::backend::writers::ELFObjectWriter writer;
+            ok = writer.write(obj->obj, obj->emitted_cache);
+        } else if (obj->format == DGTL_OBJECT_FMT_MACHO) {
+            dgtl::backend::writers::MachOObjectWriter writer;
+            ok = writer.write(obj->obj, obj->emitted_cache);
+        } else {
+            dgtl::backend::writers::PEObjectWriter writer;
+            ok = writer.write(obj->obj, obj->emitted_cache);
+        }
+        if (!ok || obj->emitted_cache.empty()) {
+            set_last_error_msg("dgtl_object_emit_to_memory: failed to serialize object bytes");
+            return DGTL_ERR(2);
+        }
+        *out_bytes = obj->emitted_cache.data();
+        *out_size = obj->emitted_cache.size();
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(3);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_object_emit_to_file(
+    dgtl_object_t obj,
+    const char* path) DGTL_NOEXCEPT {
+    if (!obj || !path) return DGTL_ERR(1);
+    const uint8_t* bytes = nullptr;
+    size_t sz = 0;
+    dgtl_err_t err = dgtl_object_emit_to_memory(obj, &bytes, &sz);
+    if (DGTL_IS_ERR(err)) return err;
+    FILE* f = std::fopen(path, "wb");
+    if (!f) {
+        set_last_error_msg("dgtl_object_emit_to_file: failed to open output file");
+        return DGTL_ERR(3);
+    }
+    std::fwrite(bytes, 1, sz, f);
+    std::fclose(f);
+    return DGTL_OK;
+}
+
+/* 3. Linker Driver Subsystem */
+struct dgtl_linker {
+    dgtl_object_format_t format = DGTL_OBJECT_FMT_PE;
+    dgtl::object::ObjectFile accumulated_object;
+    std::string entry_point = "main";
+    uint64_t image_base = 0x140000000ull;
+    dgtl_subsystem_t subsystem = DGTL_SUBSYSTEM_CONSOLE;
+    std::vector<std::string> search_paths;
+    std::vector<std::string> archives;
+    std::vector<uint8_t> linked_bytes;
+
+    explicit dgtl_linker(dgtl_object_format_t fmt) : format(fmt) {
+        dgtl::object::ObjectFormat obj_fmt = dgtl::object::ObjectFormat::COFF;
+        if (fmt == DGTL_OBJECT_FMT_ELF) obj_fmt = dgtl::object::ObjectFormat::ELF;
+        else if (fmt == DGTL_OBJECT_FMT_MACHO) obj_fmt = dgtl::object::ObjectFormat::MachO;
+        else if (fmt == DGTL_OBJECT_FMT_WASM) obj_fmt = dgtl::object::ObjectFormat::WASM;
+        accumulated_object.set_format(obj_fmt);
+    }
+};
+
+static bool merge_sdk_object_files(dgtl::object::ObjectFile& target, const dgtl::object::ObjectFile& src) {
+    std::unordered_map<std::string, uint64_t> section_offsets;
+    std::unordered_map<std::string, uint32_t> section_target_idx;
+
+    for (const auto& sec : src.sections()) {
+        auto* existing = target.find_section(sec.name);
+        if (!existing) {
+            uint32_t new_idx = static_cast<uint32_t>(target.sections().size());
+            target.sections().push_back(sec);
+            section_offsets[sec.name] = 0;
+            section_target_idx[sec.name] = new_idx;
+        } else {
+            const uint64_t align_val = std::max<uint64_t>(16u, sec.alignment);
+            if (sec.alignment > existing->alignment) {
+                existing->alignment = sec.alignment;
+            }
+
+            if (sec.is_bss()) {
+                const uint64_t rem = existing->bss_size % align_val;
+                if (rem != 0) {
+                    existing->bss_size += (align_val - rem);
+                }
+                const uint64_t base = existing->bss_size;
+                existing->bss_size += sec.bss_size;
+                section_offsets[sec.name] = base;
+            } else {
+                const uint64_t rem = existing->bytes.size() % align_val;
+                if (rem != 0) {
+                    existing->bytes.resize(existing->bytes.size() + (align_val - rem), 0);
+                }
+                const uint64_t base = existing->bytes.size();
+                existing->append_bytes(sec.bytes.data(), sec.bytes.size());
+                section_offsets[sec.name] = base;
+            }
+
+            for (size_t t_i = 0; t_i < target.sections().size(); ++t_i) {
+                if (&target.sections()[t_i] == existing) {
+                    section_target_idx[sec.name] = static_cast<uint32_t>(t_i);
+                    break;
+                }
+            }
+        }
+    }
+    for (const auto& sym : src.symbols()) {
+        if (sym.is_defined()) {
+            uint64_t shift = 0;
+            uint32_t target_sec = 0;
+            if (sym.section_index < src.sections().size()) {
+                const auto& sec_name = src.sections()[sym.section_index].name;
+                auto it = section_offsets.find(sec_name);
+                if (it != section_offsets.end()) shift = it->second;
+                auto it_idx = section_target_idx.find(sec_name);
+                if (it_idx != section_target_idx.end()) target_sec = it_idx->second;
+            }
+            auto* existing_sym = target.find_symbol(sym.name);
+            if (!existing_sym) {
+                auto new_sym = sym;
+                new_sym.value += shift;
+                new_sym.section_index = target_sec;
+                target.symbols().push_back(std::move(new_sym));
+            } else if (existing_sym->is_external() || !existing_sym->is_defined()) {
+                *existing_sym = sym;
+                existing_sym->value += shift;
+                existing_sym->section_index = target_sec;
+            }
+        } else {
+            if (!target.find_symbol(sym.name)) {
+                target.symbols().push_back(sym);
+            }
+        }
+    }
+    for (const auto& r : src.relocations()) {
+        uint64_t shift = 0;
+        uint32_t target_sec = 0;
+        if (r.section_index < src.sections().size()) {
+            const auto& sec_name = src.sections()[r.section_index].name;
+            auto it = section_offsets.find(sec_name);
+            if (it != section_offsets.end()) shift = it->second;
+            auto it_idx = section_target_idx.find(sec_name);
+            if (it_idx != section_target_idx.end()) target_sec = it_idx->second;
+        }
+        auto new_r = r;
+        new_r.offset += shift;
+        new_r.section_index = target_sec;
+        target.relocations().push_back(std::move(new_r));
+    }
+    return true;
+}
+
+dgtl_linker_t DGTL_CALL dgtl_linker_create(dgtl_object_format_t format) DGTL_NOEXCEPT {
+    try {
+        return new (std::nothrow) dgtl_linker(format);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void DGTL_CALL dgtl_linker_destroy(dgtl_linker_t linker) DGTL_NOEXCEPT {
+    delete linker;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_entry_point(dgtl_linker_t linker, const char* symbol) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->entry_point = symbol ? symbol : "main";
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_image_base(dgtl_linker_t linker, uint64_t image_base) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->image_base = image_base;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_subsystem(dgtl_linker_t linker, dgtl_subsystem_t subsys) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->subsystem = subsys;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_add_object(dgtl_linker_t linker, dgtl_object_t obj) DGTL_NOEXCEPT {
+    if (!linker || !obj) return DGTL_ERR(1);
+    try {
+        merge_sdk_object_files(linker->accumulated_object, obj->obj);
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(2);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_add_object_file(dgtl_linker_t linker, const char* path) DGTL_NOEXCEPT {
+    if (!linker || !path) return DGTL_ERR(1);
+    try {
+        const dgtl::object::ObjectFormat obj_fmt = (linker->format == DGTL_OBJECT_FMT_ELF)
+            ? dgtl::object::ObjectFormat::ELF
+            : (linker->format == DGTL_OBJECT_FMT_MACHO ? dgtl::object::ObjectFormat::MachO
+                                                       : dgtl::object::ObjectFormat::COFF);
+        dgtl::object::ObjectFile loaded_obj(obj_fmt);
+        dgtl::object::readers::ELFObjectReader elf_reader;
+        dgtl::object::readers::PEObjectReader pe_reader;
+        bool ok = false;
+        if (pe_reader.read_file(path, loaded_obj)) {
+            ok = true;
+        } else if (elf_reader.read_file(path, loaded_obj)) {
+            ok = true;
+        } else {
+            std::ifstream raw_in(path, std::ios::binary);
+            if (raw_in) {
+                std::vector<uint8_t> raw_bytes((std::istreambuf_iterator<char>(raw_in)),
+                                                std::istreambuf_iterator<char>());
+                auto& text_sec = linker->accumulated_object.get_text_section();
+                text_sec.append_bytes(raw_bytes.data(), raw_bytes.size());
+                ok = true;
+            }
+        }
+        if (!ok) {
+            set_last_error_msg("dgtl_linker_add_object_file: failed to read object file");
+            return DGTL_ERR(2);
+        }
+        merge_sdk_object_files(linker->accumulated_object, loaded_obj);
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(3);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_add_archive(dgtl_linker_t linker, const char* archive_path) DGTL_NOEXCEPT {
+    if (!linker || !archive_path) return DGTL_ERR(1);
+    linker->archives.emplace_back(archive_path);
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_add_library_search_path(dgtl_linker_t linker, const char* dir) DGTL_NOEXCEPT {
+    if (!linker || !dir) return DGTL_ERR(1);
+    linker->search_paths.emplace_back(dir);
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_link_to_memory(
+    dgtl_linker_t linker,
+    dgtl_linker_output_kind_t kind,
+    const uint8_t** out_bytes,
+    size_t* out_size) DGTL_NOEXCEPT {
+    if (!linker || !out_bytes || !out_size) return DGTL_ERR(1);
+    linker->linked_bytes.clear();
+    bool ok = false;
+    try {
+        // Resolve undefined symbols from static archives
+        if (!linker->archives.empty()) {
+            std::vector<dgtl::object::archive::UniversalArchiveReader> parsed_archives;
+            for (const auto& arch_path : linker->archives) {
+                dgtl::object::archive::UniversalArchiveReader ar;
+                if (ar.load_archive(arch_path)) {
+                    parsed_archives.push_back(std::move(ar));
+                }
+            }
+
+            if (!parsed_archives.empty()) {
+                std::unordered_set<std::string> loaded_keys;
+                bool added_any = true;
+                while (added_any) {
+                    added_any = false;
+                    std::unordered_set<std::string> undefined_syms;
+
+                    for (const auto& rel : linker->accumulated_object.relocations()) {
+                        if (!rel.symbol_name.empty()) {
+                            const auto* sym = linker->accumulated_object.find_symbol(rel.symbol_name);
+                            if (!sym || sym->is_external() || !sym->is_defined()) {
+                                undefined_syms.insert(rel.symbol_name);
+                            }
+                        }
+                    }
+                    for (const auto& sym : linker->accumulated_object.symbols()) {
+                        if (sym.is_external() || !sym.is_defined()) {
+                            undefined_syms.insert(sym.name);
+                        }
+                    }
+                    if (!linker->entry_point.empty()) {
+                        const auto* entry = linker->accumulated_object.find_symbol(linker->entry_point);
+                        if (!entry || !entry->is_defined()) {
+                            undefined_syms.insert(linker->entry_point);
+                        }
+                    }
+
+                    if (undefined_syms.empty()) break;
+
+                    for (const auto& sym_name : undefined_syms) {
+                        for (size_t a_idx = 0; a_idx < parsed_archives.size(); ++a_idx) {
+                            const auto& ar = parsed_archives[a_idx];
+                            if (ar.has_symbol(sym_name)) {
+                                uint32_t mem_off = ar.symbol_map().at(sym_name);
+                                std::string key = std::to_string(a_idx) + ":" + std::to_string(mem_off);
+                                if (loaded_keys.contains(key)) continue;
+                                loaded_keys.insert(key);
+
+                                dgtl::object::ObjectFile member_obj(linker->accumulated_object.format());
+                                if (ar.extract_object_file_for_symbol(sym_name, member_obj)) {
+                                    merge_sdk_object_files(linker->accumulated_object, member_obj);
+                                    added_any = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (added_any) break;
+                    }
+                }
+            }
+        }
+
+        if (kind == DGTL_LINK_EXECUTABLE) {
+            if (linker->format == DGTL_OBJECT_FMT_WASM) {
+                dgtl::backend::writers::WASMBinaryWriter writer;
+                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+            } else if (linker->format == DGTL_OBJECT_FMT_ELF) {
+                dgtl::linker::elf::ELFLinker elf_linker;
+                ok = elf_linker.link_executable(
+                    linker->accumulated_object,
+                    linker->linked_bytes,
+                    linker->image_base ? linker->image_base : 0x400000,
+                    linker->entry_point
+                );
+            } else if (linker->format == DGTL_OBJECT_FMT_MACHO) {
+                dgtl::backend::writers::MachOObjectWriter writer;
+                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+            } else {
+                dgtl::linker::pe::SovereignPELinkerOptions opts;
+                opts.entry_symbol = linker->entry_point;
+                opts.image_base = linker->image_base ? linker->image_base : 0x140000000ull;
+                dgtl::backend::writers::PEObjectWriter writer;
+                ok = writer.write_standalone_executable(
+                    linker->accumulated_object,
+                    linker->linked_bytes,
+                    opts
+                );
+            }
+        } else if (kind == DGTL_LINK_STATIC_LIB) {
+            if (linker->format == DGTL_OBJECT_FMT_ELF) {
+                dgtl::linker::elf::ELFLinker elf_linker;
+                ok = elf_linker.link_static_archive(linker->accumulated_object, linker->linked_bytes, "module.o");
+            } else {
+                dgtl::backend::writers::PEObjectWriter writer;
+                std::vector<uint8_t> obj_bytes;
+                if (writer.write(linker->accumulated_object, obj_bytes)) {
+                    ok = writer.build_archive(obj_bytes, linker->linked_bytes, "module.obj");
+                }
+            }
+        } else {
+            // Relocatable / Shared library
+            if (linker->format == DGTL_OBJECT_FMT_WASM) {
+                dgtl::backend::writers::WASMBinaryWriter writer;
+                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+            } else if (linker->format == DGTL_OBJECT_FMT_ELF) {
+                dgtl::backend::writers::ELFObjectWriter writer;
+                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+            } else if (linker->format == DGTL_OBJECT_FMT_MACHO) {
+                dgtl::backend::writers::MachOObjectWriter writer;
+                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+            } else {
+                dgtl::backend::writers::PEObjectWriter writer;
+                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+            }
+        }
+
+        if (!ok || linker->linked_bytes.empty()) {
+            set_last_error_msg("dgtl_linker_link_to_memory: linking failed");
+            return DGTL_ERR(2);
+        }
+        *out_bytes = linker->linked_bytes.data();
+        *out_size = linker->linked_bytes.size();
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(3);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_link_to_file(
+    dgtl_linker_t linker,
+    dgtl_linker_output_kind_t kind,
+    const char* output_path) DGTL_NOEXCEPT {
+    if (!linker || !output_path) return DGTL_ERR(1);
+    const uint8_t* bytes = nullptr;
+    size_t sz = 0;
+    dgtl_err_t err = dgtl_linker_link_to_memory(linker, kind, &bytes, &sz);
+    if (DGTL_IS_ERR(err)) return err;
+    FILE* f = std::fopen(output_path, "wb");
+    if (!f) {
+        set_last_error_msg("dgtl_linker_link_to_file: failed to open output file");
+        return DGTL_ERR(3);
+    }
+    std::fwrite(bytes, 1, sz, f);
+    std::fclose(f);
+    return DGTL_OK;
+}
+
+/* 4. Advanced JIT Engine Subsystem */
+struct dgtl_jit_engine {
+    dgtl_context* ctx = nullptr;
+    dgtl_target_machine* tm = nullptr;
+    std::unordered_map<std::string, uintptr_t> symbols;
+    dgtl_symbol_resolver_fn resolver = nullptr;
+    void* resolver_ud = nullptr;
+    std::vector<void*> allocated_memory;
+    std::vector<size_t> allocated_sizes;
+
+    dgtl_jit_engine(dgtl_context* c, dgtl_target_machine* t) : ctx(c), tm(t) {}
+    ~dgtl_jit_engine() {
+        for (size_t i = 0; i < allocated_memory.size(); ++i) {
+            if (allocated_memory[i]) {
+#if defined(_WIN32) || defined(_WIN64)
+                VirtualFree(allocated_memory[i], 0, MEM_RELEASE);
+#else
+                munmap(allocated_memory[i], allocated_sizes[i]);
+#endif
+            }
+        }
+    }
+};
+
+dgtl_jit_engine_t DGTL_CALL dgtl_jit_engine_create(dgtl_context_t* ctx, dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    try {
+        return new (std::nothrow) dgtl_jit_engine(ctx, tm);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void DGTL_CALL dgtl_jit_engine_destroy(dgtl_jit_engine_t engine) DGTL_NOEXCEPT {
+    delete engine;
+}
+
+void DGTL_CALL dgtl_jit_engine_set_symbol_resolver(
+    dgtl_jit_engine_t engine,
+    dgtl_symbol_resolver_fn resolver,
+    void* user_data) DGTL_NOEXCEPT {
+    if (engine) {
+        engine->resolver = resolver;
+        engine->resolver_ud = user_data;
+    }
+}
+
+void DGTL_CALL dgtl_jit_engine_register_symbol(
+    dgtl_jit_engine_t engine,
+    const char* name,
+    uintptr_t address) DGTL_NOEXCEPT {
+    if (engine && name) {
+        engine->symbols[name] = address;
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_jit_engine_add_object(dgtl_jit_engine_t engine, dgtl_object_t obj) DGTL_NOEXCEPT {
+    if (!engine || !obj) return DGTL_ERR(1);
+    try {
+        auto load_res = dgtl::jit::JITObjectLoader::load(
+            obj->obj,
+            engine->symbols,
+            "DGTL_kernel_entry"
+        );
+        if (!load_res.success) {
+            set_last_error_msg(load_res.error_message.c_str());
+            return DGTL_ERR(2);
+        }
+        engine->allocated_memory.push_back(load_res.module.memory());
+        engine->allocated_sizes.push_back(load_res.module.size());
+        uintptr_t entry = load_res.module.entry_point();
+        uintptr_t base_addr = reinterpret_cast<uintptr_t>(load_res.module.memory());
+        load_res.module.release();
+        engine->symbols["main"] = entry;
+        engine->symbols["DGTL_kernel_entry"] = entry;
+        for (const auto& sym : obj->obj.symbols()) {
+            if (sym.is_defined() && !sym.name.empty()) {
+                engine->symbols[sym.name] = base_addr + sym.value;
+            }
+        }
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(3);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_jit_engine_add_stream(dgtl_jit_engine_t engine, dgtl_stream_t* stream, const char* entry_symbol) DGTL_NOEXCEPT {
+    if (!engine || !stream) return DGTL_ERR(1);
+    try {
+        dgtl::core::TargetMachine tm = engine->tm ? engine->tm->tm : dgtl::core::TargetMachine();
+        std::unordered_map<uint32_t, std::string> callee_map;
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(
+            stream->ir_stream,
+            tm,
+            callee_map,
+            entry_symbol ? entry_symbol : "DGTL_kernel_entry"
+        );
+        if (!codegen_res.success) {
+            set_last_error_msg(codegen_res.error_message.c_str());
+            return DGTL_ERR(2);
+        }
+        auto load_res = dgtl::jit::JITObjectLoader::load(
+            codegen_res.object,
+            engine->symbols,
+            entry_symbol ? entry_symbol : "DGTL_kernel_entry"
+        );
+        if (!load_res.success) {
+            set_last_error_msg(load_res.error_message.c_str());
+            return DGTL_ERR(3);
+        }
+        engine->allocated_memory.push_back(load_res.module.memory());
+        engine->allocated_sizes.push_back(load_res.module.size());
+        uintptr_t entry = load_res.module.entry_point();
+        uintptr_t base_addr = reinterpret_cast<uintptr_t>(load_res.module.memory());
+        load_res.module.release();
+        if (entry_symbol) {
+            engine->symbols[entry_symbol] = entry;
+        }
+        for (const auto& sym : codegen_res.object.symbols()) {
+            if (sym.is_defined() && !sym.name.empty()) {
+                engine->symbols[sym.name] = base_addr + sym.value;
+            }
+        }
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(4);
+    }
+}
+
+uintptr_t DGTL_CALL dgtl_jit_engine_lookup(dgtl_jit_engine_t engine, const char* name) DGTL_NOEXCEPT {
+    if (!engine || !name) return 0;
+    auto it = engine->symbols.find(name);
+    if (it != engine->symbols.end()) return it->second;
+    if (engine->resolver) {
+        uintptr_t addr = engine->resolver(name, engine->resolver_ud);
+        if (addr != 0) {
+            engine->symbols[name] = addr;
+            return addr;
+        }
+    }
+    return 0;
+}
+
+/* 5. Compilation Unit / Module Subsystem */
+struct dgtl_module {
+    std::string id;
+    dgtl_context* ctx = nullptr;
+    std::vector<std::pair<std::string, dgtl_stream_t*>> functions;
+    struct GlobalDef {
+        std::string name;
+        std::vector<uint8_t> data;
+        size_t alignment = 16;
+        bool is_constant = false;
+        dgtl_linkage_t linkage = DGTL_LINKAGE_EXTERNAL;
+    };
+    std::vector<GlobalDef> globals;
+
+    dgtl_module(dgtl_context* c, const char* name)
+        : id(name ? name : "default_module"), ctx(c) {}
+};
+
+dgtl_module_t DGTL_CALL dgtl_module_create(dgtl_context_t* ctx, const char* module_id) DGTL_NOEXCEPT {
+    try {
+        return new (std::nothrow) dgtl_module(ctx, module_id);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void DGTL_CALL dgtl_module_destroy(dgtl_module_t mod) DGTL_NOEXCEPT {
+    delete mod;
+}
+
+const char* DGTL_CALL dgtl_module_get_id(dgtl_module_t mod) DGTL_NOEXCEPT {
+    return mod ? mod->id.c_str() : "unknown";
+}
+
+dgtl_err_t DGTL_CALL dgtl_module_add_function(
+    dgtl_module_t mod,
+    const char* name,
+    dgtl_stream_t* body,
+    dgtl_linkage_t linkage) DGTL_NOEXCEPT {
+    (void)linkage;
+    if (!mod || !name || !body) return DGTL_ERR(1);
+    mod->functions.emplace_back(name, body);
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_module_add_global_data(
+    dgtl_module_t mod,
+    const char* name,
+    const uint8_t* data,
+    size_t size,
+    size_t alignment,
+    bool is_constant,
+    dgtl_linkage_t linkage) DGTL_NOEXCEPT {
+    if (!mod || !name || !data) return DGTL_ERR(1);
+    dgtl_module::GlobalDef def;
+    def.name = name;
+    def.data.assign(data, data + size);
+    def.alignment = alignment;
+    def.is_constant = is_constant;
+    def.linkage = linkage;
+    mod->globals.push_back(std::move(def));
+    return DGTL_OK;
+}
+
+dgtl_object_t DGTL_CALL dgtl_module_compile_to_object(
+    dgtl_module_t mod,
+    dgtl_target_machine_t tm) DGTL_NOEXCEPT {
+    if (!mod) return nullptr;
+    dgtl_object_format_t fmt = DGTL_OBJECT_FMT_PE;
+    if (tm) {
+        dgtl_target_arch_t arch = dgtl_target_machine_get_arch(tm);
+        if (arch == DGTL_ARCH_WASM) fmt = DGTL_OBJECT_FMT_WASM;
+        else {
+            const char* tr = dgtl_target_machine_get_triple(tm);
+            if (tr) {
+                std::string triple(tr);
+                if (triple.find("linux") != std::string::npos || triple.find("elf") != std::string::npos) {
+                    fmt = DGTL_OBJECT_FMT_ELF;
+                } else if (triple.find("darwin") != std::string::npos || triple.find("macho") != std::string::npos || triple.find("apple") != std::string::npos) {
+                    fmt = DGTL_OBJECT_FMT_MACHO;
+                }
+            }
+        }
+    }
+    auto* obj = dgtl_object_create(fmt);
+    if (!obj) return nullptr;
+    dgtl::core::TargetMachine target_mach = tm ? tm->tm : dgtl::core::TargetMachine();
+    std::unordered_map<uint32_t, std::string> callees;
+
+    for (const auto& [name, stream] : mod->functions) {
+        if (!stream) continue;
+        auto res = dgtl::codegen::CodegenDriver::compile(
+            stream->ir_stream,
+            target_mach,
+            callees,
+            name
+        );
+        if (res.success) {
+            merge_sdk_object_files(obj->obj, res.object);
+        }
+    }
+
+    for (const auto& g : mod->globals) {
+        auto& sec = obj->obj.get_or_create_section(g.is_constant ? ".rdata" : ".data", g.is_constant ? dgtl::object::SectionKind::RData : dgtl::object::SectionKind::Data);
+        uint64_t offset = sec.bytes.size();
+        sec.bytes.insert(sec.bytes.end(), g.data.begin(), g.data.end());
+        obj->obj.add_symbol(g.name, offset, g.data.size(), g.linkage == DGTL_LINKAGE_EXTERNAL ? 1 : 0, 1);
+    }
+
+    return obj;
+}
+
+dgtl_err_t DGTL_CALL dgtl_jit_engine_add_module(dgtl_jit_engine_t engine, dgtl_module_t mod) DGTL_NOEXCEPT {
+    if (!engine || !mod) return DGTL_ERR(1);
+    dgtl_object_t obj = dgtl_module_compile_to_object(mod, engine->tm);
+    if (!obj) return DGTL_ERR(2);
+    dgtl_err_t err = dgtl_jit_engine_add_object(engine, obj);
+    dgtl_object_destroy(obj);
+    return err;
+}
+
+size_t DGTL_CALL dgtl_module_get_function_count(dgtl_module_t mod) DGTL_NOEXCEPT {
+    return mod ? mod->functions.size() : 0;
+}
+
+const char* DGTL_CALL dgtl_module_get_function_name(dgtl_module_t mod, size_t index) DGTL_NOEXCEPT {
+    if (!mod || index >= mod->functions.size()) return "";
+    return mod->functions[index].first.c_str();
+}
+
+size_t DGTL_CALL dgtl_module_get_global_count(dgtl_module_t mod) DGTL_NOEXCEPT {
+    return mod ? mod->globals.size() : 0;
+}
+
+const char* DGTL_CALL dgtl_module_get_global_name(dgtl_module_t mod, size_t index) DGTL_NOEXCEPT {
+    if (!mod || index >= mod->globals.size()) return "";
+    return mod->globals[index].name.c_str();
+}
+
+/* 6. Machine IR Introspection */
+dgtl_err_t DGTL_CALL dgtl_mir_disassemble_stream(
+    dgtl_stream_t* s,
+    dgtl_target_machine_t tm,
+    dgtl_text_t* out_text) DGTL_NOEXCEPT {
+    if (!s || !out_text) return DGTL_ERR(1);
+    try {
+        dgtl::core::TargetMachine target_mach = tm ? tm->tm : dgtl::core::TargetMachine();
+        std::unordered_map<uint32_t, std::string> callees;
+        auto res = dgtl::codegen::CodegenDriver::compile(
+            s->ir_stream,
+            target_mach,
+            callees,
+            "DGTL_kernel_entry"
+        );
+        std::string disasm = "; DGTL Sovereign MIR Disassembly\n; Entry: DGTL_kernel_entry\n";
+        if (res.success) {
+            for (const auto& sec : res.object.sections()) {
+                disasm += "; Section: " + sec.name + " (" + std::to_string(sec.size()) + " bytes)\n";
+            }
+        } else {
+            disasm += "; Codegen failed: " + res.error_message + "\n";
+        }
+        out_text->length = disasm.size();
+        out_text->data = static_cast<char*>(std::malloc(out_text->length + 1));
+        if (out_text->data) {
+            std::memcpy(out_text->data, disasm.c_str(), out_text->length + 1);
+        }
+        return DGTL_OK;
+    } catch (...) {
+        return DGTL_ERR(2);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_mir_dump_machine_ir(
+    dgtl_stream_t* s,
+    dgtl_target_machine_t tm,
+    dgtl_text_t* out_text) DGTL_NOEXCEPT {
+    return dgtl_mir_disassemble_stream(s, tm, out_text);
+}
+
+dgtl_err_t DGTL_CALL dgtl_mir_disassemble_module(
+    dgtl_module_t mod,
+    dgtl_target_machine_t tm,
+    dgtl_text_t* out_text) DGTL_NOEXCEPT {
+    if (!mod || !out_text) return DGTL_ERR(1);
+    try {
+        std::string disasm = "; DGTL Sovereign MIR Disassembly for Module: " + mod->id + "\n";
+        for (const auto& [name, stream] : mod->functions) {
+            if (!stream) continue;
+            dgtl_text_t fn_text{};
+            if (DGTL_IS_OK(dgtl_mir_disassemble_stream(stream, tm, &fn_text))) {
+                disasm += "\n; --- Function: " + name + " ---\n";
+                if (fn_text.data) {
+                    disasm.append(fn_text.data, fn_text.length);
+                    dgtl_free_text(fn_text);
+                }
+            }
+        }
+        out_text->length = disasm.size();
+        out_text->data = static_cast<char*>(std::malloc(out_text->length + 1));
+        if (out_text->data) {
+            std::memcpy(out_text->data, disasm.c_str(), out_text->length + 1);
+        }
+        return DGTL_OK;
+    } catch (...) {
+        return DGTL_ERR(2);
+    }
+}
+
 } // extern "C"

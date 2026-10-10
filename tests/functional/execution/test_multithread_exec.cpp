@@ -9,7 +9,7 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl/core/Arena.hpp"
+import dgtl.arena;
 #include <iostream>
 #include <vector>
 #include <thread>

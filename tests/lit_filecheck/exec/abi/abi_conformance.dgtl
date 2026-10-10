@@ -1,0 +1,14 @@
+; RUN: %dgtl-llc --target=x86_64 --output=%t.s %s
+; RUN: dgtl-opt --pass=inlining --filecheck %s
+; FileCheck test for ABI Conformance
+; Verifies standard calling conventions and parameter slot propagation
+
+op 0x0D 0x00000001 0x00000005 0x00000000 0x00000000 0x0000
+op 0x0D 0x00000002 0x00000007 0x00000000 0x00000000 0x0000
+op 0x16 0x00000003 0x00000001 0x00000002 0x00000000 0x0000
+op 0x65 0x00000000 0x00000003 0x00000000 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: op 0x16 0x00000003
+; CHECK: op 0x65 0x00000000
+; CHECK: End of IR

@@ -1,0 +1,12 @@
+; RUN: dgtl-opt --pass=predication --filecheck %s
+; FileCheck test for Control Predication Optimization Pass
+
+op 0x0D 0x00000001 0x00000001 0x00000000 0x00000000 0x0000
+op 0x53 0x00000002 0x00000001 0x00000000 0x00000000 0x0040
+op 0x0B 0x00000003 0x00000002 0x00000000 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: Stream size: 3 nodes
+; CHECK: op 0x53 0x00000002
+; CHECK: op 0x0b 0x00000003
+; CHECK: End of IR

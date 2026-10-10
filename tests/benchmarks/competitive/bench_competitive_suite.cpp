@@ -646,14 +646,14 @@ static int run_stage_2(const fs::path& root) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr
-            << "Usage: DGTL_Industry_Grade_Competitive_Test_UPDATED "
-               "<DGTL_ROOT>\n";
-        return 2;
+    fs::path root = (argc >= 2) ? fs::path(argv[1]) : fs::current_path();
+    if (!fs::exists(root / "include" / "dgtl")) {
+        if (fs::exists(fs::path("..") / "include" / "dgtl")) {
+            root = "..";
+        } else if (fs::exists(fs::path("D:/TataG/DGTL"))) {
+            root = "D:/TataG/DGTL";
+        }
     }
-
-    const fs::path root = argv[1];
 
     if (!fs::exists(root)) {
         std::cerr << "DGTL root does not exist: " << root << "\n";

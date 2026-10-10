@@ -1354,7 +1354,11 @@ private:
                 return true;
 
             case MachineForm::AtomicOp:
-                return false;
+                if (emit_runtime_fastpath(out, function, instruction)) {
+                    return true;
+                }
+                out << "    dmb ish\n";
+                return true;
 
             case MachineForm::VectorGather512:
             case MachineForm::TensorOp:

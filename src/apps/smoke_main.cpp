@@ -59,11 +59,17 @@ import dgtl.isa.x64.x64_graphcoloring_regalloc;
 import dgtl.isa.x64.target;
 import dgtl.mir.regalloc.universal;
 import dgtl.isa.wasm.encoder;
-// import dgtl.linker.macho;
 import dgtl.linker.backend;
 import dgtl.linker.driver.api;
 import dgtl.linker.driver;
 import dgtl.linker.utils;
+
+namespace dgtl::backend::driver {
+    using namespace dgtl::linker::driver;
+}
+namespace dgtl::backend::driver::shared {
+    using namespace dgtl::linker::driver::shared;
+}
 
 namespace {
 

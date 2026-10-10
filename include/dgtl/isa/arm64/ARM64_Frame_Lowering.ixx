@@ -1,4 +1,15 @@
 /*
+ * Copyright (c) 2026 TataG Systems. All rights reserved.
+ *
+ * Project:     DGTL (Deep General-purpose Transformation Layer)
+ * Owner:       Divyanshu Tata
+ * Repository:  github.com/TataG-Systems/DGTL
+ *
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
+ */
+ 
+/*
  * DGTL AArch64/AAPCS64 frame lowering.
  *
  * This pass owns stack-slot offsets and the physical non-volatile GPR save set.
@@ -190,4 +201,4 @@ public:
     }
 };
 
-} // namespace dgtl::isa::arm64::lowering::arm64
+} // namespace dgtl::isa::lowering::arm64

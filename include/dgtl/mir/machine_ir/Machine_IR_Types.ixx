@@ -97,11 +97,11 @@ struct MachineRegister {
     }
 
     [[nodiscard]] constexpr bool is_virtual() const noexcept {
-        return kind == RegisterKind::Virtual;
+        return valid() && kind == RegisterKind::Virtual;
     }
 
     [[nodiscard]] constexpr bool is_physical() const noexcept {
-        return kind == RegisterKind::Physical;
+        return valid() && kind == RegisterKind::Physical;
     }
 
     [[nodiscard]] static constexpr MachineRegister virtual_reg(
@@ -669,7 +669,11 @@ struct alignas(64) MachineInstruction {
     InstrId id = INVALID_INSTR_ID;
     MachineForm form = MachineForm::Unhandled;
     MachineSemanticKind semantic_kind = MachineSemanticKind::None;
+    // Target-independent opcode used by MIR transforms, analyses and selectors.
     MachineOpcode opcode = INVALID_MACHINE_OPCODE;
+    // Concrete target opcode assigned exactly once during target lowering.
+    // Keeping this separate prevents target lowering from destroying MIR semantics.
+    MachineOpcode target_opcode_value = INVALID_MACHINE_OPCODE;
     MachineInstrFlag flags = MachineInstrFlag::None;
     MachineCFIData cfi_data{};
 
@@ -719,22 +723,22 @@ struct alignas(64) MachineInstruction {
     }
 
     [[nodiscard]] bool has_target_opcode() const noexcept {
-        return is_target_opcode(opcode);
+        return is_target_opcode(target_opcode_value);
     }
 
     [[nodiscard]] MachineOpcode target_opcode() const noexcept {
-        return opcode;
+        return target_opcode_value;
     }
 
     [[nodiscard]] bool has_opcode() const noexcept {
-        return opcode != INVALID_MACHINE_OPCODE;
+        return is_generic_opcode(opcode) || has_target_opcode();
     }
 
     [[nodiscard]] bool assign_target_opcode_once(MachineOpcode target_opcode) noexcept {
         if (!is_target_opcode(target_opcode) || has_target_opcode()) {
             return false;
         }
-        opcode = target_opcode;
+        target_opcode_value = target_opcode;
         return true;
     }
 
@@ -742,7 +746,7 @@ struct alignas(64) MachineInstruction {
         return semantic_kind != MachineSemanticKind::None;
     }
 
-    [[nodiscard]] bool has_flag(MachineInstrFlag flag) const noexcept {
+    [[nodiscard]] constexpr bool has_flag(MachineInstrFlag flag) const noexcept {
         return (flags & flag) != MachineInstrFlag::None;
     }
 
@@ -755,19 +759,40 @@ struct alignas(64) MachineInstruction {
     }
 
     [[nodiscard]] constexpr bool is_terminator() const noexcept {
-        return has_flag(MachineInstrFlag::Terminator);
+        return has_flag(MachineInstrFlag::Terminator) ||
+               form == MachineForm::Return ||
+               form == MachineForm::Goto ||
+               form == MachineForm::BranchCond ||
+               form == MachineForm::BranchCompare ||
+               opcode == GM_RETURN ||
+               opcode == GM_GOTO ||
+               opcode == GM_BR_COND ||
+               opcode == GM_BR_COMPARE ||
+               (opcode >= GM_BR_COMPARE_EQ && opcode <= GM_BR_COMPARE_GE);
     }
 
     [[nodiscard]] constexpr bool is_branch() const noexcept {
-        return has_flag(MachineInstrFlag::Branch);
+        return has_flag(MachineInstrFlag::Branch) ||
+               form == MachineForm::Goto ||
+               form == MachineForm::BranchCond ||
+               form == MachineForm::BranchCompare ||
+               opcode == GM_GOTO ||
+               opcode == GM_BR_COND ||
+               opcode == GM_BR_COMPARE ||
+               (opcode >= GM_BR_COMPARE_EQ && opcode <= GM_BR_COMPARE_GE);
     }
 
     [[nodiscard]] constexpr bool is_call() const noexcept {
-        return has_flag(MachineInstrFlag::Call);
+        return has_flag(MachineInstrFlag::Call) ||
+               form == MachineForm::Call ||
+               opcode == GM_CALL ||
+               opcode == GM_CALL_VARIADIC;
     }
 
     [[nodiscard]] constexpr bool is_return() const noexcept {
-        return has_flag(MachineInstrFlag::Return);
+        return has_flag(MachineInstrFlag::Return) ||
+               form == MachineForm::Return ||
+               opcode == GM_RETURN;
     }
 
     [[nodiscard]] constexpr bool is_load() const noexcept {
@@ -779,7 +804,11 @@ struct alignas(64) MachineInstruction {
     }
 
     [[nodiscard]] constexpr bool is_barrier() const noexcept {
-        return has_flag(MachineInstrFlag::Barrier);
+        return has_flag(MachineInstrFlag::Barrier) ||
+               form == MachineForm::Return ||
+               form == MachineForm::Goto ||
+               opcode == GM_RETURN ||
+               opcode == GM_GOTO;
     }
 
     [[nodiscard]] constexpr bool is_atomic() const noexcept {
@@ -853,12 +882,12 @@ struct alignas(64) MachineInstruction {
             return static_cast<ComparisonPredicate>(semantic_provenance);
         }
         switch (semantic_provenance) {
-            case 140u: return ComparisonPredicate::Equal;
-            case 141u: return ComparisonPredicate::NotEqual;
-            case 142u: return ComparisonPredicate::SignedLessThan;
-            case 143u: return ComparisonPredicate::SignedLessEqual;
-            case 144u: return ComparisonPredicate::SignedGreaterThan;
-            case 145u: return ComparisonPredicate::SignedGreaterEqual;
+            case 40u: case 140u: case 0x0380u: return ComparisonPredicate::Equal;
+            case 41u: case 141u: case 0x0381u: return ComparisonPredicate::NotEqual;
+            case 42u: case 142u: case 0x0382u: return ComparisonPredicate::SignedLessThan;
+            case 43u: case 143u: case 0x0383u: return ComparisonPredicate::SignedLessEqual;
+            case 44u: case 144u: case 0x0384u: return ComparisonPredicate::SignedGreaterThan;
+            case 45u: case 145u: case 0x0385u: return ComparisonPredicate::SignedGreaterEqual;
             default: return ComparisonPredicate::Equal;
         }
     }

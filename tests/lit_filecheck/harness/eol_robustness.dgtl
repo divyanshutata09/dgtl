@@ -1,18 +1,14 @@
 ; RUN: dgtl-opt --pass=predication --filecheck %s
-; Cross-Platform EOL Normalization Test
+; Cross-Platform EOL Robustness Test
 ; This test validates that FileCheck works correctly with both
 ; Windows (CRLF: \r\n) and Unix (LF: \n) line endings.
-; The tool normalizes all \r characters before processing.
 
-op 0x06 0x00000001 0x00000000 0x00000000 0x00000000 0x0000
-op 0x07 0x00000002 0x00000001 0x00000001 0x00000000 0x0000
+op 0x0A 0x00000001 0x00000000 0x00000000 0x00000000 0x0000
+op 0x0B 0x00000002 0x00000001 0x00000001 0x00000000 0x0000
 
 ; CHECK: DGTL IR Text Format
-; CHECK-NEXT: Stream size:
-; CHECK: Generated:
-; CHECK: op 0x06
-; CHECK-NEXT: op 0x07
+; CHECK: Stream size: 2 nodes
+; CHECK: op 0x0a 0x00000001
+; CHECK-NEXT: op 0x0b 0x00000002
 ; CHECK-NOT: FAILED
-; CHECK-NOT: Windows
-; CHECK-NOT: Unix
 ; CHECK: End of IR

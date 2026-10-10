@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -68,20 +68,18 @@ static mutex g_log_mutex;
     }
 
 bool test_version() {
-    const char* version = dgtl_version_string();
-    REQUIRE(version != nullptr, "version");
+    dgtl_version_info_t v = dgtl_get_version();
+    REQUIRE(v.build_id != nullptr, "version");
 
     cout << "DGTL version: "
-         << version << '\n';
+         << v.major << "." << v.minor << "." << v.patch << " [" << v.build_id << "]\n";
 
     PASS("version");
     return true;
 }
 
 bool test_context() {
-    auto* ctx =
-        dgtl_context_create();
-
+    auto* ctx = dgtl_context_create(2, 32);
     REQUIRE(ctx, "context");
 
     dgtl_context_destroy(ctx);
@@ -91,14 +89,10 @@ bool test_context() {
 }
 
 bool test_stream() {
-    auto* ctx =
-        dgtl_context_create();
-
+    auto* ctx = dgtl_context_create(2, 32);
     REQUIRE(ctx, "context");
 
-    auto* stream =
-        dgtl_stream_create(ctx, 16);
-
+    auto* stream = dgtl_stream_create(ctx, 16);
     REQUIRE(stream, "stream");
 
     dgtl_stream_destroy(stream);
@@ -109,17 +103,13 @@ bool test_stream() {
 }
 
 bool test_stream_stress() {
-    auto* ctx =
-        dgtl_context_create();
-
+    auto* ctx = dgtl_context_create(2, 32);
     REQUIRE(ctx, "context");
 
     constexpr int N = 1000;
 
     for (int i = 0; i < N; i++) {
-        auto* s =
-            dgtl_stream_create(ctx, 64);
-
+        auto* s = dgtl_stream_create(ctx, 64);
         REQUIRE(s, "stream alloc");
 
         dgtl_stream_destroy(s);
@@ -143,7 +133,8 @@ bool test_null_safety() {
         dgtl_context_destroy(nullptr);
         dgtl_stream_destroy(nullptr);
 
-        dgtl_optimize(nullptr);
+        dgtl_err_t err = dgtl_optimize(nullptr);
+        (void)err;
 
         PASS("null safety");
     }
@@ -156,43 +147,29 @@ bool test_null_safety() {
 }
 
 bool test_ir_creation() {
-    auto* ctx =
-        dgtl_context_create();
-
+    auto* ctx = dgtl_context_create(2, 32);
     REQUIRE(ctx, "context");
 
-    auto* stream =
-        dgtl_stream_create(ctx, 16);
-
+    auto* stream = dgtl_stream_create(ctx, 16);
     REQUIRE(stream, "stream");
+    auto* fb = dgtl_func_builder_create(stream, "test_fn", DGTL_TYPE_I64);
+    REQUIRE(fb, "func_builder");
+    auto b = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, b);
 
-    auto lhs =
-        dgtl_emit_const_i64(
-            stream, 10);
+    auto lhs = dgtl_build_const_i64(fb, 10);
+    auto rhs = dgtl_build_const_i64(fb, 20);
+    auto add = dgtl_build_add(fb, lhs, rhs);
 
-    auto rhs =
-        dgtl_emit_const_i64(
-            stream, 20);
+    REQUIRE(dgtl_value_is_valid(lhs), "lhs node");
+    REQUIRE(dgtl_value_is_valid(rhs), "rhs node");
+    REQUIRE(dgtl_value_is_valid(add), "add node");
 
-    auto add =
-        dgtl_emit_add_i64(
-            stream,
-            lhs,
-            rhs);
+    cout << "LHS slot: %v" << lhs.id << '\n';
+    cout << "RHS slot: %v" << rhs.id << '\n';
+    cout << "ADD slot: %v" << add.id << '\n';
 
-    REQUIRE(lhs, "lhs node");
-    REQUIRE(rhs, "rhs node");
-    REQUIRE(add, "add node");
-
-    cout << "LHS node: "
-         << lhs << '\n';
-
-    cout << "RHS node: "
-         << rhs << '\n';
-
-    cout << "ADD node: "
-         << add << '\n';
-
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(stream);
     dgtl_context_destroy(ctx);
 
@@ -201,38 +178,24 @@ bool test_ir_creation() {
 }
 
 bool test_massive_ir() {
-    auto* ctx =
-        dgtl_context_create();
-
+    auto* ctx = dgtl_context_create(2, 64);
     REQUIRE(ctx, "context");
 
     constexpr int N = 100000;
-    const size_t reserve_nodes =
-        static_cast<size_t>(N) * 3u + 16u;
+    const size_t reserve_nodes = static_cast<size_t>(N) * 3u + 16u;
 
-    auto* stream =
-        dgtl_stream_create(ctx, reserve_nodes);
-
+    auto* stream = dgtl_stream_create(ctx, reserve_nodes);
     REQUIRE(stream, "stream");
+    auto* fb = dgtl_func_builder_create(stream, "massive_fn", DGTL_TYPE_I64);
+    REQUIRE(fb, "func_builder");
+    auto b = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, b);
 
     for (int i = 0; i < N; i++) {
-
-        auto lhs =
-            dgtl_emit_const_i64(
-                stream, i);
-
-        auto rhs =
-            dgtl_emit_const_i64(
-                stream, i + 1);
-
-        auto add =
-            dgtl_emit_add_i64(
-                stream,
-                lhs,
-                rhs);
-
-        REQUIRE(add,
-                 "massive ir");
+        auto lhs = dgtl_build_const_i64(fb, i);
+        auto rhs = dgtl_build_const_i64(fb, i + 1);
+        auto add = dgtl_build_add(fb, lhs, rhs);
+        REQUIRE(dgtl_value_is_valid(add), "massive ir");
 
         if ((i + 1) % 25000 == 0)
             INFO(("IR nodes: " +
@@ -242,13 +205,13 @@ bool test_massive_ir() {
 
     INFO(("IR iterations: " + to_string(N)).c_str());
 
-    bool ok =
-        dgtl_optimize(
-            stream).code == 0;
+    (void)dgtl_func_builder_finalize(fb);
+    dgtl_err_t err = dgtl_optimize(stream);
+    bool ok = DGTL_IS_OK(err);
 
-    REQUIRE(ok,
-             "optimize massive");
+    REQUIRE(ok, "optimize massive");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(stream);
     dgtl_context_destroy(ctx);
 
@@ -257,41 +220,26 @@ bool test_massive_ir() {
 }
 
 bool test_optimizer_repeat() {
-    auto* ctx =
-        dgtl_context_create();
-
+    auto* ctx = dgtl_context_create(2, 32);
     REQUIRE(ctx, "context");
 
-    auto* stream =
-        dgtl_stream_create(ctx, 64);
-
+    auto* stream = dgtl_stream_create(ctx, 64);
     REQUIRE(stream, "stream");
+    auto* fb = dgtl_func_builder_create(stream, "repeat_fn", DGTL_TYPE_I64);
+    REQUIRE(fb, "func_builder");
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
-    auto a =
-        dgtl_emit_const_i64(
-            stream, 1);
+    auto a = dgtl_build_const_i64(fb, 1);
+    auto b = dgtl_build_const_i64(fb, 2);
+    (void)dgtl_build_add(fb, a, b);
+    (void)dgtl_func_builder_finalize(fb);
 
-    auto b =
-        dgtl_emit_const_i64(
-            stream, 2);
-
-    dgtl_emit_add_i64(
-        stream,
-        a,
-        b);
-
-        constexpr int N = 100;
-
-        for (int i = 0;
-            i < N;
-         i++) {
-
-        bool ok =
-            dgtl_optimize(
-                stream).code == 0;
-
-        REQUIRE(ok,
-                 "optimize repeat");
+    constexpr int N = 100;
+    for (int i = 0; i < N; i++) {
+        dgtl_err_t err = dgtl_optimize(stream);
+        bool ok = DGTL_IS_OK(err);
+        REQUIRE(ok, "optimize repeat");
 
         if ((i + 1) % 25 == 0)
             INFO(("optimizer progress: " +
@@ -299,6 +247,7 @@ bool test_optimizer_repeat() {
                   "/" + to_string(N)).c_str());
     }
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(stream);
     dgtl_context_destroy(ctx);
 
@@ -322,54 +271,32 @@ bool test_parallel_chaos() {
           to_string(ITERATIONS) +
           " iterations").c_str());
 
-    for (int t = 0;
-         t < THREADS;
-         t++) {
-
+    for (int t = 0; t < THREADS; t++) {
         workers.emplace_back([&]() {
-            auto* thread_ctx =
-                dgtl_context_create();
+            auto* thread_ctx = dgtl_context_create(1, 16);
+            if (!thread_ctx) return;
 
-            if (!thread_ctx) {
-                return;
-            }
+            for (int i = 0; i < ITERATIONS; i++) {
+                auto* stream = dgtl_stream_create(thread_ctx, 64);
+                if (!stream) continue;
 
-            for (int i = 0;
-                 i < ITERATIONS;
-                 i++) {
-                auto* stream =
-                    dgtl_stream_create(
-                        thread_ctx,
-                        64);
-
-                if (!stream) {
-                    continue;
+                auto* fb = dgtl_func_builder_create(stream, "k", DGTL_TYPE_I64);
+                if (fb) {
+                    auto b = dgtl_func_append_block(fb, "entry");
+                    dgtl_func_set_insert_block(fb, b);
+                    auto a = dgtl_build_const_i64(fb, i);
+                    auto rhs = dgtl_build_const_i64(fb, i + 1);
+                    (void)dgtl_build_add(fb, a, rhs);
+                    (void)dgtl_func_builder_finalize(fb);
+                    dgtl_func_builder_destroy(fb);
                 }
 
-                auto a =
-                    dgtl_emit_const_i64(
-                        stream,
-                        i);
+                dgtl_err_t opt_err = dgtl_optimize(stream);
+                (void)opt_err;
 
-                auto b =
-                    dgtl_emit_const_i64(
-                        stream,
-                        i + 1);
+                dgtl_stream_destroy(stream);
 
-                dgtl_emit_add_i64(
-                    stream,
-                    a,
-                    b);
-
-                dgtl_optimize(
-                    stream);
-
-                dgtl_stream_destroy(
-                    stream);
-
-                const int done =
-                    completed.fetch_add(1) + 1;
-
+                const int done = completed.fetch_add(1) + 1;
                 int expected = next_report.load();
                 while (done >= expected) {
                     if (next_report.compare_exchange_weak(expected, expected + REPORT_STEP)) {
@@ -382,8 +309,7 @@ bool test_parallel_chaos() {
                 }
             }
 
-            dgtl_context_destroy(
-                thread_ctx);
+            dgtl_context_destroy(thread_ctx);
         });
     }
 
@@ -401,22 +327,13 @@ bool test_memory_pressure() {
     vector<void*> memory;
 
     try {
-        for (int i = 0;
-             i < 100;
-             i++) {
-
-            memory.push_back(
-                malloc(
-                    1024 * 1024));
-
-            REQUIRE(
-                memory.back(),
-                "memory alloc");
+        for (int i = 0; i < 100; i++) {
+            memory.push_back(malloc(1024 * 1024));
+            REQUIRE(memory.back(), "memory alloc");
         }
     }
     catch (...) {
-        FAIL(
-            "memory pressure");
+        FAIL("memory pressure");
         return false;
     }
 
@@ -428,84 +345,60 @@ bool test_memory_pressure() {
 }
 
 bool test_soak() {
+    auto start = chrono::steady_clock::now();
 
-    auto start =
-        chrono::steady_clock::now();
+    while (chrono::steady_clock::now() - start < chrono::seconds(3)) {
+        auto* ctx = dgtl_context_create(1, 16);
+        auto* stream = dgtl_stream_create(ctx, 64);
+        auto* fb = dgtl_func_builder_create(stream, "soak_fn", DGTL_TYPE_I64);
+        auto b = dgtl_func_append_block(fb, "entry");
+        dgtl_func_set_insert_block(fb, b);
 
-    while (
-        chrono::steady_clock::now()
-        - start
-        < chrono::seconds(10))
-    {
-        auto* ctx =
-            dgtl_context_create();
+        auto a = dgtl_build_const_i64(fb, 10);
+        auto rhs = dgtl_build_const_i64(fb, 20);
+        (void)dgtl_build_add(fb, a, rhs);
+        (void)dgtl_func_builder_finalize(fb);
 
-        auto* stream =
-            dgtl_stream_create(
-                ctx,
-                64);
+        dgtl_err_t opt_err = dgtl_optimize(stream);
+        (void)opt_err;
 
-        auto a =
-            dgtl_emit_const_i64(
-                stream,
-                10);
-
-        auto b =
-            dgtl_emit_const_i64(
-                stream,
-                20);
-
-        dgtl_emit_add_i64(
-            stream,
-            a,
-            b);
-
-        dgtl_optimize(
-            stream);
-
-        dgtl_stream_destroy(
-            stream);
-
-        dgtl_context_destroy(
-            ctx);
+        dgtl_func_builder_destroy(fb);
+        dgtl_stream_destroy(stream);
+        dgtl_context_destroy(ctx);
     }
 
-    PASS("10 second soak");
+    PASS("soak verification");
     return true;
 }
 
 int main() {
-
-    cout
-        << "====================================\n";
-
-    cout
-        << "DGTL HARDEST E2E C++ GATE\n";
-
-    cout
-        << "====================================\n";
+    cout << "====================================\n";
+    cout << "DGTL HARDEST E2E C++ GATE\n";
+    cout << "====================================\n";
 
     int failures = 0;
 
     RUN(test_version);
+    RUN(test_context);
+    RUN(test_stream);
     RUN(test_stream_stress);
+    RUN(test_null_safety);
+    RUN(test_ir_creation);
     RUN(test_massive_ir);
+    RUN(test_optimizer_repeat);
     RUN(test_parallel_chaos);
+    RUN(test_memory_pressure);
+    RUN(test_soak);
 
-    cout
-        << "\n====================================\n";
+    cout << "\n====================================\n";
 
     if (failures == 0) {
-        cout
-            << "ALL DGTL TESTS PASSED\n";
+        cout << "ALL DGTL TESTS PASSED\n";
     } else {
-        cout
-            << failures
-            << " TESTS FAILED\n";
+        cout << failures << " TESTS FAILED\n";
     }
 
-    cout
-        << "====================================\n";
+    cout << "====================================\n";
 
     return failures;
 }

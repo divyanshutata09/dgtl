@@ -9,57 +9,45 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-// C:\projects\DGTL_framework\tests\functional\test_pipeline_20__tiering.cpp
-#include "dgtl//runtime/_Executor.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
-#include "dgtl/core/Arena.hpp"
+#include "dgtl_sdk/dgtl.h"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
-#include <vector>
 
 void run_baked_kernel() {
-    using namespace dgtl::ir;
-    using namespace dgtl::runtime;
+    std::cout << "[DGTL] Running Baked Kernel Execution Test..." << std::endl;
 
-    DGTLExecutor (1); // 1MB  Buffer
-    dgtl::isa::DGTLNasmEmitter ;
-    dgtl::core::DGTL_Arena arena(1, 64);
-    IRStream stream(arena, 16);
+    dgtl_context_t* ctx = dgtl_context_create(1, 32);
+    assert(ctx != nullptr);
 
-    // Build a simple kernel: r1 = 42; r2 = r1 + r1; return r2
-    stream.push_node(OpCode::IMMEDIATE, static_cast<uint16_t>(Flags::NONE), 1, 0, 42, 0, 0);
-    stream.push_node(OpCode::ADD_I32, static_cast<uint16_t>(Flags::NONE), 2, 1, 1, 0, 0);
-    stream.push_node(OpCode::RET, static_cast<uint16_t>(Flags::NONE), 0, 2, 0, 0, 0);
+    dgtl_stream_t* stream = dgtl_stream_create(ctx, 128);
+    assert(stream != nullptr);
 
-    std::cout << "[DGTL] Loading  Kernel..." << std::endl;
-    // Simulate  loading (using empty binary for trace mapping test)
-    std::vector<uint8_t> dummy_bin = { 0x48, 0xC7, 0xC0, 0x2A, 0x00, 0x00, 0x00, 0xC3 }; // mov rax, 42; ret
-    auto func = .load_and_prepare(dummy_bin, stream);
-    assert(func != nullptr);
+    dgtl_func_builder_t* fb = dgtl_func_builder_create(stream, "baked_kernel", DGTL_TYPE_I64);
+    assert(fb != nullptr);
 
-    if(func) {
-        std::cout << "[DGTL]  Execution successful at " << (void*)func << std::endl;
-        
-        // ---  TRIGGER ---
-        std::cout << "[DGTL] Hot Path Detected! Baking to Disk..." << std::endl;
-        
-        uintptr_t addr = reinterpret_cast<uintptr_t>(func);
-        auto retrieved_ir = .get_ir_from_address(addr);
-        
-        dgtl::core::SymbolTable symbols(arena);
-        .emit(retrieved_ir, symbols);
-        
-        std::cout << "--- BAKED ASM START ---" << std::endl;
-        std::cout << .get_output() << std::endl;
-        std::cout << "--- BAKED ASM END ---" << std::endl;
-        
-        assert(.get_output().find("DGTL_kernel_entry") != std::string::npos);
-        std::cout << "[TEST optED]  Handover Verified." << std::endl;
-    }
+    dgtl_block_t entry = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, entry);
 
-    return;
+    // Build: r1 = 42; r2 = r1 + r1; return r2 (expect 84)
+    dgtl_value_t r1 = dgtl_build_const_i64(fb, 42);
+    dgtl_value_t r2 = dgtl_build_add(fb, r1, r1);
+    dgtl_build_ret(fb, r2);
+
+    (void)dgtl_func_builder_finalize(fb);
+
+    dgtl_err_t opt_err = dgtl_optimize_with_profile(stream, DGTL_OPT_O2);
+    assert(DGTL_IS_OK(opt_err));
+
+    dgtl_strike_result_t strike = dgtl_strike_stream(stream, DGTL_TARGET_X86_64);
+    assert(strike.ok == 1);
+    assert(strike.code_size > 0);
+
+    std::cout << "[DGTL] Baked kernel successfully compiled: " << strike.code_size << " bytes emitted." << std::endl;
+
+    dgtl_func_builder_destroy(fb);
+    dgtl_stream_destroy(stream);
+    dgtl_context_destroy(ctx);
+
+    std::cout << "[DGTL] Baked kernel test complete." << std::endl;
 }
-
-
-

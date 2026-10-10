@@ -12,32 +12,36 @@
 module;
 
 #include <cstdlib>
-
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 #include <utility>
 #include <string_view>
-#include <mutex>        
-#include <shared_mutex> 
+#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
 
 export module dgtl.api.hybrid_session;
 
-// Import external monolithic module architectures natively
 import dgtl.ir;
 import dgtl.runtime.numa;
 import dgtl.compiler_context;
 import dgtl.runtime.bulletins;
-import dgtl.ir.pipeline.pass_manager_orchestrator;
-import dgtl.jit.jit_orchestrator;
 import dgtl.runtime.tls;
-import dgtl.flat_map; 
-import dgtl.sync;     
 import dgtl.mir;
 import dgtl.mir.machine_ir;
+import dgtl.mir.pipeline;
+import dgtl.object.file;
+import dgtl.object.section;
+import dgtl.object.symbol;
+import dgtl.target;
+import dgtl.codegen.driver;
+import dgtl.jit.object_loader;
+import dgtl.linker.driver;
+import dgtl.linker.driver_api;
 
-// Import local base class definition safely via its sibling API partition shortcut
 import dgtl.api.execution_engine;
 import dgtl.formal;
 
@@ -47,138 +51,237 @@ namespace api {
 /**
  * @class HybridSession
  * @brief Adaptive tiered execution engine.
- * Dynamically selects between JIT and AOT based on runtime characteristics
- * of code being compiled. JIT handles cold paths with minimal latency,
- * while AOT handles hot loops with maximum optimization intensity.
- * Intelligent tier switching optimizes for the best of both worlds.
+ * Dynamically selects between JIT and AOT based on execution tier.
+ * Powered by DGTL's sovereign compilation pipeline.
  */
 class alignas(64) HybridSession final : public ExecutionEngine {
 public:
     using ExecutionEngine::get_symbol_address;
 
-    /**
-     * @brief Create a Hybrid session for the given context.
-     * @param context The execution context
-     */
     explicit HybridSession(Context& context)
         : context_(context),
-          pipeline_(),
-          orchestrator_(*context.get_impl(), context.get_impl()->get_arena()) {
-        (void)pipeline_.initialize();
+          target_machine_(),
+          pipeline_options_() {
     }
 
     ~HybridSession() override = default;
 
-    /**
-     * @brief Compile IRStream with adaptive tier selection.
-     * @param stream The IR to compile
-     * @return true if compilation succeeded
-     */
     [[nodiscard]] bool compile(ir::IRStream& stream) override {
-
-        if (stream.is_null()) return false;
+        if (stream.is_null() || stream.size() == 0) return false;
 
         dgtl::runtime::TLSFlushMerge flusher;
         flusher.merge_concurrent(stream);
 
-        auto status = pipeline_.execute(stream);
-        if (status != dgtl::pipeline::HybridStatus::Success) {
+        std::unordered_map<uint32_t, std::string> slot_syms_copy;
+        std::unordered_map<std::string, uintptr_t> host_syms_copy;
+        {
+            std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+            slot_syms_copy = slot_to_symbol_;
+            host_syms_copy = host_symbols_;
+        }
 
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(
+            stream,
+            target_machine_,
+            slot_syms_copy,
+            "DGTL_kernel_entry",
+            pipeline_options_
+        );
+
+        if (!codegen_res.success) {
             return false;
         }
 
-        if (pipeline_.get_current_tier() == dgtl::pipeline::ExecutionTier::JIT_Fast) {
+        auto load_res = dgtl::jit::JITObjectLoader::load(
+            codegen_res.object,
+            host_syms_copy,
+            "DGTL_kernel_entry"
+        );
 
-            uintptr_t addr = orchestrator_.compile_to_address(stream);
+        if (!load_res.success) {
+            return false;
+        }
 
-            if (addr != 0) {
-                std::unique_lock<dgtl::utils::sync::FastSharedSpinLock> lock(symbol_mutex_);
-                
-                uint64_t logic_hash = stream.generate_logic_hash();
-                symbol_map_.insert_or_assign(std::to_string(logic_hash), addr);
+        uintptr_t entry_addr = load_res.module.entry_point();
 
-                for (size_t i = 0; i < stream.size(); ++i) {
-                    const auto node = stream.get_node_readonly(i);
-                    if (node.opcode == ir::OpCode::LABEL) {
-                        std::string_view name = dgtl::runtime::try_lookup_string(node.result_id);
-                        if (!name.empty()) {
-                            const uint32_t label_id = node.result_id != ir::INVALID_SLOT ? node.result_id : node.op_a;
-                            const size_t offset = orchestrator_.get_label_offset(label_id);
-                            symbol_map_.insert_or_assign(std::string(name), addr + offset);
-                        }
+        {
+            std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
+            if (!cached_object_file_) {
+                cached_object_file_ = std::make_unique<dgtl::object::ObjectFile>();
+            }
+            *cached_object_file_ = codegen_res.object;
+
+            loaded_modules_.push_back(std::move(load_res.module));
+            const auto* base = static_cast<const uint8_t*>(loaded_modules_.back().memory());
+            if (base) {
+                for (const auto& sym : codegen_res.object.symbols()) {
+                    if (sym.is_defined() && !sym.name.empty()) {
+                        symbol_map_[sym.name] = reinterpret_cast<uint64_t>(base + sym.value);
                     }
                 }
             }
-            if (symbol_map_.find("DGTL_kernel_entry") == nullptr) {
-                symbol_map_.insert_or_assign("DGTL_kernel_entry", addr);
-                symbol_map_.insert_or_assign("main", addr);
-            }
-        } else {
-
+            symbol_map_["DGTL_kernel_entry"] = entry_addr;
+            symbol_map_["main"] = entry_addr;
         }
 
         return true;
     }
 
-    /**
-     * @brief Sovereign MIR MachineFunction compilation.
-     */
     [[nodiscard]] bool compile_mir(const machine::MachineFunction& fn) override {
-        uintptr_t addr = orchestrator_.compile_mir_to_address(fn);
-        if (addr == 0) return false;
-        std::unique_lock<dgtl::utils::sync::FastSharedSpinLock> lock(symbol_mutex_);
-        const std::string name_key = fn.name().empty()
-            ? ("dgtl_mf_" + std::to_string(reinterpret_cast<uintptr_t>(&fn)))
-            : std::string(fn.name());
-        symbol_map_.insert_or_assign(name_key, addr);
-        symbol_map_.insert_or_assign("DGTL_kernel_entry", addr);
-        symbol_map_.insert_or_assign("main", addr);
+        std::unordered_map<uint32_t, std::string> slot_syms_copy;
+        {
+            std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+            slot_syms_copy = slot_to_symbol_;
+        }
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(
+            fn,
+            target_machine_,
+            slot_syms_copy,
+            fn.name().empty() ? "DGTL_kernel_entry" : fn.name()
+        );
+        if (!codegen_res.success) {
+            return false;
+        }
+        return compile_object(codegen_res.object);
+    }
+
+    [[nodiscard]] bool compile_object(const dgtl::object::ObjectFile& obj) override {
+        std::unordered_map<std::string, uintptr_t> host_syms_copy;
+        {
+            std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+            host_syms_copy = host_symbols_;
+        }
+
+        auto load_res = dgtl::jit::JITObjectLoader::load(obj, host_syms_copy, "DGTL_kernel_entry");
+        if (!load_res.success) {
+            return false;
+        }
+
+        uintptr_t entry_addr = load_res.module.entry_point();
+
+        {
+            std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
+            if (!cached_object_file_) {
+                cached_object_file_ = std::make_unique<dgtl::object::ObjectFile>();
+            }
+            *cached_object_file_ = obj;
+
+            loaded_modules_.push_back(std::move(load_res.module));
+            const auto* base = static_cast<const uint8_t*>(loaded_modules_.back().memory());
+            if (base) {
+                for (const auto& sym : obj.symbols()) {
+                    if (sym.is_defined() && !sym.name.empty()) {
+                        symbol_map_[sym.name] = reinterpret_cast<uint64_t>(base + sym.value);
+                    }
+                }
+            }
+            symbol_map_["DGTL_kernel_entry"] = entry_addr;
+            symbol_map_["main"] = entry_addr;
+        }
+
         return true;
     }
 
-    /**
-     * @brief Resolve a symbol by name from compiled code.
-     * @param symbol_name The name of the symbol
-     * @return Address of compiled code (0 if not found)
-     */
+    [[nodiscard]] bool emit_object(std::string_view output_path) noexcept override {
+        std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+        if (!cached_object_file_) return false;
+
+        std::vector<uint8_t> bytes;
+        dgtl::linker::LinkerDriver driver;
+        dgtl::linker::OutputFormat fmt = dgtl::linker::OutputFormat::COFFObject;
+        if (cached_object_file_->format() == dgtl::object::ObjectFormat::ELF) {
+            fmt = dgtl::linker::OutputFormat::ELFObject;
+        } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::MachO) {
+            fmt = dgtl::linker::OutputFormat::MachOObject;
+        } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::WASM) {
+            fmt = dgtl::linker::OutputFormat::WASMBinary;
+        } else {
+#if defined(_WIN32) || defined(_WIN64)
+            fmt = dgtl::linker::OutputFormat::COFFObject;
+#else
+            fmt = dgtl::linker::OutputFormat::ELFObject;
+#endif
+        }
+
+        if (!driver.emit(fmt, *cached_object_file_, bytes) || bytes.empty()) {
+            return false;
+        }
+
+        std::ofstream out(std::string(output_path), std::ios::binary);
+        if (!out.is_open()) return false;
+        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        return out.good();
+    }
+
+    [[nodiscard]] bool emit_binary(std::string_view output_path) noexcept override {
+        std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+        if (!cached_object_file_) return false;
+
+        dgtl::linker::LinkerDriver driver;
+        std::vector<uint8_t> binary_image;
+        dgtl::linker::OutputFormat fmt = dgtl::linker::OutputFormat::PEExecutable;
+        if (target_machine_.get_arch() == core::ArchType::WASM_SIMD ||
+            cached_object_file_->format() == dgtl::object::ObjectFormat::WASM) {
+            fmt = dgtl::linker::OutputFormat::WASMBinary;
+        } else {
+#if defined(_WIN32) || defined(_WIN64)
+            fmt = dgtl::linker::OutputFormat::PEExecutable;
+#else
+            fmt = dgtl::linker::OutputFormat::ELFExecutable;
+#endif
+        }
+
+        if (!driver.emit(fmt, *cached_object_file_, binary_image) || binary_image.empty()) {
+            dgtl::backend::aot::DGTLAOTLinker linker;
+            if (!linker.build_pe_executable_from_object(*cached_object_file_, binary_image) || binary_image.empty()) {
+                return false;
+            }
+        }
+
+        std::ofstream out(std::string(output_path), std::ios::binary);
+        if (!out.is_open()) return false;
+        out.write(reinterpret_cast<const char*>(binary_image.data()), static_cast<std::streamsize>(binary_image.size()));
+        return out.good();
+    }
+
+    [[nodiscard]] int64_t execute(const machine::MachineFunction& fn, void* ctx = nullptr) override {
+        void* ptr = get_function_pointer(fn.name());
+        if (!ptr) {
+            if (!compile_mir(fn)) return -1;
+            ptr = get_function_pointer(fn.name());
+            if (!ptr) ptr = get_function_pointer("DGTL_kernel_entry");
+            if (!ptr) return -1;
+        }
+        using NativeFn = int64_t (*)(void*);
+        return reinterpret_cast<NativeFn>(ptr)(ctx);
+    }
+
     [[nodiscard]] uint64_t get_symbol_address(const char* symbol_name) noexcept override {
         if (!symbol_name) return 0;
-        
-        std::shared_lock<dgtl::utils::sync::FastSharedSpinLock> lock(symbol_mutex_);
-        auto* addr = symbol_map_.find(symbol_name);
-        if (addr) {
-            return *addr;
+        std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+        auto it = symbol_map_.find(symbol_name);
+        if (it != symbol_map_.end()) {
+            return it->second;
         }
-        return orchestrator_.lookup_global_symbol(symbol_name);
+        auto h_it = host_symbols_.find(symbol_name);
+        if (h_it != host_symbols_.end()) {
+            return h_it->second;
+        }
+        return 0;
     }
 
     void register_host_symbol(const std::string& symbol_name, uint64_t address) override {
-        orchestrator_.register_runtime_function(symbol_name, static_cast<uintptr_t>(address));
+        std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
+        host_symbols_[symbol_name] = static_cast<uintptr_t>(address);
     }
 
     void register_host_symbol_slot(uint32_t slot, uint64_t address) override {
-        orchestrator_.register_runtime_function_slot(slot, static_cast<uintptr_t>(address));
+        std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
+        const std::string name = std::string("host_sym_") + std::to_string(slot);
+        host_symbols_[name] = static_cast<uintptr_t>(address);
+        slot_to_symbol_[slot] = name;
     }
 
-    /**
-     * @brief Toggle execution tier preference.
-     * @param prefer_jit If true, prefer JIT for next compilations. If false, prefer AOT.
-     */
-    void toggle_mode(bool prefer_jit) noexcept {
-        pipeline_.set_tier(prefer_jit ? dgtl::pipeline::ExecutionTier::JIT_Fast : dgtl::pipeline::ExecutionTier::AOT_Intensive);
-    }
-
-    /**
-     * @brief Get current execution tier.
-     * @return The active tier (JIT_Fast, AOT_Intensive, or Adaptive)
-     */
-    [[nodiscard]] dgtl::pipeline::ExecutionTier get_current_tier() const noexcept {
-        return pipeline_.get_current_tier();
-    }
-
-    /**
-     * @brief Verify equivalence using external SMT solver.
-     */
     [[nodiscard]] formal::VerificationResult verify_semantics(
         const ir::IRStream& original_stream,
         const ir::IRStream& optimized_stream,
@@ -190,9 +293,6 @@ public:
         return verifier.verify_with_external_solver(script, solver_name);
     }
 
-    /**
-     * @brief Specialize an IR stream using evolutionary optimization.
-     */
     [[nodiscard]] bool specialize_stream(
         ir::IRStream& stream,
         const ir::evolution::ExecutionFeedback& feedback
@@ -202,20 +302,26 @@ public:
         return res.succeeded;
     }
 
-    [[nodiscard]] dgtl::pipeline::Hybrid_Pipeline& get_pipeline() noexcept { return pipeline_; }
-    [[nodiscard]] const dgtl::pipeline::Hybrid_Pipeline& get_pipeline() const noexcept { return pipeline_; }
+    [[nodiscard]] dgtl::mir::MachinePipelineOptions& get_pipeline() noexcept { return pipeline_options_; }
+    [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline() const noexcept { return pipeline_options_; }
+    [[nodiscard]] dgtl::mir::MachinePipelineOptions& get_pipeline_options() noexcept { return pipeline_options_; }
+    [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline_options() const noexcept { return pipeline_options_; }
 
 private:
     Context& context_;
-    dgtl::pipeline::Hybrid_Pipeline pipeline_;
-    dgtl::jit::StrikeOrchestrator orchestrator_;
+    core::TargetMachine target_machine_;
+    dgtl::mir::MachinePipelineOptions pipeline_options_{};
 
-    mutable dgtl::utils::sync::FastSharedSpinLock symbol_mutex_;
-    dgtl::utils::FastFlatMap<std::string, uint64_t, 512> symbol_map_;
+    std::unique_ptr<dgtl::object::ObjectFile> cached_object_file_;
+    std::vector<dgtl::jit::JITLoadedModule> loaded_modules_;
+    std::unordered_map<std::string, uintptr_t> host_symbols_;
+    std::unordered_map<uint32_t, std::string> slot_to_symbol_;
+    std::unordered_map<std::string, uint64_t> symbol_map_;
+    mutable std::shared_mutex symbol_mutex_;
 
     HybridSession(const HybridSession&) = delete;
     HybridSession& operator=(const HybridSession&) = delete;
 };
 
 } // namespace api
-} // namespace dgtl
+} // namespace dgtl // sovereign hybrid session

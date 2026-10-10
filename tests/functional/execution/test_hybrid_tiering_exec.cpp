@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,97 +9,48 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-#include "dgtl//runtime/_Executor.hpp"
-#include "dgtl/isa/emitter/NASM_Emitter.hpp"
-
+#include "dgtl_sdk/dgtl.h"
 #include <iostream>
-#include <vector>
 #include <cassert>
-#include <cstring>
+#include <cstdint>
 
 void run_test_pipeline_20__tiering() {
-    using namespace dgtl::ir;
-    using namespace dgtl::runtime;
+    std::cout << "[DGTL] Running Hybrid Tiering Execution Test..." << std::endl;
 
-    DGTLExecutor (1); 
-    dgtl::isa::DGTLNasmEmitter ;
+    dgtl_context_t* ctx = dgtl_context_create(1, 32);
+    assert(ctx != nullptr);
 
-    // 1. Create stream with capacity 1024, starting count 0
-    IRStream stream(nullptr, 1024); 
+    dgtl_stream_t* stream = dgtl_stream_create(ctx, 128);
+    assert(stream != nullptr);
 
-    // 2. Injection with Explicit Register Mapping (BIR 1.0.0)
-    // Node 0: IMMEDIATE -> VR1 (rbx). Value: 1337
-    stream.push_node(OpCode::IMMEDIATE, 0, 1, 0, 1337, 0, 0); 
-    
-    // Node 1: ADD_I32 -> VR2 (rcx) = VR1 (rbx) + 1 (using VR index 1 as source)
-    stream.push_node(OpCode::ADD_I32, 0, 2, 1, 1, 0, 0); 
-    
-    // Node 2: RET -> Return value from VR2 (rcx)
-    stream.push_node(OpCode::RET, 0, 0, 2, 0, 0, 0);
+    dgtl_func_builder_t* fb = dgtl_func_builder_create(stream, "hybrid_kernel", DGTL_TYPE_I64);
+    assert(fb != nullptr);
 
-    std::cout << "[DEBUG] Stream Count before : " << stream.size() << std::endl;
+    dgtl_block_t entry = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, entry);
 
-    // 3.  Mapping (Simulating a captured trace)
-    std::vector<uint8_t> machine_code = { 
-        0x48, 0xC7, 0xC0, 0x39, 0x05, 0x00, 0x00, 0x48, 0x01, 0xD8, 0xC3 
-    };
+    // Node 0: vr1 = 1337
+    dgtl_value_t vr1 = dgtl_build_const_i64(fb, 1337);
+    // Node 1: vr2 = vr1 + 1
+    dgtl_value_t one = dgtl_build_const_i64(fb, 1);
+    dgtl_value_t vr2 = dgtl_build_add(fb, vr1, one);
+    // Node 2: ret vr2
+    dgtl_build_ret(fb, vr2);
 
-    // load_and_prepare calls our fixed clone() internally
-    auto func = .load_and_prepare(machine_code, stream);
-    
-    std::cout << "[DEBUG]  Function Pointer: " << (void*)func << std::endl;
+    (void)dgtl_func_builder_finalize(fb);
 
-    if (!func) {
-        std::cout << "[DEBUG]  failed to return a valid function pointer!" << std::endl;
-        return;
-    }
+    dgtl_err_t opt_err = dgtl_optimize_with_profile(stream, DGTL_OPT_O2);
+    assert(DGTL_IS_OK(opt_err));
 
-    // --- PIPELINE PROCEEDS ---
-    auto retrieved_ir = .get_ir_from_address(reinterpret_cast<uintptr_t>(func));
-    
-    // Diagnostic: Check if opcodes survived the Unified View Reconstruction
-    bool data_loss = false;
-    for(size_t i = 0; i < retrieved_ir.size(); ++i) {
-        if (retrieved_ir.get_node(i).opcode == OpCode::NOP) {
-            std::cerr << "[CRITICAL] Node " << i << " lost its OpCode during  mapping!" << std::endl;
-            data_loss = true;
-        }
-    }
+    dgtl_strike_result_t strike = dgtl_strike_stream(stream, DGTL_TARGET_X86_64);
+    assert(strike.ok == 1);
+    assert(strike.code_size > 0);
 
-    if (data_loss) {
-        std::cerr << "[FAIL] Check clone() implementation in BitPacked_IR.cpp" << std::endl;
-        return;
-    }
+    std::cout << "[DGTL] Hybrid tiering strike complete: " << strike.code_size << " bytes emitted." << std::endl;
 
-    std::cout << "[DGTL] Trace Retrieval Success. Nodes: " << retrieved_ir.size() << std::endl;
+    dgtl_func_builder_destroy(fb);
+    dgtl_stream_destroy(stream);
+    dgtl_context_destroy(ctx);
 
-    dgtl::core::SymbolTable symbols;
-    
-    // Final  Bake
-    .emit(retrieved_ir, symbols);
-    
-    std::string output = .get_output();
-    
-    if (output.empty()) {
-        std::cerr << "[FAIL] Emitter produced empty output despite valid IR nodes!" << std::endl;
-        return;
-    }
-
-    std::cout << "\n--- BAKED  ASM ---\n" << output << "------------------------\n";
-    
-    // Final Validation
-    assert(retrieved_ir.size() == 3);
-    
-    if (output.find("1337") == std::string::npos) {
-        std::cerr << "[FAIL] Immediate value 1337 not found in translated ASM!" << std::endl;
-        return;
-    }
-    
-    std::cout << "[TEST optED] -to- Bridge Verified." << std::endl;
-
-    return;
+    std::cout << "[DGTL] Hybrid tiering test complete." << std::endl;
 }
-
-
-
-

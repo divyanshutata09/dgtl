@@ -25,6 +25,7 @@ export import dgtl.isa.x64.x64_reg_map;
 export import dgtl.isa.x64.x64_abi;
 export import dgtl.isa.lowering.x64.frame_lowering;
 export import dgtl.isa.x64.x64_machine_form_lowering;
+export import dgtl.isa.x64.mc_encoder;
 export import dgtl.isa.x64.nasm_emitter;
 export import dgtl.isa.x64.x64_graphcoloring_regalloc;
 

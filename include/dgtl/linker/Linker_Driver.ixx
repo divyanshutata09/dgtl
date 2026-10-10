@@ -21,6 +21,7 @@
 module;
 
 #include <cstdlib>
+#include <bit>
 #include <vector>
 #include <string_view>
 #include <string>
@@ -51,207 +52,37 @@ export module dgtl.linker.driver;
 
 import dgtl.object.file;
 import dgtl.mir.machine_ir;
-import dgtl.mir.isel_gen;
-import dgtl.isa.x64.isel_gen;
-import dgtl.execution.loader;
-import dgtl.mir.runtime_contract;
+import dgtl.linker.elf.sections;
+import dgtl.linker.pe.sections;
+import dgtl.linker.pe;
 
-namespace dgtl::isa::lowering {
-    namespace runtime_contract = dgtl::mir::runtime_contract;
+// The canonical MachineForm/MachineSemanticKind live in common MIR (dgtl::machine).
+using dgtl::machine::MachineForm;
+using dgtl::machine::MachineSemanticKind;
+
+namespace dgtl::mir {
+    using dgtl::machine::MachineForm;
+    using dgtl::machine::MachineSemanticKind;
 }
 
-namespace runtime_contract = dgtl::mir::runtime_contract;
-
-// The canonical MachineForm/MachineSemanticKind live in common MIR.
-// Target-specific classification is supplied by the generated x64 contract.
-using dgtl::mir::MachineForm;
-using dgtl::mir::MachineSemanticKind;
+#ifndef ELF64_ST_INFO
+#define ELF64_ST_INFO(bind, type) (dgtl::linker::elf::elf64_st_info((bind), (type)))
+#endif
+#ifndef ELF64_R_INFO
+#define ELF64_R_INFO(sym, type) (dgtl::linker::elf::elf64_r_info((sym), (type)))
+#endif
 
 export namespace dgtl::linker::driver {
 
-namespace generated = dgtl::isa::x64::generated;
+using namespace dgtl::linker::elf;
+using namespace dgtl::linker::pe;
 
 namespace elf {
-    struct Elf64_Ehdr { 
-        unsigned char e_ident[16]; uint16_t e_type, e_machine; uint32_t e_version; 
-        uint64_t e_entry, e_phoff, e_shoff; uint32_t e_flags; 
-        uint16_t e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx; 
-    };
-    struct Elf64_Shdr {
-        uint32_t sh_name;
-        uint32_t sh_type;
-        uint64_t sh_flags;
-        uint64_t sh_addr;
-        uint64_t sh_offset;
-        uint64_t sh_size;
-        uint32_t sh_link;
-        uint32_t sh_info;
-        uint64_t sh_addralign;
-        uint64_t sh_entsize;
-    };
-    struct Elf64_Sym {
-        uint32_t st_name;
-        unsigned char st_info;
-        unsigned char st_other;
-        uint16_t st_shndx;
-        uint64_t st_value;
-        uint64_t st_size;
-    };
-    struct Elf64_Rela {
-        uint64_t r_offset;
-        uint64_t r_info;
-        int64_t  r_addend;
-    };
-    #ifndef ELFMAG
-        #define ELFMAG "\177ELF"
-        #define SELFMAG 4
-        #define ELFCLASS64 2
-        #define ELFDATA2LSB 1
-        #define EV_CURRENT 1
-        #define ET_REL 1
-        #define EM_X86_64 62
-        #define SHT_PROGBITS 1
-        #define SHT_SYMTAB 2
-        #define SHT_STRTAB 3
-        #define SHT_RELA 4
-        #define SHF_ALLOC 0x2
-        #define SHF_EXECINSTR 0x4
-        #define SHF_INFO_LINK 0x40
-        #define STB_LOCAL 0
-        #define STB_GLOBAL 1
-        #define STT_SECTION 3
-        #define STT_FUNC 2
-        #define ELF64_ST_INFO(bind, type) (((bind) << 4) + ((type) & 0xf))
-    #endif
+    using namespace dgtl::linker::elf;
 } // namespace elf
 
 namespace coff {
-#pragma pack(push, 1)
-    struct FileHeader {
-        uint16_t Machine;
-        uint16_t NumberOfSections;
-        uint32_t TimeDateStamp;
-        uint32_t PointerToSymbolTable;
-        uint32_t NumberOfSymbols;
-        uint16_t SizeOfOptionalHeader;
-        uint16_t Characteristics;
-    };
-
-    struct SectionHeader {
-        char     Name[8];
-        uint32_t VirtualSize;
-        uint32_t VirtualAddress;
-        uint32_t SizeOfRawData;
-        uint32_t PointerToRawData;
-        uint32_t PointerToRelocations;
-        uint32_t PointerToLinenumbers;
-        uint16_t NumberOfRelocations;
-        uint16_t NumberOfLinenumbers;
-        uint32_t Characteristics;
-    };
-
-    struct Relocation {
-        uint32_t VirtualAddress;
-        uint32_t SymbolTableIndex;
-        uint16_t Type;
-    };
-
-    struct Symbol {
-        union {
-            char ShortName[8];
-            struct {
-                uint32_t Zeroes;
-                uint32_t Offset;
-            } LongName;
-        } N;
-        uint32_t Value;
-        int16_t  SectionNumber;
-        uint16_t Type;
-        uint8_t  StorageClass;
-        uint8_t  NumberOfAuxSymbols;
-    };
-
-    struct ImageDosHeader {
-        uint16_t e_magic;
-        uint16_t e_cblp;
-        uint16_t e_cp;
-        uint16_t e_crlc;
-        uint16_t e_cparhdr;
-        uint16_t e_minalloc;
-        uint16_t e_maxalloc;
-        uint16_t e_ss;
-        uint16_t e_sp;
-        uint16_t e_csum;
-        uint16_t e_ip;
-        uint16_t e_cs;
-        uint16_t e_lfarlc;
-        uint16_t e_ovno;
-        uint16_t e_res[4];
-        uint16_t e_oemid;
-        uint16_t e_oeminfo;
-        uint16_t e_res2[10];
-        uint32_t e_lfanew;
-    };
-
-    struct ImageDataDirectory {
-        uint32_t VirtualAddress;
-        uint32_t Size;
-    };
-
-    struct ImportDescriptor {
-        uint32_t OriginalFirstThunk;
-        uint32_t TimeDateStamp;
-        uint32_t ForwarderChain;
-        uint32_t Name;
-        uint32_t FirstThunk;
-    };
-
-    struct ImageOptionalHeader64 {
-        uint16_t Magic;
-        uint8_t  MajorLinkerVersion;
-        uint8_t  MinorLinkerVersion;
-        uint32_t SizeOfCode;
-        uint32_t SizeOfInitializedData;
-        uint32_t SizeOfUninitializedData;
-        uint32_t AddressOfEntryPoint;
-        uint32_t BaseOfCode;
-        uint64_t ImageBase;
-        uint32_t SectionAlignment;
-        uint32_t FileAlignment;
-        uint16_t MajorOperatingSystemVersion;
-        uint16_t MinorOperatingSystemVersion;
-        uint16_t MajorImageVersion;
-        uint16_t MinorImageVersion;
-        uint16_t MajorSubsystemVersion;
-        uint16_t MinorSubsystemVersion;
-        uint32_t Win32VersionValue;
-        uint32_t SizeOfImage;
-        uint32_t SizeOfHeaders;
-        uint32_t CheckSum;
-        uint16_t Subsystem;
-        uint16_t DllCharacteristics;
-        uint64_t SizeOfStackReserve;
-        uint64_t SizeOfStackCommit;
-        uint64_t SizeOfHeapReserve;
-        uint64_t SizeOfHeapCommit;
-        uint32_t LoaderFlags;
-        uint32_t NumberOfRvaAndSizes;
-        ImageDataDirectory DataDirectory[16];
-    };
-#pragma pack(pop)
-
-    inline constexpr uint16_t MACHINE_AMD64             = 0x8664;
-    inline constexpr uint32_t SCN_CNT_CODE              = 0x00000020;
-    inline constexpr uint32_t SCN_CNT_INITIALIZED_DATA  = 0x00000040;
-    inline constexpr uint32_t SCN_MEM_EXECUTE           = 0x20000000;
-    inline constexpr uint32_t SCN_MEM_READ              = 0x40000000;
-    inline constexpr uint32_t SCN_MEM_WRITE             = 0x80000000;
-    inline constexpr uint32_t SCN_ALIGN_16BYTES         = 0x00500000;
-
-    inline constexpr uint8_t  SYM_CLASS_EXTERNAL        = 2;
-    inline constexpr uint8_t  SYM_CLASS_STATIC          = 3;
-    inline constexpr uint16_t SYM_TYPE_FUNCTION         = 0x20;
-    inline constexpr uint16_t REL_AMD64_REL32           = 4;
+    using namespace dgtl::linker::pe;
 } // namespace coff
 
 struct MagicMultiplierS64 {
@@ -266,7 +97,7 @@ inline MagicMultiplierS64 compute_magic_s64(int64_t d) noexcept {
     if (d <= 0) return res;
     if ((d & (d - 1)) == 0) {
         res.is_power_of_2 = true;
-        res.s = static_cast<uint8_t>(__builtin_ctzll(static_cast<unsigned long long>(d)));
+        res.s = static_cast<uint8_t>(std::countr_zero(static_cast<uint64_t>(d)));
         res.valid = true;
         return res;
     }
@@ -365,11 +196,11 @@ struct DecodedNode {
     }
 
     [[nodiscard]] bool has_runtime_symbol() const noexcept {
-        return dgtl::mir::runtime_contract::has_runtime_symbol_for_semantic(semantic_kind);
+        return false;
     }
 
     [[nodiscard]] const char* runtime_symbol() const noexcept {
-        return dgtl::mir::runtime_contract::runtime_symbol_for_semantic_kind(semantic_kind);
+        return nullptr;
     }
 };
 
@@ -464,6 +295,7 @@ inline DecodedNode decode_instruction(const machine::MachineInstruction& inst) {
             case 0: node.op_a = id; break;
             case 1: node.op_b = id; break;
             case 2: node.op_c = id; break;
+            case 3: node.logic_flags = id; break;
             default:
                 node.call_overflow_args.push_back(id);
                 break;
@@ -546,6 +378,10 @@ public:
     }
 
     static size_t x64_node_size(const DecodedNode& node) {
+        if (node.parent_block == machine::INVALID_BLOCK_ID) {
+            return 0;
+        }
+
         if (node.has_runtime_symbol()) {
             return 64;
         }
@@ -634,6 +470,9 @@ public:
 
         for (size_t i = 0; i < count; ++i) {
             const auto& node = nodes[i];
+            if (node.parent_block == machine::INVALID_BLOCK_ID) {
+                continue;
+            }
             if (node.opcode == InternalOpcode::LABEL) {
                 if (node.result_id != INVALID_SLOT) {
                     label_map[node.result_id] = i;
@@ -672,6 +511,7 @@ public:
             if (it != label_map.end()) return it->second;
             for (size_t k = 0; k < count; ++k) {
                 const auto& knode = nodes[k];
+                if (knode.parent_block == machine::INVALID_BLOCK_ID) continue;
                 if (knode.opcode == InternalOpcode::LABEL) {
                     if (knode.result_id == raw || knode.op_a == raw || knode.op_b == raw) {
                         return k;
@@ -689,6 +529,9 @@ public:
         for (size_t i = 0; i < count; ++i) {
             node_offsets[i] = probe;
             const auto& node = nodes[i];
+            if (node.parent_block == machine::INVALID_BLOCK_ID) {
+                continue;
+            }
             probe += x64_node_size(node);
         }
         node_offsets[count] = probe;
@@ -751,13 +594,6 @@ public:
         write_u8(0x48); write_u8(0x89); write_u8(0xE5); // mov rbp, rsp
         write_u8(0x48); write_u8(0x81); write_u8(0xEC); write_u32(frame_size); // sub rsp, frame_size
 
-        // Zero out initial scratch slots (0..3)
-        write_u8(0x48); write_u8(0x31); write_u8(0xC0); // xor rax, rax
-        emit_store_rax_to_slot(0u);
-        emit_store_rax_to_slot(1u);
-        emit_store_rax_to_slot(2u);
-        emit_store_rax_to_slot(3u);
-
         if (count > 0 && nodes[0].opcode == InternalOpcode::LABEL) {
             const auto& fn_hdr = nodes[0];
             if (fn_hdr.op_a != INVALID_SLOT) emit_store_rcx_to_slot(fn_hdr.op_a);
@@ -777,6 +613,9 @@ public:
         for (size_t i = 0; i < count; ++i) {
             node_offsets[i] = offset;
             const auto& node = nodes[i];
+            if (node.parent_block == machine::INVALID_BLOCK_ID) {
+                continue;
+            }
             const MachineForm form = node.form;
 
             if (node.has_runtime_symbol()) {
@@ -1132,6 +971,15 @@ public:
                                 target_addr = it->second;
                             }
                         }
+                        if (target_addr == 0 && !slot_to_callee.empty()) {
+                            auto it_c = slot_to_callee.find(static_cast<uint32_t>(node.op_a));
+                            if (it_c != slot_to_callee.end() && !it_c->second.empty()) {
+#if defined(_WIN32) || defined(_WIN64)
+                                HMODULE h_mod = GetModuleHandleA(nullptr);
+                                target_addr = reinterpret_cast<uintptr_t>(GetProcAddress(h_mod, it_c->second.c_str()));
+#endif
+                            }
+                        }
                         if (target_addr == 0 && node.op_a > 0x7FFF00000000ULL) {
                             target_addr = static_cast<uintptr_t>(node.op_a);
                         }
@@ -1144,6 +992,11 @@ public:
                         write_u8(0x48); write_u8(0xB8); write_u64(static_cast<uint64_t>(target_addr));
                         write_u8(0xFF); write_u8(0xD0); // call rax
                     } else {
+                        const size_t tgt_idx = resolve_target(node.op_a);
+                        if (out_relocs == nullptr && tgt_idx >= count) {
+                            record_fallback_opcode(i, node.opcode);
+                            return false;
+                        }
                         write_u8(0xE8); // call rel32
                         const size_t patch_disp_offset = offset;
                         write_u32(0);
@@ -1160,7 +1013,7 @@ public:
                             }
                         }
                         if (!is_external_reloc) {
-                            patches.push_back({patch_disp_offset, patch_source_end, resolve_target(node.op_a)});
+                            patches.push_back({patch_disp_offset, patch_source_end, tgt_idx});
                         }
                     }
                     write_u8(0x48); write_u8(0x81); write_u8(0xC4); write_u32(static_cast<uint32_t>(stack_alloc)); // add rsp, stack_alloc
@@ -1294,7 +1147,13 @@ public:
         }
 
         // Defensive fallthrough safety: guarantee clean leave; ret if last instruction was not Return
-        const auto last_op = (count > 0) ? nodes[count - 1].opcode : InternalOpcode::NOP;
+        InternalOpcode last_op = InternalOpcode::NOP;
+        for (size_t i = count; i > 0; --i) {
+            if (nodes[i - 1].parent_block != machine::INVALID_BLOCK_ID) {
+                last_op = nodes[i - 1].opcode;
+                break;
+            }
+        }
         if (count == 0 || (last_op != InternalOpcode::RET && last_op != InternalOpcode::RETURN)) {
             write_u8(0x31); write_u8(0xC0); // xor eax, eax
             write_u8(0xC9); write_u8(0xC3); // leave; ret
@@ -1641,18 +1500,20 @@ public:
         return true;
     }
 
+    bool build_pe_executable_from_object(const dgtl::object::ObjectFile& object, std::vector<uint8_t>& pe_image) {
+        if (dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(object, pe_image)) {
+            return true;
+        }
+        const auto* text_sec = object.find_section(".text");
+        if (!text_sec || text_sec->empty()) {
+            text_sec = object.find_section("__text");
+        }
+        if (!text_sec || text_sec->empty()) return false;
+        return build_pe_executable_from_text(text_sec->bytes, pe_image);
+    }
+
     bool build_pe_executable_buffer(const machine::MachineFunction& function, std::vector<uint8_t>& pe_image) {
-        using namespace coff;
         if (function.instructions().empty()) return false;
-
-        constexpr uint32_t kFileAlign = 0x200;   // 512
-        constexpr uint32_t kSecAlign  = 0x1000;  // 4096
-        constexpr uint32_t kHeadersSize = 0x400; // 1024
-
-        auto align_up_u32 = [](uint32_t val, uint32_t align) -> uint32_t {
-            return (val + align - 1) & ~(align - 1);
-        };
-
         const size_t raw_code_est = (function.instructions().size() * 64) + 1024;
         std::vector<uint8_t> machine_code(raw_code_est, 0);
         size_t emitted_size = 0;
@@ -1662,6 +1523,20 @@ public:
                                               &emitted_size);
         if (!ok) return false;
         machine_code.resize(emitted_size);
+        return build_pe_executable_from_text(machine_code, pe_image);
+    }
+
+    bool build_pe_executable_from_text(std::span<const uint8_t> machine_code, std::vector<uint8_t>& pe_image) {
+        using namespace coff;
+        if (machine_code.empty()) return false;
+
+        constexpr uint32_t kFileAlign = 0x200;   // 512
+        constexpr uint32_t kSecAlign  = 0x1000;  // 4096
+        constexpr uint32_t kHeadersSize = 0x400; // 1024
+
+        auto align_up_u32 = [](uint32_t val, uint32_t align) -> uint32_t {
+            return (val + align - 1) & ~(align - 1);
+        };
 
         // 1. Synthesize .text with Sovereign Entry Trampoline
         std::vector<uint8_t> text_full;
@@ -1855,6 +1730,9 @@ public:
         size_t text_offset = x64_prologue_size(function);
         for (size_t i = 0; i < count; ++i) {
             const auto& node = nodes[i];
+            if (node.parent_block == machine::INVALID_BLOCK_ID) {
+                continue;
+            }
             if (node.has_runtime_symbol()) {
                 const size_t rcx_size = (node.op_a != INVALID_SLOT && node.op_a != 0u) ? 7u : 3u;
                 const size_t rdx_size = (node.op_b != INVALID_SLOT && node.op_b != 0u) ? 7u : 3u;

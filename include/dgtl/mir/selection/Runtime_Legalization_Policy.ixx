@@ -18,9 +18,9 @@ module;
 
 export module dgtl.mir.runtime_policy;
 
-import dgtl.ir_enums;
 import dgtl.target;
-import dgtl.isa.isel_dispatch;
+import dgtl.ir_enums;
+import dgtl.mir.target_isel;
 
 // Generated target-aware MachineForm classification.
 import dgtl.mir.isel_gen;
@@ -59,13 +59,13 @@ enum class LegalizationRoute : std::uint8_t {
     ir::OpCode opcode) noexcept
 {
     const MachineForm form =
-        dgtl::isa::classify_machine_form(target, opcode);
+        dgtl::mir::classify_machine_form(target, opcode);
 
     if (form != MachineForm::Unhandled) [[likely]] {
         return LegalizationRoute::DirectISel;
     }
 
-    if (dgtl::isa::is_runtime_backed(target, opcode)) [[unlikely]] {
+    if (dgtl::mir::is_runtime_backed(target, opcode)) [[unlikely]] {
         return LegalizationRoute::RuntimeCall;
     }
 
@@ -119,7 +119,7 @@ enum class LegalizationRoute : std::uint8_t {
     const core::TargetMachine& target,
     ir::OpCode opcode) noexcept
 {
-    return dgtl::isa::classify_machine_form(target, opcode);
+    return dgtl::mir::classify_machine_form(target, opcode);
 }
 
 } // namespace dgtl::mir::runtime_policy

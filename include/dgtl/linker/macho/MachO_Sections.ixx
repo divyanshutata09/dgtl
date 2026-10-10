@@ -17,6 +17,83 @@ export module dgtl.linker.macho.sections;
 
 export namespace dgtl::linker::macho {
 
+inline constexpr uint32_t MH_MAGIC_64_VAL                 = 0xFEEDFACF;
+inline constexpr uint32_t MH_OBJECT_TYPE                  = 0x1;
+inline constexpr int32_t  CPU_TYPE_ARM64_VAL              = 0x0100000C;
+inline constexpr int32_t  CPU_SUBTYPE_ALL_VAL             = 0x0;
+inline constexpr int32_t  CPU_TYPE_X86_64_VAL             = 0x01000007;
+inline constexpr uint32_t MH_SUBSECTIONS_VIA_SYMBOLS_FLAG = 0x2000;
+inline constexpr uint32_t LC_SEGMENT_64_CMD               = 0x19;
+inline constexpr uint32_t LC_SYMTAB_CMD                   = 0x02;
+
+inline constexpr uint8_t  N_EXT_FLAG                      = 0x01;
+inline constexpr uint8_t  N_SECT_TYPE                     = 0x0E;
+inline constexpr uint8_t  N_UNDF_TYPE                     = 0x00;
+
+#pragma pack(push, 1)
+struct Header64 {
+    uint32_t magic;
+    int32_t  cputype;
+    int32_t  cpusubtype;
+    uint32_t filetype;
+    uint32_t ncmds;
+    uint32_t sizeofcmds;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+struct SegmentCommand64 {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    char     segname[16];
+    uint64_t vmaddr;
+    uint64_t vmsize;
+    uint64_t fileoff;
+    uint64_t filesize;
+    int32_t  maxprot;
+    int32_t  initprot;
+    uint32_t nsects;
+    uint32_t flags;
+};
+
+struct Section64 {
+    char     sectname[16];
+    char     segname[16];
+    uint64_t addr;
+    uint64_t size;
+    uint32_t offset;
+    uint32_t align;
+    uint32_t reloff;
+    uint32_t nreloc;
+    uint32_t flags;
+    uint32_t reserved1;
+    uint32_t reserved2;
+    uint32_t reserved3;
+};
+
+struct SymtabCommand {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    uint32_t symoff;
+    uint32_t nsyms;
+    uint32_t stroff;
+    uint32_t strsize;
+};
+
+struct Nlist64 {
+    uint32_t n_strx;
+    uint8_t  n_type;
+    uint8_t  n_sect;
+    uint16_t n_desc;
+    uint64_t n_value;
+};
+
+struct RelocationInfo {
+    int32_t  r_address;
+    uint32_t r_info;
+};
+#pragma pack(pop)
+
 struct SectionDescriptor {
     const char* segname;
     const char* sectname;

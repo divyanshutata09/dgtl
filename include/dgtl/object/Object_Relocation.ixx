@@ -61,8 +61,8 @@ struct Relocation {
     std::uint32_t section_index = 0u;
 
     Relocation() = default;
-    Relocation(std::uint64_t o, std::string sym, std::int64_t add = 0, std::uint32_t t = 0, RelocationKind k = RelocationKind::PCRel32)
-        : offset(o), symbol_name(std::move(sym)), addend(add), type(t), kind(k) {}
+    Relocation(std::uint64_t o, std::string sym, std::int64_t add = 0, std::uint32_t t = 0, RelocationKind k = RelocationKind::PCRel32, std::uint32_t sec_idx = 0u)
+        : offset(o), symbol_name(std::move(sym)), addend(add), type(t), kind(k), section_index(sec_idx) {}
 
     [[nodiscard]] bool is_pc_relative() const noexcept {
         return kind == RelocationKind::PCRel32 || kind == RelocationKind::PCRel64 ||
@@ -100,11 +100,29 @@ public:
         return true;
     }
 
+    static bool apply_branch26_arm64(std::uint8_t* p, std::uint64_t place, std::uint64_t target) noexcept {
+        if (!p) return false;
+        std::int64_t offset = static_cast<std::int64_t>(target) - static_cast<std::int64_t>(place);
+        if ((offset & 3) != 0) return false;
+        std::int64_t imm26 = offset >> 2;
+        if (imm26 < -(1 << 25) || imm26 >= (1 << 25)) return false;
+        std::uint32_t insn = static_cast<std::uint32_t>(p[0]) |
+                             (static_cast<std::uint32_t>(p[1]) << 8) |
+                             (static_cast<std::uint32_t>(p[2]) << 16) |
+                             (static_cast<std::uint32_t>(p[3]) << 24);
+        insn = (insn & 0xFC000000u) | (static_cast<std::uint32_t>(imm26) & 0x03FFFFFFu);
+        for (std::size_t i = 0; i < 4; ++i) {
+            p[i] = static_cast<std::uint8_t>(insn >> (i * 8));
+        }
+        return true;
+    }
+
     static bool apply(std::span<std::uint8_t> section_bytes, const Relocation& reloc, std::uint64_t place, std::uint64_t symbol_target_address) noexcept {
         if (reloc.offset >= section_bytes.size()) return false;
         std::uint8_t* target = section_bytes.data() + reloc.offset;
         switch (reloc.kind) {
             case RelocationKind::PCRel32:
+            case RelocationKind::PLT32:
                 if (reloc.offset + 4 > section_bytes.size()) return false;
                 return apply_pc32(target, place, symbol_target_address, reloc.addend);
             case RelocationKind::Absolute64:
@@ -113,6 +131,10 @@ public:
             case RelocationKind::Absolute32:
                 if (reloc.offset + 4 > section_bytes.size()) return false;
                 return apply_abs32(target, static_cast<std::uint32_t>(symbol_target_address + reloc.addend));
+            case RelocationKind::Branch26:
+            case RelocationKind::Call26:
+                if (reloc.offset + 4 > section_bytes.size()) return false;
+                return apply_branch26_arm64(target, place, symbol_target_address);
             default:
                 return false;
         }

@@ -9,11 +9,11 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-/* * DGTL (Deep General-purpose Transformation Layer) version 1.0.0 : THE COMPILER SPEC
- * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR) - VERSION 2.1
+/* * DGTL (Deep General-purpose Transformation Layer) version 2.0.0 : THE COMPILER SPEC
+ * STEP 2: BIT-PACKED INTERMEDIATE REPRESENTATION (BIR)
  * PILLAR 2: TRI-TIER TRANSACTIONAL STREAM & SHADOW-AWARE EMISSION
- * SYMBOL TABLE: Scoped High-Velocity Identity Resolution
- * STANDARDS: C++26 / UCRT64 (Lock-Free Read / Minimal Collision)
+ * SYMBOL TABLE: Scoped High-Velocity Identity Resolution (LLVM/Cranelift-Grade)
+ * STANDARDS: C++26 / UCRT64 (Zero-Heap Arena-Backed Open-Addressing)
  */
 
 module;
@@ -27,7 +27,6 @@ module;
 #include <vector>
 #include <array>
 #include <optional>
-#include <unordered_map>
 #include <span>
 #include <memory>
 #include <algorithm>
@@ -36,8 +35,6 @@ module;
 #include <bit>
 
 export module dgtl.hir.semantic;
-
-// FIXED CYCLIC LOOP: Import local core tier siblings via short-form
 
 // Import standalone external primitives safely
 import dgtl.arena;
@@ -150,6 +147,9 @@ struct alignas(64) Symbol {
     Symbol* shadow_prev = nullptr;
     Symbol* scope_next = nullptr;
 
+    // Cached lightweight entry for legacy API compatibility
+    mutable SymbolEntry entry_cache{};
+
     [[nodiscard]] constexpr bool has_flag(uint32_t flag) const noexcept {
         return (flags & flag) != 0;
     }
@@ -161,18 +161,26 @@ struct alignas(64) Symbol {
     constexpr void clear_flag(uint32_t flag) noexcept {
         flags &= ~flag;
     }
+
+    [[nodiscard]] SymbolEntry& as_entry() const noexcept {
+        entry_cache.slot_id = slot_id;
+        entry_cache.flags = flags;
+        entry_cache.type_hint = static_cast<dgtl::ir::OpCode>(type_hint);
+        entry_cache.version = version;
+        entry_cache.name_hash = name_hash;
+        entry_cache.metadata = metadata;
+        return entry_cache;
+    }
 };
 
 /**
  * @class alignas(64) SymbolTable
  * @brief Scoped Symbol Table with Arena-backed allocation.
- * Uses a tiered scope stack to manage shadowing and transactional visibility.
+ * Uses a zero-heap open-addressing table with intrusive scope chaining.
+ * Fully compliant with LLVM/Cranelift high-performance symbol resolution.
  */
 class alignas(64) SymbolTable {
 public:
-    using ScopeMap = std::unordered_map<uint64_t, SymbolEntry>;
-    using ExtendedScopeMap = std::unordered_map<uint64_t, Symbol>;
-
     static constexpr size_t kInitialCapacity = 1024;
     static constexpr uint64_t kEmptyHash = 0ULL;
     static constexpr uint64_t kTombstoneHash = 1ULL;
@@ -193,16 +201,11 @@ public:
      */
     SymbolTable()
         : m_fallback_arena(std::make_unique<dgtl::core::DGTL_Arena>(1, 16)),
-          m_arena(*m_fallback_arena),
           arena_(*m_fallback_arena),
           capacity_(std::bit_ceil(kInitialCapacity)),
           mask_(capacity_ - 1),
           slot_capacity_(kInitialCapacity),
           slot_mask_(slot_capacity_ - 1) {
-        m_scopes.reserve(8);
-        m_scopes.emplace_back();
-        m_extended_scopes.reserve(8);
-        m_extended_scopes.emplace_back();
         scope_stack_.reserve(16);
         allocate_table(capacity_);
         allocate_slot_table(slot_capacity_);
@@ -210,17 +213,11 @@ public:
     }
 
     explicit SymbolTable(dgtl::core::DGTL_Arena& arena)
-        : m_arena(arena),
-          arena_(arena),
+        : arena_(arena),
           capacity_(std::bit_ceil(kInitialCapacity)),
           mask_(capacity_ - 1),
           slot_capacity_(kInitialCapacity),
           slot_mask_(slot_capacity_ - 1) {
-        m_scopes.reserve(8);
-        // Initialize global scope
-        m_scopes.emplace_back();
-        m_extended_scopes.reserve(8);
-        m_extended_scopes.emplace_back();
         scope_stack_.reserve(16);
         allocate_table(capacity_);
         allocate_slot_table(slot_capacity_);
@@ -228,16 +225,11 @@ public:
     }
 
     explicit SymbolTable(dgtl::core::DGTL_Arena& arena, size_t initial_cap) noexcept
-        : m_arena(arena),
-          arena_(arena),
+        : arena_(arena),
           capacity_(std::bit_ceil(initial_cap)),
           mask_(capacity_ - 1),
           slot_capacity_(std::bit_ceil(initial_cap)),
           slot_mask_(slot_capacity_ - 1) {
-        m_scopes.reserve(8);
-        m_scopes.emplace_back();
-        m_extended_scopes.reserve(8);
-        m_extended_scopes.emplace_back();
         scope_stack_.reserve(16);
         allocate_table(capacity_);
         allocate_slot_table(slot_capacity_);
@@ -251,15 +243,15 @@ public:
 
     ~SymbolTable() = default;
 
-    // --- SCOPE MANAGEMENT ---
+    // =========================================================================
+    // SCOPE MANAGEMENT (ZERO HEAP ALLOCATION)
+    // =========================================================================
 
     /**
      * @brief Pushes a new lexical scope.
      * Symbols added here will shadow symbols in parent scopes.
      */
     void push_scope() {
-        m_scopes.emplace_back();
-        m_extended_scopes.emplace_back();
         const uint32_t next_depth = scope_depth_counter_++;
         scope_stack_.push_back(ScopeCheckpoint{
             .head = nullptr,
@@ -268,24 +260,9 @@ public:
     }
 
     /**
-     * @brief Pops the current scope, destroying all local symbol mappings.
+     * @brief Pops the current scope, restoring shadowed outer definitions in O(1).
      */
     void pop_scope() {
-        if (m_scopes.size() > 1) [[likely]] {
-            for (const auto& [hash, entry] : m_scopes.back()) {
-                if (entry.slot_id != dgtl::ir::INVALID_SLOT) {
-                    m_slot_to_entry.erase(entry.slot_id);
-                }
-            }
-            for (const auto& [hash, sym] : m_extended_scopes.back()) {
-                if (sym.slot_id != dgtl::ir::INVALID_SLOT) {
-                    unindex_slot(sym.slot_id);
-                }
-            }
-            m_scopes.pop_back();
-            m_extended_scopes.pop_back();
-        }
-
         if (scope_stack_.size() > 1) [[likely]] {
             ScopeCheckpoint active = scope_stack_.back();
             scope_stack_.pop_back();
@@ -316,16 +293,7 @@ public:
 
                 // 2. Unwind SSA Slot Index
                 if (curr->slot_id != dgtl::ir::INVALID_SLOT) {
-                    size_t s_idx = hash_slot(curr->slot_id) & slot_mask_;
-                    while (slot_table_[s_idx].slot_id != dgtl::ir::INVALID_SLOT) {
-                        if (slot_table_[s_idx].symbol == curr) {
-                            slot_table_[s_idx].slot_id = dgtl::ir::INVALID_SLOT;
-                            slot_table_[s_idx].symbol = nullptr;
-                            slot_count_--;
-                            break;
-                        }
-                        s_idx = (s_idx + 1) & slot_mask_;
-                    }
+                    unindex_slot(curr->slot_id);
                 }
 
                 curr = next;
@@ -333,7 +301,9 @@ public:
         }
     }
 
-    // --- SYMBOL MANIPULATION ---
+    // =========================================================================
+    // SYMBOL MANIPULATION & DEFINITION
+    // =========================================================================
 
     /**
      * @brief Defines a new symbol in the current scope.
@@ -344,41 +314,17 @@ public:
             return false;
         }
 
-        uint64_t hash = compute_hash(name);
-        auto& current_scope = m_scopes.back();
-
-        if (current_scope.contains(hash)) [[unlikely]] {
-            return false; // Redefinition Error
+        if (lookup_current_scope(name) != nullptr) [[unlikely]] {
+            return false; // Redefinition Error in current scope
         }
 
-        SymbolEntry entry{
-            .slot_id = slot_id,
-            .flags = 0,
-            .type_hint = type,
-            .version = 1,
-            .name_hash = hash,
-            .metadata = nullptr
-        };
-
-        auto res = current_scope.emplace(hash, entry);
-        if (res.second) {
-            m_slot_to_entry.insert_or_assign(slot_id, &res.first->second);
-
-            // Register in extended symbol map
-            Symbol sym{};
-            sym.name = intern_string(name);
-            sym.name_hash = hash;
-            sym.slot_id = slot_id;
-            sym.kind = SymbolKind::Variable;
-            sym.type_hint = static_cast<uint32_t>(type);
-            sym.scope_depth = static_cast<uint32_t>(depth() - 1);
-            
-            auto& ext_scope = m_extended_scopes.back();
-            auto ext_res = ext_scope.insert_or_assign(hash, sym);
-            index_slot(&ext_res.first->second);
-            return true;
-        }
-        return false;
+        Symbol sym{};
+        sym.name = name;
+        sym.slot_id = slot_id;
+        sym.kind = SymbolKind::Variable;
+        sym.type_hint = static_cast<uint32_t>(type);
+        sym.type_code = dgtl::ir::TypeCode::VOID_T;
+        return insert(sym) != nullptr;
     }
 
     /**
@@ -391,10 +337,7 @@ public:
             return false;
         }
 
-        uint64_t hash = compute_hash(name);
-        auto& current_scope = m_scopes.back();
-
-        if (current_scope.contains(hash)) [[unlikely]] {
+        if (lookup_current_scope(name) != nullptr) [[unlikely]] {
             return false;
         }
 
@@ -407,48 +350,24 @@ public:
             numeric_type_hint = static_cast<uint32_t>(type_hint.handle);
         }
 
-        SymbolEntry entry{
-            .slot_id = slot_id,
-            .flags = is_param ? 1u : 0u,
-            .type_hint = op,
-            .version = 1,
-            .name_hash = hash,
-            .metadata = nullptr
-        };
-
-        auto res = current_scope.emplace(hash, entry);
-        if (res.second) {
-            m_slot_to_entry.insert_or_assign(slot_id, &res.first->second);
-
-            Symbol sym{};
-            sym.name = intern_string(name);
-            sym.name_hash = hash;
-            sym.slot_id = slot_id;
-            sym.kind = is_param ? SymbolKind::Parameter : SymbolKind::Variable;
-            sym.type_hint = numeric_type_hint;
-            sym.scope_depth = static_cast<uint32_t>(depth() - 1);
-
-            auto& ext_scope = m_extended_scopes.back();
-            auto ext_res = ext_scope.insert_or_assign(hash, sym);
-            index_slot(&ext_res.first->second);
-            return true;
-        }
-        return false;
+        Symbol sym{};
+        sym.name = name;
+        sym.slot_id = slot_id;
+        sym.kind = is_param ? SymbolKind::Parameter : SymbolKind::Variable;
+        sym.type_hint = (op != dgtl::ir::OpCode::NOP) ? static_cast<uint32_t>(op) : numeric_type_hint;
+        sym.type_code = dgtl::ir::TypeCode::VOID_T;
+        if (is_param) sym.set_flag(SymbolFlags::None);
+        return insert(sym) != nullptr;
     }
 
     /**
      * @brief Resolves a symbol by searching from the innermost scope outwards.
      */
     [[nodiscard]] std::optional<SymbolEntry> resolve(std::string_view name) const noexcept {
-        uint64_t hash = compute_hash(name);
-
-        // Search stack from top (local) to bottom (global)
-        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
-            if (auto entry_it = it->find(hash); entry_it != it->end()) [[likely]] {
-                return entry_it->second;
-            }
+        const Symbol* sym = lookup(name);
+        if (sym) {
+            return sym->as_entry();
         }
-
         return std::nullopt;
     }
 
@@ -456,45 +375,24 @@ public:
      * @brief Direct pointer access for the Emitter via Name.
      */
     [[nodiscard]] SymbolEntry* get(std::string_view name) noexcept {
-        uint64_t hash = compute_hash(name);
-        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
-            if (auto entry_it = it->find(hash); entry_it != it->end()) [[likely]] {
-                return &(entry_it->second);
-            }
-        }
-        return nullptr;
+        Symbol* sym = lookup(name);
+        return sym ? &sym->as_entry() : nullptr;
     }
 
     /**
      * @brief Direct access via slot_id to prevent uint32_t to string_view conversion errors.
      */
     [[nodiscard]] SymbolEntry* get(uint32_t slot_id) noexcept {
-        auto it = m_slot_to_entry.find(slot_id);
-        if (it != m_slot_to_entry.end()) return it->second;
-
-        for (auto s_it = m_scopes.rbegin(); s_it != m_scopes.rend(); ++s_it) {
-            for (auto& [hash, entry] : *s_it) {
-                if (entry.slot_id == slot_id) [[unlikely]] {
-                    m_slot_to_entry[slot_id] = &entry;
-                    return &entry;
-                }
-            }
-        }
-        return nullptr;
+        Symbol* sym = lookup_by_slot(slot_id);
+        return sym ? &sym->as_entry() : nullptr;
     }
 
     /**
      * @brief Specialized getter for IR-linked function nodes.
-     * Fixed: Added explicit pointer return. The caller must cast to ir::IRStream&.
      */
     [[nodiscard]] void* get_function_ir(std::string_view name) const noexcept {
-        uint64_t hash = compute_hash(name);
-        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
-            if (auto entry_it = it->find(hash); entry_it != it->end()) [[likely]] {
-                return entry_it->second.metadata;
-            }
-        }
-        return nullptr;
+        const Symbol* sym = lookup(name);
+        return sym ? sym->metadata : nullptr;
     }
 
     /**
@@ -505,23 +403,12 @@ public:
             return false;
         }
 
-        uint64_t hash = compute_hash(name);
-        for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
-            if (auto entry_it = it->find(hash); entry_it != it->end()) [[likely]] {
-                const uint32_t old_slot = entry_it->second.slot_id;
-                m_slot_to_entry.erase(old_slot);
-                entry_it->second.slot_id = new_slot;
-                entry_it->second.version++;
-                m_slot_to_entry[new_slot] = &(entry_it->second);
-
-                if (auto* sym = lookup(name)) {
-                    unindex_slot(old_slot);
-                    sym->slot_id = new_slot;
-                    sym->version = entry_it->second.version;
-                    index_slot(sym);
-                }
-                return true;
-            }
+        if (auto* sym = lookup(name)) {
+            unindex_slot(sym->slot_id);
+            sym->slot_id = new_slot;
+            sym->version++;
+            index_slot(sym);
+            return true;
         }
         return false;
     }
@@ -560,7 +447,7 @@ public:
             if (table_[idx].hash == kTombstoneHash) {
                 if (first_tombstone == capacity_) first_tombstone = idx;
             } else if (table_[idx].hash == mem->name_hash &&
-                       table_[idx].symbol->name == mem->name) {
+                       table_[idx].symbol && table_[idx].symbol->name == mem->name) {
                 // Collision with matching name: Setup Intrusive Shadow Chain
                 Symbol* existing = table_[idx].symbol;
                 mem->version = existing->version + 1;
@@ -570,19 +457,6 @@ public:
                 table_[idx].symbol = mem; // Overwrite top pointer with new shadow layer
                 track_in_current_scope(mem);
                 index_slot(mem);
-
-                // Keep legacy maps synchronized
-                SymbolEntry legacy_entry{
-                    .slot_id = mem->slot_id,
-                    .flags = mem->flags,
-                    .type_hint = static_cast<dgtl::ir::OpCode>(mem->type_hint),
-                    .version = mem->version,
-                    .name_hash = mem->name_hash,
-                    .metadata = mem->metadata
-                };
-                m_scopes.back().insert_or_assign(mem->name_hash, legacy_entry);
-                m_slot_to_entry.insert_or_assign(mem->slot_id, &m_scopes.back().find(mem->name_hash)->second);
-                m_extended_scopes.back().insert_or_assign(mem->name_hash, *mem);
                 return mem;
             }
             idx = (idx + 1) & mask_;
@@ -596,20 +470,6 @@ public:
 
         track_in_current_scope(mem);
         index_slot(mem);
-
-        // Keep legacy maps synchronized
-        SymbolEntry legacy_entry{
-            .slot_id = mem->slot_id,
-            .flags = mem->flags,
-            .type_hint = static_cast<dgtl::ir::OpCode>(mem->type_hint),
-            .version = mem->version,
-            .name_hash = mem->name_hash,
-            .metadata = mem->metadata
-        };
-        m_scopes.back().insert_or_assign(mem->name_hash, legacy_entry);
-        m_slot_to_entry.insert_or_assign(mem->slot_id, &m_scopes.back().find(mem->name_hash)->second);
-        m_extended_scopes.back().insert_or_assign(mem->name_hash, *mem);
-
         return mem;
     }
 
@@ -675,7 +535,7 @@ public:
 
         size_t idx = h & mask_;
         while (table_[idx].hash != kEmptyHash) {
-            if (table_[idx].hash == h && table_[idx].symbol->name == name) {
+            if (table_[idx].hash == h && table_[idx].symbol && table_[idx].symbol->name == name) {
                 return table_[idx].symbol;
             }
             idx = (idx + 1) & mask_;
@@ -763,7 +623,7 @@ public:
      * @brief Returns the current nesting depth.
      */
     [[nodiscard]] size_t depth() const noexcept {
-        return m_scopes.size();
+        return scope_stack_.size();
     }
 
     [[nodiscard]] size_t current_scope_depth() const noexcept {
@@ -771,15 +631,9 @@ public:
     }
 
     /**
-     * @brief Clears all scopes except the global scope.
+     * @brief Clears all scopes and resets the tables to initial state.
      */
     void reset() {
-        m_scopes.clear();
-        m_scopes.emplace_back();
-        m_extended_scopes.clear();
-        m_extended_scopes.emplace_back();
-        m_slot_to_entry.clear();
-        m_slot_to_symbol.clear();
         scope_stack_.clear();
         scope_depth_counter_ = 0;
         occupied_count_ = 0;
@@ -846,18 +700,9 @@ private:
     };
 
     std::unique_ptr<dgtl::core::DGTL_Arena> m_fallback_arena; // Standalone support
-    dgtl::core::DGTL_Arena& m_arena;
     dgtl::core::DGTL_Arena& arena_;
 
-    // Tier-1: Legacy lightweight SymbolEntry scopes
-    std::vector<ScopeMap> m_scopes;
-    std::unordered_map<uint32_t, SymbolEntry*> m_slot_to_entry;
-
-    // Tier-2: Full semantic Symbol scopes with hardware layout & types
-    std::vector<ExtendedScopeMap> m_extended_scopes;
-    std::unordered_map<uint32_t, Symbol*> m_slot_to_symbol;
-
-    // Tier-3: Cache-local Open-Addressing Slot Table
+    // Sovereign Cache-local Open-Addressing Table & Intrusive Scopes
     TableEntry* table_ = nullptr;
     size_t capacity_ = 0;
     size_t mask_ = 0;

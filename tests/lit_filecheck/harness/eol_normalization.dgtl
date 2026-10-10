@@ -5,8 +5,12 @@
 ; on Windows (\r\n line endings) and Unix (\n line endings) systems.
 ; The tool normalizes all line endings before directive matching.
 
-; CHECK: DGTL IR Text
-; CHECK-NEXT: Format
-; CHECK: Stream size
-; CHECK: nodes
+op 0x0A 0x00000001 0x00000000 0x00000000 0x00000000 0x0000
+op 0x53 0x00000002 0x00000001 0x00000000 0x00000000 0x0004
+
+; CHECK: DGTL IR Text Format
+; CHECK: Stream size: 2 nodes
+; CHECK: op 0x0a 0x00000001
+; CHECK: op 0x53 0x00000002
 ; CHECK-NOT: FAILED
+; CHECK: End of IR

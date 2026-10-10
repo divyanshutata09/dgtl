@@ -21,6 +21,7 @@ export module dgtl.linker.context;
 
 import dgtl.mir;
 import dgtl.object.file;
+import dgtl.object.section;
 import dgtl.object.symbol;
 
 export namespace dgtl::linker {
@@ -47,10 +48,17 @@ struct LinkerContext {
         return symbols.find(std::string(name)) != symbols.end();
     }
 
-    void import_object_symbols(const dgtl::object::ObjectFile& obj, uint64_t section_base = 0) {
+    void import_object_symbols(const dgtl::object::ObjectFile& obj, uint64_t default_section_base = 0) {
         for (const auto& sym : obj.symbols()) {
             if (sym.is_defined() && !sym.name.empty()) {
-                symbols[sym.name] = section_base + sym.value;
+                uint64_t base = default_section_base;
+                if (sym.section_index < obj.sections().size()) {
+                    const auto& sec = obj.sections()[sym.section_index];
+                    if (sec.address != 0) {
+                        base = sec.address;
+                    }
+                }
+                symbols[sym.name] = base + sym.value;
             }
         }
     }

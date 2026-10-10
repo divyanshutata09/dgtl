@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -19,7 +19,7 @@ import dgtl.ir_node;
 #include <immintrin.h>
 #include <iostream>
 #include <memory>
-#include "dgtl/pipeline/Performance_Test_Probes.hpp"
+import dgtl.ir.pipeline.performance_probes;
 
 void run_test_simd_5() {
     constexpr size_t kNodeCount = 1000000;

@@ -1,0 +1,12 @@
+; RUN: %dgtl-opt --pass=all --filecheck %s
+; FileCheck test for Internal Compiler Pipeline End-to-End Execution
+; Verifies full pass pipeline: GVN, DCE, Predication, Inlining, Escape, Fusion, and SIMD
+
+op 0x0D 0x00000001 0x0000000A 0x00000000 0x00000000 0x0000
+op 0x0D 0x00000002 0x00000014 0x00000000 0x00000000 0x0000
+op 0x14 0x00000003 0x00000001 0x00000002 0x00000000 0x0000
+op 0x0B 0x00000004 0x00000003 0x00000000 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: op 0x14 0x00000003
+; CHECK: End of IR

@@ -25,6 +25,7 @@ import dgtl.mir.runtime_contract;
 import dgtl.mir.abi_lowering;
 import dgtl.mir.machine_ir;
 import dgtl.isa.x64.x64_reg_map;
+import dgtl.isa.x64.x64_instruction_info;
 
 export namespace dgtl::isa::x64 {
 
@@ -296,7 +297,8 @@ public:
                     append_line(std::string("; [ERROR] Unsupported MIR instruction id=") +
                         std::to_string(instruction->id) +
                         " form=" + std::to_string(static_cast<unsigned>(instruction->form)) +
-                        " opcode=" + std::to_string(static_cast<unsigned>(instruction->opcode)));
+                        " generic_opcode=" + std::to_string(static_cast<unsigned>(instruction->opcode)) +
+                        " target_opcode=" + std::to_string(static_cast<unsigned>(instruction->target_opcode())));
                     return false;
                 }
             }
@@ -505,6 +507,13 @@ private:
         const dgtl::machine::MachineInstruction& instruction) {
 
         using namespace dgtl::machine;
+
+        // The MIR opcode remains generic; the target opcode is an independent
+        // concrete X64 identity and must agree with the selected machine form.
+        if (!instruction.has_target_opcode() ||
+            !is_x64_opcode_for_form(instruction.target_opcode(), instruction.form)) {
+            return false;
+        }
 
         const auto operands = mir_operands(function, instruction);
         const auto get = [&](std::size_t index) -> const std::string& {
@@ -807,6 +816,7 @@ private:
 
         case MachineForm::HardwareFence:
         case MachineForm::ConcurrentSync:
+        case MachineForm::AtomicOp:
             append_line("    mfence");
             return true;
 

@@ -52,7 +52,7 @@ import dgtl.isa.arm64.target;
 import dgtl.ir.analysis.cost_model;
 import dgtl.jit.hardware_scheduler;
 import dgtl.linker.backend;
-import dgtl.linker.driver.api;
+import dgtl.linker.driver_api;
 import dgtl.jit.jit_orchestrator;
 import dgtl.execution.loader;
 import dgtl.hir.semantic;
@@ -381,7 +381,8 @@ bool parse_ir_text(std::string_view text, dgtl::ir::IRStream& stream) {
 static bool lower_stream_to_mir(const dgtl::ir::IRStream& stream,
                                 dgtl::machine::MachineFunction& out_mf,
                                 const dgtl::core::TargetMachine& target) {
-    if (stream.is_null() || stream.size() == 0) return false;
+    if (stream.is_null()) return false;
+    if (stream.size() == 0) return true;
     const dgtl::isa::x64::X64TargetSubtarget subtarget;
     auto res = dgtl::mir::pipeline::MachinePipeline::compile(
         out_mf,
@@ -392,6 +393,9 @@ static bool lower_stream_to_mir(const dgtl::ir::IRStream& stream,
         &subtarget.frame_info,
         &subtarget.abi(true),
         dgtl::mir::isel::make_builtin_instruction_selector_program());
+    if (!res.success) {
+        std::cerr << "MIR pipeline error: " << res.error_message << "\n";
+    }
     return res.success;
 }
 
@@ -416,15 +420,21 @@ std::string lower_ir_to_asm(
     dgtl::core::TargetMachine target(arch);
 
     if (opts.target_arch == TargetArch::X86_64) {
-        dgtl::machine::MachineFunction mf("main");
-        if (!lower_stream_to_mir(stream, mf, target)) {
-            std::cerr << "Error: MIR lowering failed for x86_64\n";
-            return "";
-        }
+        if (stream.size() == 0) {
+            dgtl::isa::x64::DGTLNasmEmitter emitter;
+            emitter.emit(stream, nullptr);
+            oss << emitter.str();
+        } else {
+            dgtl::machine::MachineFunction mf("main");
+            if (!lower_stream_to_mir(stream, mf, target)) {
+                std::cerr << "Error: MIR lowering failed for x86_64\n";
+                return "";
+            }
 
-        dgtl::isa::x64::DGTLNasmEmitter emitter;
-        emitter.emit(mf, nullptr);
-        oss << emitter.str();
+            dgtl::isa::x64::DGTLNasmEmitter emitter;
+            emitter.emit(mf, nullptr);
+            oss << emitter.str();
+        }
     } else {
         dgtl::core::DGTL_Arena sym_arena(1, 64);
         dgtl::semantic::SymbolTable symbols(sym_arena);

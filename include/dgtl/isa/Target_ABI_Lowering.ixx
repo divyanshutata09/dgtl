@@ -190,10 +190,10 @@ private:
     }
 
     // Hardware Register Banks
-    static constexpr std::array<uint32_t, 6> SYSTEMV_INT_REGS = { 0, 1, 2, 3, 4, 5 };
+    static constexpr std::array<uint32_t, 6> SYSTEMV_INT_REGS = { 7, 6, 2, 1, 8, 9 };
     static constexpr std::array<uint32_t, 8> SYSTEMV_FLOAT_REGS = { 16, 17, 18, 19, 20, 21, 22, 23 };
 
-    static constexpr std::array<uint32_t, 4> MICROSOFT_INT_REGS = { 3, 2, 4, 5 };
+    static constexpr std::array<uint32_t, 4> MICROSOFT_INT_REGS = { 1, 2, 8, 9 };
     static constexpr std::array<uint32_t, 4> MICROSOFT_FLOAT_REGS = { 16, 17, 18, 19 };
 
     static constexpr std::array<uint32_t, 8> ARM64_INT_REGS = { 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -401,6 +401,16 @@ inline ABIParameter ABI_Lowering::lower_aggregate_parameter(std::span<const ABIV
                 }
                 return spill_to_stack();
             }
+        }
+
+        case ABIConvention::Microsoft_x64: {
+            if (total_size <= 8u) {
+                if (unified_slots_used_ < 4u) {
+                    const uint8_t slot = unified_slots_used_++;
+                    return ABIParameter{MICROSOFT_INT_REGS[slot], 0xFFFFFFFFu, 0u, total_size, true, false};
+                }
+            }
+            return spill_to_stack();
         }
 
         case ABIConvention::ARM64_EABI: {

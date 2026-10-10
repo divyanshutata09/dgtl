@@ -69,4 +69,4 @@ public:
     }
 };
 
-} // namespace dgtl::isa::amdgpu::rocm
+} // namespace dgtl::isa::amdgpu

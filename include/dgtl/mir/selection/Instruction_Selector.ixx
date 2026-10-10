@@ -43,8 +43,7 @@ import dgtl.mir.runtime_policy;
 import dgtl.mir.isel_gen;
 import dgtl.mir.machine_ir;
 
-// Target dispatch: classify_machine_form and semantic_kind queries
-import dgtl.isa.isel_dispatch;
+import dgtl.mir.target_isel;
 
 // Explicitly import target descriptions to resolve ArchType and TargetMachine
 import dgtl.target;
@@ -79,6 +78,7 @@ struct SelectedInstruction {
     std::string_view rule_name{};
     bool matched_rule = false;
     std::optional<machine::MachineMemoryOperand> memory_operand = std::nullopt;
+    std::vector<uint32_t> overflow_operands{};
 };
 
 /* ============================================================================
@@ -365,6 +365,80 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
                     machine::MachineSelectionOperand::value_ref(val, machine::OperandRole::Use));
             }
         }
+    } else if (selected.form == MachineForm::Call) {
+        selection.flags = selection.flags | machine::MachineInstrFlag::Call;
+        if (selected.node.op_a != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::symbol_ref(selected.node.op_a, machine::OperandRole::Use));
+        }
+        if (selected.node.op_b != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use));
+        }
+        if (selected.node.op_c != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::value_ref(selected.node.op_c, machine::OperandRole::Use));
+        }
+        if (selected.node.logic_flags != ir::INVALID_SLOT && selected.node.logic_flags != 0u) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::value_ref(selected.node.logic_flags, machine::OperandRole::Use));
+        }
+        for (uint32_t ov : selected.overflow_operands) {
+            if (ov != ir::INVALID_SLOT) {
+                selection.operands.push_back(
+                    machine::MachineSelectionOperand::value_ref(ov, machine::OperandRole::Use));
+            }
+        }
+    } else if (selected.form == MachineForm::LoadImmediate ||
+               selected.node.opcode == ir::OpCode::CONST ||
+               selected.node.opcode == ir::OpCode::LOAD_IMM ||
+               selected.node.opcode == ir::OpCode::IMMEDIATE) {
+        int64_t imm_val = 0;
+        if (selected.node.op_a == ir::INVALID_SLOT) {
+            imm_val = static_cast<int64_t>(static_cast<int32_t>(selected.node.op_b));
+        } else if (selected.node.op_b == ir::INVALID_SLOT) {
+            imm_val = static_cast<int64_t>(static_cast<int32_t>(selected.node.op_a));
+        } else {
+            const uint64_t raw = (static_cast<uint64_t>(selected.node.op_b) << 32) | static_cast<uint64_t>(selected.node.op_a);
+            imm_val = static_cast<int64_t>(raw);
+        }
+        selection.operands.push_back(machine::MachineSelectionOperand::imm(imm_val));
+    } else if (selected.form == MachineForm::Goto) {
+        if (selected.node.op_a != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::block_ref(selected.node.op_a));
+        }
+    } else if (selected.form == MachineForm::BranchCond) {
+        if (selected.node.op_a != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::value_ref(selected.node.op_a, machine::OperandRole::Use));
+        }
+        if (selected.node.op_b != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::block_ref(selected.node.op_b));
+        }
+    } else if (selected.form == MachineForm::Compare32) {
+        if (selected.node.op_a != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::value_ref(selected.node.op_a, machine::OperandRole::Use));
+        }
+        if (selected.node.op_b != ir::INVALID_SLOT) {
+            selection.operands.push_back(
+                machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use));
+        }
+        machine::ComparisonPredicate pred = machine::ComparisonPredicate::Equal;
+        switch (selected.node.opcode) {
+            case ir::OpCode::CMP_EQ_I32: pred = machine::ComparisonPredicate::Equal; break;
+            case ir::OpCode::CMP_NE_I32: pred = machine::ComparisonPredicate::NotEqual; break;
+            case ir::OpCode::CMP_LT_I32: pred = machine::ComparisonPredicate::SignedLessThan; break;
+            case ir::OpCode::CMP_LE_I32: pred = machine::ComparisonPredicate::SignedLessEqual; break;
+            case ir::OpCode::CMP_GT_I32: pred = machine::ComparisonPredicate::SignedGreaterThan; break;
+            case ir::OpCode::CMP_GE_I32: pred = machine::ComparisonPredicate::SignedGreaterEqual; break;
+            default: break;
+        }
+        selection.semantic_provenance = static_cast<std::uint32_t>(pred);
+        machine::MachineSelectionOperand pred_op = machine::MachineSelectionOperand::imm(static_cast<std::int64_t>(pred));
+        selection.operands.push_back(pred_op);
     } else {
         const std::uint32_t operands[3] = {
             selected.node.op_a, selected.node.op_b, selected.node.op_c
@@ -676,23 +750,23 @@ struct SelectionRule {
 
 struct MatchContext {
     const ir::IRStream& stream;
-    std::unordered_map<uint32_t, size_t> producer_by_result;
+    std::unordered_map<uint32_t, ir::IRNode> producer_nodes;
 
     explicit MatchContext(const ir::IRStream& ir_stream) : stream(ir_stream) {
-        producer_by_result.reserve(ir_stream.size() * 2u + 1u);
+        producer_nodes.reserve(ir_stream.size() * 2u + 1u);
 
         for (size_t i = 0; i < ir_stream.size(); ++i) {
-            const ir::IRNode node = ir_stream.get_node_readonly(i);
+            const ir::IRNode node = ir_stream.get_node(i);
             if (node.result_id != ir::INVALID_SLOT) {
-                producer_by_result.emplace(node.result_id, i);
+                producer_nodes.emplace(node.result_id, node);
             }
         }
     }
 
     [[nodiscard]] const ir::IRNode* lookup_producer(uint32_t slot) const noexcept {
-        const auto it = producer_by_result.find(slot);
-        if (it == producer_by_result.end()) return nullptr;
-        return &stream.get_node_readonly(it->second);
+        const auto it = producer_nodes.find(slot);
+        if (it == producer_nodes.end()) return nullptr;
+        return &it->second;
     }
 };
 
@@ -803,7 +877,10 @@ struct MatchContext {
         if (node.op_a == ir::INVALID_SLOT) {
             return static_cast<int64_t>(static_cast<int32_t>(node.op_b));
         }
-        const uint64_t raw = (static_cast<uint64_t>(node.op_a) << 32) | static_cast<uint64_t>(node.op_b);
+        if (node.op_b == ir::INVALID_SLOT) {
+            return static_cast<int64_t>(static_cast<int32_t>(node.op_a));
+        }
+        const uint64_t raw = (static_cast<uint64_t>(node.op_b) << 32) | static_cast<uint64_t>(node.op_a);
         return static_cast<int64_t>(raw);
     }
     return std::nullopt;
@@ -1033,8 +1110,23 @@ namespace detail {
 
 [[nodiscard]] inline MachineForm classify_machine_form_with_fallback(
     const core::TargetMachine& target,
+    const ir::IRNode& node) noexcept {
+    const MachineForm form = dgtl::mir::classify_machine_node(target, node);
+    if (form != MachineForm::Unhandled) [[likely]] {
+        return form;
+    }
+
+    if (runtime_policy::should_route_unhandled_to_runtime_call(target, node.opcode)) {
+        return MachineForm::Call;
+    }
+
+    return MachineForm::Unhandled;
+}
+
+[[nodiscard]] inline MachineForm classify_machine_form_with_fallback(
+    const core::TargetMachine& target,
     ir::OpCode opcode) noexcept {
-    const MachineForm form = dgtl::isa::classify_machine_form(target, opcode);
+    const MachineForm form = dgtl::mir::classify_machine_form(target, opcode);
     if (form != MachineForm::Unhandled) [[likely]] {
         return form;
     }
@@ -1129,8 +1221,15 @@ public:
         selected.semantic_opcode = selected.node.opcode;
         selected.rule_name = replacement.rule_name;
         selected.matched_rule = replacement.matched;
-        selected.form = classify_machine_form_with_fallback(target, selected.node.opcode);
-        selected.semantic_kind = dgtl::isa::semantic_kind(target, selected.semantic_opcode);
+        selected.form = classify_machine_form_with_fallback(target, selected.node);
+        selected.semantic_kind = dgtl::mir::semantic_kind(target, selected.semantic_opcode);
+
+        if (selected.form == MachineForm::Call) {
+            const auto overflow = stream.get_call_overflow_args(index);
+            if (!overflow.empty()) {
+                selected.overflow_operands.assign(overflow.begin(), overflow.end());
+            }
+        }
 
         if (selected.form == MachineForm::LoadStack || selected.form == MachineForm::StoreStack ||
             selected.node.opcode == ir::OpCode::LOAD || selected.node.opcode == ir::OpCode::STORE ||
@@ -1153,11 +1252,13 @@ public:
         machine::BlockId block,
         const SelectedInstruction& selected,
         machine::RegisterClassKind result_class = machine::RegisterClassKind::General) const {
-        if (selected.form == MachineForm::Unhandled ||
+        if (block == machine::INVALID_BLOCK_ID ||
+            selected.form == MachineForm::Unhandled ||
             selected.semantic_kind == machine::MachineSemanticKind::None ||
-            !machine::semantic_kind_matches_form(to_machine_form(selected.form), selected.semantic_kind)) {
+            !machine::semantic_kind_matches_form(to_machine_form(selected.form), selected.semantic_kind) ||
+            !dgtl::mir::verify_node_form_compatibility(selected.node, selected.form)) {
             throw std::invalid_argument(
-                "DGTL ISel contract violation: invalid HIR-to-MIR semantic/form pair");
+                "DGTL ISel contract violation: invalid HIR-to-MIR semantic/form pair or block ID");
         }
         return builder.append(block, to_machine_selection(selected, result_class), result_class);
     }

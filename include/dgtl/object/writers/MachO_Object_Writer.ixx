@@ -37,100 +37,12 @@ import dgtl.object.symbol;
 import dgtl.object.relocation;
 import dgtl.mir.machine_ir;
 import dgtl.isa.arm64.arm64_emitter;
+import dgtl.linker.macho.sections;
+import dgtl.linker.macho.relocations;
 
 export namespace dgtl::object::writers::macho {
 
-inline constexpr uint32_t MH_MAGIC_64_VAL                 = 0xFEEDFACF;
-inline constexpr uint32_t MH_OBJECT_TYPE                  = 0x1;
-inline constexpr int32_t  CPU_TYPE_ARM64_VAL              = 0x0100000C;
-inline constexpr int32_t  CPU_SUBTYPE_ALL_VAL             = 0x0;
-inline constexpr int32_t  CPU_TYPE_X86_64_VAL             = 0x01000007;
-inline constexpr uint32_t MH_SUBSECTIONS_VIA_SYMBOLS_FLAG = 0x2000;
-inline constexpr uint32_t LC_SEGMENT_64_CMD               = 0x19;
-inline constexpr uint32_t LC_SYMTAB_CMD                   = 0x02;
-
-inline constexpr uint32_t S_REGULAR                       = 0x00000000;
-inline constexpr uint32_t S_ZEROFILL                      = 0x00000001;
-inline constexpr uint32_t S_CSTRING_LITERALS              = 0x00000002;
-inline constexpr uint32_t S_THREAD_LOCAL_REGULAR          = 0x00000011;
-inline constexpr uint32_t S_THREAD_LOCAL_ZEROFILL         = 0x00000012;
-inline constexpr uint32_t S_ATTR_PURE_INSTRUCTIONS        = 0x80000000;
-inline constexpr uint32_t S_ATTR_SOME_INSTRUCTIONS        = 0x00000400;
-inline constexpr uint32_t S_ATTR_DEBUG                    = 0x02000000;
-inline constexpr uint32_t S_ATTR_LIVE_SUPPORT             = 0x08000000;
-
-inline constexpr uint8_t  N_EXT_FLAG                      = 0x01;
-inline constexpr uint8_t  N_SECT_TYPE                     = 0x0E;
-inline constexpr uint8_t  N_UNDF_TYPE                     = 0x00;
-
-inline constexpr uint8_t  ARM64_RELOC_UNSIGNED            = 0x00;
-inline constexpr uint8_t  ARM64_RELOC_BRANCH26            = 0x02;
-inline constexpr uint8_t  ARM64_RELOC_PAGE21              = 0x03;
-inline constexpr uint8_t  ARM64_RELOC_PAGEOFF12           = 0x04;
-
-#pragma pack(push, 1)
-struct Header64 {
-    uint32_t magic;
-    int32_t  cputype;
-    int32_t  cpusubtype;
-    uint32_t filetype;
-    uint32_t ncmds;
-    uint32_t sizeofcmds;
-    uint32_t flags;
-    uint32_t reserved;
-};
-
-struct SegmentCommand64 {
-    uint32_t cmd;
-    uint32_t cmdsize;
-    char     segname[16];
-    uint64_t vmaddr;
-    uint64_t vmsize;
-    uint64_t fileoff;
-    uint64_t filesize;
-    int32_t  maxprot;
-    int32_t  initprot;
-    uint32_t nsects;
-    uint32_t flags;
-};
-
-struct Section64 {
-    char     sectname[16];
-    char     segname[16];
-    uint64_t addr;
-    uint64_t size;
-    uint32_t offset;
-    uint32_t align;
-    uint32_t reloff;
-    uint32_t nreloc;
-    uint32_t flags;
-    uint32_t reserved1;
-    uint32_t reserved2;
-    uint32_t reserved3;
-};
-
-struct SymtabCommand {
-    uint32_t cmd;
-    uint32_t cmdsize;
-    uint32_t symoff;
-    uint32_t nsyms;
-    uint32_t stroff;
-    uint32_t strsize;
-};
-
-struct Nlist64 {
-    uint32_t n_strx;
-    uint8_t  n_type;
-    uint8_t  n_sect;
-    uint16_t n_desc;
-    uint64_t n_value;
-};
-
-struct RelocationInfo {
-    int32_t  r_address;
-    uint32_t r_info;
-};
-#pragma pack(pop)
+using namespace dgtl::linker::macho;
 
 } // namespace dgtl::object::writers::macho
 
@@ -180,7 +92,7 @@ public:
         }
 
         // Build fully synthesized Mach-O ObjectFile with unwind and frame info
-        dgtl::object::ObjectFile obj = dgtl::object::ObjectFile::from_machine_function(function, dgtl::object::ObjectFormat::MachO);
+        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
         auto& text_sec = obj.get_text_section();
         text_sec.bytes = std::move(codegen.code);
 
@@ -383,10 +295,14 @@ public:
             } else {
                 rec.type = m::N_SECT_TYPE | (sym.is_global() ? m::N_EXT_FLAG : 0);
                 uint8_t target_sect = 1;
-                if (sym.section_index > 0 && sym.section_index <= nsects) {
-                    target_sect = static_cast<uint8_t>(sym.section_index);
-                } else {
-                    target_sect = 1;
+                if (sym.section_index < obj.sections().size()) {
+                    const auto* target_sec = &obj.sections()[sym.section_index];
+                    for (size_t k = 0; k < layouts.size(); ++k) {
+                        if (layouts[k].sec == target_sec) {
+                            target_sect = static_cast<uint8_t>(k + 1);
+                            break;
+                        }
+                    }
                 }
                 rec.sect_idx = target_sect;
                 rec.value = layouts[target_sect - 1].vm_addr + sym.value;
@@ -423,12 +339,44 @@ public:
                     break;
                 }
             }
+
+            uint32_t pcrel = 1u;
+            uint32_t length = 2u; // 2^2 = 4 bytes
+            uint32_t r_type = m::ARM64_RELOC_BRANCH26;
+
+            if (r.kind == dgtl::object::RelocationKind::Absolute64) {
+                pcrel = 0u;
+                length = 3u; // 2^3 = 8 bytes
+                r_type = m::ARM64_RELOC_UNSIGNED;
+            } else if (r.kind == dgtl::object::RelocationKind::Absolute32) {
+                pcrel = 0u;
+                length = 2u;
+                r_type = m::ARM64_RELOC_UNSIGNED;
+            } else if (r.kind == dgtl::object::RelocationKind::Branch26 || r.kind == dgtl::object::RelocationKind::Call26) {
+                pcrel = 1u;
+                length = 2u;
+                r_type = m::ARM64_RELOC_BRANCH26;
+            }
+
             ri.r_info = (s_idx & 0x00FFFFFFu)
-                      | (1u << 24)
-                      | (static_cast<uint32_t>(m::ARM64_RELOC_BRANCH26) << 25)
-                      | (1u << 27)
-                      | (2u << 28);
-            sec_relocs[0].push_back(ri);
+                      | (pcrel << 24)
+                      | (length << 25)
+                      | (1u << 27) // r_extern = 1
+                      | (r_type << 28);
+
+            uint32_t target_sec_idx = 0;
+            if (r.section_index < obj.sections().size()) {
+                const auto* sec_ptr = &obj.sections()[r.section_index];
+                for (size_t k = 0; k < layouts.size(); ++k) {
+                    if (layouts[k].sec == sec_ptr) {
+                        target_sec_idx = static_cast<uint32_t>(k);
+                        break;
+                    }
+                }
+            }
+            if (target_sec_idx < nsects) {
+                sec_relocs[target_sec_idx].push_back(ri);
+            }
         }
 
         for (uint32_t i = 0; i < nsects; ++i) {

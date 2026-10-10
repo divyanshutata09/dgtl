@@ -117,9 +117,20 @@ public:
             emit_u32(symtab, strtab_offsets[i]); // st_name
             std::uint8_t info = (sym.is_global() ? 1 : 0) << 4; // STB_GLOBAL / STB_LOCAL
             info |= (sym.is_function() ? 2 : (sym.is_object() ? 1 : 0)); // STT_FUNC / STT_OBJECT
-            symtab.push_back(info); // st_info
-            symtab.push_back(0);    // st_other
-            emit_u16(symtab, sym.external ? 0 : 1); // st_shndx (1 = .text)
+            std::uint16_t shndx = 0;
+            if (!sym.external) {
+                shndx = 1;
+                if (sym.section_index < obj.sections().size()) {
+                    const auto* target_sec = &obj.sections()[sym.section_index];
+                    for (std::size_t k = 0; k < emit_sections.size(); ++k) {
+                        if (emit_sections[k] == target_sec) {
+                            shndx = static_cast<std::uint16_t>(k + 1);
+                            break;
+                        }
+                    }
+                }
+            }
+            emit_u16(symtab, shndx);
             emit_u64(symtab, sym.value); // st_value
             emit_u64(symtab, sym.size);  // st_size
         }
@@ -254,11 +265,9 @@ public:
         const machine::MachineFunction& function,
         std::vector<std::uint8_t>& out,
         std::string_view entry = "DGTL_kernel_entry") const {
-        auto obj = dgtl::object::ObjectFile::from_machine_function(function, dgtl::object::ObjectFormat::ELF);
+        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::ELF);
         if (!entry.empty()) {
-            if (auto* s = obj.find_symbol("DGTL_kernel_entry")) {
-                s->name = std::string(entry);
-            }
+            obj.add_function_symbol(std::string(entry), 0u, 0u, true);
         }
         return write(obj, out);
     }
@@ -324,10 +333,9 @@ public:
     }
 };
 
-} // namespace dgtl::backend::object
+} // namespace dgtl::object::writers
 
-export namespace dgtl::object::writers {
-} namespace dgtl::backend::object {
+export namespace dgtl::backend::object {
     using ELFObjectWriter = dgtl::object::writers::ELFObjectWriter;
 }
 

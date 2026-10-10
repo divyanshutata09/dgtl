@@ -27,6 +27,7 @@ module;
 #include <algorithm>
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 #include <bitset>
 #include <optional>
 #include <atomic>
@@ -34,6 +35,8 @@ module;
 #include <mutex>
 #include <stdexcept>
 #include <cstddef>
+#include <span>
+#include <utility>
 
 #ifdef CONST
 #undef CONST
@@ -74,196 +77,471 @@ struct alignas(16) ValueKey {
     }
 };
 
-class DGTLGVN {
-    static constexpr size_t DefaultTableSize = 16384;
-    static constexpr size_t MaxTableCap = 1 << 20;
+// ============================================================================
+// Shared helpers for the scalar-core passes.
+//
+// The HIR stream is NOT in SSA form: frontends (e.g. MYZON `let mut`) re-assign
+// the same result slot many times, and control flow is expressed with
+// LABEL / GOTO / BRANCH / BRANCH_COND nodes. Every pass below therefore:
+//   * treats a slot as a mutable variable (never as a single SSA definition);
+//   * treats every opcode that is not on an explicit pure whitelist as opaque;
+//   * never interprets LOAD_IMM / IMMEDIATE payload words as value references.
+// ============================================================================
+namespace scalar_core_detail {
 
-    struct Entry {
-        ValueKey key{};
-        uint32_t result_id = 0;
+// Node flags that make an otherwise-pure opcode observable / non-removable.
+inline constexpr std::uint16_t kBarrierFlagMask = static_cast<std::uint16_t>(
+    ir::Flags::HAS_SIDE_EFFECTS | ir::Flags::IS_VOLATILE | ir::Flags::IS_BRANCH |
+    ir::Flags::IS_RETURN | ir::Flags::IS_GUARD | ir::Flags::MAY_DEOPT);
+
+// Whitelist of opcodes whose only effect is writing result_id from register
+// operands (or immediates). Anything not listed here is conservatively opaque:
+// a DCE root and a GVN block barrier. Integer DIV/MOD are deliberately excluded
+// (they may trap); memory, control flow, calls, PHIs and casts are excluded.
+[[nodiscard]] inline bool is_pure_value_opcode(ir::OpCode op) noexcept {
+    switch (op) {
+        case ir::OpCode::REG_MOVE:
+        case ir::OpCode::LOAD_IMM:
+        case ir::OpCode::IMMEDIATE:
+        case ir::OpCode::ADD_I8:
+        case ir::OpCode::ADD_I32:
+        case ir::OpCode::SUB_I32:
+        case ir::OpCode::MUL_I32:
+        case ir::OpCode::SHL_I32:
+        case ir::OpCode::AND_I32:
+        case ir::OpCode::OR_I32:
+        case ir::OpCode::XOR_I32:
+        case ir::OpCode::SHR_I32:
+        case ir::OpCode::ADD_I64:
+        case ir::OpCode::SUB_I64:
+        case ir::OpCode::MUL_I64:
+        case ir::OpCode::AND_I64:
+        case ir::OpCode::OR_I64:
+        case ir::OpCode::XOR_I64:
+        case ir::OpCode::SHL_I64:
+        case ir::OpCode::SHR_I64:
+        case ir::OpCode::ADD_F32:
+        case ir::OpCode::SUB_F32:
+        case ir::OpCode::MUL_F32:
+        case ir::OpCode::DIV_F32:
+        case ir::OpCode::FMA_F32:
+        case ir::OpCode::ADD_F64:
+        case ir::OpCode::SUB_F64:
+        case ir::OpCode::MUL_F64:
+        case ir::OpCode::DIV_F64:
+        case ir::OpCode::CMP_EQ_I32:
+        case ir::OpCode::CMP_NE_I32:
+        case ir::OpCode::CMP_LT_I32:
+        case ir::OpCode::CMP_LE_I32:
+        case ir::OpCode::CMP_GT_I32:
+        case ir::OpCode::CMP_GE_I32:
+        case ir::OpCode::SELECT:
+        case ir::OpCode::BOOL_SELECT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Opcodes whose op_a/op_b/op_c are immediate payload words (CONST lo/hi), not
+// value references.
+[[nodiscard]] inline bool is_immediate_payload_opcode(ir::OpCode op) noexcept {
+    return op == ir::OpCode::LOAD_IMM || op == ir::OpCode::IMMEDIATE;
+}
+
+[[nodiscard]] inline bool is_pure_node(ir::OpCode op, std::uint16_t flags) noexcept {
+    return is_pure_value_opcode(op) && (flags & kBarrierFlagMask) == 0u;
+}
+
+// Commutative pure opcodes for GVN key canonicalisation (op_a <-> op_b).
+// Compares are intentionally excluded (fcmp encodes a predicate in op_c).
+[[nodiscard]] inline bool is_gvn_commutative(ir::OpCode op) noexcept {
+    switch (op) {
+        case ir::OpCode::ADD_I8:
+        case ir::OpCode::ADD_I32:
+        case ir::OpCode::MUL_I32:
+        case ir::OpCode::AND_I32:
+        case ir::OpCode::OR_I32:
+        case ir::OpCode::XOR_I32:
+        case ir::OpCode::ADD_I64:
+        case ir::OpCode::MUL_I64:
+        case ir::OpCode::AND_I64:
+        case ir::OpCode::OR_I64:
+        case ir::OpCode::XOR_I64:
+        case ir::OpCode::ADD_F32:
+        case ir::OpCode::MUL_F32:
+        case ir::OpCode::ADD_F64:
+        case ir::OpCode::MUL_F64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Snapshot of every node-index-keyed side table held by IRStream.
+struct NodeSidecars {
+    std::vector<std::uint32_t> call_overflow;     // CALL args[3..N-1]
+    std::vector<std::uint32_t> call_abi_layout;   // packed ABI plan words
+    std::vector<std::uint32_t> operand_overflow;  // variadic operands
+    std::vector<std::uint32_t> result_ids;        // multi-result ids / PHI blocks
+    std::uint32_t effects = 0u;                   // EffectSet
+
+    [[nodiscard]] bool empty() const noexcept {
+        return call_overflow.empty() && call_abi_layout.empty() &&
+               operand_overflow.empty() && result_ids.empty() && effects == 0u;
+    }
+};
+
+[[nodiscard]] inline NodeSidecars read_sidecars(const ir::IRStream& s, size_t idx) {
+    NodeSidecars sc;
+    sc.call_overflow    = s.get_call_overflow_args(idx);
+    sc.call_abi_layout  = s.get_call_abi_layout_words(idx);
+    sc.operand_overflow = s.get_operand_overflow(idx);
+    sc.result_ids       = s.get_result_ids(idx);
+    sc.effects          = s.get_node_effects(idx);
+    return sc;
+}
+
+inline void clear_sidecars(ir::IRStream& s, size_t idx) {
+    s.clear_call_overflow_args(idx);
+    s.clear_call_abi_layout_words(idx);
+    s.clear_operand_overflow(idx);
+    s.clear_result_ids(idx);
+    s.clear_node_effects(idx);
+}
+
+inline void write_sidecars(ir::IRStream& s, size_t idx, const NodeSidecars& sc) {
+    if (!sc.call_overflow.empty()) {
+        s.set_call_overflow_args(idx, std::span<const std::uint32_t>(sc.call_overflow.data(), sc.call_overflow.size()));
+    }
+    if (!sc.call_abi_layout.empty()) {
+        s.set_call_abi_layout_words(idx, std::span<const std::uint32_t>(sc.call_abi_layout.data(), sc.call_abi_layout.size()));
+    }
+    if (!sc.operand_overflow.empty()) {
+        s.set_operand_overflow(idx, std::span<const std::uint32_t>(sc.operand_overflow.data(), sc.operand_overflow.size()));
+    }
+    if (!sc.result_ids.empty()) {
+        s.set_result_ids(idx, std::span<const std::uint32_t>(sc.result_ids.data(), sc.result_ids.size()));
+    }
+    if (sc.effects != 0u) {
+        s.set_node_effects(idx, sc.effects);
+    }
+}
+
+/**
+ * Flow-insensitive mark-and-sweep DCE, safe on non-SSA, CFG-shaped IR.
+ *
+ * Roots: every node that is not a whitelisted pure value op (calls, stores,
+ * loads, labels, branches, returns, params, function headers, unknown ops),
+ * every node carrying a barrier flag, every node with an index-keyed sidecar,
+ * and every node accepted by `is_extra_root`.
+ * Uses: op_a/op_b/op_c (except LOAD_IMM/IMMEDIATE payloads), non-zero
+ * logic_flags (CALL 3rd argument), CALL overflow args and operand overflow.
+ * A slot is live if any live node uses it; a pure node is live iff its result
+ * slot is live (all definitions of a slot are kept together, which is what
+ * makes this sound for loop-carried re-definitions such as i = i + 1).
+ *
+ * Sweep: compaction with remapping of every index-keyed sidecar. If the stream
+ * carries node-id keyed metadata that cannot be remapped through the public
+ * IRStream API (ownership / concurrency / DSA maps), dead nodes are replaced
+ * by NOP in place instead, so no node index ever shifts.
+ */
+template <typename ExtraRootFn>
+inline void run_mark_sweep_dce(ir::IRStream& stream, ExtraRootFn&& is_extra_root) {
+    if (stream.is_null() || stream.is_active_transaction()) return;
+    const size_t n = stream.size();
+    if (n == 0u) return;
+
+    std::vector<ir::IRNode> nodes(n);
+    std::vector<std::uint8_t> has_sc(n, 0u);
+    std::unordered_map<size_t, NodeSidecars> sc_map;
+    for (size_t i = 0; i < n; ++i) {
+        nodes[i] = stream.get_node(i);
+        NodeSidecars sc = read_sidecars(stream, i);
+        if (!sc.empty()) {
+            has_sc[i] = 1u;
+            sc_map.emplace(i, std::move(sc));
+        }
+    }
+
+    std::vector<std::uint8_t> live(n, 0u);
+    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> pure_defs;  // slot -> pure def nodes
+    std::unordered_set<std::uint32_t> live_slots;
+    std::vector<std::uint32_t> pending;
+    pure_defs.reserve(n);
+    live_slots.reserve(n * 2u);
+
+    const auto mark_slot = [&](std::uint32_t slot) {
+        if (slot == ir::INVALID_SLOT) return;
+        if (live_slots.insert(slot).second) pending.push_back(slot);
     };
 
-    size_t table_size_ = DefaultTableSize;
-    size_t table_mask_ = DefaultTableSize - 1;
-    std::unique_ptr<Entry[]> primary_table;
-    std::unique_ptr<Entry[]> secondary_table;
-    std::vector<uint32_t> id_map;
-    uint32_t memory_version = 0;
-    static constexpr size_t PRE_WINDOW = 64;
-    std::vector<ValueKey> pre_keys;
-    std::vector<uint32_t> pre_ids;
+    const auto mark_uses = [&](size_t i) {
+        const ir::IRNode& nd = nodes[i];
+        if (!is_immediate_payload_opcode(nd.opcode)) {
+            mark_slot(nd.op_a);
+            mark_slot(nd.op_b);
+            mark_slot(nd.op_c);
+            if (nd.logic_flags != 0u) mark_slot(nd.logic_flags);
+        }
+        if (has_sc[i]) {
+            const auto it = sc_map.find(i);
+            if (it != sc_map.end()) {
+                for (const std::uint32_t s : it->second.call_overflow) mark_slot(s);
+                for (const std::uint32_t s : it->second.operand_overflow) mark_slot(s);
+            }
+        }
+    };
 
-    static size_t next_pow2(size_t v) noexcept {
-        if (v <= 64) return 64;
-        v--;
-        v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16; v |= v >> 32;
-        v++;
-        return (v > MaxTableCap) ? MaxTableCap : v;
+    // Mark: roots first.
+    for (size_t i = 0; i < n; ++i) {
+        const ir::IRNode& nd = nodes[i];
+        bool removable = !has_sc[i] &&
+                         (nd.opcode == ir::OpCode::NOP || is_pure_node(nd.opcode, nd.flags));
+        if (removable && is_extra_root(nd)) removable = false;
+
+        if (!removable) {
+            live[i] = 1u;
+            mark_uses(i);
+            continue;
+        }
+        if (nd.opcode != ir::OpCode::NOP && nd.result_id != ir::INVALID_SLOT) {
+            pure_defs[nd.result_id].push_back(static_cast<std::uint32_t>(i));
+        }
     }
+
+    // Fixpoint: a newly-live slot makes every pure definition of it live.
+    while (!pending.empty()) {
+        const std::uint32_t slot = pending.back();
+        pending.pop_back();
+        const auto it = pure_defs.find(slot);
+        if (it == pure_defs.end()) continue;
+        for (const std::uint32_t idx : it->second) {
+            if (live[idx]) continue;
+            live[idx] = 1u;
+            mark_uses(idx);
+        }
+    }
+
+    size_t live_count = 0;
+    for (size_t i = 0; i < n; ++i) live_count += live[i];
+    if (live_count == n) return;
+
+    // Node-id keyed maps (ownership / concurrency / DSA) cannot be remapped via
+    // the public API; keep indices stable in that case.
+    const bool can_compact = stream.estimate_complexity_score() == 0u;
+
+    stream.begin_transaction();
+    ir::IRAtom* atoms = stream.raw_atoms();
+    ir::IRCore* cores = stream.raw_cores();
+    if (!atoms || !cores) {
+        stream.rollback_transaction();
+        return;
+    }
+
+    if (!can_compact) {
+        bool changed = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (live[i]) continue;
+            if (atoms[i].opcode == ir::OpCode::NOP &&
+                (atoms[i].flags & ir::Flags::IS_DEAD) != 0u &&
+                cores[i].result_id == ir::INVALID_SLOT) {
+                continue;
+            }
+            atoms[i].opcode = ir::OpCode::NOP;
+            atoms[i].flags = ir::Flags::IS_DEAD;
+            cores[i].result_id = ir::INVALID_SLOT;
+            cores[i].op_a = ir::INVALID_SLOT;
+            cores[i].op_b = ir::INVALID_SLOT;
+            cores[i].op_c = ir::INVALID_SLOT;
+            cores[i].logic_flags = 0u;
+            cores[i].intent_hash = ir::IRNode::calculate_hash(
+                atoms[i].opcode, cores[i].result_id, cores[i].op_a, cores[i].op_b, cores[i].op_c);
+            changed = true;
+        }
+        if (changed && stream.validate_shadow_integrity()) {
+            stream.commit_transaction();
+        } else {
+            stream.rollback_transaction();
+        }
+        return;
+    }
+
+    // Compaction. Full IRAtom/IRCore copies preserve logic_flags, aux_flags,
+    // debug_id and epoch.
+    std::vector<std::pair<size_t, size_t>> moved_sidecars;  // old index -> new index
+    size_t write_idx = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (!live[i]) continue;
+        if (write_idx != i) {
+            atoms[write_idx] = atoms[i];
+            cores[write_idx] = cores[i];
+            if (has_sc[i]) moved_sidecars.emplace_back(i, write_idx);
+        }
+        cores[write_idx].intent_hash = ir::IRNode::calculate_hash(
+            atoms[write_idx].opcode,
+            cores[write_idx].result_id,
+            cores[write_idx].op_a,
+            cores[write_idx].op_b,
+            cores[write_idx].op_c);
+        ++write_idx;
+    }
+
+    stream.set_shadow_count(write_idx);
+    if (!stream.validate_shadow_integrity()) {
+        stream.rollback_transaction();
+        return;
+    }
+    stream.commit_transaction();
+
+    // Remap index-keyed side tables. Dead nodes never carry sidecars (they are
+    // roots), so only moved survivors need remapping. Clear all old slots first
+    // so overlapping old/new indices cannot clobber each other.
+    for (const auto& mv : moved_sidecars) {
+        clear_sidecars(stream, mv.first);
+    }
+    for (const auto& mv : moved_sidecars) {
+        const auto it = sc_map.find(mv.first);
+        if (it != sc_map.end()) write_sidecars(stream, mv.second, it->second);
+    }
+}
+
+} // namespace scalar_core_detail
+
+/**
+ * Block-local value numbering (local CSE) for non-SSA HIR.
+ *
+ * - The available-expression table is cleared at every node that is not a
+ *   whitelisted pure value op (LABEL, branches, GOTO, RET, CALL, stores,
+ *   function headers, unknown ops, nodes with sidecars or barrier flags).
+ * - Whenever a slot is (re)defined, every entry whose operands or result equal
+ *   that slot is invalidated.
+ * - LOAD_IMM / IMMEDIATE payloads are never treated as value references and
+ *   constants are not numbered (they stay rematerialisable immediates).
+ * - A redundant computation `r = op(a, b)` with an available equivalent `c` is
+ *   rewritten in place to `r = MOV c`. Nodes are never removed or reordered, so
+ *   node indices and every index-keyed side table stay valid. logic_flags,
+ *   aux_flags, debug_id and epoch are preserved.
+ */
+class DGTLGVN {
+    struct Key {
+        std::uint16_t opcode = 0u;
+        std::uint16_t flags = 0u;
+        std::uint32_t op_a = 0u;
+        std::uint32_t op_b = 0u;
+        std::uint32_t op_c = 0u;
+        std::uint32_t logic_flags = 0u;
+
+        bool operator==(const Key& o) const noexcept {
+            return opcode == o.opcode && flags == o.flags &&
+                   op_a == o.op_a && op_b == o.op_b && op_c == o.op_c &&
+                   logic_flags == o.logic_flags;
+        }
+    };
+
+    struct KeyHash {
+        size_t operator()(const Key& k) const noexcept {
+            std::uint64_t h = ir::IRNode::calculate_semantic_hash(
+                static_cast<ir::OpCode>(k.opcode), k.op_a, k.op_b, k.op_c, k.flags);
+            h ^= static_cast<std::uint64_t>(k.logic_flags) + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+            return static_cast<size_t>(h);
+        }
+    };
+
+    std::unordered_map<Key, std::uint32_t, KeyHash> table_;
+    std::unordered_map<std::uint32_t, std::vector<Key>> deps_;  // slot -> keys mentioning it
 
 public:
     explicit DGTLGVN(size_t max_ids = 64) {
-        table_size_ = next_pow2(std::max<size_t>(64, max_ids * 2));
-        table_mask_ = table_size_ - 1;
-        primary_table = std::make_unique<Entry[]>(table_size_);
-        secondary_table = std::make_unique<Entry[]>(table_size_);
-
-        id_map.resize(table_size_);
-        for (uint32_t i = 0; i < id_map.size(); ++i) id_map[i] = i;
-
-        pre_keys.reserve(PRE_WINDOW);
-        pre_ids.reserve(PRE_WINDOW);
+        table_.reserve(std::min<size_t>(std::max<size_t>(max_ids, 64u), 4096u));
     }
 
     void execute(ir::IRStream& stream) {
-        const size_t N = stream.size();
-        if (N == 0) return;
+        if (stream.is_null() || stream.is_active_transaction()) return;
+        const size_t n = stream.size();
+        if (n == 0u) return;
 
-        const ir::IRStream source = stream.clone();
-
-        const size_t needed_size = next_pow2(std::max<size_t>(64, N * 4));
-        if (needed_size != table_size_) {
-            table_size_ = needed_size;
-            table_mask_ = table_size_ - 1;
-            primary_table = std::make_unique<Entry[]>(table_size_);
-            secondary_table = std::make_unique<Entry[]>(table_size_);
-        } else {
-            std::fill_n(primary_table.get(), table_size_, Entry{});
-            std::fill_n(secondary_table.get(), table_size_, Entry{});
+        // Nodes carrying index-keyed sidecars are opaque barriers.
+        std::vector<std::uint8_t> has_sc(n, 0u);
+        for (size_t i = 0; i < n; ++i) {
+            has_sc[i] = scalar_core_detail::read_sidecars(stream, i).empty() ? 0u : 1u;
         }
 
-        if (id_map.size() <= N + 64) {
-            id_map.resize(N + 256);
-        }
-
-        pre_keys.clear();
-        pre_ids.clear();
-        memory_version = 0;
-        for (uint32_t i = 0; i < id_map.size(); ++i) {
-            id_map[i] = i;
-        }
+        reset_block();
 
         stream.begin_transaction();
-        stream.prune_shadow_buffer();
-        stream.set_shadow_count(0);
-
-        bool has_live = false;
-
-        for (size_t i = 0; i < N; ++i) {
-            const auto& atom = source.get_atom_readonly(i);
-            const auto& core = source.get_core_readonly(i);
-
-            // FIXED: Checked side effects via the native flag mask layout directly
-            if (atom.flags & ir::Flags::HAS_SIDE_EFFECTS) {
-                memory_version++;
-            }
-
-            if (atom.opcode == ir::OpCode::NOP) {
-                ir::IRNode n{atom.opcode, atom.flags,
-                             core.result_id,
-                             core.op_a, core.op_b, core.op_c, 0, 0u};
-                n.intent_hash = ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
-                stream.push_to_shadow(n);
-                continue;
-            }
-
-            // FIXED: Checked side effects and traits via explicit flag masks and op traits cleanly
-            const bool has_se =
-                (atom.flags & ir::Flags::HAS_SIDE_EFFECTS) ||
-                dgtl::ir::gen::op_has_trait(atom.opcode, dgtl::ir::gen::GenTrait::IsTerminator);
-
-            if (has_se) {
-                has_live = true;
-
-                ir::IRNode n{
-                    atom.opcode,
-                    atom.flags,
-                    core.result_id,
-                    resolve(core.op_a),
-                    resolve(core.op_b),
-                    resolve(core.op_c),
-                    0,
-                    0u
-                };
-
-                n.intent_hash = ir::IRNode::calculate_hash(
-                    n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
-
-                stream.push_to_shadow(n);
-                continue;
-            }
-
-            uint32_t a = resolve(core.op_a);
-            uint32_t b = resolve(core.op_b);
-            uint32_t c = resolve(core.op_c);
-
-            if (atom.opcode == ir::OpCode::ADD_I32) {
-                if (is_zero(source, a, i)) {
-                    map_id(core.result_id, b);
-                    stream.push_to_shadow(make_mov(core.result_id, b));
-                    continue;
-                }
-                if (is_zero(source, b, i)) {
-                    map_id(core.result_id, a);
-                    stream.push_to_shadow(make_mov(core.result_id, a));
-                    continue;
-                }
-            }
-
-            if (is_commutative(atom.opcode)) {
-                if (a > b) std::swap(a, b);
-            }
-
-            ir::IRNode temp{ atom.opcode, atom.flags, core.result_id, a, b, c, 0, 0u };
-            uint64_t hash64 = ir::IRNode::calculate_hash(temp.opcode, temp.result_id, a, b, c);
-            temp.intent_hash = hash64;
-            const uint32_t hash = static_cast<uint32_t>(hash64 & 0xFFFFFFFFu);
-
-            uint16_t sem_flags = temp.flags & (ir::Flags::IS_CONST |
-                                               ir::Flags::IS_VOLATILE |
-                                               ir::Flags::HAS_SIDE_EFFECTS);
-
-            ValueKey key{
-                static_cast<uint16_t>(temp.opcode),
-                sem_flags,
-                a, b, c,
-                hash ^ memory_version
-            };
-
-            for (size_t k = pre_keys.size(); k-- > 0;) {
-                if (pre_keys[k] == key) {
-                    uint32_t gid = pre_ids[k];
-                    map_id(core.result_id, gid);
-                    stream.push_to_shadow(make_nop(core.result_id));
-                    goto next_iter;
-                }
-            }
-
-            {
-                uint32_t gid = lookup_or_insert(key, core.result_id);
-
-                if (gid != core.result_id && gid != 0) {
-                    map_id(core.result_id, gid);
-                    resolve(core.result_id);
-                    stream.push_to_shadow(make_nop(core.result_id));
-                } else {
-                    has_live = true;
-                    stream.push_to_shadow(temp);
-
-                    if (pre_keys.size() >= PRE_WINDOW) {
-                        pre_keys.erase(pre_keys.begin());
-                        pre_ids.erase(pre_ids.begin());
-                    }
-                    pre_keys.push_back(key);
-                    pre_ids.push_back(core.result_id);
-                }
-            }
-
-        next_iter:
-            ;
+        ir::IRAtom* atoms = stream.raw_atoms();
+        ir::IRCore* cores = stream.raw_cores();
+        if (!atoms || !cores) {
+            stream.rollback_transaction();
+            return;
         }
 
-        if (!has_live) {
+        bool changed = false;
+        for (size_t i = 0; i < n; ++i) {
+            ir::IRAtom& atom = atoms[i];
+            ir::IRCore& core = cores[i];
+            const ir::OpCode op = atom.opcode;
+
+            if (op == ir::OpCode::NOP) continue;
+
+            if (has_sc[i] || !scalar_core_detail::is_pure_node(op, atom.flags)) {
+                // Block boundary or opaque instruction: nothing stays available.
+                reset_block();
+                continue;
+            }
+
+            const std::uint32_t r = core.result_id;
+            if (r == ir::INVALID_SLOT) continue;
+
+            // Moves and constants are not numbered; they only redefine r.
+            if (op == ir::OpCode::REG_MOVE || scalar_core_detail::is_immediate_payload_opcode(op)) {
+                invalidate_slot(r);
+                continue;
+            }
+
+            Key key{};
+            key.opcode = static_cast<std::uint16_t>(op);
+            key.flags = atom.flags;
+            key.op_a = core.op_a;
+            key.op_b = core.op_b;
+            key.op_c = core.op_c;
+            key.logic_flags = core.logic_flags;
+            if (scalar_core_detail::is_gvn_commutative(op) && key.op_a > key.op_b) {
+                std::swap(key.op_a, key.op_b);
+            }
+
+            bool rewritten = false;
+            if (const auto it = table_.find(key); it != table_.end()) {
+                const std::uint32_t canonical = it->second;
+                if (canonical == r) {
+                    // Recomputes the value r already holds; nothing changes.
+                    continue;
+                }
+                atom.opcode = ir::OpCode::REG_MOVE;
+                atom.flags = static_cast<std::uint16_t>(
+                    atom.flags & ~(ir::Flags::IS_CONST | ir::Flags::IS_SPEC_CONST | ir::Flags::IS_FUSED));
+                core.op_a = canonical;
+                core.op_b = ir::INVALID_SLOT;
+                core.op_c = ir::INVALID_SLOT;
+                core.intent_hash = ir::IRNode::calculate_hash(
+                    atom.opcode, core.result_id, core.op_a, core.op_b, core.op_c);
+                rewritten = true;
+                changed = true;
+            }
+
+            // r is (re)defined here: drop everything that mentioned its old value.
+            invalidate_slot(r);
+
+            // `i = i + 1` style self-updates do not produce a reusable expression.
+            if (!rewritten && key.op_a != r && key.op_b != r && key.op_c != r) {
+                insert(key, r);
+            }
+        }
+
+        reset_block();
+
+        if (!changed) {
             stream.rollback_transaction();
             return;
         }
@@ -276,121 +554,40 @@ public:
     }
 
 private:
-    void map_id(uint32_t from, uint32_t to) {
-        if (from == 0 || to == 0) return;
-        if (from >= id_map.size()) return;
-        id_map[from] = to;
-    }
-
-    uint32_t resolve(uint32_t id) {
-        if (id == 0 || id == ir::INVALID_SLOT) return id;
-        if (id >= id_map.size()) return id;
-
-        uint32_t root = id;
-        while (root < id_map.size() && id_map[root] != root)
-            root = id_map[root];
-
-        while (id < id_map.size() && id_map[id] != id) {
-            uint32_t p = id_map[id];
-            id_map[id] = root;
-            id = p;
+    void reset_block() {
+        if (!table_.empty()) {
+            if (table_.bucket_count() > 8192u) table_ = decltype(table_){};
+            else table_.clear();
         }
-
-        return root;
-    }
-
-    static bool is_zero(const ir::IRStream& s, uint32_t id, size_t upto) {
-        if (id == 0 || id == ir::INVALID_SLOT) return false;
-
-        for (size_t j = 0; j < upto; ++j) {
-            if (s.get_core_readonly(j).result_id == id) {
-                const auto& a = s.get_atom_readonly(j);
-                if (a.opcode == ir::OpCode::CONST &&
-                    s.get_core_readonly(j).op_a == 0)
-                    return true;
-                return false;
-            }
+        if (!deps_.empty()) {
+            if (deps_.bucket_count() > 8192u) deps_ = decltype(deps_){};
+            else deps_.clear();
         }
-        return false;
     }
 
-    static ir::IRNode make_mov(uint32_t dst, uint32_t src) {
-        ir::IRNode n{};
-        n.opcode = ir::OpCode::MOV;
-        n.result_id = dst;
-        n.op_a = src;
-        return n;
+    void add_dep(std::uint32_t slot, const Key& key) {
+        if (slot == ir::INVALID_SLOT) return;
+        deps_[slot].push_back(key);
     }
 
-    static ir::IRNode make_nop(uint32_t id) {
-        ir::IRNode n{};
-        n.opcode = ir::OpCode::NOP;
-        n.flags = ir::Flags::IS_DEAD;
-        n.result_id = id;
-        return n;
+    void insert(const Key& key, std::uint32_t result) {
+        table_[key] = result;
+        add_dep(result, key);
+        add_dep(key.op_a, key);
+        add_dep(key.op_b, key);
+        add_dep(key.op_c, key);
     }
 
-    static bool is_commutative(ir::OpCode op) noexcept {
-        return dgtl::ir::gen::op_has_trait(op, dgtl::ir::gen::GenTrait::Commutative);
-    }
-
-    uint32_t lookup_or_insert(const ValueKey& key, uint32_t id) {
-        static constexpr size_t MaxProbes = 32;
-
-        const uint64_t h1 = mix_h1(key) & table_mask_;
-        const uint64_t h2 = mix_h2(key) & table_mask_;
-
-        if (primary_table[h1].result_id && primary_table[h1].key == key)
-            return primary_table[h1].result_id;
-
-        if (!primary_table[h1].result_id) {
-            primary_table[h1] = {key, id};
-            return id;
-        }
-
-        if (secondary_table[h2].result_id && secondary_table[h2].key == key)
-            return secondary_table[h2].result_id;
-
-        if (!secondary_table[h2].result_id) {
-            secondary_table[h2] = {key, id};
-            return id;
-        }
-
-        for (size_t probes = 1; probes < MaxProbes; ++probes) {
-            const uint64_t idx = (h1 + probes) & table_mask_;
-            if (primary_table[idx].result_id && primary_table[idx].key == key)
-                return primary_table[idx].result_id;
-            if (!primary_table[idx].result_id) {
-                primary_table[idx] = {key, id};
-                return id;
-            }
-        }
-
-        return id;
-    }
-
-    static uint64_t mix_h1(const ValueKey& k) noexcept {
-        uint64_t h = 0x123456789ABCDEF0ULL ^ k.op_a;
-        h ^= (uint64_t(k.opcode) << 32) | k.op_b;
-        h ^= (uint64_t(k.op_c) << 48);
-        h ^= (uint64_t(k.flags) << 16);
-        h ^= h >> 33; h *= 0xff51afd7ed558ccdULL;
-        return h ^ (h >> 33);
-    }
-
-    static uint64_t mix_h2(const ValueKey& k) noexcept {
-        uint64_t h = 0x876543210FEDCBA9ULL ^ k.op_b;
-        h ^= (uint64_t(k.op_a) << 16) | k.opcode;
-        h ^= (uint64_t(k.op_c) << 32);
-        h ^= (uint64_t(k.flags) << 48);
-        h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
-        return h ^ (h >> 31);
+    void invalidate_slot(std::uint32_t slot) {
+        if (slot == ir::INVALID_SLOT) return;
+        const auto it = deps_.find(slot);
+        if (it == deps_.end()) return;
+        for (const Key& k : it->second) table_.erase(k);
+        deps_.erase(it);
     }
 };
 
 class DGTLDCESolver {
-    static constexpr uint32_t MAX_TRACKED_IDS = 65536;
-
 public:
     DGTLDCESolver() = default;
 
@@ -399,629 +596,28 @@ public:
     }
 
     void execute(ir::IRStream& stream, const pipeline::DGTLLanguageRootMarker* root_marker) {
-        if (stream.is_null() || stream.size() == 0) [[unlikely]] return;
-
-        ir::IRStream shadow_stream = ir::IRStream::allocate_transactional(stream.capacity());
-        if (shadow_stream.is_null()) return;
-
-        std::bitset<MAX_TRACKED_IDS> live_map;
-        mark_live_instructions(stream, live_map, root_marker);
-        propagate_liveness(stream, live_map, root_marker);
-
-        shadow_stream.begin_transaction();
-        bool success = prune_to_shadow(stream, shadow_stream, live_map, root_marker);
-
-        if (success && shadow_stream.validate_shadow_integrity()) {
-            stream.commit_from_shadow(shadow_stream);
-        } else {
-            shadow_stream.abort_transaction();
-        }
-    }
-
-private:
-    static void mark_live_instructions(
-        const ir::IRStream& src,
-        std::bitset<MAX_TRACKED_IDS>& live_map,
-        const pipeline::DGTLLanguageRootMarker* root_marker
-    ) {
-        const size_t sz = src.size();
-        for (int i = static_cast<int>(sz) - 1; i >= 0; --i) {
-            ir::IRNode node = src.get_node(i);
-
-            const bool is_call_like =
-                dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::ControlFlow) &&
-                !node.is_terminator();
-
-            if (is_call_like || node.opcode == ir::OpCode::VOLATILE_STORE || node.opcode == ir::OpCode::VOLATILE_LOAD) {
-                live_map.set(i % MAX_TRACKED_IDS);
-            }
-
-            if (node.result_id != ir::INVALID_SLOT) {
-                if (root_marker && root_marker->is_root(node)) {
-                    live_map.set(node.result_id % MAX_TRACKED_IDS);
-                }
-            }
-        }
-    }
-
-    static void propagate_liveness(
-        const ir::IRStream& src,
-        std::bitset<MAX_TRACKED_IDS>& live_map,
-        const pipeline::DGTLLanguageRootMarker* root_marker
-    ) {
-        const size_t sz = src.size();
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (int i = static_cast<int>(sz) - 1; i >= 0; --i) {
-                ir::IRNode node = src.get_node(i);
-
-                const bool is_call_like =
-                dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::ControlFlow) &&
-                !node.is_terminator();
-
-                const bool is_memory_write =
-                    node.is_memory_write();
-
-                const bool is_essential = node.is_terminator() ||
-                                           is_call_like ||
-                                           (node.flags & ir::Flags::HAS_SIDE_EFFECTS) ||
-                                           is_memory_write ||
-                                           (root_marker != nullptr && root_marker->is_root(node));
-
-                const bool has_result = node.result_id != ir::INVALID_SLOT;
-                const bool needed_by_successor = has_result && live_map.test(node.result_id % MAX_TRACKED_IDS);
-
-                if (is_essential || needed_by_successor) {
-                    if (node.op_a != ir::INVALID_SLOT && !live_map.test(node.op_a % MAX_TRACKED_IDS)) {
-                        live_map.set(node.op_a % MAX_TRACKED_IDS);
-                        changed = true;
-                    }
-                    if (node.op_b != ir::INVALID_SLOT && !live_map.test(node.op_b % MAX_TRACKED_IDS)) {
-                        live_map.set(node.op_b % MAX_TRACKED_IDS);
-                        changed = true;
-                    }
-                    if (node.op_c != ir::INVALID_SLOT && !live_map.test(node.op_c % MAX_TRACKED_IDS)) {
-                        live_map.set(node.op_c % MAX_TRACKED_IDS);
-                        changed = true;
-                    }
-                    if (has_result && !live_map.test(node.result_id % MAX_TRACKED_IDS)) {
-                        live_map.set(node.result_id % MAX_TRACKED_IDS);
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    static bool prune_to_shadow(
-        const ir::IRStream& src,
-        ir::IRStream& shadow,
-        const std::bitset<MAX_TRACKED_IDS>& live_map,
-        const pipeline::DGTLLanguageRootMarker* root_marker
-    ) {
-        for (size_t i = 0; i < src.size(); ++i) {
-            ir::IRNode node = src.get_node(i);
-
-            const bool is_call_like =
-                dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::ControlFlow) &&
-                !node.is_terminator();
-
-            const bool is_memory_write =
-                    node.is_memory_write();
-
-            // FIXED: Swapped out unmapped IRTraitsStatic with native flags mask evaluation
-            bool is_live = node.is_terminator() ||
-                           is_call_like ||
-                           (node.flags & ir::Flags::HAS_SIDE_EFFECTS) ||
-                           is_memory_write ||
-                           (root_marker != nullptr && root_marker->is_root(node)) ||
-                           (node.result_id != ir::INVALID_SLOT && live_map.test(node.result_id % MAX_TRACKED_IDS));
-
-            if (is_live) {
-                if (node.result_id == ir::INVALID_SLOT &&
-                    !node.is_terminator() &&
-                    !is_call_like &&
-                    !(node.flags & ir::Flags::HAS_SIDE_EFFECTS)) {
-                    if (node.opcode != ir::OpCode::NOP) return false;
-                }
-
-                node.intent_hash = ir::IRNode::calculate_hash(
-                    node.opcode,
-                    node.result_id,
-                    node.op_a,
-                    node.op_b,
-                    node.op_c
-                );
-
-                shadow.push_back(node);
-            }
-        }
-        return true;
+        scalar_core_detail::run_mark_sweep_dce(stream, [root_marker](const ir::IRNode& node) {
+            return root_marker != nullptr && root_marker->is_root(node);
+        });
     }
 };
 
 class DeadCodeElimination {
 public:
     void execute(dgtl::ir::IRStream& stream) {
-        stream.begin_transaction();
-        ir::IRAtom* shadow_atoms = stream.raw_atoms();
-        ir::IRCore* shadow_cores = stream.raw_cores();
-        if (!shadow_atoms || !shadow_cores) {
-            stream.rollback_transaction();
-            return;
-        }
-
-        const size_t shadow_count = stream.size();
-        if (shadow_count == 0) {
-            stream.commit_transaction();
-            return;
-        }
-
-        // 1. Scan true virtual register IDs only (ignore immediate payloads)
-        uint32_t max_reg_id = 0;
-        for (size_t i = 0; i < shadow_count; ++i) {
-            const ir::IRAtom& a = shadow_atoms[i];
-            const ir::IRCore& c = shadow_cores[i];
-            
-            auto bump = [&](uint32_t r) {
-                if (r != ir::INVALID_SLOT && r < 0x80000000u && r > max_reg_id) {
-                    max_reg_id = r;
-                }
-            };
-            bump(c.result_id);
-            if (!(a.flags & ir::Flags::IS_CONST) && a.opcode != ir::OpCode::LOAD_IMM && a.opcode != ir::OpCode::IMMEDIATE) {
-                bump(c.op_a);
-                bump(c.op_b);
-                bump(c.op_c);
-            }
-        }
-
-        // 2. Ultra-fast Zero-Heap ThreadLocalArena Allocation
-        constexpr uint32_t kDenseIdLimit = 16u * 1024u * 1024u;
-        const bool use_dense = (max_reg_id <= kDenseIdLimit);
-
-        dgtl::core::ThreadLocalArena scratch;
-        const size_t dense_sz = use_dense ? (static_cast<size_t>(max_reg_id) + 1u) : 0u;
-
-        size_t ss_sz = 64u;
-        if (!use_dense) {
-            const size_t needed = (shadow_count > 0u) ? (shadow_count * 4u) : 64u;
-            while (ss_sz < needed && ss_sz < (1u << 22)) {
-                ss_sz <<= 1;
-            }
-        }
-
-        scratch.init(dense_sz + ss_sz * sizeof(uint32_t) + 1024u);
-        uint8_t* dense_live = use_dense ? scratch.allocate<uint8_t>(dense_sz) : nullptr;
-        uint32_t* ss_keys = !use_dense ? scratch.allocate<uint32_t>(ss_sz) : nullptr;
-
-        if (dense_live) {
-            std::memset(dense_live, 0, dense_sz);
-        }
-        if (ss_keys) {
-            std::memset(ss_keys, 0xFF, ss_sz * sizeof(uint32_t));
-        }
-
-        const size_t ss_mask = ss_sz - 1u;
-        constexpr uint32_t SS_EMPTY = 0xFFFFFFFFu;
-        constexpr uint32_t SS_DELETED = 0xFFFFFFFEu;
-        constexpr size_t kMaxProbes = 64;
-
-        const auto ss_contains = [&](uint32_t k) noexcept -> bool {
-            if (!ss_keys) return false;
-            size_t slot = static_cast<size_t>(k) & ss_mask;
-            for (size_t p = 0; p < kMaxProbes; ++p) {
-                const uint32_t entry = ss_keys[slot];
-                if (entry == k) return true;
-                if (entry == SS_EMPTY) return false;
-                slot = (slot + 1u) & ss_mask;
-            }
+        scalar_core_detail::run_mark_sweep_dce(stream, [](const ir::IRNode&) noexcept {
             return false;
-        };
-
-        const auto ss_insert = [&](uint32_t k) noexcept {
-            if (!ss_keys) return;
-            size_t slot = static_cast<size_t>(k) & ss_mask;
-            for (size_t p = 0; p < kMaxProbes; ++p) {
-                const uint32_t entry = ss_keys[slot];
-                if (entry == SS_EMPTY || entry == SS_DELETED || entry == k) {
-                    ss_keys[slot] = k;
-                    return;
-                }
-                slot = (slot + 1u) & ss_mask;
-            }
-        };
-
-        const auto ss_erase = [&](uint32_t k) noexcept {
-            if (!ss_keys) return;
-            size_t slot = static_cast<size_t>(k) & ss_mask;
-            for (size_t p = 0; p < kMaxProbes; ++p) {
-                const uint32_t entry = ss_keys[slot];
-                if (entry == k) {
-                    ss_keys[slot] = SS_DELETED;
-                    return;
-                }
-                if (entry == SS_EMPTY) return;
-                slot = (slot + 1u) & ss_mask;
-            }
-        };
-
-        const auto is_live_fn = [&](uint32_t r) noexcept -> bool {
-            if (r == ir::INVALID_SLOT) return false;
-            return use_dense ? (r < dense_sz && dense_live[r] != 0u) : ss_contains(r);
-        };
-
-        const auto set_live = [&](uint32_t r) noexcept {
-            if (r == ir::INVALID_SLOT) return;
-            if (use_dense) {
-                if (r < dense_sz) dense_live[r] = 1u;
-            } else {
-                ss_insert(r);
-            }
-        };
-
-        const auto clear_live = [&](uint32_t r) noexcept {
-            if (r == ir::INVALID_SLOT) return;
-            if (use_dense) {
-                if (r < dense_sz) dense_live[r] = 0u;
-            } else {
-                ss_erase(r);
-            }
-        };
-
-        // 3. Backward Liveness Analysis
-        for (int i = static_cast<int>(shadow_count) - 1; i >= 0; --i) {
-            ir::IRAtom& atom = shadow_atoms[i];
-            ir::IRCore& core = shadow_cores[i];
-
-            const bool is_terminator = dgtl::ir::gen::op_has_trait(atom.opcode, dgtl::ir::gen::GenTrait::IsTerminator);
-            const bool is_call_like = atom.opcode == ir::OpCode::CALL || atom.opcode == ir::OpCode::SYSCALL;
-            const bool is_essential = is_call_like ||
-                                      (atom.flags & ir::Flags::HAS_SIDE_EFFECTS) ||
-                                      is_terminator ||
-                                      is_live_fn(core.result_id);
-
-            if (!is_essential) {
-                atom.flags |= ir::Flags::IS_DEAD;
-            } else {
-                clear_live(core.result_id);
-                const bool is_imm = (atom.flags & ir::Flags::IS_CONST) ||
-                                    atom.opcode == ir::OpCode::LOAD_IMM ||
-                                    atom.opcode == ir::OpCode::IMMEDIATE;
-                if (!is_imm) {
-                    set_live(core.op_a);
-                    set_live(core.op_b);
-                    set_live(core.op_c);
-                }
-            }
-        }
-
-        // 4. In-Place Stream Compaction
-        size_t write_idx = 0;
-        for (size_t i = 0; i < shadow_count; ++i) {
-            if (!(shadow_atoms[i].flags & ir::Flags::IS_DEAD)) {
-                if (write_idx != i) {
-                    shadow_atoms[write_idx] = shadow_atoms[i];
-                    shadow_cores[write_idx] = shadow_cores[i];
-                }
-                shadow_cores[write_idx].intent_hash = ir::IRNode::calculate_hash(
-                    shadow_atoms[write_idx].opcode,
-                    shadow_cores[write_idx].result_id,
-                    shadow_cores[write_idx].op_a,
-                    shadow_cores[write_idx].op_b,
-                    shadow_cores[write_idx].op_c);
-                ++write_idx;
-            }
-        }
-
-        stream.set_shadow_count(write_idx);
-        if (stream.validate_shadow_integrity()) {
-            stream.commit_transaction();
-        } else {
-            stream.rollback_transaction();
-        }
+        });
     }
 };
 
+// Legacy entry point kept for existing callers; delegates to the block-local,
+// non-SSA-safe value numbering above.
 class GlobalValueNumbering {
 public:
     void execute(dgtl::ir::IRStream& stream) {
-        stream.begin_transaction();
-        ir::IRAtom* shadow_atoms = stream.raw_atoms();
-        ir::IRCore* shadow_cores = stream.raw_cores();
-        if (!shadow_atoms || !shadow_cores) {
-            stream.rollback_transaction();
-            return;
-        }
-
-        size_t shadow_count = stream.size();
-
-        uint32_t max_reg_id = 0;
-        for (size_t i = 0; i < shadow_count; ++i) {
-            const ir::IRAtom& a = shadow_atoms[i];
-            const ir::IRCore& c = shadow_cores[i];
-            auto bump = [&](uint32_t r) {
-                if (r != ir::INVALID_SLOT && r < 0x80000000u && r > max_reg_id) {
-                    max_reg_id = r;
-                }
-            };
-            bump(c.result_id);
-            if (!(a.flags & ir::Flags::IS_CONST) && a.opcode != ir::OpCode::LOAD_IMM && a.opcode != ir::OpCode::IMMEDIATE) {
-                bump(c.op_a);
-                bump(c.op_b);
-                bump(c.op_c);
-            }
-        }
-        const size_t reg_sz = (max_reg_id != ir::INVALID_SLOT && max_reg_id < (16u * 1024u * 1024u))
-            ? (static_cast<size_t>(max_reg_id) + 1u)
-            : 1u;
-
-        size_t et_sz = 64u;
-        {
-            const size_t needed = (shadow_count > 0u) ? (shadow_count * 4u) : 64u;
-            while (et_sz < needed && et_sz < (1u << 22)) {
-                et_sz <<= 1;
-            }
-        }
-
-        dgtl::core::ThreadLocalArena scratch;
-        scratch.init(reg_sz * (sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint8_t))
-                     + et_sz * (sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint8_t))
-                     + 1024u);
-
-        uint32_t* remap_table = scratch.allocate<uint32_t>(reg_sz);
-        uint64_t* const_tab = scratch.allocate<uint64_t>(reg_sz);
-        uint8_t* has_const = scratch.allocate<uint8_t>(reg_sz);
-        uint64_t* et_keys = scratch.allocate<uint64_t>(et_sz);
-        uint32_t* et_vals = scratch.allocate<uint32_t>(et_sz);
-        uint8_t* et_occ = scratch.allocate<uint8_t>(et_sz);
-
-        if (!remap_table || !const_tab || !has_const || !et_keys || !et_vals || !et_occ) {
-            stream.rollback_transaction();
-            return;
-        }
-
-        std::memset(remap_table, 0xFF, reg_sz * sizeof(uint32_t));
-        std::memset(has_const, 0, reg_sz * sizeof(uint8_t));
-        std::memset(et_occ, 0, et_sz * sizeof(uint8_t));
-
-        const size_t et_mask = et_sz - 1u;
-        constexpr size_t kMaxProbes = 64;
-
-        const auto et_find = [&](uint64_t k) noexcept -> uint32_t {
-            size_t slot = static_cast<size_t>(k) & et_mask;
-            for (size_t p = 0; p < kMaxProbes; ++p) {
-                if (!et_occ[slot]) return ir::INVALID_SLOT;
-                if (et_keys[slot] == k) return et_vals[slot];
-                slot = (slot + 1u) & et_mask;
-            }
-            return ir::INVALID_SLOT;
-        };
-
-        const auto et_insert = [&](uint64_t k, uint32_t v) noexcept {
-            size_t slot = static_cast<size_t>(k) & et_mask;
-            for (size_t p = 0; p < kMaxProbes; ++p) {
-                if (!et_occ[slot] || et_keys[slot] == k) {
-                    et_keys[slot] = k;
-                    et_vals[slot] = v;
-                    et_occ[slot] = 1u;
-                    return;
-                }
-                slot = (slot + 1u) & et_mask;
-            }
-        };
-
-        const auto remap_get = [&](uint32_t r) noexcept -> uint32_t {
-            if (r == ir::INVALID_SLOT || r >= static_cast<uint32_t>(reg_sz)) {
-                return ir::INVALID_SLOT;
-            }
-            return remap_table[r];
-        };
-
-        const auto remap_set = [&](uint32_t from, uint32_t to) noexcept {
-            if (from != ir::INVALID_SLOT && from < static_cast<uint32_t>(reg_sz)) {
-                remap_table[from] = to;
-            }
-        };
-
-        const auto const_get = [&](uint32_t r, uint64_t& out) noexcept -> bool {
-            if (r == ir::INVALID_SLOT || r >= static_cast<uint32_t>(reg_sz)) {
-                return false;
-            }
-            if (!has_const[r]) {
-                return false;
-            }
-            out = const_tab[r];
-            return true;
-        };
-
-        const auto const_set = [&](uint32_t r, uint64_t val) noexcept {
-            if (r != ir::INVALID_SLOT && r < static_cast<uint32_t>(reg_sz)) {
-                const_tab[r] = val;
-                has_const[r] = 1u;
-            }
-        };
-
-        for (size_t i = 0; i < shadow_count; ++i) {
-            ir::IRAtom& atom = shadow_atoms[i];
-            ir::IRCore& core = shadow_cores[i];
-
-            const bool is_imm_node = atom.opcode == ir::OpCode::LOAD_IMM || atom.opcode == ir::OpCode::IMMEDIATE;
-            if (!is_imm_node) {
-                {
-                    uint32_t r = remap_get(core.op_a);
-                    if (r != ir::INVALID_SLOT) {
-                        core.op_a = r;
-                    }
-                }
-                {
-                    uint32_t r = remap_get(core.op_b);
-                    if (r != ir::INVALID_SLOT) {
-                        core.op_b = r;
-                    }
-                }
-                {
-                    uint32_t r = remap_get(core.op_c);
-                    if (r != ir::INVALID_SLOT) {
-                        core.op_c = r;
-                    }
-                }
-            }
-
-            if (atom.opcode == ir::OpCode::PHI_NODE) {
-                bool all_const = true;
-                bool found_any = false;
-                uint64_t common_val = 0;
-                for (uint32_t op : {core.op_a, core.op_b, core.op_c}) {
-                    if (op == ir::INVALID_SLOT) {
-                        continue;
-                    }
-                    uint64_t cv = 0;
-                    if (!const_get(op, cv)) {
-                        all_const = false;
-                        break;
-                    }
-                    if (!found_any) {
-                        common_val = cv;
-                        found_any = true;
-                    } else if (cv != common_val) {
-                        all_const = false;
-                        break;
-                    }
-                }
-
-                if (all_const && found_any) {
-                    atom.opcode = ir::OpCode::LOAD_IMM;
-                    atom.flags |= static_cast<uint16_t>(ir::Flags::IS_CONST | ir::Flags::IS_SPEC_CONST);
-                    core.op_a = static_cast<uint32_t>((common_val >> 32) & 0xFFFFFFFFu);
-                    core.op_b = static_cast<uint32_t>(common_val & 0xFFFFFFFFu);
-                    core.op_c = ir::INVALID_SLOT;
-                    const_set(core.result_id, common_val);
-                }
-
-                core.intent_hash = ir::IRNode::calculate_hash(
-                    atom.opcode,
-                    core.result_id,
-                    core.op_a,
-                    core.op_b,
-                    core.op_c);
-                continue;
-            }
-
-            if (atom.opcode >= ir::OpCode::ADD_I32 && atom.opcode <= ir::OpCode::SHL_I32) {
-                uint64_t ca = 0;
-                uint64_t cb = 0;
-                if (const_get(core.op_a, ca) && const_get(core.op_b, cb)) {
-                    const uint32_t lhs = static_cast<uint32_t>(ca);
-                    const uint32_t rhs = static_cast<uint32_t>(cb);
-                    bool folded = true;
-                    uint32_t result_v = 0;
-                    switch (atom.opcode) {
-                        case ir::OpCode::ADD_I32: result_v = lhs + rhs; break;
-                        case ir::OpCode::SUB_I32: result_v = lhs - rhs; break;
-                        case ir::OpCode::MUL_I32: result_v = lhs * rhs; break;
-                        case ir::OpCode::DIV_I32:
-                            if (!rhs) {
-                                folded = false;
-                            } else {
-                                result_v = lhs / rhs;
-                            }
-                            break;
-                        case ir::OpCode::AND_I32: result_v = lhs & rhs; break;
-                        case ir::OpCode::OR_I32: result_v = lhs | rhs; break;
-                        case ir::OpCode::XOR_I32: result_v = lhs ^ rhs; break;
-                        case ir::OpCode::SHL_I32: result_v = lhs << (rhs & 31u); break;
-                        default: folded = false; break;
-                    }
-                    if (folded) {
-                        atom.opcode = ir::OpCode::LOAD_IMM;
-                        atom.flags |= static_cast<uint16_t>(ir::Flags::IS_CONST | ir::Flags::IS_SPEC_CONST);
-                        core.op_a = 0u;
-                        core.op_b = result_v;
-                        core.op_c = ir::INVALID_SLOT;
-                    }
-                }
-            }
-
-            if (atom.opcode == ir::OpCode::SELECT) {
-                uint64_t cond_v = 0;
-                uint64_t true_v = 0;
-                uint64_t false_v = 0;
-                if (const_get(core.op_a, cond_v) && const_get(core.op_b, true_v) && const_get(core.op_c, false_v)) {
-                    const uint64_t pick = (cond_v != 0u) ? true_v : false_v;
-                    atom.opcode = ir::OpCode::LOAD_IMM;
-                    atom.flags |= static_cast<uint16_t>(ir::Flags::IS_CONST | ir::Flags::IS_SPEC_CONST);
-                    core.op_a = static_cast<uint32_t>((pick >> 32) & 0xFFFFFFFFu);
-                    core.op_b = static_cast<uint32_t>(pick & 0xFFFFFFFFu);
-                    core.op_c = ir::INVALID_SLOT;
-                }
-            }
-
-            if (dgtl::ir::gen::op_has_trait(atom.opcode, dgtl::ir::gen::GenTrait::Commutative) && core.op_a > core.op_b) {
-                std::swap(core.op_a, core.op_b);
-            }
-
-            core.intent_hash = ir::IRNode::calculate_hash(
-                atom.opcode,
-                core.result_id,
-                core.op_a,
-                core.op_b,
-                core.op_c);
-
-            if (atom.opcode == ir::OpCode::LOAD_IMM || atom.opcode == ir::OpCode::IMMEDIATE) {
-                const uint32_t high = (core.op_a == ir::INVALID_SLOT) ? 0u : core.op_a;
-                const_set(core.result_id, (static_cast<uint64_t>(high) << 32) | core.op_b);
-            }
-
-            const bool is_call_like = atom.opcode == ir::OpCode::CALL || atom.opcode == ir::OpCode::SYSCALL;
-            
-            // FIXED: Substituted unresolved IRTraitsStatic with precise bitwise state lookups 
-            const bool is_blocking = is_call_like ||
-                                     (atom.flags & ir::Flags::HAS_SIDE_EFFECTS) ||
-                                     dgtl::ir::gen::op_has_trait(atom.opcode, dgtl::ir::gen::GenTrait::IsTerminator) ||
-                                     (atom.flags & ir::Flags::IS_VOLATILE);
-
-            if (!is_blocking) {
-                const uint64_t sem_hash = ir::IRNode::calculate_semantic_hash(
-                    atom.opcode,
-                    core.op_a,
-                    core.op_b,
-                    core.op_c,
-                    atom.flags);
-                const uint32_t canonical = et_find(sem_hash);
-                if (canonical != ir::INVALID_SLOT) {
-                    remap_set(core.result_id, canonical);
-                    atom.flags |= ir::Flags::IS_DEAD;
-                    continue;
-                }
-                et_insert(sem_hash, core.result_id);
-            }
-        }
-
-        size_t write_idx = 0;
-        for (size_t i = 0; i < shadow_count; ++i) {
-            if (!(shadow_atoms[i].flags & ir::Flags::IS_DEAD)) {
-                if (write_idx != i) {
-                    shadow_atoms[write_idx] = shadow_atoms[i];
-                    shadow_cores[write_idx] = shadow_cores[i];
-                }
-                shadow_cores[write_idx].intent_hash = ir::IRNode::calculate_hash(
-                    shadow_atoms[write_idx].opcode,
-                    shadow_cores[write_idx].result_id,
-                    shadow_cores[write_idx].op_a,
-                    shadow_cores[write_idx].op_b,
-                    shadow_cores[write_idx].op_c);
-                ++write_idx;
-            }
-        }
-
-        stream.set_shadow_count(write_idx);
-        if (stream.validate_shadow_integrity()) {
-            stream.commit_transaction();
-        } else {
-            stream.rollback_transaction();
-        }
+        DGTLGVN gvn(stream.size());
+        gvn.execute(stream);
     }
 };
 

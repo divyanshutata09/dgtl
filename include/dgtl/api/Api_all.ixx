@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -20,6 +20,9 @@ export module dgtl.api;
 export import dgtl.ir;
 export import dgtl.mir;
 export import dgtl.object.file;
+export import dgtl.codegen.driver;
+export import dgtl.jit.object_loader;
+export import dgtl.linker.driver;
 export import dgtl.execution;
 export import dgtl.formal;
 

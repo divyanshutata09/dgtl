@@ -319,11 +319,11 @@ inline BlockBranchTopology MachineFunction::block_branch_topology(BlockId block_
 class MachineVerifier {
 public:
     [[nodiscard]] static MachineVerifyResult
-    verify(const MachineFunction& function) noexcept {
-        if (!function.verify_cfg_integrity()) {
+    verify(const MachineFunction& function, std::string* out_diag = nullptr) noexcept {
+        if (!function.verify_cfg_integrity(out_diag)) {
             return {MachineVerifyError::CFGIntegrityViolation, INVALID_BLOCK_ID, INVALID_INSTR_ID};
         }
-        if (function.properties().is_ssa && !function.verify_ssa_dominance()) {
+        if (function.properties().is_ssa && !function.verify_ssa_dominance(out_diag)) {
             return {MachineVerifyError::SSADominanceViolation, INVALID_BLOCK_ID, INVALID_INSTR_ID};
         }
 
@@ -367,6 +367,7 @@ public:
             }
 
             bool seen_terminator = false;
+            bool seen_barrier = false;
             for (std::size_t position = 0; position < blocks[i].instructions.size(); ++position) {
                 const InstrId id = blocks[i].instructions[position];
                 if (id >= instructions.size()) {
@@ -409,21 +410,30 @@ public:
                     return {MachineVerifyError::MissingTargetOpcode, blocks[i].id, id};
                 }
 
-                if (seen_terminator) {
+                if (seen_barrier) {
+                    if (out_diag) {
+                        *out_diag = "Instruction follows unconditional terminator/barrier in block " + std::to_string(blocks[i].id);
+                    }
                     return {
                         MachineVerifyError::InvalidInstruction,
                         blocks[i].id,
                         id
                     };
                 }
-                if (block_instr.has_flag(MachineInstrFlag::Terminator)) {
+                if (seen_terminator && !block_instr.is_terminator()) {
+                    if (out_diag) {
+                        *out_diag = "Non-terminator instruction follows terminator in block " + std::to_string(blocks[i].id);
+                    }
+                    return {
+                        MachineVerifyError::InvalidInstruction,
+                        blocks[i].id,
+                        id
+                    };
+                }
+                if (block_instr.is_terminator()) {
                     seen_terminator = true;
-                    if (position + 1u != blocks[i].instructions.size()) {
-                        return {
-                            MachineVerifyError::InvalidInstruction,
-                            blocks[i].id,
-                            id
-                        };
+                    if (block_instr.is_barrier()) {
+                        seen_barrier = true;
                     }
                 }
 
@@ -485,8 +495,16 @@ public:
 
             if (function.is_phase_at_least(MachinePhase::PreRegAlloc) &&
                 !blocks[i].instructions.empty() && !seen_terminator) {
-                return {MachineVerifyError::MissingTerminator,
-                        blocks[i].id, INVALID_INSTR_ID};
+                const bool has_layout_fallthrough =
+                    (i + 1u < blocks.size()) &&
+                    (std::find(blocks[i].successors.begin(), blocks[i].successors.end(), static_cast<BlockId>(i + 1u)) != blocks[i].successors.end());
+                if (!has_layout_fallthrough) {
+                    if (out_diag) {
+                        *out_diag = "Block " + std::to_string(blocks[i].id) + " missing terminator and does not fall through to layout successor";
+                    }
+                    return {MachineVerifyError::MissingTerminator,
+                            blocks[i].id, INVALID_INSTR_ID};
+                }
             }
 
             for (BlockId successor : blocks[i].successors) {
@@ -572,7 +590,19 @@ public:
         }
 
         for (std::size_t i = 0; i < instruction_membership.size(); ++i) {
+            if (instructions[i].parent_block == INVALID_BLOCK_ID) {
+                if (instruction_membership[i] != 0u) {
+                    if (out_diag) *out_diag = "Tombstoned instruction " + std::to_string(i) + " appears in basic block";
+                    return {
+                        MachineVerifyError::DuplicateInstruction,
+                        INVALID_BLOCK_ID,
+                        static_cast<InstrId>(i)
+                    };
+                }
+                continue;
+            }
             if (instruction_membership[i] != 1u) {
+                if (out_diag) *out_diag = "Instruction " + std::to_string(i) + " membership count is " + std::to_string(instruction_membership[i]);
                 return {
                     MachineVerifyError::DuplicateInstruction,
                     INVALID_BLOCK_ID,
@@ -582,8 +612,12 @@ public:
         }
 
         for (const MachineInstruction& instr : instructions) {
+            if (instr.parent_block == INVALID_BLOCK_ID) {
+                continue;
+            }
             if (instr.id == INVALID_INSTR_ID ||
                 instr.form == MachineForm::Unhandled) {
+                if (out_diag) *out_diag = "Instruction " + std::to_string(instr.id) + " has unhandled form or invalid id";
                 return {
                     MachineVerifyError::InvalidInstruction,
                     INVALID_BLOCK_ID,

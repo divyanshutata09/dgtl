@@ -68,8 +68,8 @@ public:
         std::unordered_set<InstrId> all_phis;
         std::unordered_map<RegId, uint32_t> non_phi_use_counts;
 
-        const auto blocks = function.blocks();
-        for (std::size_t b_idx = 0; b_idx < blocks.size(); ++b_idx) {
+        const std::size_t initial_block_count = function.blocks().size();
+        for (std::size_t b_idx = 0; b_idx < initial_block_count; ++b_idx) {
             const MachineBasicBlock* b = function.block(static_cast<BlockId>(b_idx));
             if (!b) continue;
 
@@ -124,7 +124,7 @@ public:
         }
 
         // Step 2: Lower live PHIs block by block
-        for (std::size_t b_idx = 0; b_idx < blocks.size(); ++b_idx) {
+        for (std::size_t b_idx = 0; b_idx < initial_block_count; ++b_idx) {
             const BlockId block_id = static_cast<BlockId>(b_idx);
             MachineBasicBlock* bb = function.block(block_id);
             if (!bb) continue;
@@ -137,7 +137,8 @@ public:
             }
 
             if (phi_ids.empty()) {
-                for (const InstrId instr_id : bb->instructions) {
+                const std::vector<InstrId> block_instr_ids = bb->instructions;
+                for (const InstrId instr_id : block_instr_ids) {
                     if (dead_phis.count(instr_id)) {
                         auto* inst = function.instruction(instr_id);
                         if (inst) {
@@ -146,14 +147,10 @@ public:
                             inst->opcode = GM_NOOP;
                             inst->operands.clear();
                         }
+                        function.remove_instruction(instr_id);
                         modified = true;
                     }
                 }
-                bb->instructions.erase(
-                    std::remove_if(bb->instructions.begin(), bb->instructions.end(),
-                                   [&](InstrId id) { return dead_phis.count(id) > 0; }),
-                    bb->instructions.end());
-                bb->instr_count = bb->instructions.size();
                 continue;
             }
 
@@ -185,6 +182,9 @@ public:
                 if (is_critical) {
                     MachineBasicBlock& split_block = function.create_block(false);
                     const BlockId split_id = split_block.id;
+                    pred_bb = function.block(pred_id);
+                    bb = function.block(block_id);
+                    if (!pred_bb || !bb || function.block(split_id) == nullptr) return false;
 
                     for (auto& succ : pred_bb->successors) {
                         if (succ == block_id) {
@@ -208,18 +208,21 @@ public:
                     goto_inst.opcode = GM_GOTO;
                     goto_inst.add_flag(MachineInstrFlag::Branch | MachineInstrFlag::Terminator);
                     goto_inst.add_operand(MachineOperand::block_ref(block_id));
-                    function.insert_instruction_before(split_id, INVALID_INSTR_ID, goto_inst.id);
+                    if (!function.insert_instruction_before(split_id, INVALID_INSTR_ID, goto_inst.id)) {
+                        return false;
+                    }
 
-                    emit_parallel_copies(function, split_id, copies, false);
+                    if (!emit_parallel_copies(function, split_id, copies, false)) return false;
                 } else if (pred_bb->successors.size() == 1) {
-                    emit_parallel_copies(function, pred_id, copies, false);
+                    if (!emit_parallel_copies(function, pred_id, copies, false)) return false;
                 } else {
-                    emit_parallel_copies(function, block_id, copies, true);
+                    if (!emit_parallel_copies(function, block_id, copies, true)) return false;
                 }
 
                 modified = true;
             }
 
+            std::vector<InstrId> phis_to_remove;
             for (const InstrId phi_id : bb->instructions) {
                 if (all_phis.count(phi_id)) {
                     auto* inst = function.instruction(phi_id);
@@ -229,31 +232,33 @@ public:
                         inst->opcode = GM_NOOP;
                         inst->operands.clear();
                     }
+                    phis_to_remove.push_back(phi_id);
                 }
             }
-
-            bb->instructions.erase(
-                std::remove_if(bb->instructions.begin(), bb->instructions.end(),
-                               [&](InstrId id) { return all_phis.count(id) > 0; }),
-                bb->instructions.end());
-            bb->instr_count = bb->instructions.size();
+            for (const InstrId phi_id : phis_to_remove) {
+                function.remove_instruction(phi_id);
+            }
         }
 
         function.properties().is_ssa = false;
-        return modified;
+        (void)modified;
+        // Contract: the return value signals success (consumed by MachinePipeline),
+        // not whether the function was modified. A PHI-free function is a valid,
+        // successful deconstruction.
+        return true;
     }
 
 private:
-    static void emit_parallel_copies(
+    static bool emit_parallel_copies(
         MachineFunction& function,
         BlockId target_block,
         std::vector<PendingCopy>& copies,
         bool at_entry = false) {
 
-        if (copies.empty()) return;
+        if (copies.empty()) return true;
 
         MachineBasicBlock* bb = function.block(target_block);
-        if (!bb) return;
+        if (!bb) return false;
 
         InstrId cursor = INVALID_INSTR_ID;
         if (at_entry) {
@@ -293,7 +298,7 @@ private:
             move_inst.opcode = GM_COPY;
             move_inst.add_operand(dst);
             move_inst.add_operand(src);
-            function.insert_instruction_before(target_block, cursor, move_inst.id);
+            return function.insert_instruction_before(target_block, cursor, move_inst.id);
         };
 
         while (!pending.empty()) {
@@ -314,7 +319,7 @@ private:
                 }
 
                 if (!dest_read_by_others) {
-                    emit_move(it->dest, it->src);
+                    if (!emit_move(it->dest, it->src)) return false;
                     pending.erase(it);
                     progress = true;
                     break;
@@ -327,7 +332,9 @@ private:
                     const auto victim_reg = cycle_copy.dest.reg;
                     const MachineRegister scratch = function.create_virtual_register(victim_reg.reg_class);
 
-                    emit_move(MachineOperand::def(scratch), MachineOperand::use(victim_reg));
+                    if (!emit_move(MachineOperand::def(scratch), MachineOperand::use(victim_reg))) {
+                        return false;
+                    }
 
                     for (auto& p : pending) {
                         if (p.src.kind == MachineOperandKind::Register && p.src.reg == victim_reg) {
@@ -335,11 +342,12 @@ private:
                         }
                     }
                 } else {
-                    emit_move(cycle_copy.dest, cycle_copy.src);
+                    if (!emit_move(cycle_copy.dest, cycle_copy.src)) return false;
                     pending.erase(pending.begin());
                 }
             }
         }
+        return true;
     }
 };
 

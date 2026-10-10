@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -76,18 +76,18 @@ static mutex g_log_mutex;
     }
 
 bool test_version() {
-    const char* version = dgtl_version_string();
-    REQUIRE(version != nullptr, "version");
+    dgtl_version_info_t v = dgtl_get_version();
+    REQUIRE(v.build_id != nullptr, "version");
 
     cout << "DGTL version: "
-         << version << '\n';
+         << v.major << "." << v.minor << "." << v.patch << " [" << v.build_id << "]\n";
 
     PASS("version");
     return true;
 }
 
 bool test_stream_stress() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 16);
     REQUIRE(ctx, "context");
 
     constexpr int N = 1000;
@@ -116,21 +116,25 @@ bool test_stream_stress() {
 }
 
 bool test_massive_ir() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(2, 64);
     REQUIRE(ctx, "context");
 
     auto* stream = dgtl_stream_create(ctx, 1024);
     REQUIRE(stream, "stream");
+    auto* fb = dgtl_func_builder_create(stream, "massive_ir", DGTL_TYPE_I64);
+    REQUIRE(fb, "func_builder");
+    auto entry = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, entry);
 
     constexpr int N = 100000;
     const auto emit_start = chrono::steady_clock::now();
 
     for (int i = 0; i < N; i++) {
-        auto lhs = dgtl_emit_const_i64(stream, i);
-        auto rhs = dgtl_emit_const_i64(stream, i + 1);
-        auto add = dgtl_emit_add_i64(stream, lhs, rhs);
+        auto lhs = dgtl_build_const_i64(fb, i);
+        auto rhs = dgtl_build_const_i64(fb, i + 1);
+        auto add = dgtl_build_add(fb, lhs, rhs);
 
-        REQUIRE(add, "massive ir");
+        REQUIRE(dgtl_value_is_valid(add), "massive ir");
 
         if ((i + 1) % 25000 == 0) {
             INFO(("IR nodes: " +
@@ -143,14 +147,18 @@ bool test_massive_ir() {
     const auto emit_ms = chrono::duration_cast<chrono::milliseconds>(
         emit_end - emit_start).count();
 
+    (void)dgtl_func_builder_finalize(fb);
+
     const auto opt_start = chrono::steady_clock::now();
-    const bool ok = DGTL_IS_OK(dgtl_optimize(stream));
+    const dgtl_err_t opt_err = dgtl_optimize(stream);
+    const bool ok = DGTL_IS_OK(opt_err);
     const auto opt_end = chrono::steady_clock::now();
     const auto opt_ms = chrono::duration_cast<chrono::milliseconds>(
         opt_end - opt_start).count();
 
     REQUIRE(ok, "optimize massive");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(stream);
     dgtl_context_destroy(ctx);
 
@@ -169,7 +177,7 @@ bool test_parallel_chaos() {
     for (int t = 0; t < THREADS; t++) {
         workers.emplace_back([=]() {
             for (int i = 0; i < ITERATIONS; i++) {
-                auto* ctx = dgtl_context_create();
+                auto* ctx = dgtl_context_create(1, 16);
                 if (!ctx) {
                     continue;
                 }
@@ -180,10 +188,19 @@ bool test_parallel_chaos() {
                     continue;
                 }
 
-                auto a = dgtl_emit_const_i64(stream, i);
-                auto b = dgtl_emit_const_i64(stream, i + 1);
-                dgtl_emit_add_i64(stream, a, b);
-                dgtl_optimize(stream);
+                auto* fb = dgtl_func_builder_create(stream, "kernel", DGTL_TYPE_I64);
+                if (fb) {
+                    auto b = dgtl_func_append_block(fb, "b");
+                    dgtl_func_set_insert_block(fb, b);
+                    auto a = dgtl_build_const_i64(fb, i);
+                    auto rhs = dgtl_build_const_i64(fb, i + 1);
+                    (void)dgtl_build_add(fb, a, rhs);
+                    (void)dgtl_func_builder_finalize(fb);
+                    dgtl_func_builder_destroy(fb);
+                }
+
+                const dgtl_err_t err = dgtl_optimize(stream);
+                (void)err;
 
                 dgtl_stream_destroy(stream);
                 dgtl_context_destroy(ctx);

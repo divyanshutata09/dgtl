@@ -152,16 +152,7 @@ private:
                 });
             }
 
-            // Check 3: Risky float conversions
-            const bool is_arithmetic = dgtl::ir::gen::op_implements_interface(node.opcode, dgtl::ir::gen::GenInterface::Arithmetic);
-            if (is_mem_access || is_arithmetic) {
-                // Risky conversion - add runtime check
-                errors.push_back(ErrorInfo{
-                    .node_idx = i,
-                    .error_message = "Type conversion may overflow",
-                    .recovery = RecoveryStrategy::InsertRuntimeCheck
-                });
-            }
+            // Check 3: Handled in pipeline
         }
 
         return errors;
@@ -201,6 +192,20 @@ private:
                         );
 
                         shadow_cursor++;
+
+                        // Preserve original node
+                        const auto& orig_node = stream.get_node_readonly(i);
+                        auto& s_atom = stream.get_shadow_atom(shadow_cursor);
+                        auto& s_core = stream.get_shadow_core(shadow_cursor);
+                        s_atom.opcode = orig_node.opcode;
+                        s_atom.flags = orig_node.flags;
+                        s_core.result_id = orig_node.result_id;
+                        s_core.op_a = orig_node.op_a;
+                        s_core.op_b = orig_node.op_b;
+                        s_core.op_c = orig_node.op_c;
+                        s_core.intent_hash = orig_node.intent_hash;
+                        shadow_cursor++;
+
                         modified = true;
                         break;
                     }

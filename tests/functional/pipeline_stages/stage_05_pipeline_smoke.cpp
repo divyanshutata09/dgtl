@@ -1,17 +1,14 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  */
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
+import dgtl.arena;
+import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir.pass.transform_scalar_core;
 
 #include <iostream>
 #include <stdexcept>
-
-import dgtl.arena;
-import dgtl.ir_stream;
-import dgtl.ir_core.transform_scalar_core;
 
 
 void run_test_t01_pipeline_smoke() {

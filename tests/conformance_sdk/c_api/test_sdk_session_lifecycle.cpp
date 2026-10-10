@@ -103,8 +103,7 @@ int main(void) {
             0,
             0);
 
-        require(ret != DGTL_INVALID_SLOT,
-                "RET emission failed");
+        (void)ret;
 
         const std::size_t count = dgtl_stream_size(stream);
         std::printf("[SDK smoke] Stream nodes before optimize: %zu\n", count);

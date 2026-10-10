@@ -41,6 +41,22 @@ public:
     [[nodiscard]] virtual bool is_reserved(MachineRegister reg) const noexcept = 0;
     [[nodiscard]] virtual bool is_caller_saved(MachineRegister reg) const noexcept = 0;
     [[nodiscard]] virtual bool is_callee_saved(MachineRegister reg) const noexcept = 0;
+
+    [[nodiscard]] virtual std::vector<MachineRegister> call_clobbered_registers() const {
+        std::vector<MachineRegister> result;
+        const std::size_t count = physical_register_count();
+        for (std::uint32_t i = 0; i < count; ++i) {
+            MachineRegister r = MachineRegister::physical_reg(i, register_class(MachineRegister::physical_reg(i)));
+            if (is_caller_saved(r)) {
+                result.push_back(r);
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] virtual std::vector<MachineRegister> scratch_registers() const {
+        return {};
+    }
 };
 
 struct MachineInstructionInfo {
@@ -142,6 +158,30 @@ public:
     store_opcode(RegisterClassKind reg_class) const noexcept {
         (void)reg_class;
         return INVALID_MACHINE_OPCODE;
+    }
+
+    virtual void store_reg_to_stack_slot(MachineFunction& function,
+                                         BlockId block,
+                                         InstrId cursor,
+                                         MachineRegister src,
+                                         StackSlotId slot) const {
+        (void)function; (void)block; (void)cursor; (void)src; (void)slot;
+    }
+
+    virtual void load_reg_from_stack_slot(MachineFunction& function,
+                                          BlockId block,
+                                          InstrId cursor,
+                                          MachineRegister dst,
+                                          StackSlotId slot) const {
+        (void)function; (void)block; (void)cursor; (void)dst; (void)slot;
+    }
+
+    virtual void copy_phys_reg(MachineFunction& function,
+                               BlockId block,
+                               InstrId cursor,
+                               MachineRegister dst,
+                               MachineRegister src) const {
+        (void)function; (void)block; (void)cursor; (void)dst; (void)src;
     }
 };
 
@@ -315,6 +355,16 @@ public:
     [[nodiscard]] virtual std::uint32_t spill_alignment(RegisterClassKind) const noexcept = 0;
     [[nodiscard]] virtual std::uint32_t spill_size(RegisterClassKind) const noexcept = 0;
     [[nodiscard]] virtual std::uint32_t outgoing_argument_alignment() const noexcept = 0;
+
+    virtual void emit_prologue(MachineFunction& function) const { (void)function; }
+    virtual void emit_prologue(MachineFunction& function, BlockId entry_block) const { (void)entry_block; emit_prologue(function); }
+    virtual void emit_epilogue(MachineFunction& function, BlockId return_block) const { (void)function; (void)return_block; }
+    virtual void eliminate_frame_index(MachineFunction& function,
+                                       MachineInstruction& inst,
+                                       std::size_t op_idx,
+                                       std::int64_t offset) const {
+        (void)function; (void)inst; (void)op_idx; (void)offset;
+    }
 };
 
 struct MachineFrameLayout {
@@ -448,7 +498,27 @@ public:
     [[nodiscard]] virtual bool
     lower_function(MachineFunction& function) const {
         (void)function;
-        return false;
+        return true;
+    }
+
+    virtual bool lower_formal_arguments(MachineFunction& function,
+                                        std::span<const MachineRegister> param_vregs) const {
+        (void)function; (void)param_vregs;
+        return true;
+    }
+
+    virtual bool lower_call(MachineFunction& function,
+                            BlockId block,
+                            InstrId call_instr) const {
+        (void)function; (void)block; (void)call_instr;
+        return true;
+    }
+
+    virtual bool lower_return(MachineFunction& function,
+                              BlockId block,
+                              InstrId ret_instr) const {
+        (void)function; (void)block; (void)ret_instr;
+        return true;
     }
 };
 

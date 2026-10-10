@@ -173,9 +173,17 @@ bool build_ir_for_profile(dgtl::ir::IRStream& stream, BenchmarkProfile profile, 
     return false;
 }
 
+// void run_core_optimizations(dgtl::ir::IRStream& stream) {
+//     dgtl::ir::pass::transform::DGTLGVN gvn;
+//     gvn.execute(stream);
+//     dgtl::ir::pass::DGTLTemporalVectorFusion temporal_fusion;
+//     temporal_fusion.execute(stream);
+//     dgtl::ir::pass::transform::DGTLMaskedPredicationLowering masked_predication;
+//     masked_predication.execute(stream);
+//     dgtl::ir::pass::transform::DeadCodeElimination dce;
+//     dce.execute(stream);
+// }
 void run_core_optimizations(dgtl::ir::IRStream& stream) {
-    dgtl::ir::pass::transform::DGTLGVN gvn;
-    gvn.execute(stream);
     dgtl::ir::pass::DGTLTemporalVectorFusion temporal_fusion;
     temporal_fusion.execute(stream);
     dgtl::ir::pass::transform::DGTLMaskedPredicationLowering masked_predication;

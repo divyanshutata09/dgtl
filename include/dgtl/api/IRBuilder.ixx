@@ -40,6 +40,7 @@ import dgtl.hir.semantic;
 import dgtl.hir.type_system;
 import dgtl.ir_core.abi;
 import dgtl.formal;
+import dgtl.mir.machine_ir;
 
 export namespace dgtl {
 namespace api {
@@ -63,6 +64,7 @@ class alignas(64) IRBuilder final {
 public:
     // Public ABI-class alias so clients can stay on IRBuilder facade only.
     using ABIValueClass = dgtl::core::DGTLABIValueClass;
+    using ComparisonPredicate = dgtl::machine::ComparisonPredicate;
     using GeneratedTrait = ir::gen::GenTrait;
     using GeneratedInterface = ir::gen::GenInterface;
     using GeneratedAttribute = ir::gen::GenAttribute;
@@ -211,7 +213,11 @@ public:
         // Constant IDs are stream-local. Switching streams must invalidate cache.
         if (active_stream_ != stream) {
             constant_i32_cache_.clear();
+            constant_i64_cache_.clear();
             string_constant_slot_cache_.clear();
+            if (stream != nullptr && numa_locality_enabled_) {
+                pre_emit_numa_();
+            }
         }
         active_stream_ = stream;
     }
@@ -335,7 +341,6 @@ public:
         if (!has_insertion_point()) {
             return EmitOutcome{EmitStatus::MissingInsertionPoint, ir::INVALID_SLOT, EmitOutcome::npos};
         }
-        pre_emit_numa_();
 
         const ir::gen::OpDefMetadata* meta = lookup_generated_op_def_(op_name);
         if (meta == nullptr) {
@@ -496,7 +501,6 @@ public:
     template <typename Op, typename... Args>
     requires DGTLBuildableOp<Op, Args...>
     [[nodiscard]] ir::IRNode create(Args&&... args) {
-        pre_emit_numa_();
         ir::IRNode node = Op::build(std::forward<Args>(args)...);
         if (active_stream_ == nullptr || active_stream_->is_null()) {
             return node;
@@ -515,7 +519,6 @@ public:
                                          uint32_t op_b = ir::INVALID_SLOT,
                                          uint32_t op_c = ir::INVALID_SLOT,
                                          uint16_t flags = ir::Flags::NONE) {
-        pre_emit_numa_();
         ir::IRNode node = make_raw_node(opcode, result_id, op_a, op_b, op_c, flags);
         if (active_stream_ != nullptr && !active_stream_->is_null()) {
             (void)append_node_(*active_stream_, node);
@@ -567,9 +570,9 @@ public:
      */
     [[nodiscard]] uint32_t create_immediate(ir::IRStream& stream, uint32_t result_id,
                                            uint64_t value) noexcept {
-        const uint32_t hi = static_cast<uint32_t>(value >> 32u);
         const uint32_t lo = static_cast<uint32_t>(value & 0xFFFFFFFFu);
-        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::LOAD_IMM, result_id, hi, lo));
+        const uint32_t hi = static_cast<uint32_t>((value >> 32u) & 0xFFFFFFFFu);
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::LOAD_IMM, result_id, lo, hi));
         annotate_result_type_(stream, ir::OpCode::LOAD_IMM, result_id);
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
@@ -648,6 +651,22 @@ public:
         const uint32_t slot = allocate_temp_id();
         (void)create_immediate(*active_stream_, slot, static_cast<uint64_t>(static_cast<int64_t>(value)));
         constant_i32_cache_.insert_or_assign(value, slot);
+        return slot;
+    }
+
+    [[nodiscard]] uint32_t get_constant_i64(int64_t value) {
+        if (active_stream_ == nullptr || active_stream_->is_null()) {
+            return ir::INVALID_SLOT;
+        }
+
+        auto it = constant_i64_cache_.find(value);
+        if (it != constant_i64_cache_.end()) {
+            return it->second;
+        }
+
+        const uint32_t slot = allocate_temp_id();
+        (void)create_immediate(*active_stream_, slot, static_cast<uint64_t>(value));
+        constant_i64_cache_.insert_or_assign(value, slot);
         return slot;
     }
 
@@ -742,6 +761,7 @@ public:
 
     void clear_constant_cache() noexcept {
         constant_i32_cache_.clear();
+        constant_i64_cache_.clear();
         string_constant_slot_cache_.clear();
     }
 
@@ -796,6 +816,21 @@ public:
         }
     }
 
+    [[nodiscard]] bool emit_function_params(std::span<const uint32_t> param_slots) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return false;
+        if (param_slots.empty()) return true;
+        for (uint32_t slot : param_slots) {
+            if (slot == ir::INVALID_SLOT) return false;
+        }
+        const size_t n = active_stream_->size();
+        if (n == 0) return false;
+        const size_t label_idx = n - 1;
+        const auto label = active_stream_->get_node(label_idx);
+        if (label.opcode != ir::OpCode::LABEL) return false;
+        active_stream_->set_result_ids(label_idx, param_slots);
+        return true;
+    }
+
     void emit_label(uint32_t label_id) noexcept {
         if (active_stream_ == nullptr || active_stream_->is_null()) return;
         (void)append_node_(*active_stream_, 
@@ -833,9 +868,79 @@ public:
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
 
+    void emit_branch_compare_fused(ComparisonPredicate pred,
+                                   uint32_t lhs,
+                                   uint32_t rhs,
+                                   uint32_t target_label,
+                                   bool is64 = false) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return;
+        ir::IRNode node = ir::gen::make_generated_node(
+            ir::OpCode::BRANCH_COMPARE_FUSED,
+            allocate_temp_id(),
+            target_label,
+            lhs,
+            rhs,
+            ir::Flags::HAS_SIDE_EFFECTS);
+        node.logic_flags = static_cast<uint32_t>(pred) | (is64 ? 0x80000000u : 0u);
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+    }
+
+    void emit_switch_dispatch(uint32_t scrutinee,
+                              uint32_t default_label,
+                              std::span<const uint32_t> case_values = {},
+                              std::span<const uint32_t> case_labels = {}) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return;
+        const size_t node_idx = active_stream_->size();
+        ir::IRNode node = ir::gen::make_generated_node(
+            ir::OpCode::SWITCH_DISPATCH,
+            allocate_temp_id(),
+            scrutinee,
+            default_label,
+            ir::INVALID_SLOT,
+            ir::Flags::HAS_SIDE_EFFECTS);
+        (void)append_node_(*active_stream_, node);
+        try_annotate_debug_and_type_(*active_stream_, node_idx);
+        if (!case_labels.empty()) {
+            active_stream_->set_operand_overflow(node_idx, case_labels);
+        }
+        if (!case_values.empty()) {
+            active_stream_->set_result_ids(node_idx, case_values);
+        }
+    }
+
+    [[nodiscard]] uint32_t emit_phi(std::span<const uint32_t> incoming_values,
+                                    std::span<const uint32_t> incoming_blocks = {},
+                                    uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) {
+            return ir::INVALID_SLOT;
+        }
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        const size_t n = incoming_values.size();
+        const uint32_t val0 = n > 0 ? incoming_values[0] : ir::INVALID_SLOT;
+        const uint32_t val1 = n > 1 ? incoming_values[1] : ir::INVALID_SLOT;
+        const size_t node_idx = active_stream_->size();
+        if (n <= 2) {
+            ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::PHI_NODE, rid, val0, val1);
+            (void)append_node_(*active_stream_, node);
+        } else {
+            ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::PHI_MULTI, rid, val0, val1);
+            (void)append_node_(*active_stream_, node);
+            active_stream_->set_operand_overflow(node_idx, std::span<const uint32_t>(incoming_values.data() + 2, n - 2));
+        }
+        if (!incoming_blocks.empty()) {
+            active_stream_->set_result_ids(node_idx, incoming_blocks);
+        }
+        annotate_result_type_(*active_stream_, ir::OpCode::PHI_NODE, rid);
+        try_annotate_debug_and_type_(*active_stream_, node_idx);
+        return rid;
+    }
+
     [[nodiscard]] uint32_t emit_call(uint32_t callee_slot,
                                      std::span<const uint32_t> args,
-                                     uint32_t result_id = ir::INVALID_SLOT) noexcept {
+                                     uint32_t result_id,
+                                     std::span<const uint32_t> abi_layout_words) noexcept {
         if (!has_insertion_point()) {
             return ir::INVALID_SLOT;
         }
@@ -864,12 +969,22 @@ public:
                 node_idx,
                 std::span<const uint32_t>(args.data() + 3, args.size() - 3));
         }
+        if (!abi_layout_words.empty() && active_stream_->size() > node_idx) {
+            active_stream_->set_call_abi_layout_words(node_idx, abi_layout_words);
+        }
         return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_call(uint32_t callee_slot,
+                                     std::span<const uint32_t> args,
+                                     uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_call(callee_slot, args, result_id, std::span<const uint32_t>{});
     }
 
     [[nodiscard]] uint32_t emit_call_variadic(uint32_t callee_slot,
                                               std::span<const uint32_t> args,
-                                              uint32_t result_id = ir::INVALID_SLOT) noexcept {
+                                              uint32_t result_id,
+                                              std::span<const uint32_t> abi_layout_words) noexcept {
         if (!has_insertion_point()) {
             return ir::INVALID_SLOT;
         }
@@ -898,7 +1013,16 @@ public:
                 node_idx,
                 std::span<const uint32_t>(args.data() + 3, args.size() - 3));
         }
+        if (!abi_layout_words.empty() && active_stream_->size() > node_idx) {
+            active_stream_->set_call_abi_layout_words(node_idx, abi_layout_words);
+        }
         return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_call_variadic(uint32_t callee_slot,
+                                              std::span<const uint32_t> args,
+                                              uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_call_variadic(callee_slot, args, result_id, std::span<const uint32_t>{});
     }
     
     void emit_ret(uint32_t value_id) noexcept {
@@ -913,6 +1037,18 @@ public:
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
 
+    void emit_ret_void() noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return;
+        (void)append_node_(*active_stream_, 
+            ir::gen::make_generated_node(ir::OpCode::RET,
+                                         allocate_temp_id(),
+                                         ir::INVALID_SLOT,
+                                         ir::INVALID_SLOT,
+                                         ir::INVALID_SLOT,
+                                         ir::Flags::IS_RETURN));
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+    }
+
     // ---- Constants ----------------------------------------------------------
 
     [[nodiscard]] uint32_t emit_constant_i64(int64_t value,
@@ -920,10 +1056,19 @@ public:
         if (active_stream_ == nullptr || active_stream_->is_null()) {
             return ir::INVALID_SLOT;
         }
+        if (result_id == ir::INVALID_SLOT) {
+            auto it = constant_i64_cache_.find(value);
+            if (it != constant_i64_cache_.end()) {
+                return it->second;
+            }
+        }
         const uint32_t rid = (result_id == ir::INVALID_SLOT)
                                  ? allocate_temp_id()
                                  : result_id;
         (void)create_immediate(*active_stream_, rid, static_cast<uint64_t>(value));
+        if (result_id == ir::INVALID_SLOT) {
+            constant_i64_cache_.insert_or_assign(value, rid);
+        }
         if (active_symbol_table_) {
             active_symbol_table_->insert_constant_i64(std::to_string(rid), rid, static_cast<uint64_t>(value));
         }
@@ -1110,6 +1255,62 @@ public:
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
     }
 
+    [[nodiscard]] uint32_t emit_load_aligned(uint32_t addr_id,
+                                             uint32_t alignment,
+                                             uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) {
+            return ir::INVALID_SLOT;
+        }
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::LOAD, rid, addr_id);
+        node.logic_flags = alignment;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        annotate_result_type_(*active_stream_, ir::OpCode::LOAD, rid);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    void emit_store_aligned(uint32_t addr_id,
+                            uint32_t val_id,
+                            uint32_t alignment,
+                            uint32_t node_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return;
+        const uint32_t nid = (node_id == ir::INVALID_SLOT) ? allocate_temp_id() : node_id;
+        ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::STORE, nid, addr_id, val_id);
+        node.logic_flags = alignment;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+    }
+
+    [[nodiscard]] uint32_t emit_volatile_load(uint32_t addr_id,
+                                              uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) {
+            return ir::INVALID_SLOT;
+        }
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        (void)append_node_(*active_stream_,
+            ir::gen::make_generated_node(ir::OpCode::VOLATILE_LOAD, rid, addr_id,
+                                         ir::INVALID_SLOT, ir::INVALID_SLOT,
+                                         static_cast<uint16_t>(ir::Flags::IS_VOLATILE | ir::Flags::HAS_SIDE_EFFECTS)));
+        annotate_result_type_(*active_stream_, ir::OpCode::VOLATILE_LOAD, rid);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    void emit_volatile_store(uint32_t addr_id,
+                             uint32_t val_id,
+                             uint32_t node_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return;
+        const uint32_t nid = (node_id == ir::INVALID_SLOT) ? allocate_temp_id() : node_id;
+        (void)append_node_(*active_stream_,
+            ir::gen::make_generated_node(ir::OpCode::VOLATILE_STORE, nid, addr_id, val_id,
+                                         ir::INVALID_SLOT,
+                                         static_cast<uint16_t>(ir::Flags::IS_VOLATILE | ir::Flags::HAS_SIDE_EFFECTS)));
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+    }
+
     [[nodiscard]] uint32_t emit_atomic_load(uint32_t addr_id,
                                             uint32_t result_id = ir::INVALID_SLOT) noexcept {
         return emit_unary_op_(ir::OpCode::ATOMIC_LOAD, addr_id, result_id);
@@ -1149,108 +1350,138 @@ public:
 
     [[nodiscard]] uint32_t emit_compare_eq_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_EQ_I32, ComparisonPredicate::Equal, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ne_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_NE_I32, ComparisonPredicate::NotEqual, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_lt_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_LT_I32, ComparisonPredicate::SignedLessThan, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_le_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_LE_I32, ComparisonPredicate::SignedLessEqual, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_gt_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_GT_I32, ComparisonPredicate::SignedGreaterThan, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ge_i32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_GE_I32, ComparisonPredicate::SignedGreaterEqual, lhs, rhs, 32u, result_id);
     }
 
     // ---- Comparisons (i64) --------------------------------------------------
 
     [[nodiscard]] uint32_t emit_compare_eq_i64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_EQ_I32, ComparisonPredicate::Equal, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ne_i64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_NE_I32, ComparisonPredicate::NotEqual, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_lt_i64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_LT_I32, ComparisonPredicate::SignedLessThan, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_le_i64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_LE_I32, ComparisonPredicate::SignedLessEqual, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_gt_i64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_GT_I32, ComparisonPredicate::SignedGreaterThan, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ge_i64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+        return emit_compare_int_impl_(ir::OpCode::CMP_GE_I32, ComparisonPredicate::SignedGreaterEqual, lhs, rhs, 64u, result_id);
     }
 
     // ---- Comparisons (f32) --------------------------------------------------
 
     [[nodiscard]] uint32_t emit_compare_eq_f32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_EQ_I32, ComparisonPredicate::Equal, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ne_f32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_NE_I32, ComparisonPredicate::NotEqual, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_lt_f32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_LT_I32, ComparisonPredicate::SignedLessThan, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_le_f32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_LE_I32, ComparisonPredicate::SignedLessEqual, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_gt_f32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_GT_I32, ComparisonPredicate::SignedGreaterThan, lhs, rhs, 32u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ge_f32(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i32_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_GE_I32, ComparisonPredicate::SignedGreaterEqual, lhs, rhs, 32u, result_id);
     }
 
     // ---- Comparisons (f64) --------------------------------------------------
 
     [[nodiscard]] uint32_t emit_compare_eq_f64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_EQ_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_EQ_I32, ComparisonPredicate::Equal, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ne_f64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_NE_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_NE_I32, ComparisonPredicate::NotEqual, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_lt_f64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_LT_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_LT_I32, ComparisonPredicate::SignedLessThan, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_le_f64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_LE_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_LE_I32, ComparisonPredicate::SignedLessEqual, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_gt_f64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_GT_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_GT_I32, ComparisonPredicate::SignedGreaterThan, lhs, rhs, 64u, result_id);
     }
     [[nodiscard]] uint32_t emit_compare_ge_f64(uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        return emit_binary_op_i64_(ir::OpCode::CMP_GE_I32, lhs, rhs, result_id);
+        return emit_compare_float_impl_(ir::OpCode::CMP_GE_I32, ComparisonPredicate::SignedGreaterEqual, lhs, rhs, 64u, result_id);
+    }
+
+    // ---- Generic Predicate-Based Comparisons --------------------------------
+
+    [[nodiscard]] uint32_t emit_compare_i32(ComparisonPredicate pred,
+                                            uint32_t lhs,
+                                            uint32_t rhs,
+                                            uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_compare_int_impl_(map_predicate_to_cmp_op_(pred), pred, lhs, rhs, 32u, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_compare_i64(ComparisonPredicate pred,
+                                            uint32_t lhs,
+                                            uint32_t rhs,
+                                            uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_compare_int_impl_(map_predicate_to_cmp_op_(pred), pred, lhs, rhs, 64u, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_compare_f32(ComparisonPredicate pred,
+                                            uint32_t lhs,
+                                            uint32_t rhs,
+                                            uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_compare_float_impl_(map_predicate_to_cmp_op_(pred), pred, lhs, rhs, 32u, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_compare_f64(ComparisonPredicate pred,
+                                            uint32_t lhs,
+                                            uint32_t rhs,
+                                            uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_compare_float_impl_(map_predicate_to_cmp_op_(pred), pred, lhs, rhs, 64u, result_id);
     }
 
     // ---- Unary & Inversion Operations ---------------------------------------
@@ -1295,7 +1526,6 @@ public:
         return emit_binary_op_i64_(ir::OpCode::PTR_DIFF, lhs_ptr, rhs_ptr, result_id);
     }
     [[nodiscard]] uint32_t emit_reg_move(uint32_t dst_slot, uint32_t src_slot) noexcept {
-        pre_emit_numa_();
         if (!has_insertion_point() || dst_slot == ir::INVALID_SLOT || src_slot == ir::INVALID_SLOT) {
             return ir::INVALID_SLOT;
         }
@@ -1309,6 +1539,56 @@ public:
         try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
         return dst_slot;
     }
+
+    [[nodiscard]] uint32_t emit_sext_i32_i64(uint32_t val, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return ir::INVALID_SLOT;
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::REG_MOVE, rid, val);
+        node.logic_flags = 64u;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        active_stream_->set_result_type(rid, ir::TypeCode::I64);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_zext_i32_i64(uint32_t val, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return ir::INVALID_SLOT;
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::REG_MOVE, rid, val);
+        node.logic_flags = 32u;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        active_stream_->set_result_type(rid, ir::TypeCode::I64);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_trunc_i64_i32(uint32_t val, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) return ir::INVALID_SLOT;
+        const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
+        ir::IRNode node = ir::gen::make_generated_node(ir::OpCode::REG_MOVE, rid, val);
+        node.logic_flags = 32u;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        active_stream_->set_result_type(rid, ir::TypeCode::I32);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_bit_field_insert(uint32_t base,
+                                                 uint32_t val,
+                                                 uint32_t offset_width_packed,
+                                                 uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::BIT_FIELD_INSERT, base, val, offset_width_packed, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_bit_field_extract(uint32_t val,
+                                                  uint32_t offset_width_packed,
+                                                  uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::BIT_FIELD_EXTRACT, val, offset_width_packed, result_id);
+    }
+
     [[nodiscard]] uint32_t emit_alloca(uint32_t size_bytes, uint32_t align,
                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
         return emit_binary_op_i64_(ir::OpCode::DSA_ALLOCATE, size_bytes, align, result_id);
@@ -1437,7 +1717,6 @@ public:
     }
 
     [[nodiscard]] uint32_t emit_sdpa_f16(uint32_t q, uint32_t k, uint32_t v, uint32_t mask = ir::INVALID_SLOT, uint32_t result_id = ir::INVALID_SLOT) noexcept {
-        pre_emit_numa_();
         if (!has_insertion_point()) return ir::INVALID_SLOT;
         const uint32_t rid = (result_id == ir::INVALID_SLOT) ? allocate_temp_id() : result_id;
         ir::IRNode n = ir::gen::make_generated_node(ir::OpCode::SDPA_F16, rid, q, k, v);
@@ -1635,6 +1914,7 @@ private:
     bool numa_locality_enabled_ = true;
     uint32_t preferred_numa_node_ = 0;
     std::unordered_map<int32_t, uint32_t> constant_i32_cache_;
+    std::unordered_map<int64_t, uint32_t> constant_i64_cache_;
     std::unordered_map<std::string, uint32_t> string_handle_cache_;
     std::unordered_map<uint32_t, uint32_t> string_constant_slot_cache_;
 
@@ -1666,8 +1946,6 @@ private:
      * builder APIs rather than mutating IRStream directly.
      */
     [[nodiscard]] size_t append_node_(ir::IRStream& stream, ir::IRNode node) noexcept {
-        pre_emit_numa_();
-
         // The canonical IR node owns its structural hash. Recompute at the
         // final insertion boundary so nodes modified immediately before
         // insertion cannot carry stale integrity metadata.
@@ -1729,7 +2007,6 @@ private:
     [[nodiscard]] uint32_t emit_binary_op_i64_(ir::OpCode op,
                                                uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id) noexcept {
-        pre_emit_numa_();
         if (active_stream_ == nullptr || active_stream_->is_null()) {
             return ir::INVALID_SLOT;
         }
@@ -1745,7 +2022,6 @@ private:
     [[nodiscard]] uint32_t emit_binary_op_i32_(ir::OpCode op,
                                                uint32_t lhs, uint32_t rhs,
                                                uint32_t result_id) noexcept {
-        pre_emit_numa_();
         if (active_stream_ == nullptr || active_stream_->is_null()) {
             return ir::INVALID_SLOT;
         }
@@ -1761,7 +2037,6 @@ private:
     [[nodiscard]] uint32_t emit_unary_op_(ir::OpCode op,
                                           uint32_t value,
                                           uint32_t result_id) noexcept {
-        pre_emit_numa_();
         if (!has_insertion_point()) {
             return ir::INVALID_SLOT;
         }
@@ -1777,7 +2052,6 @@ private:
                                             uint32_t b,
                                             uint32_t c,
                                             uint32_t result_id) noexcept {
-        pre_emit_numa_();
         if (!has_insertion_point()) {
             return ir::INVALID_SLOT;
         }
@@ -1788,8 +2062,68 @@ private:
         return rid;
     }
 
+    [[nodiscard]] uint32_t emit_compare_int_impl_(ir::OpCode op,
+                                                  ComparisonPredicate pred,
+                                                  uint32_t lhs,
+                                                  uint32_t rhs,
+                                                  uint32_t bitwidth,
+                                                  uint32_t result_id) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) {
+            return ir::INVALID_SLOT;
+        }
+        const uint32_t rid = (result_id == ir::INVALID_SLOT)
+                                 ? allocate_temp_id()
+                                 : result_id;
+        ir::IRNode node = ir::gen::make_generated_node(
+            op, rid, lhs, rhs, static_cast<uint32_t>(pred));
+        node.logic_flags = bitwidth;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        active_stream_->set_result_type(rid, ir::TypeCode::BOOL);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    [[nodiscard]] uint32_t emit_compare_float_impl_(ir::OpCode op,
+                                                    ComparisonPredicate pred,
+                                                    uint32_t lhs,
+                                                    uint32_t rhs,
+                                                    uint32_t bitwidth,
+                                                    uint32_t result_id) noexcept {
+        if (active_stream_ == nullptr || active_stream_->is_null()) {
+            return ir::INVALID_SLOT;
+        }
+        const uint32_t rid = (result_id == ir::INVALID_SLOT)
+                                 ? allocate_temp_id()
+                                 : result_id;
+        ir::IRNode node = ir::gen::make_generated_node(
+            op, rid, lhs, rhs, static_cast<uint32_t>(pred),
+            static_cast<uint16_t>(ir::Flags::IS_SPEC_CONST));
+        node.logic_flags = bitwidth;
+        node.refresh_intent_hash();
+        (void)append_node_(*active_stream_, node);
+        active_stream_->set_result_type(rid, ir::TypeCode::BOOL);
+        try_annotate_debug_and_type_(*active_stream_, active_stream_->size() - 1);
+        return rid;
+    }
+
+    [[nodiscard]] static ir::OpCode map_predicate_to_cmp_op_(ComparisonPredicate pred) noexcept {
+        switch (pred) {
+            case ComparisonPredicate::Equal: return ir::OpCode::CMP_EQ_I32;
+            case ComparisonPredicate::NotEqual: return ir::OpCode::CMP_NE_I32;
+            case ComparisonPredicate::SignedLessThan:
+            case ComparisonPredicate::UnsignedLessThan: return ir::OpCode::CMP_LT_I32;
+            case ComparisonPredicate::SignedLessEqual:
+            case ComparisonPredicate::UnsignedLessEqual: return ir::OpCode::CMP_LE_I32;
+            case ComparisonPredicate::SignedGreaterThan:
+            case ComparisonPredicate::UnsignedGreaterThan: return ir::OpCode::CMP_GT_I32;
+            case ComparisonPredicate::SignedGreaterEqual:
+            case ComparisonPredicate::UnsignedGreaterEqual: return ir::OpCode::CMP_GE_I32;
+            default: return ir::OpCode::CMP_EQ_I32;
+        }
+    }
+
     void emit_side_effect_op0_(ir::OpCode op) noexcept {
-        pre_emit_numa_();
         if (!has_insertion_point()) return;
         (void)append_node_(*active_stream_, ir::gen::make_generated_node(op,
                                                                allocate_temp_id(),

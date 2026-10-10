@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL â€” Deep General-purpose Transformation Layer
@@ -403,6 +403,7 @@ typedef uint16_t dgtl_opcode_t;
 #define DGTL_OP_DIV_F32               33u
 #define DGTL_OP_FMA_F32               35u
 #define DGTL_OP_FMA_WIDEN_F16_F32     36u
+#define DGTL_OP_FAST_FMA              0x8002u
 #define DGTL_OP_CMP_EQ_I32            40u
 #define DGTL_OP_CMP_NE_I32            41u
 #define DGTL_OP_CMP_LT_I32            42u
@@ -444,6 +445,7 @@ typedef uint16_t dgtl_opcode_t;
 #define DGTL_OP_RET                   101u
 #define DGTL_OP_BRANCH_COND           102u
 #define DGTL_OP_BRANCH_FUSED          103u
+#define DGTL_OP_BRANCH_COMPARE_FUSED  103u
 #define DGTL_OP_CALL                  110u
 #define DGTL_OP_SYSCALL               111u
 #define DGTL_OP_GUARD_ALIAS           120u
@@ -1200,6 +1202,49 @@ DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_emit_raw(dgtl_stream_t* DGTL_NON
 DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_emit_raw_with_slot(dgtl_stream_t* DGTL_NONNULL(1) s, dgtl_opcode_t opcode, uint16_t flags, uint32_t result_id, uint32_t op_a, uint32_t op_b, uint32_t op_c) DGTL_NOEXCEPT;
 DGTL_API void DGTL_CALL dgtl_set_verbose(int32_t enabled) DGTL_NOEXCEPT;
 
+/*
+ * dgtl_emit_call — emit one IR CALL node using DGTL's canonical call layout
+ * (identical to dgtl::api::IRBuilder::emit_call):
+ *
+ *   opcode      = DGTL_OP_CALL (0x6E)
+ *   flags       = DGTL_FLAG_HAS_SIDE_EFFECTS | DGTL_FLAG_IS_VOLATILE
+ *   result_id   = result_slot (if DGTL_INVALID_SLOT, a fresh stream slot is
+ *                 allocated; the call result is always node.result_id)
+ *   op_a        = callee_slot
+ *   op_b        = args[0]      or DGTL_INVALID_SLOT when arg_count < 1
+ *   op_c        = args[1]      or DGTL_INVALID_SLOT when arg_count < 2
+ *   logic_flags = args[2]      or DGTL_INVALID_SLOT when arg_count < 3
+ *   call overflow sidecar (dgtl_stream_get_call_overflow(node_idx)) =
+ *                 args[3 .. arg_count-1]; only set when arg_count > 3.
+ *
+ * Argument i of the call is therefore: i==0 -> op_b, i==1 -> op_c,
+ * i==2 -> logic_flags, i>=3 -> overflow[i-3]. The number of arguments is
+ * the count of leading non-DGTL_INVALID_SLOT values in that sequence.
+ * Returns false (and appends nothing) on a null stream, an invalid callee,
+ * or args == NULL with arg_count > 0.
+ */
+DGTL_API bool DGTL_CALL dgtl_emit_call(dgtl_stream_t* s, uint32_t callee_slot, uint32_t result_slot, const uint32_t* args, size_t arg_count) DGTL_NOEXCEPT;
+
+/*
+ * dgtl_emit_function_params — attach the formal parameter list to the
+ * function entry LABEL that was just emitted.
+ *
+ * DGTL IR has no PARAM/ARG opcode. Parameters are expressed as values
+ * DEFINED by the function's entry LABEL node via the multi-result sidecar:
+ *
+ *   precondition: the LAST node in the stream is a DGTL_OP_LABEL node
+ *                 (the function entry label; emit this right after it).
+ *   effect:       dgtl_stream_set_result_ids(label_node_idx, param_slots, count)
+ *                 i.e. result_ids[i] == slot holding formal parameter i
+ *                 (ABI argument position i). The LABEL's own result_id /
+ *                 op_a..op_c are left untouched. No new IR node is appended.
+ *
+ * count == 0 is a valid no-op (returns true). Returns false on a null
+ * stream, param_slots == NULL with count > 0, any DGTL_INVALID_SLOT entry,
+ * or when the last node is not a LABEL.
+ */
+DGTL_API bool DGTL_CALL dgtl_emit_function_params(dgtl_stream_t* s, const uint32_t* param_slots, size_t count) DGTL_NOEXCEPT;
+
 /* ============================================================================
  * SECTION 24C â€” CONVENIENCE EMISSION & INTROSPECTION HELPERS
  * ========================================================================== */
@@ -1278,6 +1323,17 @@ static inline size_t dgtl_stream_node_count(const dgtl_stream_t* s) {
 DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_last_linker_fallback_count(void) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_last_linker_fallback_message(size_t index, char* out_buffer, size_t out_size) DGTL_NOEXCEPT;
 
+/* ============================================================================
+ * SECTION 35 â€” MODULAR SOVEREIGN SUBSYSTEM EXTENSIONS
+ * ========================================================================== */
+#include "types.h"
+#include "target.h"
+#include "object.h"
+#include "linker.h"
+#include "jit.h"
+#include "module.h"
+#include "mir.h"
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
@@ -1301,7 +1357,7 @@ struct Value {
     constexpr Value() noexcept : v{0xFFFFFFFFu} {}
     constexpr explicit Value(dgtl_value_t vv) noexcept : v(vv) {}
     constexpr explicit Value(uint32_t id) noexcept : v{id} {}
-    [[nodiscard]] constexpr bool valid() const noexcept { return dgtl_value_is_valid(v); }
+    [[nodiscard]] bool valid() const noexcept { return dgtl_value_is_valid(v); }
     [[nodiscard]] constexpr uint32_t id() const noexcept { return v.id; }
     [[nodiscard]] constexpr dgtl_value_t raw() const noexcept { return v; }
 };
@@ -1310,10 +1366,14 @@ struct Block {
     dgtl_block_t b;
     constexpr Block() noexcept : b{0xFFFFFFFFu} {}
     constexpr explicit Block(dgtl_block_t bb) noexcept : b(bb) {}
-    [[nodiscard]] constexpr bool valid() const noexcept { return dgtl_block_is_valid(b); }
+    [[nodiscard]] bool valid() const noexcept { return dgtl_block_is_valid(b); }
     [[nodiscard]] constexpr uint32_t id() const noexcept { return b.id; }
     [[nodiscard]] constexpr dgtl_block_t raw() const noexcept { return b; }
 };
+
+class Context;
+class Stream;
+class TargetMachine;
 
 class Context {
 public:
@@ -1367,6 +1427,8 @@ public:
     [[nodiscard]] dgtl_strike_result_t strike(dgtl_target_t t = DGTL_TARGET_HOST) noexcept {
         return dgtl_strike_stream(s_, t);
     }
+    [[nodiscard]] dgtl_text_t disassemble(const TargetMachine& tm) const noexcept;
+    [[nodiscard]] dgtl_text_t dump_machine_ir(const TargetMachine& tm) const noexcept;
 private:
     dgtl_stream_t* s_ = nullptr;
 };
@@ -1515,13 +1577,281 @@ private:
     dgtl_session_t* session_ = nullptr;
 };
 
+class TargetMachine {
+public:
+    TargetMachine() : tm_(dgtl_target_machine_create_host()) {}
+    explicit TargetMachine(dgtl_target_machine_t tm) : tm_(tm) {}
+    TargetMachine(const char* triple, const char* cpu = nullptr, const char* features = nullptr,
+                  dgtl_opt_level_t opt = DGTL_OPT_O2,
+                  dgtl_reloc_model_t reloc = DGTL_RELOC_DEFAULT,
+                  dgtl_code_model_t code = DGTL_CODE_MODEL_DEFAULT)
+        : tm_(dgtl_target_machine_create(triple, cpu, features, opt, reloc, code)) {}
+    ~TargetMachine() noexcept { if (tm_) dgtl_target_machine_destroy(tm_); }
+    TargetMachine(const TargetMachine&) = delete;
+    TargetMachine& operator=(const TargetMachine&) = delete;
+    TargetMachine(TargetMachine&& o) noexcept : tm_(o.tm_) { o.tm_ = nullptr; }
+    TargetMachine& operator=(TargetMachine&& o) noexcept {
+        if (this != &o) { if (tm_) dgtl_target_machine_destroy(tm_); tm_ = o.tm_; o.tm_ = nullptr; }
+        return *this;
+    }
+    [[nodiscard]] bool is_valid() const noexcept { return tm_ != nullptr; }
+    [[nodiscard]] dgtl_target_machine_t get() const noexcept { return tm_; }
+    [[nodiscard]] const char* triple() const noexcept { return dgtl_target_machine_get_triple(tm_); }
+    [[nodiscard]] const char* cpu() const noexcept { return dgtl_target_machine_get_cpu(tm_); }
+    [[nodiscard]] bool has_feature(const char* feat) const noexcept { return dgtl_target_machine_has_feature(tm_, feat); }
+    [[nodiscard]] uint32_t pointer_size() const noexcept { return dgtl_target_machine_get_pointer_size(tm_); }
+    [[nodiscard]] bool is_64bit() const noexcept { return dgtl_target_machine_is_64bit(tm_); }
+    [[nodiscard]] bool is_little_endian() const noexcept { return dgtl_target_machine_is_little_endian(tm_); }
+    [[nodiscard]] dgtl_target_arch_t arch() const noexcept { return dgtl_target_machine_get_arch(tm_); }
+private:
+    dgtl_target_machine_t tm_ = nullptr;
+};
+
+inline dgtl_text_t Stream::disassemble(const TargetMachine& tm) const noexcept {
+    dgtl_text_t txt{};
+    (void)dgtl_mir_disassemble_stream(s_, tm.get(), &txt);
+    return txt;
+}
+
+inline dgtl_text_t Stream::dump_machine_ir(const TargetMachine& tm) const noexcept {
+    dgtl_text_t txt{};
+    (void)dgtl_mir_dump_machine_ir(s_, tm.get(), &txt);
+    return txt;
+}
+
+class SectionRef {
+public:
+    explicit SectionRef(dgtl_section_t sec) noexcept : sec_(sec) {}
+    [[nodiscard]] bool is_valid() const noexcept { return sec_ != nullptr; }
+    [[nodiscard]] dgtl_section_t get() const noexcept { return sec_; }
+    operator dgtl_section_t() const noexcept { return sec_; }
+    [[nodiscard]] const char* name() const noexcept { return dgtl_section_get_name(sec_); }
+    [[nodiscard]] size_t size() const noexcept { return dgtl_section_get_size(sec_); }
+    [[nodiscard]] const uint8_t* data() const noexcept { return dgtl_section_get_data(sec_); }
+    [[nodiscard]] uint32_t flags() const noexcept { return dgtl_section_get_flags(sec_); }
+    [[nodiscard]] uint64_t bss_size() const noexcept { return dgtl_section_get_bss_size(sec_); }
+    dgtl_err_t set_bss_size(uint64_t sz) noexcept { return dgtl_section_set_bss_size(sec_, sz); }
+    [[nodiscard]] uint64_t alignment() const noexcept { return dgtl_section_get_alignment(sec_); }
+    dgtl_err_t append_data(const uint8_t* data, size_t sz) noexcept { return dgtl_section_append_data(sec_, data, sz); }
+private:
+    dgtl_section_t sec_ = nullptr;
+};
+
+class SymbolRef {
+public:
+    explicit SymbolRef(dgtl_symbol_t sym) noexcept : sym_(sym) {}
+    [[nodiscard]] bool is_valid() const noexcept { return sym_ != nullptr; }
+    [[nodiscard]] dgtl_symbol_t get() const noexcept { return sym_; }
+    operator dgtl_symbol_t() const noexcept { return sym_; }
+    [[nodiscard]] const char* name() const noexcept { return dgtl_symbol_get_name(sym_); }
+    [[nodiscard]] uint64_t value() const noexcept { return dgtl_symbol_get_value(sym_); }
+    [[nodiscard]] uint64_t size() const noexcept { return dgtl_symbol_get_size(sym_); }
+    [[nodiscard]] uint32_t section_index() const noexcept { return dgtl_symbol_get_section_index(sym_); }
+private:
+    dgtl_symbol_t sym_ = nullptr;
+};
+
+class RelocationRef {
+public:
+    explicit RelocationRef(dgtl_relocation_t rel) noexcept : rel_(rel) {}
+    [[nodiscard]] bool is_valid() const noexcept { return rel_ != nullptr; }
+    [[nodiscard]] dgtl_relocation_t get() const noexcept { return rel_; }
+    operator dgtl_relocation_t() const noexcept { return rel_; }
+    [[nodiscard]] uint64_t offset() const noexcept { return dgtl_relocation_get_offset(rel_); }
+    [[nodiscard]] const char* symbol_name() const noexcept { return dgtl_relocation_get_symbol_name(rel_); }
+    [[nodiscard]] uint32_t symbol_index() const noexcept { return dgtl_relocation_get_symbol_index(rel_); }
+    [[nodiscard]] int64_t addend() const noexcept { return dgtl_relocation_get_addend(rel_); }
+    [[nodiscard]] uint32_t type() const noexcept { return dgtl_relocation_get_type(rel_); }
+    [[nodiscard]] uint32_t section_index() const noexcept { return dgtl_relocation_get_section_index(rel_); }
+private:
+    dgtl_relocation_t rel_ = nullptr;
+};
+
+class ObjectFile {
+public:
+    explicit ObjectFile(dgtl_object_format_t fmt = DGTL_OBJECT_FMT_PE)
+        : obj_(dgtl_object_create(fmt)) {}
+    explicit ObjectFile(dgtl_object_t obj) : obj_(obj) {}
+    static ObjectFile load_from_file(const char* path) {
+        return ObjectFile(dgtl_object_load_from_file(path));
+    }
+    static ObjectFile load_from_memory(const uint8_t* bytes, size_t size) {
+        return ObjectFile(dgtl_object_load_from_memory(bytes, size));
+    }
+    ~ObjectFile() noexcept { if (obj_) dgtl_object_destroy(obj_); }
+    ObjectFile(const ObjectFile&) = delete;
+    ObjectFile& operator=(const ObjectFile&) = delete;
+    ObjectFile(ObjectFile&& o) noexcept : obj_(o.obj_) { o.obj_ = nullptr; }
+    ObjectFile& operator=(ObjectFile&& o) noexcept {
+        if (this != &o) { if (obj_) dgtl_object_destroy(obj_); obj_ = o.obj_; o.obj_ = nullptr; }
+        return *this;
+    }
+    [[nodiscard]] bool is_valid() const noexcept { return obj_ != nullptr; }
+    [[nodiscard]] dgtl_object_t get() const noexcept { return obj_; }
+    [[nodiscard]] dgtl_object_format_t format() const noexcept { return dgtl_object_get_format(obj_); }
+    [[nodiscard]] size_t section_count() const noexcept { return dgtl_object_get_section_count(obj_); }
+    [[nodiscard]] SectionRef section(size_t idx) const noexcept { return SectionRef(dgtl_object_get_section(obj_, idx)); }
+    [[nodiscard]] SectionRef find_section(const char* name) const noexcept { return SectionRef(dgtl_object_find_section(obj_, name)); }
+    [[nodiscard]] SectionRef add_section(const char* name, uint64_t align = 16, uint32_t flags = DGTL_SEC_FLAG_READ | DGTL_SEC_FLAG_DATA) noexcept {
+        return SectionRef(dgtl_object_add_section(obj_, name, align, flags));
+    }
+    [[nodiscard]] size_t symbol_count() const noexcept { return dgtl_object_get_symbol_count(obj_); }
+    [[nodiscard]] SymbolRef symbol(size_t idx) const noexcept { return SymbolRef(dgtl_object_get_symbol(obj_, idx)); }
+    [[nodiscard]] SymbolRef find_symbol(const char* name) const noexcept { return SymbolRef(dgtl_object_find_symbol(obj_, name)); }
+    [[nodiscard]] SymbolRef add_symbol(const char* name, uint64_t value, uint64_t size, uint32_t sec_idx, uint8_t binding = DGTL_SYM_BIND_GLOBAL, uint8_t type = DGTL_SYM_TYPE_FUNC) noexcept {
+        return SymbolRef(dgtl_object_add_symbol(obj_, name, value, size, sec_idx, binding, type));
+    }
+    [[nodiscard]] size_t relocation_count() const noexcept { return dgtl_object_get_relocation_count(obj_); }
+    [[nodiscard]] RelocationRef relocation(size_t idx) const noexcept { return RelocationRef(dgtl_object_get_relocation(obj_, idx)); }
+    dgtl_err_t emit_to_file(const char* path) noexcept { return dgtl_object_emit_to_file(obj_, path); }
+    dgtl_err_t emit_to_memory(const uint8_t** out_bytes, size_t* out_size) noexcept {
+        return dgtl_object_emit_to_memory(obj_, out_bytes, out_size);
+    }
+private:
+    dgtl_object_t obj_ = nullptr;
+};
+
+class Module {
+public:
+    explicit Module(Context& ctx, const char* module_id = "default_module")
+        : mod_(dgtl_module_create(ctx.get(), module_id)) {
+        if (!mod_) throw std::bad_alloc();
+    }
+    explicit Module(const char* module_id = "default_module")
+        : mod_(dgtl_module_create(nullptr, module_id)) {
+        if (!mod_) throw std::bad_alloc();
+    }
+    explicit Module(dgtl_module_t mod) noexcept : mod_(mod) {}
+    ~Module() noexcept { if (mod_) dgtl_module_destroy(mod_); }
+    Module(const Module&) = delete;
+    Module& operator=(const Module&) = delete;
+    Module(Module&& o) noexcept : mod_(o.mod_) { o.mod_ = nullptr; }
+    Module& operator=(Module&& o) noexcept {
+        if (this != &o) { if (mod_) dgtl_module_destroy(mod_); mod_ = o.mod_; o.mod_ = nullptr; }
+        return *this;
+    }
+    [[nodiscard]] bool is_valid() const noexcept { return mod_ != nullptr; }
+    [[nodiscard]] dgtl_module_t get() const noexcept { return mod_; }
+    [[nodiscard]] const char* id() const noexcept { return dgtl_module_get_id(mod_); }
+
+    dgtl_err_t add_function(const char* name, Stream& body, dgtl_linkage_t linkage = DGTL_LINKAGE_EXTERNAL) noexcept {
+        return dgtl_module_add_function(mod_, name, body.get(), linkage);
+    }
+    dgtl_err_t add_global_data(const char* name, const uint8_t* data, size_t size, size_t alignment = 16, bool is_constant = false, dgtl_linkage_t linkage = DGTL_LINKAGE_EXTERNAL) noexcept {
+        return dgtl_module_add_global_data(mod_, name, data, size, alignment, is_constant, linkage);
+    }
+    [[nodiscard]] size_t function_count() const noexcept { return dgtl_module_get_function_count(mod_); }
+    [[nodiscard]] const char* function_name(size_t idx) const noexcept { return dgtl_module_get_function_name(mod_, idx); }
+    [[nodiscard]] size_t global_count() const noexcept { return dgtl_module_get_global_count(mod_); }
+    [[nodiscard]] const char* global_name(size_t idx) const noexcept { return dgtl_module_get_global_name(mod_, idx); }
+
+    [[nodiscard]] ObjectFile compile_to_object(TargetMachine& tm) {
+        return ObjectFile(dgtl_module_compile_to_object(mod_, tm.get()));
+    }
+    [[nodiscard]] dgtl_text_t disassemble(TargetMachine& tm) const noexcept {
+        dgtl_text_t txt{};
+        (void)dgtl_mir_disassemble_module(mod_, tm.get(), &txt);
+        return txt;
+    }
+private:
+    dgtl_module_t mod_ = nullptr;
+};
+
+class Linker {
+public:
+    explicit Linker(dgtl_object_format_t fmt = DGTL_OBJECT_FMT_PE)
+        : linker_(dgtl_linker_create(fmt)) {}
+    explicit Linker(dgtl_subsystem_t sub)
+        : linker_(dgtl_linker_create(DGTL_OBJECT_FMT_PE)) {
+        if (linker_) (void)dgtl_linker_set_subsystem(linker_, sub);
+    }
+    ~Linker() noexcept { if (linker_) dgtl_linker_destroy(linker_); }
+    Linker(const Linker&) = delete;
+    Linker& operator=(const Linker&) = delete;
+    Linker(Linker&& o) noexcept : linker_(o.linker_) { o.linker_ = nullptr; }
+    Linker& operator=(Linker&& o) noexcept {
+        if (this != &o) { if (linker_) dgtl_linker_destroy(linker_); linker_ = o.linker_; o.linker_ = nullptr; }
+        return *this;
+    }
+    [[nodiscard]] bool is_valid() const noexcept { return linker_ != nullptr; }
+    [[nodiscard]] dgtl_linker_t get() const noexcept { return linker_; }
+    dgtl_err_t set_entry_point(const char* sym) noexcept { return dgtl_linker_set_entry_point(linker_, sym); }
+    dgtl_err_t set_image_base(uint64_t image_base) noexcept { return dgtl_linker_set_image_base(linker_, image_base); }
+    dgtl_err_t set_subsystem(dgtl_subsystem_t sub) noexcept { return dgtl_linker_set_subsystem(linker_, sub); }
+    dgtl_err_t add_object(const ObjectFile& obj) noexcept { return dgtl_linker_add_object(linker_, obj.get()); }
+    dgtl_err_t add_object_file(const char* path) noexcept { return dgtl_linker_add_object_file(linker_, path); }
+    dgtl_err_t add_archive(const char* path) noexcept { return dgtl_linker_add_archive(linker_, path); }
+    dgtl_err_t add_library_search_path(const char* dir) noexcept { return dgtl_linker_add_library_search_path(linker_, dir); }
+    dgtl_err_t link_to_file(dgtl_linker_output_kind_t kind, const char* out_path) noexcept {
+        return dgtl_linker_link_to_file(linker_, kind, out_path);
+    }
+    dgtl_err_t link_to_memory(dgtl_linker_output_kind_t kind, const uint8_t** out_bytes, size_t* out_size) noexcept {
+        return dgtl_linker_link_to_memory(linker_, kind, out_bytes, out_size);
+    }
+private:
+    dgtl_linker_t linker_ = nullptr;
+};
+
+class JITEngine {
+public:
+    explicit JITEngine(Context& ctx, TargetMachine& tm)
+        : engine_(dgtl_jit_engine_create(ctx.get(), tm.get())) {}
+    JITEngine()
+        : default_ctx_(), default_tm_(),
+          engine_(dgtl_jit_engine_create(default_ctx_.get(), default_tm_.get())) {}
+    ~JITEngine() noexcept { if (engine_) dgtl_jit_engine_destroy(engine_); }
+    JITEngine(const JITEngine&) = delete;
+    JITEngine& operator=(const JITEngine&) = delete;
+    JITEngine(JITEngine&& o) noexcept : engine_(o.engine_) { o.engine_ = nullptr; }
+    JITEngine& operator=(JITEngine&& o) noexcept {
+        if (this != &o) { if (engine_) dgtl_jit_engine_destroy(engine_); engine_ = o.engine_; o.engine_ = nullptr; }
+        return *this;
+    }
+    [[nodiscard]] bool is_valid() const noexcept { return engine_ != nullptr; }
+    [[nodiscard]] dgtl_jit_engine_t get() const noexcept { return engine_; }
+    void set_symbol_resolver(dgtl_symbol_resolver_fn resolver, void* user_data) noexcept {
+        dgtl_jit_engine_set_symbol_resolver(engine_, resolver, user_data);
+    }
+    void register_symbol(const char* name, uintptr_t addr) noexcept {
+        dgtl_jit_engine_register_symbol(engine_, name, addr);
+    }
+    dgtl_err_t add_object(const ObjectFile& obj) noexcept {
+        return dgtl_jit_engine_add_object(engine_, obj.get());
+    }
+    dgtl_err_t add_module(Module& mod) noexcept {
+        return dgtl_jit_engine_add_module(engine_, mod.get());
+    }
+    dgtl_err_t add_stream(Stream& s, const char* entry = "main") noexcept {
+        return dgtl_jit_engine_add_stream(engine_, s.get(), entry);
+    }
+    [[nodiscard]] uintptr_t lookup(const char* name) const noexcept {
+        return dgtl_jit_engine_lookup(engine_, name);
+    }
+    template <typename Sig>
+    [[nodiscard]] Sig* get_function(const char* name) const noexcept {
+        return reinterpret_cast<Sig*>(lookup(name));
+    }
+private:
+    Context default_ctx_{};
+    TargetMachine default_tm_{};
+    dgtl_jit_engine_t engine_ = nullptr;
+};
+
 namespace sdk {
-    using Context     = dgtl::Context;
-    using Stream      = dgtl::Stream;
-    using FuncBuilder = dgtl::FuncBuilder;
-    using Session     = dgtl::Session;
-    using Value       = dgtl::Value;
-    using Block       = dgtl::Block;
+    using Context       = dgtl::Context;
+    using Stream        = dgtl::Stream;
+    using FuncBuilder   = dgtl::FuncBuilder;
+    using Session       = dgtl::Session;
+    using Value         = dgtl::Value;
+    using Block         = dgtl::Block;
+    using TargetMachine = dgtl::TargetMachine;
+    using SectionRef    = dgtl::SectionRef;
+    using SymbolRef     = dgtl::SymbolRef;
+    using RelocationRef = dgtl::RelocationRef;
+    using ObjectFile    = dgtl::ObjectFile;
+    using Module        = dgtl::Module;
+    using Linker        = dgtl::Linker;
+    using JITEngine     = dgtl::JITEngine;
 }
 
 } /* namespace dgtl */

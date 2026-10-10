@@ -2,8 +2,8 @@
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  */
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
+import dgtl.arena;
+import dgtl.ir;
 
 #include <iostream>
 #include <stdexcept>

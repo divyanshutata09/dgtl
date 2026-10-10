@@ -134,7 +134,8 @@ public:
     [[nodiscard]] bool write(
         const machine::MachineFunction& function,
         std::vector<std::uint8_t>& out) const {
-        auto obj = dgtl::object::ObjectFile::from_machine_function(function, dgtl::object::ObjectFormat::WASM);
+        (void)function;
+        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::WASM);
         return write(obj, out);
     }
 
@@ -165,11 +166,11 @@ public:
     }
 };
 
-} // namespace dgtl::backend::writers
+} // namespace dgtl::object::writers
 
-export namespace dgtl::object::writers {
-} namespace dgtl::backend::object {
+export namespace dgtl::backend::object {
     using WASMBinaryWriter = dgtl::object::writers::WASMBinaryWriter;
 }
+
 
 

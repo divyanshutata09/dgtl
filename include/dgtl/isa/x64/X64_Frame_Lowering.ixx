@@ -173,8 +173,8 @@ public:
             const auto xreg = static_cast<X64Register>(reg.id);
             if (xreg == X64Register::RSP || xreg == X64Register::RBP ||
                 xreg == X64Register::RAX || xreg == X64Register::RCX ||
-                xreg == X64Register::RDX || xreg == X64Register::RSI ||
-                xreg == X64Register::RDI || xreg == X64Register::R8 ||
+                xreg == X64Register::RDX ||
+                xreg == X64Register::R8 ||
                 xreg == X64Register::R9 || xreg == X64Register::R10 ||
                 xreg == X64Register::R11) {
                 return false;
@@ -256,4 +256,4 @@ public:
 
 };
 
-} // namespace dgtl::isa::x64::lowering::x64
+} // namespace dgtl::isa::lowering::x64

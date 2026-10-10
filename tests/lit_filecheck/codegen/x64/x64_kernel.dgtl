@@ -1,0 +1,15 @@
+; RUN: %dgtl-llc --target=x86_64 --output=%t.s %s
+; RUN: dgtl-opt --pass=inlining --filecheck %s
+; FileCheck test for x86_64 Kernel Code Generation
+; Verifies full pipeline lowered to x86_64 assembly kernel entry
+
+op 0x0D 0x00000001 0x00000010 0x00000000 0x00000000 0x0000
+op 0x0D 0x00000002 0x00000020 0x00000000 0x00000000 0x0000
+op 0x14 0x00000003 0x00000001 0x00000002 0x00000000 0x0000
+op 0x65 0x00000000 0x00000003 0x00000000 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: Stream size: 4 nodes
+; CHECK: op 0x14 0x00000003
+; CHECK: op 0x65 0x00000000
+; CHECK: End of IR

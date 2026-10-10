@@ -1,10 +1,10 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  */
 
-#include "dgtl/core/Arena.hpp"
-#include "dgtl/ir/Global_IR.hpp"
-#include "dgtl/pass/transform/Transform_Scalar_Core.hpp"
+import dgtl.arena;
+import dgtl.ir;
+import dgtl.ir.pass.transform_scalar_core;
 
 #include <iostream>
 #include <stdexcept>

@@ -1,0 +1,14 @@
+; RUN: dgtl-opt --pass=inlining --filecheck %s
+; FileCheck test for Atomic Memory Operations and Synchronization Fences
+; Verifies ATOMIC_LOAD, ATOMIC_STORE, and ATOMIC_FENCE with address-space binding
+
+op 0x0D 0x00000001 0x00002000 0x00000000 0x00000000 0x0000
+op 0x10 0x00000002 0x00000001 0x00000000 0x00000000 0x0000
+op 0x12 0x00000000 0x00000000 0x00000000 0x00000000 0x0000
+op 0x11 0x00000003 0x00000002 0x00000001 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: op 0x10 0x00000002
+; CHECK: op 0x12 0x00000000
+; CHECK: op 0x11 0x00000003
+; CHECK: End of IR

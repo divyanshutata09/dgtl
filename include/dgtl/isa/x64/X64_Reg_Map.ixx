@@ -484,7 +484,16 @@ public:
             reg.reg_class == dgtl::machine::RegisterClassKind::Integer ||
             reg.reg_class == dgtl::machine::RegisterClassKind::Address) {
             switch (static_cast<X64Reg>(reg.id)) {
+                case X64Reg::RAX:
+                case X64Reg::RCX:
+                case X64Reg::RDX:
                 case X64Reg::RBX:
+                case X64Reg::RSI:
+                case X64Reg::RDI:
+                case X64Reg::R8:
+                case X64Reg::R9:
+                case X64Reg::R10:
+                case X64Reg::R11:
                 case X64Reg::R12:
                 case X64Reg::R13:
                 case X64Reg::R14:
@@ -495,14 +504,10 @@ public:
             }
         }
         if (reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint) {
-            // Win64: XMM0-XMM5 are volatile; XMM6-XMM15 are nonvolatile.
-            return reg.id < 6u;
+            return reg.id < 16u;
         }
         if (reg.reg_class == dgtl::machine::RegisterClassKind::Vector) {
-            // ZMM0-ZMM5 and ZMM16-ZMM31 are volatile under the AVX-512
-            // extension of the Win64 ABI. ZMM6-ZMM15 are nonvolatile.
-            return (reg.id >= 16u && reg.id < 22u) ||
-                   (reg.id >= 32u && reg.id < 48u);
+            return reg.id < 32u;
         }
         return false;
     }
@@ -522,7 +527,17 @@ public:
     [[nodiscard]] bool aliases(dgtl::machine::MachineRegister lhs,
                                dgtl::machine::MachineRegister rhs) const noexcept override {
         if (!lhs.is_physical() || !rhs.is_physical()) return false;
-        if (lhs.id == rhs.id) return true;
+        const auto is_gpr = [](dgtl::machine::RegisterClassKind cls) noexcept {
+            using dgtl::machine::RegisterClassKind;
+            return cls == RegisterClassKind::General ||
+                   cls == RegisterClassKind::Integer ||
+                   cls == RegisterClassKind::Address;
+        };
+        if (lhs.id == rhs.id &&
+            (lhs.reg_class == rhs.reg_class ||
+             (is_gpr(lhs.reg_class) && is_gpr(rhs.reg_class)))) {
+            return true;
+        }
         // Scalar FP registers share the low architectural XMM register bank.
         const auto fp_vector_alias = [](const auto& fp, const auto& vec) noexcept {
             return fp.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint &&
@@ -535,6 +550,11 @@ public:
 
     [[nodiscard]] bool is_reserved(dgtl::machine::MachineRegister reg) const noexcept override {
         if (!reg.is_physical()) return false;
+        if (reg.reg_class != dgtl::machine::RegisterClassKind::General &&
+            reg.reg_class != dgtl::machine::RegisterClassKind::Integer &&
+            reg.reg_class != dgtl::machine::RegisterClassKind::Address) {
+            return false;
+        }
         if (reg.id == static_cast<std::uint32_t>(X64Reg::RSP) ||
             reg.id == static_cast<std::uint32_t>(X64Reg::RBP)) {
             return true;
@@ -549,13 +569,19 @@ public:
             reg.reg_class == dgtl::machine::RegisterClassKind::Address) {
             switch (static_cast<X64Reg>(reg.id)) {
                 case X64Reg::RAX: case X64Reg::RCX: case X64Reg::RDX:
-                case X64Reg::RSI: case X64Reg::RDI: case X64Reg::R8:
-                case X64Reg::R9: case X64Reg::R10: case X64Reg::R11:
+                case X64Reg::R8: case X64Reg::R9: case X64Reg::R10: case X64Reg::R11:
                     return true;
                 default: return false;
             }
         }
-        return reg.id < 16u;
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint) {
+            return reg.id < 6u;
+        }
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::Vector) {
+            return (reg.id >= 16u && reg.id < 22u) ||
+                   (reg.id >= 32u && reg.id < 48u);
+        }
+        return false;
     }
 
     [[nodiscard]] bool is_callee_saved(dgtl::machine::MachineRegister reg) const noexcept override {
@@ -565,12 +591,19 @@ public:
             reg.reg_class == dgtl::machine::RegisterClassKind::Address) {
             switch (static_cast<X64Reg>(reg.id)) {
                 case X64Reg::RBX: case X64Reg::RBP:
+                case X64Reg::RSI: case X64Reg::RDI:
                 case X64Reg::R12: case X64Reg::R13:
                 case X64Reg::R14: case X64Reg::R15:
                     return true;
                 default:
                     return false;
             }
+        }
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint) {
+            return reg.id >= 6u && reg.id < 16u;
+        }
+        if (reg.reg_class == dgtl::machine::RegisterClassKind::Vector) {
+            return reg.id >= 22u && reg.id < 32u;
         }
         return false;
     }

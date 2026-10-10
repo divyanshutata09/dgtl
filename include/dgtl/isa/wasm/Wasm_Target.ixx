@@ -30,6 +30,13 @@ export module dgtl.isa.wasm.target;
 import dgtl.mir.machine_ir;
 import dgtl.mir.abi_lowering;
 import dgtl.mir.runtime_contract;
+export import dgtl.isa.wasm.wasm_instruction_info;
+export import dgtl.isa.wasm.reg_map;
+export import dgtl.isa.wasm.wasm_abi;
+export import dgtl.isa.wasm.frame_lowering;
+export import dgtl.isa.wasm.wasm_machine_form_lowering;
+export import dgtl.isa.wasm.encoder;
+
 export namespace dgtl::isa::wasm {
 
 // --- MACH-O CROSS-PLATFORM STUBS (For Windows/Linux/DGTL-OS Hosts) ---
@@ -244,4 +251,35 @@ private:
 
 };
 
-} // namespace dgtl::isa::wasm::wasm
+inline constexpr std::string_view kTargetName = "wasm";
+inline constexpr std::string_view kTargetTripleDefault = "wasm32-unknown-wasi";
+
+struct WasmTargetSubtarget {
+    WasmTargetRegisterInfo reg_info{};
+    WasmTargetInstructionInfo instr_info{};
+    WasmFrameInfo frame_info{};
+    WasmABI wasm_abi{};
+
+    [[nodiscard]] const dgtl::machine::TargetABI& abi() const noexcept {
+        return wasm_abi;
+    }
+
+    [[nodiscard]] dgtl::machine::TargetSubtarget as_subtarget() const noexcept {
+        return dgtl::machine::TargetSubtarget{
+            reg_info, instr_info, frame_info, wasm_abi, nullptr
+        };
+    }
+};
+
+[[nodiscard]] inline const dgtl::machine::TargetSubtarget& get_wasm_target_subtarget() noexcept {
+    static const WasmTargetRegisterInfo reg_info{};
+    static const WasmTargetInstructionInfo instr_info{};
+    static const WasmFrameInfo frame_info{};
+    static const WasmABI wasm_abi{};
+    static const dgtl::machine::TargetSubtarget subtarget{
+        reg_info, instr_info, frame_info, wasm_abi, nullptr
+    };
+    return subtarget;
+}
+
+} // namespace dgtl::isa::wasm

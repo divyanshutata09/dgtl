@@ -106,6 +106,7 @@ import dgtl.jit.hardware_scheduler;
 import dgtl.isa.x64.nasm_emitter;
 import dgtl.isa.x64.x64_reg_map;
 import dgtl.isa.x64.x64_machine_form_lowering;
+import dgtl.isa.x64.mc_encoder;
 import dgtl.isa.x64.x64_graphcoloring_regalloc;
 import dgtl.mir;
 import dgtl.isa.x64.x64_instruction_info;

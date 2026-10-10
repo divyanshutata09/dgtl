@@ -184,7 +184,6 @@ private:
     }
 
     bool annotate_ir_nodes(dgtl::ir::IRStream& stream, const ValueMap& value_map) {
-        uint32_t shadow_cursor = 0;
         bool modified = false;
 
         for (uint32_t i = 0; i < static_cast<uint32_t>(stream.size()); ++i) {
@@ -200,28 +199,12 @@ private:
             }
 
             const auto& info = it->second;
-            auto& s_atom = stream.get_shadow_atom(shadow_cursor);
-            auto& s_core = stream.get_shadow_core(shadow_cursor);
-
-            s_atom.opcode = node.opcode;
-            s_atom.flags = node.flags;
-
-            // Annotate with escape status
             if (info.escape_status == EscapeStatus::NoEscape) {
+                auto& s_atom = stream.get_shadow_atom(i);
                 s_atom.flags |= static_cast<decltype(s_atom.flags)>(
                     dgtl::ir::Flags::IS_SIMD_BURST);
+                modified = true;
             }
-
-            s_core.result_id = node.result_id;
-            s_core.op_a = node.op_a;
-            s_core.op_b = node.op_b;
-            s_core.op_c = node.op_c;
-            s_core.intent_hash = dgtl::ir::IRNode::calculate_hash(
-                s_atom.opcode, s_core.result_id, s_core.op_a, s_core.op_b, s_core.op_c
-            );
-
-            shadow_cursor++;
-            modified = true;
         }
 
         return modified;

@@ -230,12 +230,7 @@ int verify_internal_api_artifacts() {
 
     const std::vector<std::pair<std::string, std::string>> required_semantic_gcms = {
         {"dgtl.hir.semantic.gcm", "dgtl.ir_core.semantic.gcm"},
-        {"dgtl.hir.type_system.gcm", "dgtl.ir_core.type_system.gcm"},
-        {"dgtl.hir.type_checker.gcm", "dgtl.ir_core.type_checker.gcm"},
-        {"dgtl.hir.borrow_checker.gcm", "dgtl.ir_core.borrow_checker.gcm"},
-        {"dgtl.hir.name_resolver.gcm", "dgtl.ir_core.name_resolver.gcm"},
-        {"dgtl.hir.constant_evaluator.gcm", "dgtl.ir_core.constant_evaluator.gcm"},
-        {"dgtl.hir.semantic_analyzer.gcm", "dgtl.ir_core.semantic_analyzer.gcm"}
+        {"dgtl.hir.type_system.gcm", "dgtl.ir_core.type_system.gcm"}
     };
     for (const auto& [canonical_gcm, legacy_gcm] : required_semantic_gcms) {
         if (!file_exists(gcm_cache / canonical_gcm) && !file_exists(gcm_cache / legacy_gcm)) {
@@ -294,7 +289,13 @@ std::vector<fs::path> get_release_sources() {
         (g_config.src_dir / "apps" / "smoke_main.cpp").lexically_normal().string(),
         (g_config.src_dir / "apps" / "dgtl_llc_main.cpp").lexically_normal().string(),
         (g_config.src_dir / "apps" / "dgtl_opt_main.cpp").lexically_normal().string(),
-        (g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal().string()
+        (g_config.src_dir / "apps" / "dgtl_verify_main.cpp").lexically_normal().string(),
+        (g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal().string(),
+        (g_config.src_dir / "apps" / "dgtl_link_main.cpp").lexically_normal().string(),
+        (g_config.src_dir / "apps" / "dgtl_engine_main.cpp").lexically_normal().string(),
+        (g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal().string(),
+        (g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal().string(),
+        (g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal().string()
     };
 
     std::error_code ec;
@@ -481,16 +482,6 @@ int compile_all_modules() {
         "dgtl.ir_core.semantic",
         "dgtl.hir.type_system",
         "dgtl.ir_core.type_system",
-        "dgtl.hir.type_checker",
-        "dgtl.ir_core.type_checker",
-        "dgtl.hir.borrow_checker",
-        "dgtl.ir_core.borrow_checker",
-        "dgtl.hir.name_resolver",
-        "dgtl.ir_core.name_resolver",
-        "dgtl.hir.constant_evaluator",
-        "dgtl.ir_core.constant_evaluator",
-        "dgtl.hir.semantic_analyzer",
-        "dgtl.ir_core.semantic_analyzer",
         "dgtl.backend.driver",
         "dgtl.backend.driver.shared",
         "dgtl.runtime.numa",

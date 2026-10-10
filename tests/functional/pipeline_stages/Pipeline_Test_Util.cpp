@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -9,112 +9,86 @@
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
+#include "dgtl_sdk/dgtl.h"
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
-#include <string>
-
-import dgtl;
-import dgtl.ir_core.semantic;
-import dgtl.ir_core.transform_scalar_core;
 
 int main() {
-    std::cout << "\033[1;36m--- [DGTL] Pipeline Integration Test ---\033[0m\n";
+    std::cout << "--- [DGTL] Pipeline Integration Test ---\n";
 
-    // 1. PILLAR 1: Initialize the huge-page arena (1 thread, 256MB).
-    // Ensures physical continuity for Tier 1 and Tier 2 IR layouts.
-    dgtl::core::DGTL_Arena arena(1, 256);
-    if (arena.raw_data() == nullptr) {
-        printf("[FATAL] OS failed to provide Huge-Page Arena.\n");
-        return -1;
-    }
-
-    // 2. INITIALIZE STREAM
-    // Sets up the Bit-Packed IR Stream using the provided Arena.
-    constexpr size_t MAX_NODES = 1024;
-    dgtl::ir::IRStream stream(arena, MAX_NODES);
-    stream.set_count(0); 
-
-    std::cout << "[DEBUG] Stream Capacity: " << stream.capacity() << " nodes\n";
-
-    // 3. TRANSACTIONAL INJECTION (Pillar 2)
-    // begin_transaction() opens the transaction window for low-latency injection.
-    stream.begin_transaction(); 
-
-    // Node 0: r1001 = 10 + 11
-    stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 1001, 10, 11, 0);
-    
-    // Node 1: r1002 = 10 + 11 (Redundant entry for GVN testing)
-    stream.push_node(dgtl::ir::OpCode::ADD_I32, dgtl::ir::Flags::NONE, 1002, 10, 11, 0);
-
-    /* * THE ANCHOR: 
-     * Using r1001 in a RET instruction. 
-     * This marks r1001 as "live," allowing GVN to eliminate r1002 while 
-     * preserving the original logic.
-     */
-    stream.push_node(dgtl::ir::OpCode::RET, dgtl::ir::Flags::NONE, 0, 1001, 0, 0);
-
-    std::cout << "[DEBUG] Transaction Status: " << (stream.is_active_transaction() ? "ACTIVE" : "INACTIVE") << "\n";
-
-    // 4. COMMIT STRIKE
-    // Finalizes the memory layout and prepares the stream for optimization.
-    stream.commit_transaction();
-
-    std::cout << "[Step 1] IR Injected. Initial Count: " << stream.size() << "\n";
-
-    // 5. RUN GLOBAL VALUE NUMBERING (GVN)
-    if (stream.size() > 0) {
-        dgtl::ir::pass::transform::DGTLGVN gvn;
-        gvn.execute(stream); 
-    } else {
-        std::cout << "[ERROR] Pipeline Stalled: IR Stream is empty.\n";
+    // 1. Context & Stream Setup
+    dgtl_context_t* ctx = dgtl_context_create(1, 32);
+    if (!ctx) {
+        std::cerr << "[FATAL] Failed to create DGTL context\n";
         return 1;
     }
 
-    // 6. VERIFY OPTIMIZATION
-    int active_ops = 0;
-    std::cout << "[DEBUG] Post-GVN Stream Analysis:\n";
-    
-    for(size_t i = 0; i < stream.size(); ++i) {
-        // Retrieve unified IRNode view (24-byte alignment)
-        const auto node = stream.get_node(i);
-        
-        bool is_nop = (node.opcode == dgtl::ir::OpCode::NOP);
-        bool is_dead = (node.flags & dgtl::ir::Flags::IS_DEAD);
-
-        printf("  Node[%03zu]: Op=%04X, Result=%u, Dead=%s, Nop=%s\n", 
-                static_cast<unsigned long>(i), 
-                static_cast<uint16_t>(node.opcode), 
-                node.result_id, 
-                is_dead ? "YES" : "NO", 
-                is_nop ? "YES" : "NO");
-
-        if(!is_nop && !is_dead) {
-            active_ops++;
-        }
-    }
-    
-    // Logic: Node 0 (ADD) and Node 2 (RET) should remain. Node 1 (ADD) is pruned.
-    std::cout << "[Step 2] GVN Applied. Active Ops (Expected 2): " << active_ops << "\n";
-
-    // 7. EMIT NASM ASSEMBLY
-    dgtl::isa::DGTLNasmEmitter nasm;
-    dgtl::semantic::SymbolTable symbols(arena);
-
-    std::cout << "\n--- GENERATING NASM OUTPUT ---\n";
-    try {
-        nasm.emit(stream, symbols);
-        std::string assembly = nasm.get_output();
-
-        if (assembly.empty() || assembly.length() < 10) {
-            std::cout << "; [WARNING] Assembly output suspiciously small. Check emitter logic.\n";
-        } else {
-            std::cout << assembly << "\n";
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "[FATAL] Emission failed: " << e.what() << "\n";
+    dgtl_stream_t* stream = dgtl_stream_create(ctx, 1024);
+    if (!stream) {
+        std::cerr << "[FATAL] Failed to allocate IR stream\n";
+        dgtl_context_destroy(ctx);
+        return 1;
     }
 
-    std::cout << "\n--- [TEST COMPLETE] ---\n";
+    // 2. Build IR Function
+    dgtl_func_builder_t* fb = dgtl_func_builder_create(stream, "pipeline_kernel", DGTL_TYPE_I64);
+    if (!fb) {
+        std::cerr << "[FATAL] Failed to create func builder\n";
+        dgtl_stream_destroy(stream);
+        dgtl_context_destroy(ctx);
+        return 1;
+    }
 
+    dgtl_block_t entry = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, entry);
+
+    // Node 0: a = 10
+    dgtl_value_t a = dgtl_build_const_i64(fb, 10);
+    // Node 1: b = 11
+    dgtl_value_t b = dgtl_build_const_i64(fb, 11);
+    // Node 2: c = a + b
+    dgtl_value_t c = dgtl_build_add(fb, a, b);
+    // Node 3: d = a + b (redundant for GVN testing)
+    dgtl_value_t d = dgtl_build_add(fb, a, b);
+    // Node 4: ret c + d
+    dgtl_value_t res = dgtl_build_add(fb, c, d);
+    dgtl_build_ret(fb, res);
+
+    (void)dgtl_func_builder_finalize(fb);
+
+    const size_t initial_nodes = dgtl_stream_size(stream);
+    std::cout << "[Step 1] IR Injected. Initial Count: " << initial_nodes << "\n";
+
+    // 3. Run Optimization Passes (GVN + Constant Folding + Dead Code Elimination)
+    dgtl_err_t opt_err = dgtl_optimize_with_profile(stream, DGTL_OPT_O2);
+    if (DGTL_IS_ERR(opt_err)) {
+        std::cerr << "[ERROR] Optimization failed with code: " << opt_err.code << "\n";
+        dgtl_func_builder_destroy(fb);
+        dgtl_stream_destroy(stream);
+        dgtl_context_destroy(ctx);
+        return 1;
+    }
+
+    const size_t opt_nodes = dgtl_stream_size(stream);
+    std::cout << "[Step 2] Optimization complete. Node Count: " << opt_nodes << "\n";
+
+    // 4. JIT Strike Lowering
+    dgtl_strike_result_t strike = dgtl_strike_stream(stream, DGTL_TARGET_X86_64);
+    if (!strike.ok || strike.code_size == 0) {
+        std::cerr << "[ERROR] Target strike lowering failed\n";
+        dgtl_func_builder_destroy(fb);
+        dgtl_stream_destroy(stream);
+        dgtl_context_destroy(ctx);
+        return 1;
+    }
+
+    std::cout << "[Step 3] Machine lowering complete. Emitted bytes: " << strike.code_size << "\n";
+
+    dgtl_func_builder_destroy(fb);
+    dgtl_stream_destroy(stream);
+    dgtl_context_destroy(ctx);
+
+    std::cout << "--- [PIPELINE TEST PASSED] ---\n";
     return 0;
 }

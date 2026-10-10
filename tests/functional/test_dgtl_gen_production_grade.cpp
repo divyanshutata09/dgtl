@@ -31,8 +31,9 @@
 #include <vector>
 
 import dgtl.arena;
-import dgtl.ir_core.gen;
-import dgtl.ir_core.stream;
+import dgtl.ir.gen;
+import dgtl.ir.gen_wrappers;
+import dgtl.ir.stream;
 
 namespace dgtl::test {
 
@@ -228,9 +229,9 @@ void test_trait_interface_counts() {
     std::cout << "  [OK] kNumDialects = " << kNumDialects << "\n";
     std::cout << "  [OK] kNumTypes = " << kNumTypes << "\n";
 
-    assert(kNumTraits == 16);
+    assert(kNumTraits == 20);
     assert(kNumInterfaces == 15);
-    assert(kNumAttributes == 14);
+    assert(kNumAttributes == 16);
     assert(kNumDialects == 10);
 }
 

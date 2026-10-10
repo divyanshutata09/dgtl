@@ -60,4 +60,4 @@ public:
     }
 };
 
-} // namespace dgtl::isa::ptx::cuda
+} // namespace dgtl::isa::ptx

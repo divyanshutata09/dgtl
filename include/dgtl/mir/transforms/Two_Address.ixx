@@ -43,7 +43,10 @@ public:
      * @brief Normalizes 3-address instructions into 2-address form for destructive targets (e.g. x86-64).
      * Eliminates redundant copies via commutation where possible, and inserts tied-operand moves when necessary.
      */
-    static bool run(MachineFunction& function, const core::TargetMachine& target) {
+    static bool run(MachineFunction& function,
+                    const core::TargetMachine& target,
+                    bool* success = nullptr) {
+        if (success != nullptr) *success = true;
         const auto arch = target.get_arch();
 
         // 3-address architectures (AArch64, ARM32, RISC-V, CUDA, ROCm, FPGA, WASM)
@@ -113,17 +116,28 @@ public:
                 }
 
                 // Insert a copy: dest = Move use1 before the instruction
+                const auto destination = def_op.reg;
+                const auto source = use1_op.reg;
                 MachineInstruction& copy_inst = function.create_instruction();
                 copy_inst.form = MachineForm::Move;
                 copy_inst.semantic_kind = MachineSemanticKind::Move;
                 copy_inst.opcode = GM_COPY;
-                copy_inst.add_operand(MachineOperand::def(def_op.reg));
-                copy_inst.add_operand(MachineOperand::use(inst->operands[1].reg));
+                copy_inst.add_operand(MachineOperand::def(destination));
+                copy_inst.add_operand(MachineOperand::use(source));
 
-                function.insert_instruction_before(block_id, inst_id, copy_inst.id);
+                if (!function.insert_instruction_before(block_id, inst_id, copy_inst.id)) {
+                    if (success != nullptr) *success = false;
+                    return modified;
+                }
 
                 // Tie use1 to dest register
-                inst->operands[1] = MachineOperand::use(def_op.reg);
+                inst = function.instruction(inst_id);
+                if (inst == nullptr || inst->operands.size() < 2u ||
+                    inst->operands[0].kind != MachineOperandKind::Register) {
+                    if (success != nullptr) *success = false;
+                    return modified;
+                }
+                inst->operands[1] = MachineOperand::use(destination);
                 modified = true;
             }
         }
@@ -133,6 +147,10 @@ public:
 
 private:
     [[nodiscard]] static bool is_two_address_candidate(const MachineInstruction& inst) noexcept {
+        if (inst.semantic_kind == MachineSemanticKind::IntegerDiv ||
+            inst.semantic_kind == MachineSemanticKind::IntegerMod) {
+            return false;
+        }
         switch (inst.form) {
             case MachineForm::IntegerBinary32:
             case MachineForm::IntegerBinary64:

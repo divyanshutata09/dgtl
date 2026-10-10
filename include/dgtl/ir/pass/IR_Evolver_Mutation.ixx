@@ -552,7 +552,7 @@ MutationResult IREvolver::apply_specialization(
     for (const auto& [hotness, idx] : scored) {
         if (attempted >= limit) break;
 
-        auto& nd = stream.get_node_ref(idx);
+        auto nd = stream.get_node(idx);
         MutationType mt = MutationType::NO_MUTATION;
         const auto op = nd.opcode;
 
@@ -573,6 +573,7 @@ MutationResult IREvolver::apply_specialization(
 
         const auto mr = apply_mutation(stream, &nd, mt);
         if (mr.succeeded) {
+            stream.set_node(idx, nd);
             ++result.nodes_affected;
             cumulative_speedup += mr.predicted_speedup;
         }

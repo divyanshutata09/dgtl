@@ -208,6 +208,23 @@ public:
             if (!words.empty()) {
                 result.stream.set_call_abi_layout_words(out_idx, words);
             }
+            const auto res_ids = input.get_result_ids(in_idx);
+            if (!res_ids.empty()) {
+                result.stream.set_result_ids(out_idx, res_ids);
+                for (uint32_t rid : res_ids) {
+                    if (rid != ir::INVALID_SLOT && rid != 0u) {
+                        result.stream.set_result_type(rid, input.get_result_type_code(rid));
+                    }
+                }
+            }
+            const auto op_overflow = input.get_operand_overflow(in_idx);
+            if (!op_overflow.empty()) {
+                result.stream.set_operand_overflow(out_idx, op_overflow);
+            }
+            const auto effects = input.get_node_effects(in_idx);
+            if (effects != 0) {
+                result.stream.set_node_effects(out_idx, effects);
+            }
         };
 
         for (size_t i = 0; i < input.size(); ++i) {

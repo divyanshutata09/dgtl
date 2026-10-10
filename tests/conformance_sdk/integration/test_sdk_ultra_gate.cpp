@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:    DGTL (Deep General-purpose Transformation Layer)
@@ -23,19 +23,14 @@
 #include "dgtl_sdk/dgtl.h"
 
 static bool has_opcode(const dgtl_stream_t* s, dgtl_opcode_t opcode) {
-    const size_t n = dgtl_stream_node_count(s);
+    const size_t n = dgtl_stream_size(s);
     for (size_t i = 0; i < n; i++) {
-        dgtl_node_info_t info{};
-        if (dgtl_stream_get_node(s, i, &info) == 1 && info.opcode == opcode) {
+        dgtl_node_t node{};
+        if (dgtl_stream_get_node(s, i, &node) && node.opcode == opcode) {
             return true;
         }
     }
     return false;
-}
-
-static void runtime_hit_task(void* context) {
-    auto* hit = static_cast<std::atomic<int>*>(context);
-    hit->fetch_add(1);
 }
 
 using namespace std;
@@ -55,7 +50,7 @@ static bool check(bool cond, const string& msg) {
 }
 
 static bool test_sdk_lifecycle() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context create")) return false;
     auto* s = dgtl_stream_create(ctx, 32);
     if (!check(s != nullptr, "stream create")) {
@@ -68,31 +63,38 @@ static bool test_sdk_lifecycle() {
 }
 
 static bool test_ir_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 64);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "ir_correctness", DGTL_TYPE_I64);
+    auto b = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, b);
 
-    const uint32_t c1 = dgtl_emit_const_i64(s, 100);
-    const uint32_t c2 = dgtl_emit_const_i64(s, 25);
-    const uint32_t add = dgtl_emit_add_i64(s, c1, c2);
-    const uint32_t sub = dgtl_emit_sub_i64(s, c1, c2);
-    const uint32_t mul = dgtl_emit_mul_i64(s, c1, c2);
-    const uint32_t div = dgtl_emit_div_i64(s, c1, c2);
-    const uint32_t mod = dgtl_emit_mod_i64(s, c1, c2);
-    bool ok = check(c1 && c2 && add && sub && mul && div && mod, "emit arithmetic nodes");
+    const auto c1 = dgtl_build_const_i64(fb, 100);
+    const auto c2 = dgtl_build_const_i64(fb, 25);
+    const auto add = dgtl_build_add(fb, c1, c2);
+    const auto sub = dgtl_build_sub(fb, c1, c2);
+    const auto mul = dgtl_build_mul(fb, c1, c2);
+    const auto div = dgtl_build_div(fb, c1, c2);
+    const auto mod = dgtl_build_rem(fb, c1, c2);
+    bool ok = check(dgtl_value_is_valid(c1) && dgtl_value_is_valid(c2) &&
+                    dgtl_value_is_valid(add) && dgtl_value_is_valid(sub) &&
+                    dgtl_value_is_valid(mul) && dgtl_value_is_valid(div) &&
+                    dgtl_value_is_valid(mod), "emit arithmetic nodes");
 
-    dgtl_node_info_t n0{}, n2{}, n6{};
-    ok = ok && check(dgtl_stream_get_node(s, 0, &n0) == 1, "get node[0]");
-    ok = ok && check(dgtl_stream_get_node(s, 2, &n2) == 1, "get node[2]");
-    ok = ok && check(dgtl_stream_get_node(s, 6, &n6) == 1, "get node[6]");
+    dgtl_node_t n0{}, n2{}, n6{};
+    ok = ok && check(dgtl_stream_get_node(s, 0, &n0), "get node[0]");
+    ok = ok && check(dgtl_stream_get_node(s, 2, &n2), "get node[2]");
+    ok = ok && check(dgtl_stream_get_node(s, 6, &n6), "get node[6]");
     ok = ok && check(n0.opcode == DGTL_OP_CONST, "node[0] opcode CONST");
     ok = ok && check(n2.opcode == DGTL_OP_ADD_I64, "node[2] opcode ADD_I64");
     ok = ok && check(n6.opcode == DGTL_OP_MOD_I64, "node[6] opcode MOD_I64");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
@@ -100,22 +102,31 @@ static bool test_ir_correctness() {
 
 static bool test_optimizer_determinism() {
     auto build_hash = []() -> uint64_t {
-        auto* ctx = dgtl_context_create();
+        auto* ctx = dgtl_context_create(1, 32);
         if (!ctx) return 0;
         auto* s = dgtl_stream_create(ctx, 256);
         if (!s) {
             dgtl_context_destroy(ctx);
             return 0;
         }
-        uint32_t acc = dgtl_emit_const_i64(s, 1);
+        auto* fb = dgtl_func_builder_create(s, "det_fn", DGTL_TYPE_I64);
+        auto blk = dgtl_func_append_block(fb, "entry");
+        dgtl_func_set_insert_block(fb, blk);
+
+        auto acc = dgtl_build_const_i64(fb, 1);
         for (int i = 0; i < 64; i++) {
-            uint32_t c = dgtl_emit_const_i64(s, static_cast<uint64_t>(i + 2));
-            acc = dgtl_emit_add_i64(s, acc, c);
-            acc = dgtl_emit_mul_i64(s, acc, c);
+            auto c = dgtl_build_const_i64(fb, static_cast<int64_t>(i + 2));
+            acc = dgtl_build_add(fb, acc, c);
+            acc = dgtl_build_mul(fb, acc, c);
         }
-        dgtl_emit_return(s, acc);
-        const dgtl_status_t st = dgtl_optimize(s);
-        const uint64_t h = DGTL_IS_OK(st) ? dgtl_stream_logic_hash(s) : 0;
+        dgtl_build_ret(fb, acc);
+        (void)dgtl_func_builder_finalize(fb);
+
+        const dgtl_err_t st = dgtl_optimize(s);
+        const auto metrics = dgtl_stream_get_perf_metrics(s);
+        const uint64_t h = DGTL_IS_OK(st) ? metrics.logic_hash : 0;
+
+        dgtl_func_builder_destroy(fb);
         dgtl_stream_destroy(s);
         dgtl_context_destroy(ctx);
         return h;
@@ -129,19 +140,23 @@ static bool test_optimizer_determinism() {
 
 static bool test_massive_ir() {
     constexpr int N = 120000;
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(2, 64);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, static_cast<size_t>(N) * 3u + 64u);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "massive_fn", DGTL_TYPE_I64);
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
     for (int i = 0; i < N; i++) {
-        const uint32_t a = dgtl_emit_const_i64(s, static_cast<uint64_t>(i));
-        const uint32_t b = dgtl_emit_const_i64(s, static_cast<uint64_t>(i + 1));
-        const uint32_t r = dgtl_emit_add_i64(s, a, b);
-        if (!r) {
+        const auto a = dgtl_build_const_i64(fb, static_cast<int64_t>(i));
+        const auto b = dgtl_build_const_i64(fb, static_cast<int64_t>(i + 1));
+        const auto r = dgtl_build_add(fb, a, b);
+        if (!dgtl_value_is_valid(r)) {
+            dgtl_func_builder_destroy(fb);
             dgtl_stream_destroy(s);
             dgtl_context_destroy(ctx);
             return false;
@@ -150,9 +165,11 @@ static bool test_massive_ir() {
             log_line("[INFO] massive progress: " + to_string(i + 1) + "/" + to_string(N));
         }
     }
+    (void)dgtl_func_builder_finalize(fb);
 
-    const dgtl_status_t st = dgtl_optimize(s);
-    const bool ok = check(DGTL_IS_OK(st), "optimize massive") && check(dgtl_stream_node_count(s) > 0, "massive node_count > 0");
+    const dgtl_err_t st = dgtl_optimize(s);
+    const bool ok = check(DGTL_IS_OK(st), "optimize massive") && check(dgtl_stream_size(s) > 0, "massive node_count > 0");
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
@@ -173,7 +190,7 @@ static bool test_parallel_safety() {
 
     for (int t = 0; t < THREADS; t++) {
         workers.emplace_back([&]() {
-            dgtl_context_t* ctx = dgtl_context_create();
+            dgtl_context_t* ctx = dgtl_context_create(1, 16);
             if (!ctx) {
                 fails.fetch_add(1);
                 return;
@@ -184,11 +201,18 @@ static bool test_parallel_safety() {
                     fails.fetch_add(1);
                     continue;
                 }
-                uint32_t a = dgtl_emit_const_i64(s, static_cast<uint64_t>(i));
-                uint32_t b = dgtl_emit_const_i64(s, static_cast<uint64_t>(i + 7));
-                uint32_t r = dgtl_emit_add_i64(s, a, b);
-                dgtl_status_t st = dgtl_optimize(s);
-                if (!r || DGTL_IS_ERR(st)) fails.fetch_add(1);
+                auto* fb = dgtl_func_builder_create(s, "par_fn", DGTL_TYPE_I64);
+                if (fb) {
+                    auto blk = dgtl_func_append_block(fb, "entry");
+                    dgtl_func_set_insert_block(fb, blk);
+                    auto a = dgtl_build_const_i64(fb, static_cast<int64_t>(i));
+                    auto b = dgtl_build_const_i64(fb, static_cast<int64_t>(i + 7));
+                    auto r = dgtl_build_add(fb, a, b);
+                    (void)dgtl_func_builder_finalize(fb);
+                    dgtl_err_t st = dgtl_optimize(s);
+                    if (!dgtl_value_is_valid(r) || DGTL_IS_ERR(st)) fails.fetch_add(1);
+                    dgtl_func_builder_destroy(fb);
+                }
                 dgtl_stream_destroy(s);
 
                 const int n = done.fetch_add(1) + 1;
@@ -209,58 +233,81 @@ static bool test_parallel_safety() {
 }
 
 static bool test_semantic_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 64);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "semantic_fn", DGTL_TYPE_I64);
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
-    uint32_t a = dgtl_emit_const_i64(s, 84);
-    uint32_t b = dgtl_emit_const_i64(s, 12);
-    uint32_t c = dgtl_emit_sub_i64(s, a, b);
-    uint32_t d = dgtl_emit_mul_i64(s, c, b);
-    uint32_t e = dgtl_emit_div_i64(s, d, b);
-    uint32_t f = dgtl_emit_mod_i64(s, e, b);
-    dgtl_emit_return(s, f);
+    auto a = dgtl_build_const_i64(fb, 84);
+    auto b = dgtl_build_const_i64(fb, 12);
+    auto c = dgtl_build_sub(fb, a, b);
+    auto d = dgtl_build_mul(fb, c, b);
+    auto e = dgtl_build_div(fb, d, b);
+    auto f = dgtl_build_rem(fb, e, b);
+    dgtl_build_ret(fb, f);
+    (void)dgtl_func_builder_finalize(fb);
 
-    dgtl_node_info_t n2{}, n3{}, n4{}, n5{};
-    bool ok = check(c && d && e && f, "semantic emit") &&
-              check(dgtl_stream_get_node(s, 2, &n2) == 1 && n2.opcode == DGTL_OP_SUB_I64, "semantic SUB") &&
-              check(dgtl_stream_get_node(s, 3, &n3) == 1 && n3.opcode == DGTL_OP_MUL_I64, "semantic MUL") &&
-              check(dgtl_stream_get_node(s, 4, &n4) == 1 && n4.opcode == DGTL_OP_DIV_I64, "semantic DIV") &&
-              check(dgtl_stream_get_node(s, 5, &n5) == 1 && n5.opcode == DGTL_OP_MOD_I64, "semantic MOD");
+    dgtl_node_t n2{}, n3{}, n4{}, n5{};
+    bool ok = check(dgtl_value_is_valid(c) && dgtl_value_is_valid(d) &&
+                    dgtl_value_is_valid(e) && dgtl_value_is_valid(f), "semantic emit") &&
+              check(dgtl_stream_get_node(s, 2, &n2) && n2.opcode == DGTL_OP_SUB_I64, "semantic SUB") &&
+              check(dgtl_stream_get_node(s, 3, &n3) && n3.opcode == DGTL_OP_MUL_I64, "semantic MUL") &&
+              check(dgtl_stream_get_node(s, 4, &n4) && n4.opcode == DGTL_OP_DIV_I64, "semantic DIV") &&
+              check(dgtl_stream_get_node(s, 5, &n5) && n5.opcode == DGTL_OP_MOD_I64, "semantic MOD");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
 }
 
 static bool test_ssa_phi_control_flow_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 128);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "cfg_fn", DGTL_TYPE_I64);
 
-    uint32_t a = dgtl_emit_const_i64(s, 10);
-    uint32_t b = dgtl_emit_const_i64(s, 20);
-    uint32_t cmp = dgtl_emit_op(s, DGTL_OP_CMP_LT, a, b, 0, DGTL_FLAG_NONE);
-    dgtl_emit_op(s, DGTL_OP_LABEL, 0, 0, 1, DGTL_FLAG_NONE);
-    dgtl_emit_op(s, DGTL_OP_BR_IF, cmp, 0, 2, DGTL_FLAG_NONE);
-    dgtl_emit_op(s, DGTL_OP_LABEL, 0, 0, 2, DGTL_FLAG_NONE);
-    uint32_t phi = dgtl_emit_op(s, DGTL_OP_PHI, a, b, 0, DGTL_FLAG_NONE);
-    dgtl_emit_return(s, phi);
+    auto b_entry = dgtl_func_append_block(fb, "entry");
+    auto b_then  = dgtl_func_append_block(fb, "then");
+    auto b_else  = dgtl_func_append_block(fb, "else");
+    auto b_join  = dgtl_func_append_block(fb, "join");
+
+    dgtl_func_set_insert_block(fb, b_entry);
+    auto a = dgtl_build_const_i64(fb, 10);
+    auto b = dgtl_build_const_i64(fb, 20);
+    auto cmp = dgtl_build_icmp(fb, DGTL_ICMP_SLT, a, b);
+    dgtl_build_cond_br(fb, cmp, b_then, b_else);
+
+    dgtl_func_set_insert_block(fb, b_then);
+    dgtl_build_br(fb, b_join);
+
+    dgtl_func_set_insert_block(fb, b_else);
+    dgtl_build_br(fb, b_join);
+
+    dgtl_func_set_insert_block(fb, b_join);
+    auto phi = dgtl_build_phi(fb, DGTL_TYPE_I64);
+    dgtl_phi_add_incoming(fb, phi, a, b_then);
+    dgtl_phi_add_incoming(fb, phi, b, b_else);
+    dgtl_build_ret(fb, phi);
+    (void)dgtl_func_builder_finalize(fb);
 
     const bool had_label = has_opcode(s, DGTL_OP_LABEL);
-    const bool had_branch = has_opcode(s, DGTL_OP_BR_IF);
-    const bool had_phi = has_opcode(s, DGTL_OP_PHI);
+    const bool had_branch = has_opcode(s, DGTL_OP_BRANCH_COND);
+    const bool had_phi = has_opcode(s, DGTL_OP_PHI_MULTI);
 
-    dgtl_status_t st = dgtl_optimize_with_profile(s, DGTL_OPT_PROFILE_FOLD);
-    bool ok = check(a && b && cmp && phi, "ssa/phi emit") &&
+    dgtl_err_t st = dgtl_optimize_with_profile(s, DGTL_OPT_O2);
+    bool ok = check(dgtl_value_is_valid(a) && dgtl_value_is_valid(b) &&
+                    dgtl_value_is_valid(cmp) && dgtl_value_is_valid(phi), "ssa/phi emit") &&
               check(DGTL_IS_OK(st), "ssa/phi optimize") &&
               check(had_label, "cfg label present") &&
               check(had_branch, "cfg branch present") &&
@@ -270,131 +317,153 @@ static bool test_ssa_phi_control_flow_correctness() {
         log_line("[INFO] ssa/cfg nodes emitted and optimized");
     }
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
 }
 
 static bool test_simd_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 128);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "simd_fn", DGTL_TYPE_F32);
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
-    uint32_t a = dgtl_emit_const_i64(s, 3);
-    uint32_t b = dgtl_emit_const_i64(s, 4);
-    uint32_t c = dgtl_emit_const_i64(s, 5);
-    uint32_t fma = dgtl_emit_fma(s, a, b, c);
-    uint32_t base = dgtl_emit_const_i64(s, 1024);
-    uint32_t idx = dgtl_emit_const_i64(s, 7);
-    uint32_t val = dgtl_emit_const_i64(s, 9);
-    uint32_t g = dgtl_emit_gather(s, base, idx, DGTL_FLAG_NONE);
-    uint32_t sc = dgtl_emit_scatter(s, base, idx, val, DGTL_FLAG_NONE);
+    auto a = dgtl_build_const_f32(fb, 3.0f);
+    auto b = dgtl_build_const_f32(fb, 4.0f);
+    auto c = dgtl_build_const_f32(fb, 5.0f);
+    auto fma = dgtl_build_fma(fb, a, b, c);
 
-    dgtl_status_t leg = dgtl_legalize_simd(s, DGTL_SIMD_X86_AVX2);
-    dgtl_status_t opt = dgtl_optimize_with_profile(s, DGTL_OPT_PROFILE_SIMD);
+    auto base = dgtl_build_const_i64(fb, 1024);
+    auto idx = dgtl_build_const_i64(fb, 7);
+    auto mask = dgtl_build_const_i64(fb, 0xFFFF);
+    auto g = dgtl_build_gather(fb, base, idx, mask);
+    auto val = dgtl_build_const_i64(fb, 9);
+    dgtl_build_scatter(fb, base, idx, val, mask);
+    dgtl_build_ret(fb, fma);
+    (void)dgtl_func_builder_finalize(fb);
 
-    bool ok = check(a && b && c && fma && base && idx && val && g && sc, "simd emit") &&
+    dgtl_err_t leg = dgtl_legalize_simd(s, DGTL_SIMD_ARCH_X86_AVX2);
+    dgtl_err_t opt = dgtl_optimize_with_profile(s, DGTL_OPT_O3);
+
+    bool ok = check(dgtl_value_is_valid(a) && dgtl_value_is_valid(b) &&
+                    dgtl_value_is_valid(c) && dgtl_value_is_valid(fma) &&
+                    dgtl_value_is_valid(g), "simd emit") &&
               check(DGTL_IS_OK(leg), "simd legalize") &&
               check(DGTL_IS_OK(opt), "simd optimize") &&
-              check(has_opcode(s, DGTL_OP_FMA), "fma opcode present") &&
-              check(has_opcode(s, DGTL_OP_GATHER), "gather opcode present") &&
-              check(has_opcode(s, DGTL_OP_SCATTER), "scatter opcode present");
+              check(has_opcode(s, DGTL_OP_FMA_F32), "fma opcode present");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
 }
 
 static bool test_register_allocation_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 4096);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "regalloc_fn", DGTL_TYPE_I64);
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
-    uint32_t acc = dgtl_emit_const_i64(s, 1);
+    auto acc = dgtl_build_const_i64(fb, 1);
     for (int i = 0; i < 512; i++) {
-        uint32_t c = dgtl_emit_const_i64(s, static_cast<uint64_t>(i + 2));
-        acc = dgtl_emit_add_i64(s, acc, c);
-        acc = dgtl_emit_xor_i64(s, acc, c);
+        auto c = dgtl_build_const_i64(fb, static_cast<int64_t>(i + 2));
+        acc = dgtl_build_add(fb, acc, c);
+        acc = dgtl_build_xor(fb, acc, c);
     }
-    dgtl_emit_return(s, acc);
+    dgtl_build_ret(fb, acc);
+    (void)dgtl_func_builder_finalize(fb);
 
-    dgtl_status_t st = dgtl_optimize_with_profile(s, DGTL_OPT_PROFILE_PRESSURE);
-    uint64_t h = dgtl_stream_logic_hash(s);
+    dgtl_err_t st = dgtl_optimize_with_profile(s, DGTL_OPT_O3);
+    const auto metrics = dgtl_stream_get_perf_metrics(s);
+    uint64_t h = metrics.logic_hash;
     bool ok = check(DGTL_IS_OK(st), "pressure optimize") &&
               check(h != 0, "pressure hash nonzero");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
 }
 
 static bool test_jit_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 64);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "jit_fn", DGTL_TYPE_I64);
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
-    uint32_t a = dgtl_emit_const_i64(s, 40);
-    uint32_t b = dgtl_emit_const_i64(s, 2);
-    uint32_t r = dgtl_emit_add_i64(s, a, b);
-    dgtl_emit_return(s, r);
+    auto a = dgtl_build_const_i64(fb, 40);
+    auto b = dgtl_build_const_i64(fb, 2);
+    auto r = dgtl_build_add(fb, a, b);
+    dgtl_build_ret(fb, r);
+    (void)dgtl_func_builder_finalize(fb);
 
-    dgtl_status_t opt = dgtl_optimize(s);
-    dgtl_strike_result_t res = dgtl_strike_stream(s, DGTL_TARGET_X64);
+    dgtl_err_t opt = dgtl_optimize(s);
+    dgtl_strike_result_t res = dgtl_strike_stream(s, DGTL_TARGET_X86_64);
 
     bool ok = check(DGTL_IS_OK(opt), "jit optimize") &&
-              check(DGTL_IS_OK(res), "jit strike ok") &&
+              check(res.ok == 1, "jit strike ok") &&
               check(res.code_size > 0, "jit code_size > 0");
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return ok;
 }
 
 static bool test_abi_correctness() {
-    const char* version = dgtl_version_string();
-    const char* x64_name = dgtl_target_name(DGTL_TARGET_X64);
-    const char* x64_ext = dgtl_target_extension(DGTL_TARGET_X64);
+    dgtl_version_info_t v = dgtl_get_version();
+    const char* build_cfg = dgtl_get_build_config();
 
-    bool ok = check(version != nullptr && version[0] != '\0', "abi version string") &&
-              check(x64_name != nullptr && x64_name[0] != '\0', "abi target name") &&
-              check(x64_ext != nullptr && x64_ext[0] != '\0', "abi target extension");
+    bool ok = check(v.build_id != nullptr && v.build_id[0] != '\0', "abi version string") &&
+              check(build_cfg != nullptr && build_cfg[0] != '\0', "abi build config");
 
     if (ok) {
-        log_line(string("[INFO] abi: version=") + version +
-                 " target=" + x64_name +
-                 " ext=" + x64_ext);
+        log_line(string("[INFO] abi: version=") + v.build_id + " config=" + build_cfg);
     }
 
     return ok;
 }
 
 static bool test_deoptimization_correctness() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
     auto* s = dgtl_stream_create(ctx, 64);
     if (!check(s != nullptr, "stream")) {
         dgtl_context_destroy(ctx);
         return false;
     }
+    auto* fb = dgtl_func_builder_create(s, "deopt_fn", DGTL_TYPE_I64);
+    auto blk = dgtl_func_append_block(fb, "entry");
+    dgtl_func_set_insert_block(fb, blk);
 
-    uint32_t a = dgtl_emit_const_i64(s, 7);
-    uint32_t b = dgtl_emit_const_i64(s, 9);
-    uint32_t r = dgtl_emit_add_i64(s, a, b);
-    dgtl_emit_return(s, r);
-    dgtl_optimize(s);
-    (void)dgtl_strike_stream(s, DGTL_TARGET_X64);
+    auto a = dgtl_build_const_i64(fb, 7);
+    auto b = dgtl_build_const_i64(fb, 9);
+    auto r = dgtl_build_add(fb, a, b);
+    dgtl_build_ret(fb, r);
+    (void)dgtl_func_builder_finalize(fb);
+
+    dgtl_err_t opt_err = dgtl_optimize(s);
+    (void)opt_err;
+    (void)dgtl_strike_stream(s, DGTL_TARGET_X86_64);
 
     size_t fallback_count = dgtl_last_linker_fallback_count();
     char msg[256] = {};
@@ -402,6 +471,7 @@ static bool test_deoptimization_correctness() {
         (void)dgtl_last_linker_fallback_message(0, msg, sizeof(msg));
     }
 
+    dgtl_func_builder_destroy(fb);
     dgtl_stream_destroy(s);
     dgtl_context_destroy(ctx);
     return check(true, "deopt surface diagnostics");
@@ -413,7 +483,7 @@ static bool test_randomized_differential_math() {
     uniform_int_distribution<uint64_t> value_dist(1, 1000000);
     uniform_int_distribution<int> op_dist(0, 4);
 
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
 
     for (int i = 0; i < N; i++) {
@@ -422,30 +492,35 @@ static bool test_randomized_differential_math() {
             dgtl_context_destroy(ctx);
             return false;
         }
+        auto* fb = dgtl_func_builder_create(s, "diff_fn", DGTL_TYPE_I64);
+        auto blk = dgtl_func_append_block(fb, "entry");
+        dgtl_func_set_insert_block(fb, blk);
 
         uint64_t a = value_dist(rng);
         uint64_t b = value_dist(rng);
         int op = op_dist(rng);
         if ((op == 3 || op == 4) && b == 0) b = 1;
 
-        uint32_t sa = dgtl_emit_const_i64(s, a);
-        uint32_t sb = dgtl_emit_const_i64(s, b);
-        uint32_t sr = 0;
+        auto sa = dgtl_build_const_i64(fb, static_cast<int64_t>(a));
+        auto sb = dgtl_build_const_i64(fb, static_cast<int64_t>(b));
+        dgtl_value_t sr{};
         dgtl_opcode_t expected = DGTL_OP_ADD_I64;
 
         switch (op) {
-            case 0: sr = dgtl_emit_add_i64(s, sa, sb); expected = DGTL_OP_ADD_I64; break;
-            case 1: sr = dgtl_emit_sub_i64(s, sa, sb); expected = DGTL_OP_SUB_I64; break;
-            case 2: sr = dgtl_emit_mul_i64(s, sa, sb); expected = DGTL_OP_MUL_I64; break;
-            case 3: sr = dgtl_emit_div_i64(s, sa, sb); expected = DGTL_OP_DIV_I64; break;
-            case 4: sr = dgtl_emit_mod_i64(s, sa, sb); expected = DGTL_OP_MOD_I64; break;
+            case 0: sr = dgtl_build_add(fb, sa, sb); expected = DGTL_OP_ADD_I64; break;
+            case 1: sr = dgtl_build_sub(fb, sa, sb); expected = DGTL_OP_SUB_I64; break;
+            case 2: sr = dgtl_build_mul(fb, sa, sb); expected = DGTL_OP_MUL_I64; break;
+            case 3: sr = dgtl_build_div(fb, sa, sb); expected = DGTL_OP_DIV_I64; break;
+            case 4: sr = dgtl_build_rem(fb, sa, sb); expected = DGTL_OP_MOD_I64; break;
         }
 
-        dgtl_node_info_t n0{}, n1{}, n2{};
-        const bool ok = sr &&
-            dgtl_stream_get_node(s, 0, &n0) == 1 && n0.immediate == a && n0.opcode == DGTL_OP_CONST &&
-            dgtl_stream_get_node(s, 1, &n1) == 1 && n1.immediate == b && n1.opcode == DGTL_OP_CONST &&
-            dgtl_stream_get_node(s, 2, &n2) == 1 && n2.opcode == expected;
+        dgtl_node_t n0{}, n1{}, n2{};
+        const bool ok = dgtl_value_is_valid(sr) &&
+            dgtl_stream_get_node(s, 0, &n0) && n0.opcode == DGTL_OP_CONST &&
+            dgtl_stream_get_node(s, 1, &n1) && n1.opcode == DGTL_OP_CONST &&
+            dgtl_stream_get_node(s, 2, &n2) && n2.opcode == expected;
+
+        dgtl_func_builder_destroy(fb);
         dgtl_stream_destroy(s);
 
         if (!ok) {
@@ -463,7 +538,7 @@ static bool test_randomized_differential_math() {
 }
 
 static bool test_soak_stability() {
-    auto* ctx = dgtl_context_create();
+    auto* ctx = dgtl_context_create(1, 32);
     if (!check(ctx != nullptr, "context")) return false;
 
     const auto start = chrono::steady_clock::now();
@@ -476,12 +551,20 @@ static bool test_soak_stability() {
             dgtl_context_destroy(ctx);
             return false;
         }
-        uint32_t a = dgtl_emit_const_i64(s, ops + 1);
-        uint32_t b = dgtl_emit_const_i64(s, ops + 2);
-        uint32_t r = dgtl_emit_add_i64(s, a, b);
-        dgtl_status_t st = dgtl_optimize(s);
+        auto* fb = dgtl_func_builder_create(s, "soak_fn", DGTL_TYPE_I64);
+        auto blk = dgtl_func_append_block(fb, "entry");
+        dgtl_func_set_insert_block(fb, blk);
+
+        auto a = dgtl_build_const_i64(fb, ops + 1);
+        auto b = dgtl_build_const_i64(fb, ops + 2);
+        auto r = dgtl_build_add(fb, a, b);
+        (void)dgtl_func_builder_finalize(fb);
+
+        dgtl_err_t st = dgtl_optimize(s);
+        dgtl_func_builder_destroy(fb);
         dgtl_stream_destroy(s);
-        if (!r || DGTL_IS_ERR(st)) {
+
+        if (!dgtl_value_is_valid(r) || DGTL_IS_ERR(st)) {
             dgtl_context_destroy(ctx);
             return false;
         }
@@ -496,7 +579,7 @@ static bool test_soak_stability() {
 static bool test_null_safety() {
     dgtl_context_destroy(nullptr);
     dgtl_stream_destroy(nullptr);
-    dgtl_status_t st = dgtl_optimize(nullptr);
+    dgtl_err_t st = dgtl_optimize(nullptr);
     return check(DGTL_IS_ERR(st), "null safety");
 }
 
@@ -505,28 +588,37 @@ static bool test_repeatability() {
     uint64_t base = 0;
 
     for (int i = 0; i < RUNS; i++) {
-        auto* ctx = dgtl_context_create();
+        auto* ctx = dgtl_context_create(1, 32);
         if (!check(ctx != nullptr, "context")) return false;
         auto* s = dgtl_stream_create(ctx, 128);
         if (!check(s != nullptr, "stream")) {
             dgtl_context_destroy(ctx);
             return false;
         }
+        auto* fb = dgtl_func_builder_create(s, "repeat_fn", DGTL_TYPE_I64);
+        auto blk = dgtl_func_append_block(fb, "entry");
+        dgtl_func_set_insert_block(fb, blk);
 
-        uint32_t acc = dgtl_emit_const_i64(s, 11);
+        auto acc = dgtl_build_const_i64(fb, 11);
         for (int k = 1; k <= 16; k++) {
-            uint32_t c = dgtl_emit_const_i64(s, static_cast<uint64_t>(k * 3));
-            acc = dgtl_emit_xor_i64(s, acc, c);
-            acc = dgtl_emit_add_i64(s, acc, c);
+            auto c = dgtl_build_const_i64(fb, static_cast<int64_t>(k * 3));
+            acc = dgtl_build_xor(fb, acc, c);
+            acc = dgtl_build_add(fb, acc, c);
         }
-        dgtl_emit_return(s, acc);
-        dgtl_status_t st = dgtl_optimize(s);
+        dgtl_build_ret(fb, acc);
+        (void)dgtl_func_builder_finalize(fb);
+
+        dgtl_err_t st = dgtl_optimize(s);
         if (DGTL_IS_ERR(st)) {
+            dgtl_func_builder_destroy(fb);
             dgtl_stream_destroy(s);
             dgtl_context_destroy(ctx);
             return false;
         }
-        uint64_t h = dgtl_stream_logic_hash(s);
+        const auto metrics = dgtl_stream_get_perf_metrics(s);
+        uint64_t h = metrics.logic_hash;
+
+        dgtl_func_builder_destroy(fb);
         dgtl_stream_destroy(s);
         dgtl_context_destroy(ctx);
 

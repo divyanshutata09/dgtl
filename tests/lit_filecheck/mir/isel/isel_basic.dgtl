@@ -1,0 +1,13 @@
+; RUN: %dgtl-llc --target=x86_64 --filetype=obj --inspect --output=%t.o %s | FileCheck %s
+; FileCheck test for Machine Instruction Selection and PE/COFF Object Emission
+; Verifies x86_64 machine lowering, stack unwinding descriptors, and W^X security verification
+
+op 0x0D 0x00000001 0x0000002A 0x00000000 0x00000000 0x0000
+op 0x65 0x00000000 0x00000001 0x00000000 0x00000000 0x0000
+
+; CHECK: Section & Footprint Analysis
+; CHECK: .text (executable machine code)
+; CHECK: .xdata (Win64 SEH UNWIND_INFO
+; CHECK: .pdata (Win64 RUNTIME_FUNCTION
+; CHECK: W^X verified
+; CHECK: Zero-cost table-driven exception handling active

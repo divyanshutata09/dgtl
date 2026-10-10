@@ -32,6 +32,7 @@ export namespace dgtl::linker {
 
 enum class OutputFormat : uint8_t {
     ELFObject,
+    ELFExecutable,
     StaticArchive,
     COFFObject,
     COFFArchive,
@@ -52,6 +53,10 @@ public:
             case OutputFormat::ELFObject: {
                 dgtl::object::writers::ELFObjectWriter writer;
                 return writer.write_machine_function(fn, out_bytes, entry_symbol);
+            }
+            case OutputFormat::ELFExecutable: {
+                elf::ELFLinker l;
+                return l.link_executable(fn, out_bytes, entry_symbol);
             }
             case OutputFormat::StaticArchive: {
                 elf::ELFLinker l;
@@ -93,6 +98,10 @@ public:
                 dgtl::object::writers::ELFObjectWriter writer;
                 return writer.write(obj, out_bytes);
             }
+            case OutputFormat::ELFExecutable: {
+                elf::ELFLinker l;
+                return l.link_executable(obj, out_bytes);
+            }
             case OutputFormat::StaticArchive: {
                 elf::ELFLinker l;
                 return l.link_static_archive(obj, out_bytes, "module.o");
@@ -129,7 +138,7 @@ public:
 export namespace dgtl::backend::linker {
     using LinkerDriver = dgtl::linker::LinkerDriver;
     using OutputFormat = dgtl::linker::OutputFormat;
-}
+} // namespace dgtl::backend::linker
 
 
 

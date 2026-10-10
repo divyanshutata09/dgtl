@@ -110,12 +110,26 @@ struct MachineFormContract {
     std::map<std::string, MachineFormSpec> forms;
 };
 
+struct OpDefinition {
+    std::string name;
+    std::string opcode;
+    std::uint16_t value = 0;
+    int operands = 0;
+    std::string result;
+    std::set<std::string> traits;
+    std::set<std::string> interfaces;
+    std::set<std::string> attributes;
+    std::string description;
+};
+
 struct CanonicalIRSchema {
     std::set<std::string> canonical_opcodes;
     std::set<std::string> spellings;
     std::unordered_map<std::string, std::string> aliases;
     std::map<std::string, std::uint16_t> values;
+    std::map<std::string, OpDefinition> op_defs;
 };
+
 
 struct TargetSpec {
     std::string arch_name;
@@ -382,7 +396,10 @@ struct RuleMetadata {
 
         if (auto it = attrs.find("semantic"); it != attrs.end()) {
             const auto vals = split_list(it->second);
-            if (vals.size() == 1) form.default_semantic = vals.front();
+            if (vals.size() == 1) {
+                form.default_semantic = vals.front();
+                form.allowed_semantics.insert(vals.front());
+            }
             else diag.error(loc, "semantic= accepts one default semantic; use allowed_semantics for multiple");
         }
 
@@ -447,6 +464,7 @@ struct RuleMetadata {
                 diag.error(loc, "malformed op declaration");
                 continue;
             }
+            const std::string op_name = trim(t.substr(3, colon - 3));
             const std::string attrs_text = t.substr(colon + 1);
             auto attrs = parse_attributes(attrs_text, loc, diag);
             const auto op_it = attrs.find("opcode");
@@ -457,13 +475,46 @@ struct RuleMetadata {
             const std::string opcode = op_it->second;
             out.canonical_opcodes.insert(opcode);
             out.spellings.insert(opcode);
+
+            OpDefinition def;
+            def.name = op_name;
+            def.opcode = opcode;
+
             if (auto value_it = attrs.find("value"); value_it != attrs.end()) {
                 auto value = parse_uint(value_it->second, loc, diag);
                 if (value && *value <= 65535) {
-                    if (!out.values.emplace(opcode, static_cast<std::uint16_t>(*value)).second)
+                    def.value = static_cast<std::uint16_t>(*value);
+                    if (!out.values.emplace(opcode, def.value).second)
                         diag.error(loc, "duplicate opcode value/name '" + opcode + "'");
                 }
             }
+            if (auto op_cnt_it = attrs.find("operands"); op_cnt_it != attrs.end()) {
+                const auto spec = trim(op_cnt_it->second);
+                if (spec == "variadic") {
+                    def.operands = -1;
+                } else {
+                    auto v = parse_uint(spec, loc, diag);
+                    if (v) def.operands = static_cast<int>(*v);
+                }
+            }
+            if (auto res_it = attrs.find("result"); res_it != attrs.end()) {
+                def.result = res_it->second;
+            } else if (auto results_it = attrs.find("results"); results_it != attrs.end()) {
+                def.result = results_it->second;
+            }
+            if (auto tr_it = attrs.find("traits"); tr_it != attrs.end()) {
+                for (const auto& tr : split_list(tr_it->second)) def.traits.insert(tr);
+            }
+            if (auto inf_it = attrs.find("interfaces"); inf_it != attrs.end()) {
+                for (const auto& inf : split_list(inf_it->second)) def.interfaces.insert(inf);
+            }
+            if (auto at_it = attrs.find("attributes"); at_it != attrs.end()) {
+                for (const auto& at : split_list(at_it->second)) def.attributes.insert(at);
+            }
+            if (auto desc_it = attrs.find("description"); desc_it != attrs.end()) {
+                def.description = desc_it->second;
+            }
+            out.op_defs[opcode] = std::move(def);
             continue;
         }
 
@@ -843,6 +894,7 @@ struct RuleMetadata {
     const TargetSpec& target,
     const MachineFormContract& forms,
     const SemanticContractFile& semantics,
+    const CanonicalIRSchema& schema,
     DiagnosticEngine& diag) {
     const auto it = forms.forms.find(mapping.form);
     if (it == forms.forms.end()) {
@@ -876,6 +928,51 @@ struct RuleMetadata {
             "semantic '" + *semantic + "' is not allowed for machine form '" + mapping.form + "'");
         return false;
     }
+
+    const std::string canonical = canonical_opcode(mapping.opcode, schema);
+    if (auto def_it = schema.op_defs.find(canonical); def_it != schema.op_defs.end()) {
+        const auto& op_def = def_it->second;
+        if (op_def.traits.contains("IsTerminator")) {
+            if (mapping.form != "Goto" && mapping.form != "BranchCond" &&
+                mapping.form != "BranchCompare" && mapping.form != "Return" &&
+                mapping.form != "Call" && mapping.form != "ConcurrentSync" &&
+                mapping.form != "Unhandled" && mapping.form != "NoOp") {
+                diag.error(mapping.loc,
+                    "canonical opcode '" + mapping.opcode + "' has IsTerminator trait but mapped to non-terminator form '" + mapping.form + "'");
+                return false;
+            }
+        }
+        if (op_def.traits.contains("IsMemoryRead")) {
+            if (mapping.form != "LoadStack" && mapping.form != "VectorGather512" &&
+                mapping.form != "AtomicOp" && mapping.form != "Call" &&
+                mapping.form != "Move" && mapping.form != "NoOp" && mapping.form != "Unhandled") {
+                diag.error(mapping.loc,
+                    "canonical opcode '" + mapping.opcode + "' has IsMemoryRead trait but mapped to incompatible form '" + mapping.form + "'");
+                return false;
+            }
+        }
+        if (op_def.traits.contains("IsMemoryWrite")) {
+            if (mapping.form != "StoreStack" && mapping.form != "VectorStore512" &&
+                mapping.form != "AtomicOp" && mapping.form != "Call" &&
+                mapping.form != "NoOp" && mapping.form != "Unhandled") {
+                diag.error(mapping.loc,
+                    "canonical opcode '" + mapping.opcode + "' has IsMemoryWrite trait but mapped to incompatible form '" + mapping.form + "'");
+                return false;
+            }
+        }
+        if (op_def.traits.contains("MemoryBarrier")) {
+            if (mapping.form != "HardwareFence" && mapping.form != "ConcurrentSync" &&
+                mapping.form != "AtomicOp" && mapping.form != "LoadStack" &&
+                mapping.form != "StoreStack" && mapping.form != "VectorStore512" &&
+                mapping.form != "VectorGather512" && mapping.form != "Call" &&
+                mapping.form != "NoOp" && mapping.form != "Unhandled") {
+                diag.error(mapping.loc,
+                    "canonical opcode '" + mapping.opcode + "' has MemoryBarrier trait but mapped to non-barrier form '" + mapping.form + "'");
+                return false;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -978,7 +1075,7 @@ struct ParsedTarget {
 
             const auto semantic = resolve_semantic(mapping, forms, semantics);
             if (semantic) mapping.semantic = *semantic;
-            if (!validate_form(mapping, target, forms, semantics, diag)) continue;
+            if (!validate_form(mapping, target, forms, semantics, schema, diag)) continue;
 
             auto existing = canonical_forms.find(canonical);
             if (existing != canonical_forms.end()) {
@@ -1029,9 +1126,18 @@ struct ParsedTarget {
     const auto& deltas = parsed.delta_mappings;
     std::ostringstream out;
 
-    out << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
-        << "/* Target: " << target.arch_name << " — "
-        << deltas.size() << " delta(s) from base */\n"
+    out << "/*\n"
+           " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+           " *\n"
+           " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+           " * Owner:       Divyanshu Tata\n"
+           " * Repository:  github.com/TataG-Systems/DGTL\n"
+           " *\n"
+           " * This software is the proprietary property of TataG Systems.\n"
+           " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+           " */\n"
+           "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
+           "/* Target: " << target.arch_name << " — " << deltas.size() << " delta(s) from base */\n"
         << "module;\n\n"
         << "#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <string_view>\n\n"
         << "export module " << target.generated_module << ";\n\n"
@@ -1143,7 +1249,17 @@ struct ParsedTarget {
     const fs::path& root) {
     const auto& t = parsed.target;
     std::ostringstream out;
-    out << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
+    out << "/*\n"
+           " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+           " *\n"
+           " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+           " * Owner:       Divyanshu Tata\n"
+           " * Repository:  github.com/TataG-Systems/DGTL\n"
+           " *\n"
+           " * This software is the proprietary property of TataG Systems.\n"
+           " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+           " */\n"
+           "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
         << "module;\n\n#include <array>\n#include <cstddef>\n#include <string_view>\n\n"
         << "export module " << t.rules_module << ";\n\n"
         << "export namespace dgtl::isa::" << t.arch_name << "::generated {\n"
@@ -1170,7 +1286,17 @@ struct ParsedTarget {
 [[nodiscard]] std::string emit_dispatch(
     const std::vector<ParsedTarget>& parsed_targets) {
     std::ostringstream out;
-    out << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
+    out << "/*\n"
+           " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+           " *\n"
+           " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+           " * Owner:       Divyanshu Tata\n"
+           " * Repository:  github.com/TataG-Systems/DGTL\n"
+           " *\n"
+           " * This software is the proprietary property of TataG Systems.\n"
+           " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+           " */\n"
+           "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
         << "module;\n\n#include <span>\n#include <string_view>\n\n"
         << "export module dgtl.isa.isel_dispatch;\n\n";
 
@@ -1178,9 +1304,11 @@ struct ParsedTarget {
         out << "export import " << p.target.generated_module << ";\n";
         out << "import " << p.target.rules_module << ";\n";
     }
-    out << "\nimport dgtl.mir.isel_gen;\n"
+    out << "\nimport dgtl.mir.target_isel;\n"
+        << "import dgtl.mir.isel_gen;\n"
         << "import dgtl.target;\n"
-        << "import dgtl.ir_enums;\n\n"
+        << "import dgtl.ir_enums;\n"
+        << "import dgtl.ir_node;\n\n"
         << "export namespace dgtl::isa {\n"
         << "using MachineForm = dgtl::mir::MachineForm;\n"
         << "using MachineSemanticKind = dgtl::mir::MachineSemanticKind;\n\n";
@@ -1198,6 +1326,17 @@ struct ParsedTarget {
     }
     out << "        default: return MachineForm::Unhandled;\n"
         << "    }\n}\n\n";
+
+    out << "[[nodiscard]] constexpr MachineForm classify_machine_node(\n"
+        << "    const core::TargetMachine& target, const ir::IRNode& node) noexcept {\n"
+        << "    const MachineForm base_form = classify_machine_form(target, node.opcode);\n"
+        << "    if ((node.flags & ir::Flags::IS_VOLATILE) != 0u) {\n"
+        << "        if (base_form == MachineForm::LoadStack || base_form == MachineForm::StoreStack) {\n"
+        << "            return base_form;\n"
+        << "        }\n"
+        << "    }\n"
+        << "    return base_form;\n"
+        << "}\n\n";
 
     out << "[[nodiscard]] constexpr MachineSemanticKind semantic_kind(\n"
         << "    const core::TargetMachine& target, ir::OpCode opcode) noexcept {\n"
@@ -1238,7 +1377,66 @@ struct ParsedTarget {
     out << "        default: return {};\n"
         << "    }\n}\n\n";
 
-    out << "} // namespace dgtl::isa\n";
+    out << "} // namespace dgtl::isa\n\n";
+
+    out << "namespace dgtl::mir {\n\n"
+        << "class TargetISelDispatcher final : public TargetISel {\n"
+        << "public:\n"
+        << "    explicit constexpr TargetISelDispatcher(core::ArchType arch) noexcept : arch_(arch) {}\n\n"
+        << "    [[nodiscard]] MachineForm classify_machine_form(ir::OpCode opcode) const noexcept override {\n"
+        << "        core::TargetMachine target(arch_);\n"
+        << "        return dgtl::isa::classify_machine_form(target, opcode);\n"
+        << "    }\n\n"
+        << "    [[nodiscard]] MachineForm classify_machine_node(const ir::IRNode& node) const noexcept override {\n"
+        << "        core::TargetMachine target(arch_);\n"
+        << "        return dgtl::isa::classify_machine_node(target, node);\n"
+        << "    }\n\n"
+        << "    [[nodiscard]] MachineSemanticKind semantic_kind(ir::OpCode opcode) const noexcept override {\n"
+        << "        core::TargetMachine target(arch_);\n"
+        << "        return dgtl::isa::semantic_kind(target, opcode);\n"
+        << "    }\n\n"
+        << "    [[nodiscard]] bool is_runtime_backed(ir::OpCode opcode) const noexcept override {\n"
+        << "        core::TargetMachine target(arch_);\n"
+        << "        return dgtl::isa::is_runtime_backed(target, opcode);\n"
+        << "    }\n\n"
+        << "    [[nodiscard]] std::span<const std::string_view> rule_lines() const noexcept override {\n"
+        << "        core::TargetMachine target(arch_);\n"
+        << "        return dgtl::isa::rule_lines(target);\n"
+        << "    }\n\n"
+        << "private:\n"
+        << "    core::ArchType arch_;\n"
+        << "};\n\n"
+        << "inline const TargetISel* dispatch_provider(core::ArchType arch) noexcept {\n";
+
+    for (const auto& p : parsed_targets) {
+        if (p.target.arch_enums.empty()) continue;
+        for (const auto& arch : p.target.arch_enums) {
+            std::string var_name = arch;
+            for (auto& c : var_name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            out << "    static const TargetISelDispatcher " << var_name
+                << "{core::ArchType::" << arch << "};\n";
+        }
+    }
+
+    out << "\n    switch (arch) {\n";
+    for (const auto& p : parsed_targets) {
+        if (p.target.arch_enums.empty()) continue;
+        for (const auto& arch : p.target.arch_enums) {
+            std::string var_name = arch;
+            for (auto& c : var_name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            out << "        case core::ArchType::" << arch << ": return &" << var_name << ";\n";
+        }
+    }
+    out << "        default: return nullptr;\n"
+        << "    }\n"
+        << "}\n\n"
+        << "struct AutoRegisterProvider {\n"
+        << "    AutoRegisterProvider() noexcept {\n"
+        << "        TargetISelRegistry::register_provider(dispatch_provider);\n"
+        << "    }\n"
+        << "};\n\n"
+        << "inline const AutoRegisterProvider g_auto_reg{};\n\n"
+        << "} // namespace dgtl::mir\n";
     return out.str();
 }
 
@@ -1336,7 +1534,10 @@ int main(int argc, char** argv) {
         const fs::path root = fs::weakly_canonical(opts.root);
 
         DiagnosticEngine diag;
-        const fs::path ir_path = root / "defs/ir/phase1_core_ops.dgtl_def";
+        fs::path ir_path = root / "defs/ir/phase1_core_ops.dgtl_def";
+        if (!fs::exists(ir_path)) {
+            ir_path = root / "include/dgtl/ir/gen/defs/phase1_core_ops.dgtl_def";
+        }
         const fs::path sem_path = root / "defs/isel/machine_semantics.dgtl_contract";
         const fs::path form_path = root / "defs/isel/machine_forms.dgtl_contract";
         const fs::path target_path = root / "defs/isel/targets.dgtl_contract";
@@ -1428,12 +1629,25 @@ int main(int argc, char** argv) {
         std::vector<std::pair<fs::path, std::string>> outputs;
 
         std::ostringstream common;
-        common << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
+        common << "/*\n"
+               << " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+               << " *\n"
+               << " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+               << " * Owner:       Divyanshu Tata\n"
+               << " * Repository:  github.com/TataG-Systems/DGTL\n"
+               << " *\n"
+               << " * This software is the proprietary property of TataG Systems.\n"
+               << " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+               << " */\n"
+               << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
                << "/* Base tables cover all canonical opcodes with majority-vote mappings. */\n"
                << "module;\n\n"
                << "#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <string_view>\n#include <type_traits>\n\n"
                << "export module dgtl.mir.isel_gen;\n\n"
-               << "import dgtl.ir_enums;\n\n"
+               << "import dgtl.ir_enums;\n"
+               << "import dgtl.ir_schema;\n"
+               << "import dgtl.ir_contracts;\n"
+               << "import dgtl.ir_node;\n\n"
                << "export namespace dgtl::mir {\n\n"
                << "enum class MachineForm : std::uint8_t {\n";
         for (const auto& [name, spec] : forms.forms)
@@ -1443,6 +1657,44 @@ int main(int argc, char** argv) {
         for (const auto& [name, spec] : semantics.semantics)
             common << "    " << name << " = " << spec.value << ",\n";
         common << "};\n\n"
+               << "[[nodiscard]] constexpr bool is_memory_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::LoadStack || form == MachineForm::StoreStack ||\n"
+               << "           form == MachineForm::VectorGather512 || form == MachineForm::VectorStore512 ||\n"
+               << "           form == MachineForm::AtomicOp;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_terminator_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::Goto || form == MachineForm::BranchCond ||\n"
+               << "           form == MachineForm::BranchCompare || form == MachineForm::Return;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_branch_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::Goto || form == MachineForm::BranchCond ||\n"
+               << "           form == MachineForm::BranchCompare;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_call_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::Call;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_atomic_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::AtomicOp;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_barrier_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::HardwareFence || form == MachineForm::ConcurrentSync;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool verify_form_contract(\n"
+               << "    ir::OpCode opcode, MachineForm form) noexcept {\n"
+               << "    if (form == MachineForm::Unhandled) return true;\n"
+               << "    if (ir::detail::irnode_is_branch(opcode)) {\n"
+               << "        return is_terminator_form(form);\n"
+               << "    }\n"
+               << "    return true;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool verify_node_form_compatibility(\n"
+               << "    const ir::IRNode& node, MachineForm form) noexcept {\n"
+               << "    if (form == MachineForm::Unhandled) return true;\n"
+               << "    if (node.is_terminator()) {\n"
+               << "        return is_terminator_form(form) || form == MachineForm::Call || form == MachineForm::ConcurrentSync;\n"
+               << "    }\n"
+               << "    return true;\n"
+               << "}\n\n"
                << "namespace generated {\n"
                << "inline constexpr std::string_view kGeneratorVersion = \"" << kGeneratorVersion << "\";\n"
                << "inline constexpr std::string_view kContractFingerprint = \"" << global_fingerprint << "\";\n"
@@ -1461,11 +1713,15 @@ int main(int argc, char** argv) {
                << "    switch (form) {\n";
         for (const auto& [name, spec] : forms.forms) {
             common << "        case MachineForm::" << name << ":\n";
-            if (spec.allowed_semantics.empty()) {
+            std::set<std::string> effective_allowed = spec.allowed_semantics;
+            if (spec.default_semantic) {
+                effective_allowed.insert(*spec.default_semantic);
+            }
+            if (effective_allowed.empty()) {
                 common << "            return false;\n";
             } else {
                 common << "            switch (semantic) {\n";
-                for (const auto& sem : spec.allowed_semantics)
+                for (const auto& sem : effective_allowed)
                     common << "                case MachineSemanticKind::" << sem << ":\n";
                 common << "                    return true;\n"
                        << "                default: return false;\n"
@@ -1527,7 +1783,17 @@ int main(int argc, char** argv) {
         outputs.push_back({root / "include/dgtl/mir/selection/ISel_Generated.ixx", common.str()});
 
         std::ostringstream rules_bridge;
-        rules_bridge << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
+        rules_bridge << "/*\n"
+                     << " * Copyright (c) 2026 TataG Systems. All rights reserved.\n"
+                     << " *\n"
+                     << " * Project:     DGTL (Deep General-purpose Transformation Layer)\n"
+                     << " * Owner:       Divyanshu Tata\n"
+                     << " * Repository:  github.com/TataG-Systems/DGTL\n"
+                     << " *\n"
+                     << " * This software is the proprietary property of TataG Systems.\n"
+                     << " * Unauthorized copying, modification, or distribution is strictly prohibited.\n"
+                     << " */\n"
+                     << "/* Auto-generated by dgtl-isel-gen " << kGeneratorVersion << ". Do not edit. */\n"
                      << "module;\n#include <string_view>\n\n"
                      << "export module dgtl.mir.isel_rules;\n\n"
                      << "export namespace dgtl::mir::generated {\n"
@@ -1583,6 +1849,23 @@ int main(int argc, char** argv) {
                 if (content.find("base_classify_machine_form") == std::string::npos) {
                     diag.error({path.generic_string(), 0},
                         "neutral MIR bridge must export base_classify_machine_form");
+                }
+                if (content.find("import dgtl.ir_schema;") == std::string::npos ||
+                    content.find("import dgtl.ir_contracts;") == std::string::npos ||
+                    content.find("import dgtl.ir_node;") == std::string::npos) {
+                    diag.error({path.generic_string(), 0},
+                        "neutral MIR bridge must import canonical IR schema, contracts, and node");
+                }
+            } else if (path.filename() == "ISel_Dispatch.ixx") {
+                if (content.find("import dgtl.ir_node;") == std::string::npos ||
+                    content.find("import dgtl.mir.target_isel;") == std::string::npos) {
+                    diag.error({path.generic_string(), 0},
+                        "ISel dispatch must import canonical dgtl.ir_node and dgtl.mir.target_isel");
+                }
+                if (content.find("class TargetISelDispatcher") == std::string::npos ||
+                    content.find("TargetISelRegistry::register_provider") == std::string::npos) {
+                    diag.error({path.generic_string(), 0},
+                        "ISel dispatch must define and register TargetISelDispatcher");
                 }
             } else if (path.filename().string().find("ISel_Generated.ixx") != std::string::npos) {
                 if (content.find("enum class MachineForm") != std::string::npos) {

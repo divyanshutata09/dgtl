@@ -36,7 +36,8 @@ enum class BinaryFormat {
     PE_COFF,
     ELF64,
     MachO64,
-    WASM
+    WASM,
+    Archive
 };
 
 struct SectionInfo {
@@ -120,6 +121,11 @@ struct InspectionReport {
 [[nodiscard]] inline BinaryFormat detect_format(const std::vector<uint8_t>& buf) noexcept {
     if (buf.size() < 4) return BinaryFormat::Unknown;
 
+    // Static Archive magic: !<arch>\n
+    if (buf.size() >= 8 && std::memcmp(buf.data(), "!<arch>\n", 8) == 0) {
+        return BinaryFormat::Archive;
+    }
+
     // WebAssembly magic: \0asm
     if (buf[0] == 0x00 && buf[1] == 0x61 && buf[2] == 0x73 && buf[3] == 0x6D) {
         return BinaryFormat::WASM;
@@ -135,7 +141,7 @@ struct InspectionReport {
                            | (static_cast<uint32_t>(buf[1]) << 8)
                            | (static_cast<uint32_t>(buf[2]) << 16)
                            | (static_cast<uint32_t>(buf[3]) << 24);
-    if (magic32 == 0xFEEDFACF || magic32 == 0xFEEDFACE) {
+    if (magic32 == 0xFEEDFACF || magic32 == 0xFEEDFACE || magic32 == 0xCFFAEDFE) {
         return BinaryFormat::MachO64;
     }
 
@@ -155,26 +161,41 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
     if (buf.size() < 20) return false;
 
     report.format = BinaryFormat::PE_COFF;
-    report.format_name = "PE / COFF (Microsoft Windows)";
+    report.format_name = "COFF Relocatable Object (Microsoft Windows)";
 
-    const uint16_t machine = static_cast<uint16_t>(buf[0]) | (static_cast<uint16_t>(buf[1]) << 8);
+    size_t coff_hdr_start = 0;
+    if (buf.size() >= 0x40 && buf[0] == 'M' && buf[1] == 'Z') {
+        const uint32_t pe_sig_offset = *reinterpret_cast<const uint32_t*>(&buf[0x3C]);
+        if (pe_sig_offset + 24 <= buf.size() &&
+            buf[pe_sig_offset] == 'P' && buf[pe_sig_offset + 1] == 'E' &&
+            buf[pe_sig_offset + 2] == '\0' && buf[pe_sig_offset + 3] == '\0') {
+            coff_hdr_start = pe_sig_offset + 4;
+            report.format_name = "PE32+ Executable / Image (Microsoft Windows)";
+        } else {
+            return false;
+        }
+    }
+
+    if (buf.size() < coff_hdr_start + 20) return false;
+
+    const uint16_t machine = *reinterpret_cast<const uint16_t*>(&buf[coff_hdr_start]);
     if (machine == 0x8664) report.arch_name = "x86-64 (AMD64)";
     else if (machine == 0xAA64) report.arch_name = "AArch64 (ARM64)";
     else if (machine == 0x014C) report.arch_name = "x86 (i386)";
     else report.arch_name = "Unknown Machine (0x" + std::to_string(machine) + ")";
 
-    const uint16_t num_sections = static_cast<uint16_t>(buf[2]) | (static_cast<uint16_t>(buf[3]) << 8);
-    const uint32_t symtab_offset = *reinterpret_cast<const uint32_t*>(&buf[8]);
-    const uint32_t num_symbols = *reinterpret_cast<const uint32_t*>(&buf[12]);
-    const uint16_t opt_hdr_size = *reinterpret_cast<const uint16_t*>(&buf[16]);
+    const uint16_t num_sections = *reinterpret_cast<const uint16_t*>(&buf[coff_hdr_start + 2]);
+    const uint32_t symtab_offset = *reinterpret_cast<const uint32_t*>(&buf[coff_hdr_start + 8]);
+    const uint32_t num_symbols = *reinterpret_cast<const uint32_t*>(&buf[coff_hdr_start + 12]);
+    const uint16_t opt_hdr_size = *reinterpret_cast<const uint16_t*>(&buf[coff_hdr_start + 16]);
 
-    const size_t sec_hdr_start = 20 + opt_hdr_size;
+    const size_t sec_hdr_start = coff_hdr_start + 20 + opt_hdr_size;
     if (buf.size() < sec_hdr_start + num_sections * 40) return false;
 
-    const size_t strtab_offset = symtab_offset + num_symbols * 18;
+    const size_t strtab_offset = (symtab_offset != 0) ? (symtab_offset + num_symbols * 18) : 0;
 
     auto get_str = [&](uint32_t offset) -> std::string {
-        if (strtab_offset + offset >= buf.size()) return "";
+        if (strtab_offset == 0 || strtab_offset + offset >= buf.size()) return "";
         const char* p = reinterpret_cast<const char*>(&buf[strtab_offset + offset]);
         return std::string(p);
     };
@@ -278,8 +299,11 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
                 << " - 0x" << end_addr << ") | Length: " << std::dec << (end_addr - begin_addr)
                 << " bytes | UnwindInfo: 0x" << std::hex << unwind_addr << std::dec << "\n";
 
-            if (xdata_sec && unwind_addr < xdata_sec->data.size()) {
-                const uint8_t* xbuf = &xdata_sec->data[unwind_addr];
+            const size_t unwind_local = (xdata_sec && unwind_addr >= xdata_sec->virtual_address && xdata_sec->virtual_address > 0)
+                                      ? (unwind_addr - xdata_sec->virtual_address)
+                                      : unwind_addr;
+            if (xdata_sec && unwind_local < xdata_sec->data.size()) {
+                const uint8_t* xbuf = &xdata_sec->data[unwind_local];
                 const uint8_t ver_flags = xbuf[0];
                 const uint8_t version = ver_flags & 0x07;
                 const uint8_t flags   = (ver_flags >> 3) & 0x1F;
@@ -319,6 +343,48 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
         report.unwind_details.push_back(oss.str());
     }
 
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// STATIC ARCHIVE PARSER
+// ----------------------------------------------------------------------------
+bool parse_archive(const std::vector<uint8_t>& buf, InspectionReport& report) {
+    if (buf.size() < 8 || std::memcmp(buf.data(), "!<arch>\n", 8) != 0) return false;
+
+    report.format = BinaryFormat::Archive;
+    report.format_name = "Static Library Archive (.a / .lib)";
+    report.arch_name = "Multi-Member Archive";
+
+    size_t offset = 8;
+    uint32_t member_idx = 0;
+    while (offset + 60 <= buf.size()) {
+        char name[17] = {0};
+        std::memcpy(name, &buf[offset], 16);
+        std::string member_name(name);
+        while (!member_name.empty() && (member_name.back() == ' ' || member_name.back() == '/')) {
+            member_name.pop_back();
+        }
+
+        char size_buf[11] = {0};
+        std::memcpy(size_buf, &buf[offset + 48], 10);
+        const uint64_t member_size = std::strtoull(size_buf, nullptr, 10);
+
+        offset += 60;
+        if (offset + member_size > buf.size()) break;
+
+        SectionInfo sec;
+        sec.name = member_name.empty() ? ("member_" + std::to_string(member_idx)) : member_name;
+        sec.file_offset = offset;
+        sec.file_size = member_size;
+        sec.virtual_size = member_size;
+        sec.is_code = false;
+        sec.is_readable = true;
+        report.sections.push_back(std::move(sec));
+
+        member_idx++;
+        offset += (member_size + 1) & ~static_cast<size_t>(1);
+    }
     return true;
 }
 
@@ -620,6 +686,7 @@ void compute_budget_and_verify(InspectionReport& report) {
         case BinaryFormat::ELF64:   parse_elf64(buffer, report);   break;
         case BinaryFormat::MachO64: parse_macho64(buffer, report); break;
         case BinaryFormat::WASM:    parse_wasm(buffer, report);    break;
+        case BinaryFormat::Archive: parse_archive(buffer, report); break;
         case BinaryFormat::Unknown:
             report.verification_errors.push_back("Unrecognized binary format or architecture.");
             break;

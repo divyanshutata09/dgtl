@@ -13,9 +13,12 @@ module;
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -24,9 +27,11 @@ module;
 
 export module dgtl.linker.pe;
 
-import dgtl.mir;
 import dgtl.object.file;
 import dgtl.object.section;
+import dgtl.object.symbol;
+import dgtl.object.relocation;
+export import dgtl.linker.pe.sections;
 
 export namespace dgtl::linker::pe {
 
@@ -114,114 +119,8 @@ namespace detail {
 } // namespace detail
 
 
-/* ============================================================================
- * Portable PE Structures
- * ========================================================================== */
-
-struct DosHeader {
-    uint16_t e_magic{};
-    uint16_t e_cblp{};
-    uint16_t e_cp{};
-    uint16_t e_crlc{};
-    uint16_t e_cparhdr{};
-    uint16_t e_minalloc{};
-    uint16_t e_maxalloc{};
-    uint16_t e_ss{};
-    uint16_t e_sp{};
-    uint16_t e_csum{};
-    uint16_t e_ip{};
-    uint16_t e_cs{};
-    uint16_t e_lfarlc{};
-    uint16_t e_ovno{};
-    std::array<uint16_t, 4> e_res{};
-    uint16_t e_oemid{};
-    uint16_t e_oeminfo{};
-    std::array<uint16_t, 10> e_res2{};
-    uint32_t e_lfanew{};
-};
-
-struct FileHeader {
-    uint16_t Machine{};
-    uint16_t NumberOfSections{};
-    uint32_t TimeDateStamp{};
-    uint32_t PointerToSymbolTable{};
-    uint32_t NumberOfSymbols{};
-    uint16_t SizeOfOptionalHeader{};
-    uint16_t Characteristics{};
-};
-
-struct DataDirectory {
-    uint32_t VirtualAddress{};
-    uint32_t Size{};
-};
-
-struct OptionalHeader64 {
-    uint16_t Magic{};
-    uint8_t MajorLinkerVersion{};
-    uint8_t MinorLinkerVersion{};
-
-    uint32_t SizeOfCode{};
-    uint32_t SizeOfInitializedData{};
-    uint32_t SizeOfUninitializedData{};
-
-    uint32_t AddressOfEntryPoint{};
-    uint32_t BaseOfCode{};
-
-    uint64_t ImageBase{};
-
-    uint32_t SectionAlignment{};
-    uint32_t FileAlignment{};
-
-    uint16_t MajorOperatingSystemVersion{};
-    uint16_t MinorOperatingSystemVersion{};
-
-    uint16_t MajorImageVersion{};
-    uint16_t MinorImageVersion{};
-
-    uint16_t MajorSubsystemVersion{};
-    uint16_t MinorSubsystemVersion{};
-
-    uint32_t Win32VersionValue{};
-
-    uint32_t SizeOfImage{};
-    uint32_t SizeOfHeaders{};
-
-    uint32_t CheckSum{};
-
-    uint16_t Subsystem{};
-    uint16_t DllCharacteristics{};
-
-    uint64_t SizeOfStackReserve{};
-    uint64_t SizeOfStackCommit{};
-    uint64_t SizeOfHeapReserve{};
-    uint64_t SizeOfHeapCommit{};
-
-    uint32_t LoaderFlags{};
-    uint32_t NumberOfRvaAndSizes{};
-
-    std::array<DataDirectory, 16> DataDirectories{};
-};
-
-struct SectionHeader {
-    std::array<uint8_t, 8> Name{};
-    uint32_t VirtualSize{};
-    uint32_t VirtualAddress{};
-    uint32_t SizeOfRawData{};
-    uint32_t PointerToRawData{};
-    uint32_t PointerToRelocations{};
-    uint32_t PointerToLinenumbers{};
-    uint16_t NumberOfRelocations{};
-    uint16_t NumberOfLinenumbers{};
-    uint32_t Characteristics{};
-};
-
-struct ImportDescriptor {
-    uint32_t OriginalFirstThunk{};
-    uint32_t TimeDateStamp{};
-    uint32_t ForwarderChain{};
-    uint32_t Name{};
-    uint32_t FirstThunk{};
-};
+/* Canonical PE/COFF structures (ImageDosHeader/DosHeader, FileHeader, DataDirectory,
+ * OptionalHeader64, SectionHeader, ImportDescriptor) are imported from dgtl.linker.pe.sections */
 
 
 /* ============================================================================
@@ -235,8 +134,11 @@ struct SovereignPELinkerOptions {
     bool deterministic = true;
     bool emit_checksum = true;
     bool emit_relocations = true;
+    std::string entry_symbol = "main";
     std::string_view import_dll = "KERNEL32.DLL";
     std::string_view entry_import = "ExitProcess";
+    std::vector<std::string> additional_imports{};
+    std::vector<std::pair<std::string, std::vector<std::string>>> custom_imports{};
 };
 
 class SovereignPELinker {
@@ -259,10 +161,16 @@ public:
 
     struct Result {
         bool success{false};
+        bool ok{false};
         Error error{Error::None};
         std::string message;
 
+        Result() = default;
+        Result(bool s, Error e, std::string msg)
+            : success(s), ok(s), error(e), message(std::move(msg)) {}
+
         explicit operator bool() const noexcept { return success; }
+        [[nodiscard]] bool is_ok() const noexcept { return success; }
     };
 
     using Options = SovereignPELinkerOptions;
@@ -279,32 +187,671 @@ private:
     };
 
 public:
+    static Result emit_standalone_binary(
+        const dgtl::object::ObjectFile& obj,
+        std::vector<uint8_t>& out_binary,
+        const Options& options = Options{})
+    {
+        const auto* text_sec = obj.find_section(".text");
+        if (!text_sec || text_sec->bytes.empty()) {
+            for (const auto& s : obj.sections()) {
+                if (s.is_code() && !s.bytes.empty()) {
+                    text_sec = &s;
+                    break;
+                }
+            }
+        }
+        if (!text_sec || text_sec->bytes.empty()) {
+            return failure(Error::EmptyCode, "DGTL PE linker: ObjectFile has no .text code section");
+        }
+
+        const auto& code_bytes = text_sec->bytes;
+
+        // Collect all data sections into a unified rdata buffer
+        struct SecRDataOff {
+            std::string name;
+            uint64_t offset;
+        };
+        std::vector<uint8_t> user_rdata;
+        std::vector<SecRDataOff> section_rdata_offsets;
+        for (const auto& sec : obj.sections()) {
+            if (sec.name == ".rdata" || sec.name == ".rodata" || sec.name == ".data" || sec.name == ".bss") {
+                while ((user_rdata.size() % 16) != 0) user_rdata.push_back(0);
+                section_rdata_offsets.push_back({sec.name, user_rdata.size()});
+                user_rdata.insert(user_rdata.end(), sec.bytes.begin(), sec.bytes.end());
+            }
+        }
+        auto find_rdata_offset = [&](std::string_view name) -> std::optional<uint64_t> {
+            for (const auto& item : section_rdata_offsets) {
+                if (item.name == name) return item.offset;
+            }
+            return std::nullopt;
+        };
+
+        // Identify undefined external symbols referenced by relocations
+        std::vector<std::string> undefined_syms;
+        for (const auto& rel : obj.relocations()) {
+            if (rel.symbol_name.empty()) continue;
+            const auto* sym = obj.find_symbol(rel.symbol_name);
+            if (!sym || sym->is_external()) {
+                if (std::find(undefined_syms.begin(), undefined_syms.end(), rel.symbol_name) == undefined_syms.end()) {
+                    undefined_syms.push_back(rel.symbol_name);
+                }
+            }
+        }
+
+        // Win32 API DLL classification rules
+        auto is_ws2_func = [](std::string_view name) {
+            return name == "WSAStartup" || name == "WSACleanup" || name == "WSAGetLastError" ||
+                   name == "socket" || name == "connect" || name == "send" || name == "recv" ||
+                   name == "closesocket" || name == "bind" || name == "listen" || name == "accept" ||
+                   name == "select" || name == "htons" || name == "ntohs" || name == "htonl" ||
+                   name == "ntohl" || name == "getaddrinfo" || name == "freeaddrinfo" ||
+                   name == "ioctlsocket" || name == "setsockopt" || name == "getsockopt";
+        };
+
+        auto is_ntdll_func = [](std::string_view name) {
+            return name.starts_with("Nt") || name.starts_with("Zw") || name.starts_with("Rtl");
+        };
+
+        auto is_msvcrt_func = [](std::string_view name) {
+            if (name.empty()) return false;
+            if (name.starts_with("__") || name.starts_with("_")) return true;
+            static constexpr std::string_view crt_funcs[] = {
+                "malloc", "free", "realloc", "calloc",
+                "printf", "puts", "putchar", "getchar", "snprintf", "sprintf", "fprintf",
+                "vsnprintf", "vfprintf", "fopen", "fclose", "fread", "fwrite", "fseek",
+                "ftell", "rewind", "fflush", "fgets", "fputs", "sscanf", "scanf",
+                "exit", "abort", "qsort", "bsearch", "atoi", "atol", "atoll", "atof",
+                "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof",
+                "rand", "srand", "system", "getenv", "abs", "labs", "llabs",
+                "memcpy", "memset", "memmove", "memcmp", "memchr",
+                "strlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
+                "strstr", "strchr", "strrchr", "strspn", "strcspn", "strtok",
+                "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+                "exp", "log", "log10", "log2", "pow", "sqrt", "cbrt", "ceil", "floor", "trunc",
+                "round", "fmod", "remainder", "fabs", "ldexp", "frexp", "modf", "hypot",
+                "sinf", "cosf", "tanf", "asinf", "acosf", "atanf", "atan2f", "sqrtf", "powf",
+                "expf", "logf", "ceilf", "floorf", "roundf", "fmodf", "fabsf",
+                "time", "clock", "difftime", "mktime", "strftime",
+                "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "tolower", "toupper"
+            };
+            for (const auto& fn : crt_funcs) {
+                if (fn == name) return true;
+            }
+            return std::islower(static_cast<unsigned char>(name.front())) != 0;
+        };
+
+        std::vector<std::string> k32_funcs;
+        std::vector<std::string> ws2_funcs;
+        std::vector<std::string> ntdll_funcs;
+        std::vector<std::string> msvcrt_funcs;
+
+        const std::string entry_exit = options.entry_import.empty() ? "ExitProcess" : std::string(options.entry_import);
+        k32_funcs.push_back(entry_exit);
+
+        for (const auto& sym : undefined_syms) {
+            std::string raw_name = sym;
+            if (raw_name.starts_with("__imp_")) {
+                raw_name = raw_name.substr(6);
+            }
+            if (raw_name.empty()) continue;
+
+            if (is_ws2_func(raw_name)) {
+                if (std::find(ws2_funcs.begin(), ws2_funcs.end(), raw_name) == ws2_funcs.end()) {
+                    ws2_funcs.push_back(raw_name);
+                }
+            } else if (is_ntdll_func(raw_name)) {
+                if (std::find(ntdll_funcs.begin(), ntdll_funcs.end(), raw_name) == ntdll_funcs.end()) {
+                    ntdll_funcs.push_back(raw_name);
+                }
+            } else if (is_msvcrt_func(raw_name)) {
+                if (std::find(msvcrt_funcs.begin(), msvcrt_funcs.end(), raw_name) == msvcrt_funcs.end()) {
+                    msvcrt_funcs.push_back(raw_name);
+                }
+            } else {
+                if (std::find(k32_funcs.begin(), k32_funcs.end(), raw_name) == k32_funcs.end()) {
+                    k32_funcs.push_back(raw_name);
+                }
+            }
+        }
+
+        for (const auto& add_fn : options.additional_imports) {
+            if (!add_fn.empty() && std::find(k32_funcs.begin(), k32_funcs.end(), add_fn) == k32_funcs.end()) {
+                k32_funcs.push_back(add_fn);
+            }
+        }
+
+        struct ImportSpec {
+            std::string dll_name;
+            std::vector<std::string> function_names;
+        };
+        std::vector<ImportSpec> import_specs;
+        if (!options.custom_imports.empty()) {
+            for (const auto& [dll, fns] : options.custom_imports) {
+                if (!dll.empty() && !fns.empty()) {
+                    import_specs.push_back({dll, fns});
+                }
+            }
+        } else {
+            if (!k32_funcs.empty()) import_specs.push_back({"KERNEL32.DLL", k32_funcs});
+            if (!ws2_funcs.empty()) import_specs.push_back({"WS2_32.DLL", ws2_funcs});
+            if (!ntdll_funcs.empty()) import_specs.push_back({"NTDLL.DLL", ntdll_funcs});
+            if (!msvcrt_funcs.empty()) import_specs.push_back({"MSVCRT.DLL", msvcrt_funcs});
+        }
+
+        constexpr uint32_t trampoline_size = 24;
+        Section text;
+        Section rdata;
+        Section idata;
+        Section reloc;
+
+        initialize_section(text, ".text", pe::kSectionMemExecute | pe::kSectionMemRead | pe::kSectionContainsCode);
+        initialize_section(rdata, ".rdata", pe::kSectionMemRead | pe::kSectionInitializedData);
+        initialize_section(idata, ".idata", pe::kSectionMemRead | pe::kSectionMemWrite | pe::kSectionInitializedData);
+        initialize_section(reloc, ".reloc", pe::kSectionMemRead | pe::kSectionInitializedData);
+
+        rdata.data.assign(user_rdata.begin(), user_rdata.end());
+
+        text.data.reserve(trampoline_size + code_bytes.size() + 1024);
+        text.data.resize(trampoline_size, 0x90);
+        text.data.insert(text.data.end(), code_bytes.begin(), code_bytes.end());
+
+        // Align text before emitting import thunks
+        while ((text.data.size() % 16) != 0) text.data.push_back(0x90);
+
+        // Map each imported function to its jump thunk offset in .text
+        struct ThunkOffsetEntry {
+            std::string name;
+            uint32_t offset;
+        };
+        std::vector<ThunkOffsetEntry> func_to_thunk_offset;
+        for (const auto& spec : import_specs) {
+            for (const auto& fn : spec.function_names) {
+                func_to_thunk_offset.push_back({fn, static_cast<uint32_t>(text.data.size())});
+                // Emit 8-byte stub: FF 25 00 00 00 00 90 90 (jmp qword ptr [rip + disp32])
+                text.data.push_back(0xFF);
+                text.data.push_back(0x25);
+                text.data.push_back(0x00);
+                text.data.push_back(0x00);
+                text.data.push_back(0x00);
+                text.data.push_back(0x00);
+                text.data.push_back(0x90);
+                text.data.push_back(0x90);
+            }
+        }
+
+        constexpr uint32_t text_rva = 0x1000;
+        const uint32_t text_virtual_size = static_cast<uint32_t>(text.data.size());
+        const uint32_t text_raw_size = detail::align_up(text_virtual_size, pe::kFileAlignment);
+
+        const uint32_t rdata_rva = detail::align_up(text_rva + text_virtual_size, pe::kSectionAlignment);
+        const uint32_t idata_rva = detail::align_up(rdata_rva + static_cast<uint32_t>(rdata.data.size()), pe::kSectionAlignment);
+        const uint32_t reloc_rva = detail::align_up(idata_rva + 0x2000, pe::kSectionAlignment);
+
+        // Build .idata Import Table
+        const uint32_t num_dlls = static_cast<uint32_t>(import_specs.size());
+        const uint32_t descriptor_count = num_dlls + 1u;
+        const uint32_t descriptor_size = descriptor_count * static_cast<uint32_t>(sizeof(ImportDescriptor));
+
+        uint32_t total_thunk_count = 0;
+        uint32_t total_hint_size = 0;
+        uint32_t total_dll_name_size = 0;
+
+        for (const auto& spec : import_specs) {
+            const uint32_t count_with_null = static_cast<uint32_t>(spec.function_names.size() + 1u);
+            total_thunk_count += count_with_null;
+            for (const auto& fn_name : spec.function_names) {
+                uint32_t hsz = 2u + static_cast<uint32_t>(fn_name.size()) + 1u;
+                if ((hsz & 1u) != 0u) hsz++;
+                total_hint_size += hsz;
+            }
+            total_dll_name_size += static_cast<uint32_t>(spec.dll_name.size() + 1u);
+        }
+
+        const uint32_t total_ilt_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
+        const uint32_t total_iat_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
+
+        uint32_t import_size = 0;
+        if (!detail::checked_add_u32(descriptor_size, total_ilt_size, import_size) ||
+            !detail::checked_add_u32(import_size, total_iat_size, import_size) ||
+            !detail::checked_add_u32(import_size, total_hint_size, import_size) ||
+            !detail::checked_add_u32(import_size, total_dll_name_size, import_size)) {
+            return failure(Error::RDataTooLarge, "DGTL PE linker: import table size overflow");
+        }
+
+        idata.data.assign(import_size + 64, 0);
+
+        const uint32_t desc_off = 0;
+        const uint32_t ilt_off  = desc_off + descriptor_size;
+        const uint32_t iat_off  = ilt_off + total_ilt_size;
+        const uint32_t hint_off = iat_off + total_iat_size;
+        const uint32_t dll_off  = hint_off + total_hint_size;
+
+        uint32_t cur_ilt_off  = ilt_off;
+        uint32_t cur_iat_off  = iat_off;
+        uint32_t cur_hint_off = hint_off;
+        uint32_t cur_dll_off  = dll_off;
+
+        struct IatRvaEntry {
+            std::string name;
+            uint32_t rva;
+        };
+        std::vector<IatRvaEntry> func_to_iat_rva;
+        auto find_iat_rva = [&](std::string_view name) -> std::optional<uint32_t> {
+            for (const auto& entry : func_to_iat_rva) {
+                if (entry.name == name) return entry.rva;
+            }
+            return std::nullopt;
+        };
+
+        for (uint32_t d = 0; d < num_dlls; ++d) {
+            const auto& spec = import_specs[d];
+            const uint32_t dll_ilt_rva  = idata_rva + cur_ilt_off;
+            const uint32_t dll_iat_rva  = idata_rva + cur_iat_off;
+            const uint32_t dll_name_rva = idata_rva + cur_dll_off;
+
+            const uint32_t d_off = desc_off + d * static_cast<uint32_t>(sizeof(ImportDescriptor));
+            write_u32(idata.data, d_off + 0, dll_ilt_rva);
+            write_u32(idata.data, d_off + 4, 0);
+            write_u32(idata.data, d_off + 8, 0);
+            write_u32(idata.data, d_off + 12, dll_name_rva);
+            write_u32(idata.data, d_off + 16, dll_iat_rva);
+
+            write_bytes(idata.data, cur_dll_off, spec.dll_name);
+            cur_dll_off += static_cast<uint32_t>(spec.dll_name.size() + 1u);
+
+            for (size_t f = 0; f < spec.function_names.size(); ++f) {
+                const auto& fn_name = spec.function_names[f];
+                const uint32_t fn_hint_rva = idata_rva + cur_hint_off;
+                const uint32_t fn_iat_rva  = idata_rva + cur_iat_off;
+
+                func_to_iat_rva.push_back({fn_name, fn_iat_rva});
+
+                write_u64(idata.data, cur_ilt_off, fn_hint_rva);
+                write_u64(idata.data, cur_iat_off, fn_hint_rva);
+
+                write_u16(idata.data, cur_hint_off, static_cast<uint16_t>(f));
+                write_bytes(idata.data, cur_hint_off + 2, fn_name);
+
+                cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
+                cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
+
+                uint32_t hsz = 2u + static_cast<uint32_t>(fn_name.size()) + 1u;
+                if ((hsz & 1u) != 0u) hsz++;
+                cur_hint_off += hsz;
+            }
+
+            write_u64(idata.data, cur_ilt_off, 0ULL);
+            write_u64(idata.data, cur_iat_off, 0ULL);
+            cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
+            cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
+        }
+
+        // Patch Import Thunks (FF 25 [disp32]) to jump through IAT slots
+        for (const auto& thunk : func_to_thunk_offset) {
+            if (auto iat_rva = find_iat_rva(thunk.name)) {
+                const uint32_t thunk_rva = text_rva + thunk.offset;
+                const int64_t disp = static_cast<int64_t>(*iat_rva) - static_cast<int64_t>(thunk_rva + 6);
+                write_i32(text.data, thunk.offset + 2, static_cast<int32_t>(disp));
+            }
+        }
+
+        // Resolve main function entry point
+        uint32_t main_func_offset = 0;
+        if (!options.entry_symbol.empty()) {
+            if (const auto* sym = obj.find_symbol(options.entry_symbol)) {
+                main_func_offset = static_cast<uint32_t>(sym->value);
+            }
+        } else if (const auto* sym = obj.find_symbol("main")) {
+            main_func_offset = static_cast<uint32_t>(sym->value);
+        }
+
+        // Patch Entry Trampoline: sub rsp, 28h; call main; mov ecx, eax; call ExitProcess; add rsp, 28h; ret
+        {
+            const int64_t main_rva = static_cast<int64_t>(text_rva) + static_cast<int64_t>(trampoline_size) + static_cast<int64_t>(main_func_offset);
+            const int64_t call_next_rva = static_cast<int64_t>(text_rva) + 9;
+            const int64_t call_disp = main_rva - call_next_rva;
+
+            if (!detail::fits_int32(call_disp)) {
+                return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: main function is outside rel32 range");
+            }
+
+            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28
+            text.data[4] = 0xE8; // call rel32
+            write_i32(text.data, 5, static_cast<int32_t>(call_disp));
+            text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax
+
+            uint32_t exit_iat_rva = idata_rva + iat_off;
+            if (auto rva = find_iat_rva(entry_exit)) {
+                exit_iat_rva = *rva;
+            }
+            const int64_t iat_disp = static_cast<int64_t>(exit_iat_rva) - static_cast<int64_t>(text_rva + 17);
+            if (!detail::fits_int32(iat_disp)) {
+                return failure(Error::IATDisplacementOutOfRange, "DGTL PE linker: IAT is outside RIP-relative range");
+            }
+            text.data[11] = 0xFF; text.data[12] = 0x15; // call qword ptr [rip + disp32]
+            write_i32(text.data, 13, static_cast<int32_t>(iat_disp));
+            text.data[17] = 0x48; text.data[18] = 0x83; text.data[19] = 0xC4; text.data[20] = 0x28; // add rsp, 0x28
+            text.data[21] = 0xC3; // ret
+        }
+
+        // Build Symbol RVA resolution table
+        struct SymRvaEntry {
+            std::string name;
+            uint64_t rva;
+        };
+        std::vector<SymRvaEntry> symbol_rva_map;
+        for (const auto& sym : obj.symbols()) {
+            if (sym.is_defined()) {
+                if (sym.section_index < obj.sections().size()) {
+                    const auto& sec_name = obj.sections()[sym.section_index].name;
+                    if (sec_name == ".text") {
+                        symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + sym.value});
+                    } else if (auto off = find_rdata_offset(sec_name)) {
+                        symbol_rva_map.push_back({sym.name, rdata_rva + *off + sym.value});
+                    } else {
+                        symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + sym.value});
+                    }
+                } else {
+                    symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + sym.value});
+                }
+            }
+        }
+        for (const auto& thunk : func_to_thunk_offset) {
+            symbol_rva_map.push_back({thunk.name, text_rva + thunk.offset});
+        }
+        for (const auto& iat : func_to_iat_rva) {
+            symbol_rva_map.push_back({"__imp_" + iat.name, iat.rva});
+        }
+
+        std::sort(symbol_rva_map.begin(), symbol_rva_map.end(),
+                  [](const SymRvaEntry& a, const SymRvaEntry& b) {
+                      return a.name < b.name;
+                  });
+
+        auto find_symbol_rva = [&](std::string_view name) -> std::optional<uint64_t> {
+            auto it = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), name,
+                                       [](const SymRvaEntry& entry, std::string_view val) {
+                                           return entry.name < val;
+                                       });
+            if (it != symbol_rva_map.end() && it->name == name) {
+                return it->rva;
+            }
+            return std::nullopt;
+        };
+
+        struct BaseRelocEntry {
+            uint32_t rva;
+            bool is_64;
+        };
+        std::vector<BaseRelocEntry> base_relocs;
+
+        // Apply all Object Relocations (rel32, abs64, abs32)
+        for (const auto& rel : obj.relocations()) {
+            if (rel.symbol_name.empty()) continue;
+
+            uint64_t target_rva = 0;
+            if (auto rva = find_symbol_rva(rel.symbol_name)) {
+                target_rva = *rva;
+            } else if (rel.symbol_name.starts_with("__imp_")) {
+                if (auto imp_rva = find_iat_rva(rel.symbol_name.substr(6))) {
+                    target_rva = *imp_rva;
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+
+            // Check if relocation target is in text or data
+            bool in_data_sec = false;
+            uint64_t data_base = 0;
+            if (rel.section_index < obj.sections().size()) {
+                const auto& target_sec_name = obj.sections()[rel.section_index].name;
+                if (target_sec_name != ".text") {
+                    if (auto off = find_rdata_offset(target_sec_name)) {
+                        in_data_sec = true;
+                        data_base = *off;
+                    }
+                }
+            }
+
+            if (in_data_sec) {
+                const uint64_t place_offset = data_base + rel.offset;
+                if (place_offset + 8 <= rdata.data.size()) {
+                    if (rel.kind == dgtl::object::RelocationKind::Absolute64) {
+                        const uint64_t abs_addr = options.image_base + target_rva + rel.addend;
+                        write_u64(rdata.data, place_offset, abs_addr);
+                        base_relocs.push_back({static_cast<uint32_t>(rdata_rva + place_offset), true});
+                    } else if (rel.kind == dgtl::object::RelocationKind::Absolute32) {
+                        const uint32_t abs_addr = static_cast<uint32_t>(options.image_base + target_rva + rel.addend);
+                        write_u32(rdata.data, place_offset, abs_addr);
+                        base_relocs.push_back({static_cast<uint32_t>(rdata_rva + place_offset), false});
+                    }
+                }
+            } else {
+                const uint64_t place_offset = trampoline_size + rel.offset;
+                const uint64_t place_rva = text_rva + place_offset;
+
+                if (place_offset + 4 <= text.data.size()) {
+                    if (rel.kind == dgtl::object::RelocationKind::PCRel32 || rel.kind == dgtl::object::RelocationKind::PLT32) {
+                        const uint64_t pc_rva = place_rva + 4;
+                        const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(pc_rva);
+                        write_i32(text.data, place_offset, static_cast<int32_t>(delta));
+                    } else if (rel.kind == dgtl::object::RelocationKind::Absolute64 && place_offset + 8 <= text.data.size()) {
+                        const uint64_t abs_addr = options.image_base + target_rva + rel.addend;
+                        write_u64(text.data, place_offset, abs_addr);
+                        base_relocs.push_back({static_cast<uint32_t>(place_rva), true});
+                    } else if (rel.kind == dgtl::object::RelocationKind::Absolute32) {
+                        const uint32_t abs_addr = static_cast<uint32_t>(options.image_base + target_rva + rel.addend);
+                        write_u32(text.data, place_offset, abs_addr);
+                        base_relocs.push_back({static_cast<uint32_t>(place_rva), false});
+                    }
+                }
+            }
+        }
+
+        // Build base relocation blocks for .reloc if relocations were requested and present
+        if (options.emit_relocations && !base_relocs.empty()) {
+            std::sort(base_relocs.begin(), base_relocs.end(), [](const auto& a, const auto& b) {
+                return a.rva < b.rva;
+            });
+            base_relocs.erase(std::unique(base_relocs.begin(), base_relocs.end(), [](const auto& a, const auto& b) {
+                return a.rva == b.rva;
+            }), base_relocs.end());
+
+            size_t r_idx = 0;
+            while (r_idx < base_relocs.size()) {
+                const uint32_t page_rva = base_relocs[r_idx].rva & ~0xFFFu;
+                const size_t page_start = r_idx;
+                while (r_idx < base_relocs.size() && (base_relocs[r_idx].rva & ~0xFFFu) == page_rva) {
+                    ++r_idx;
+                }
+                const uint32_t entry_count = static_cast<uint32_t>(r_idx - page_start);
+                uint32_t block_size = 8u + (entry_count * 2u);
+                const bool needs_padding = (entry_count % 2) != 0;
+                if (needs_padding) block_size += 2u;
+
+                const size_t block_start = reloc.data.size();
+                reloc.data.resize(block_start + block_size, 0);
+
+                write_u32(reloc.data, block_start + 0, page_rva);
+                write_u32(reloc.data, block_start + 4, block_size);
+
+                size_t entry_off = block_start + 8;
+                for (size_t k = page_start; k < r_idx; ++k) {
+                    const uint16_t off_in_page = static_cast<uint16_t>(base_relocs[k].rva & 0xFFFu);
+                    const uint16_t r_type = base_relocs[k].is_64 ? 0xA000u : 0x3000u; // IMAGE_REL_BASED_DIR64 / HIGHLOW
+                    write_u16(reloc.data, entry_off, r_type | off_in_page);
+                    entry_off += 2;
+                }
+                if (needs_padding) {
+                    write_u16(reloc.data, entry_off, 0); // IMAGE_REL_BASED_ABSOLUTE padding
+                }
+            }
+        }
+
+        // Section Virtual and Raw size metrics
+        idata.virtual_address = idata_rva;
+        idata.virtual_size = static_cast<uint32_t>(idata.data.size());
+
+        reloc.virtual_address = reloc_rva;
+        reloc.virtual_size = static_cast<uint32_t>(reloc.data.size());
+
+        text.virtual_address = text_rva;
+        text.virtual_size = static_cast<uint32_t>(text.data.size());
+
+        rdata.virtual_address = rdata_rva;
+        rdata.virtual_size = static_cast<uint32_t>(rdata.data.size());
+
+        text.raw_size = detail::align_up(text.virtual_size, pe::kFileAlignment);
+        rdata.raw_size = detail::align_up(rdata.virtual_size, pe::kFileAlignment);
+        idata.raw_size = detail::align_up(idata.virtual_size, pe::kFileAlignment);
+        reloc.raw_size = detail::align_up(reloc.virtual_size, pe::kFileAlignment);
+
+        uint32_t cursor = pe::kHeadersSize;
+        text.raw_offset = cursor;
+        if (!detail::checked_add_u32(cursor, text.raw_size, cursor)) {
+            return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .text file offset overflow");
+        }
+        rdata.raw_offset = cursor;
+        if (!detail::checked_add_u32(cursor, rdata.raw_size, cursor)) {
+            return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .rdata file offset overflow");
+        }
+        idata.raw_offset = cursor;
+        if (!detail::checked_add_u32(cursor, idata.raw_size, cursor)) {
+            return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .idata file offset overflow");
+        }
+
+        const bool has_reloc = !reloc.data.empty();
+        if (has_reloc) {
+            reloc.raw_offset = cursor;
+            if (!detail::checked_add_u32(cursor, reloc.raw_size, cursor)) {
+                return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .reloc file offset overflow");
+            }
+        }
+
+        const uint32_t file_size = cursor;
+        uint32_t image_end = text_rva + detail::align_up(text.virtual_size, pe::kSectionAlignment);
+        image_end = std::max(image_end, rdata_rva + detail::align_up(rdata.virtual_size, pe::kSectionAlignment));
+        image_end = std::max(image_end, idata_rva + detail::align_up(idata.virtual_size, pe::kSectionAlignment));
+        if (has_reloc) {
+            image_end = std::max(image_end, reloc_rva + detail::align_up(reloc.virtual_size, pe::kSectionAlignment));
+        }
+        const uint32_t size_of_image = detail::align_up(image_end, pe::kSectionAlignment);
+
+        DosHeader dos{};
+        dos.e_magic = pe::kDosMagic;
+        dos.e_lfanew = pe::kDosHeaderOffsetToNT;
+
+        FileHeader file_hdr{};
+        file_hdr.Machine = pe::kMachineAMD64;
+        file_hdr.NumberOfSections = pe::kNumberOfSections;
+        file_hdr.TimeDateStamp = options.deterministic ? 0 : options.timestamp;
+        file_hdr.SizeOfOptionalHeader = 240;
+        file_hdr.Characteristics = pe::kCharacteristicsExecutable | pe::kCharacteristicsLargeAddressAware;
+        if (!has_reloc) {
+            file_hdr.Characteristics |= pe::kCharacteristicsRelocsStripped;
+        }
+
+        OptionalHeader64 opt{};
+        opt.Magic = pe::kOptionalHeader64Magic;
+        opt.MajorLinkerVersion = 14;
+        opt.SizeOfCode = text.raw_size;
+        opt.SizeOfInitializedData = rdata.raw_size + idata.raw_size + reloc.raw_size;
+        opt.AddressOfEntryPoint = text_rva;
+        opt.BaseOfCode = text_rva;
+        opt.ImageBase = options.image_base;
+        opt.SectionAlignment = pe::kSectionAlignment;
+        opt.FileAlignment = pe::kFileAlignment;
+        opt.MajorOperatingSystemVersion = 6;
+        opt.MajorSubsystemVersion = 6;
+        opt.SizeOfImage = size_of_image;
+        opt.SizeOfHeaders = pe::kHeadersSize;
+        opt.Subsystem = pe::kSubsystemWindowsCUI;
+        opt.DllCharacteristics = pe::kDllCharNXCompat | pe::kDllCharTerminalServerAware;
+        if (options.enable_aslr && (has_reloc || base_relocs.empty())) {
+            opt.DllCharacteristics |= pe::kDllCharDynamicBase | pe::kDllCharHighEntropyVA;
+        }
+        opt.SizeOfStackReserve = pe::kStackReserve;
+        opt.SizeOfStackCommit = pe::kStackCommit;
+        opt.SizeOfHeapReserve = pe::kHeapReserve;
+        opt.SizeOfHeapCommit = pe::kHeapCommit;
+        opt.NumberOfRvaAndSizes = 16;
+        opt.DataDirectories[pe::kDirImport].VirtualAddress = idata_rva + desc_off;
+        opt.DataDirectories[pe::kDirImport].Size = descriptor_size;
+        opt.DataDirectories[pe::kDirIAT].VirtualAddress = idata_rva + iat_off;
+        opt.DataDirectories[pe::kDirIAT].Size = total_iat_size;
+        if (has_reloc) {
+            opt.DataDirectories[pe::kDirBaseReloc].VirtualAddress = reloc_rva;
+            opt.DataDirectories[pe::kDirBaseReloc].Size = reloc.virtual_size;
+        } else {
+            opt.DataDirectories[pe::kDirBaseReloc].VirtualAddress = 0;
+            opt.DataDirectories[pe::kDirBaseReloc].Size = 0;
+        }
+
+        std::array<SectionHeader, pe::kNumberOfSections> section_headers{};
+        fill_section_header(section_headers[0], text);
+        fill_section_header(section_headers[1], rdata);
+        fill_section_header(section_headers[2], idata);
+        fill_section_header(section_headers[3], reloc);
+
+        out_binary.assign(file_size, 0);
+        write_dos_header(out_binary, 0, dos);
+
+        static constexpr std::array<uint8_t, 64> dos_stub = {
+            0x0E, 0x1F, 0xBA, 0x0E, 0x00, 0xB4, 0x09, 0xCD, 0x21, 0xB8, 0x01, 0x4C, 0xCD, 0x21,
+            'D','G','T','L',' ','P','E','3','2','+','\r','\n','$',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        };
+        copy_bytes(out_binary, 64, dos_stub);
+        write_u32(out_binary, pe::kDosHeaderOffsetToNT, pe::kPeSignature);
+
+        size_t nt_cursor = pe::kDosHeaderOffsetToNT + 4;
+        write_file_header(out_binary, nt_cursor, file_hdr);
+        nt_cursor += 20;
+        write_optional_header(out_binary, nt_cursor, opt);
+        nt_cursor += 240;
+
+        for (const auto& sh : section_headers) {
+            write_section_header(out_binary, nt_cursor, sh);
+            nt_cursor += 40;
+        }
+
+        copy_bytes(out_binary, text.raw_offset, text.data);
+        copy_bytes(out_binary, rdata.raw_offset, rdata.data);
+        copy_bytes(out_binary, idata.raw_offset, idata.data);
+        if (has_reloc) {
+            copy_bytes(out_binary, reloc.raw_offset, reloc.data);
+        }
+
+        if (options.emit_checksum) {
+            const uint32_t checksum = calculate_pe_checksum(out_binary);
+            write_u32(out_binary, pe::kDosHeaderOffsetToNT + 4 + 20 + 64, checksum);
+        }
+
+        return {true, Error::None, ""};
+    }
+
     static Result emit_standalone_executable(
         const std::string& output_path,
         const dgtl::object::ObjectFile& obj,
         const Options& options = Options{})
     {
-        std::span<const uint8_t> code_span{};
-        std::span<const uint8_t> rdata_span{};
-        if (const auto* text_sec = obj.find_section(".text")) {
-            code_span = std::span<const uint8_t>(text_sec->bytes.data(), text_sec->bytes.size());
-        }
-        if (const auto* rdata_sec = obj.find_section(".rdata")) {
-            rdata_span = std::span<const uint8_t>(rdata_sec->bytes.data(), rdata_sec->bytes.size());
-        }
-        if (code_span.empty()) {
-            return failure(Error::EmptyCode, "DGTL PE linker: ObjectFile has no .text section");
-        }
-        return emit_standalone_executable(output_path, code_span, rdata_span, 0, options);
-    }
+        std::vector<uint8_t> binary;
+        auto res = emit_standalone_binary(obj, binary, options);
+        if (!res.success) return res;
 
-    static Result emit_standalone_executable(
-        const std::string& output_path,
-        const machine::MachineFunction& fn,
-        const Options& options = Options{})
-    {
-        auto obj = dgtl::object::ObjectFile::from_machine_function(fn, dgtl::object::ObjectFormat::COFF);
-        return emit_standalone_executable(output_path, obj, options);
+        std::ofstream out(output_path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return failure(Error::FileOpenFailed, "DGTL PE linker: unable to open output file");
+        }
+        out.write(reinterpret_cast<const char*>(binary.data()), static_cast<std::streamsize>(binary.size()));
+        out.flush();
+        if (!out.good()) {
+            return failure(Error::FileWriteFailed, "DGTL PE linker: failed while writing output file");
+        }
+        return {true, Error::None, ""};
     }
 
     static Result emit_standalone_executable(
@@ -322,6 +869,29 @@ public:
         std::span<const uint8_t> user_rdata,
         uint32_t main_func_offset,
         const Options& options)
+    {
+        std::vector<uint8_t> binary;
+        auto res = emit_standalone_binary(code_bytes, user_rdata, binary, main_func_offset, options);
+        if (!res.success) return res;
+
+        std::ofstream out(output_path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return failure(Error::FileOpenFailed, "DGTL PE linker: unable to open output file");
+        }
+        out.write(reinterpret_cast<const char*>(binary.data()), static_cast<std::streamsize>(binary.size()));
+        out.flush();
+        if (!out.good()) {
+            return failure(Error::FileWriteFailed, "DGTL PE linker: failed while writing output file");
+        }
+        return {true, Error::None, ""};
+    }
+
+    static Result emit_standalone_binary(
+        std::span<const uint8_t> code_bytes,
+        std::span<const uint8_t> user_rdata,
+        std::vector<uint8_t>& binary,
+        uint32_t main_func_offset = 0,
+        const Options& options = Options{})
     {
         if (code_bytes.empty()) {
             return failure(Error::EmptyCode, "DGTL PE linker: code section is empty");
@@ -366,44 +936,121 @@ public:
         const uint32_t reloc_rva = detail::align_up(idata_rva + 0x1000, pe::kSectionAlignment);
 
         // Build .idata Import Table Layout
-        constexpr uint32_t descriptor_count = 2;
-        constexpr uint32_t thunk_count = 2;
-        const uint32_t descriptor_size = descriptor_count * sizeof(ImportDescriptor);
-        const uint32_t thunk_size = thunk_count * sizeof(uint64_t);
-        const uint32_t hint_name_size = 2 + static_cast<uint32_t>(options.entry_import.size()) + 1;
-        const uint32_t dll_name_size = static_cast<uint32_t>(options.import_dll.size() + 1);
+        struct ImportSpec {
+            std::string dll_name;
+            std::vector<std::string> function_names;
+        };
+        std::vector<ImportSpec> import_specs;
+        if (!options.custom_imports.empty()) {
+            for (const auto& [dll, fns] : options.custom_imports) {
+                if (!dll.empty() && !fns.empty()) {
+                    import_specs.push_back({dll, fns});
+                }
+            }
+        }
+        if (import_specs.empty()) {
+            ImportSpec default_spec;
+            default_spec.dll_name = options.import_dll.empty() ? "KERNEL32.DLL" : std::string(options.import_dll);
+            default_spec.function_names.push_back(options.entry_import.empty() ? "ExitProcess" : std::string(options.entry_import));
+            for (const auto& add_fn : options.additional_imports) {
+                if (!add_fn.empty()) {
+                    default_spec.function_names.push_back(add_fn);
+                }
+            }
+            import_specs.push_back(std::move(default_spec));
+        }
+
+        const uint32_t num_dlls = static_cast<uint32_t>(import_specs.size());
+        const uint32_t descriptor_count = num_dlls + 1u;
+        const uint32_t descriptor_size = descriptor_count * static_cast<uint32_t>(sizeof(ImportDescriptor));
+
+        uint32_t total_thunk_count = 0;
+        uint32_t total_hint_size = 0;
+        uint32_t total_dll_name_size = 0;
+
+        for (const auto& spec : import_specs) {
+            const uint32_t count_with_null = static_cast<uint32_t>(spec.function_names.size() + 1u);
+            total_thunk_count += count_with_null;
+            for (const auto& fn_name : spec.function_names) {
+                uint32_t hsz = 2u + static_cast<uint32_t>(fn_name.size()) + 1u;
+                if ((hsz & 1u) != 0u) hsz++;
+                total_hint_size += hsz;
+            }
+            total_dll_name_size += static_cast<uint32_t>(spec.dll_name.size() + 1u);
+        }
+
+        const uint32_t total_ilt_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
+        const uint32_t total_iat_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
 
         uint32_t import_size = 0;
-        if (!detail::checked_add_u32(descriptor_size, thunk_size, import_size) ||
-            !detail::checked_add_u32(import_size, thunk_size, import_size) ||
-            !detail::checked_add_u32(import_size, hint_name_size, import_size) ||
-            !detail::checked_add_u32(import_size, dll_name_size, import_size)) {
+        if (!detail::checked_add_u32(descriptor_size, total_ilt_size, import_size) ||
+            !detail::checked_add_u32(import_size, total_iat_size, import_size) ||
+            !detail::checked_add_u32(import_size, total_hint_size, import_size) ||
+            !detail::checked_add_u32(import_size, total_dll_name_size, import_size)) {
             return failure(Error::RDataTooLarge, "DGTL PE linker: import table size overflow");
         }
 
-        idata.data.assign(import_size + 16, 0);
+        idata.data.assign(import_size + 64, 0);
 
         const uint32_t desc_off = 0;
         const uint32_t ilt_off  = desc_off + descriptor_size;
-        const uint32_t iat_off  = ilt_off + thunk_size;
-        const uint32_t hint_off = iat_off + thunk_size;
-        const uint32_t dll_off  = hint_off + hint_name_size;
+        const uint32_t iat_off  = ilt_off + total_ilt_size;
+        const uint32_t hint_off = iat_off + total_iat_size;
+        const uint32_t dll_off  = hint_off + total_hint_size;
 
-        const uint32_t ilt_rva  = idata_rva + ilt_off;
-        const uint32_t iat_rva  = idata_rva + iat_off;
-        const uint32_t hint_rva = idata_rva + hint_off;
-        const uint32_t dll_rva  = idata_rva + dll_off;
+        uint32_t cur_ilt_off  = ilt_off;
+        uint32_t cur_iat_off  = iat_off;
+        uint32_t cur_hint_off = hint_off;
+        uint32_t cur_dll_off  = dll_off;
 
-        write_u32(idata.data, desc_off + 0, ilt_rva);
-        write_u32(idata.data, desc_off + 12, dll_rva);
-        write_u32(idata.data, desc_off + 16, iat_rva);
+        struct RawIatEntry {
+            std::string name;
+            uint32_t rva;
+        };
+        std::vector<RawIatEntry> func_to_iat_rva;
 
-        write_u64(idata.data, ilt_off, hint_rva);
-        write_u64(idata.data, iat_off, hint_rva);
+        for (uint32_t d = 0; d < num_dlls; ++d) {
+            const auto& spec = import_specs[d];
+            const uint32_t dll_ilt_rva  = idata_rva + cur_ilt_off;
+            const uint32_t dll_iat_rva  = idata_rva + cur_iat_off;
+            const uint32_t dll_name_rva = idata_rva + cur_dll_off;
 
-        write_u16(idata.data, hint_off, 0);
-        write_bytes(idata.data, hint_off + 2, options.entry_import);
-        write_bytes(idata.data, dll_off, options.import_dll);
+            const uint32_t d_off = desc_off + d * static_cast<uint32_t>(sizeof(ImportDescriptor));
+            write_u32(idata.data, d_off + 0, dll_ilt_rva);
+            write_u32(idata.data, d_off + 4, 0);
+            write_u32(idata.data, d_off + 8, 0);
+            write_u32(idata.data, d_off + 12, dll_name_rva);
+            write_u32(idata.data, d_off + 16, dll_iat_rva);
+
+            write_bytes(idata.data, cur_dll_off, spec.dll_name);
+            cur_dll_off += static_cast<uint32_t>(spec.dll_name.size() + 1u);
+
+            for (size_t f = 0; f < spec.function_names.size(); ++f) {
+                const auto& fn_name = spec.function_names[f];
+                const uint32_t fn_hint_rva = idata_rva + cur_hint_off;
+                const uint32_t fn_iat_rva  = idata_rva + cur_iat_off;
+
+                func_to_iat_rva.push_back({fn_name, fn_iat_rva});
+
+                write_u64(idata.data, cur_ilt_off, fn_hint_rva);
+                write_u64(idata.data, cur_iat_off, fn_hint_rva);
+
+                write_u16(idata.data, cur_hint_off, static_cast<uint16_t>(f));
+                write_bytes(idata.data, cur_hint_off + 2, fn_name);
+
+                cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
+                cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
+
+                uint32_t hsz = 2u + static_cast<uint32_t>(fn_name.size()) + 1u;
+                if ((hsz & 1u) != 0u) hsz++;
+                cur_hint_off += hsz;
+            }
+
+            write_u64(idata.data, cur_ilt_off, 0ULL);
+            write_u64(idata.data, cur_iat_off, 0ULL);
+            cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
+            cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
+        }
 
         idata.virtual_address = idata_rva;
         idata.virtual_size = static_cast<uint32_t>(idata.data.size());
@@ -471,7 +1118,14 @@ public:
             write_i32(text.data, 5, static_cast<int32_t>(call_disp));
             text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax
 
-            const int64_t iat_disp = static_cast<int64_t>(idata_rva + iat_off) - static_cast<int64_t>(text_rva + 17);
+            uint32_t exit_iat_rva = idata_rva + iat_off;
+            for (const auto& entry : func_to_iat_rva) {
+                if (entry.name == options.entry_import) {
+                    exit_iat_rva = entry.rva;
+                    break;
+                }
+            }
+            const int64_t iat_disp = static_cast<int64_t>(exit_iat_rva) - static_cast<int64_t>(text_rva + 17);
             if (!detail::fits_int32(iat_disp)) {
                 return failure(Error::IATDisplacementOutOfRange, "DGTL PE linker: IAT is outside RIP-relative range");
             }
@@ -519,7 +1173,7 @@ public:
         opt.DataDirectories[pe::kDirImport].VirtualAddress = idata_rva + desc_off;
         opt.DataDirectories[pe::kDirImport].Size = descriptor_size;
         opt.DataDirectories[pe::kDirIAT].VirtualAddress = idata_rva + iat_off;
-        opt.DataDirectories[pe::kDirIAT].Size = thunk_size;
+        opt.DataDirectories[pe::kDirIAT].Size = total_iat_size;
 
         std::array<SectionHeader, pe::kNumberOfSections> section_headers{};
         fill_section_header(section_headers[0], text);
@@ -527,7 +1181,7 @@ public:
         fill_section_header(section_headers[2], idata);
         fill_section_header(section_headers[3], reloc);
 
-        std::vector<uint8_t> binary(file_size, 0);
+        binary.assign(file_size, 0);
         write_dos_header(binary, 0, dos);
 
         static constexpr std::array<uint8_t, 64> dos_stub = {
@@ -560,16 +1214,6 @@ public:
             write_u32(binary, pe::kDosHeaderOffsetToNT + 4 + 20 + 64, checksum);
         }
 
-        std::ofstream out(output_path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            return failure(Error::FileOpenFailed, "DGTL PE linker: unable to open output file");
-        }
-        out.write(reinterpret_cast<const char*>(binary.data()), static_cast<std::streamsize>(binary.size()));
-        out.flush();
-        if (!out.good()) {
-            return failure(Error::FileWriteFailed, "DGTL PE linker: failed while writing output file");
-        }
-
         return {true, Error::None, ""};
     }
 
@@ -587,7 +1231,7 @@ private:
 
     static void fill_section_header(SectionHeader& header, const Section& section) noexcept {
         header = {};
-        header.Name = section.name;
+        std::memcpy(header.Name, section.name.data(), 8);
         header.VirtualSize = section.virtual_size;
         header.VirtualAddress = section.virtual_address;
         header.SizeOfRawData = section.raw_size;

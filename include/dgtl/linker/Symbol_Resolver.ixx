@@ -50,9 +50,9 @@ public:
         set(std::string(fn.name()), address);
     }
 
-    void import_symbol(const dgtl::object::Symbol& sym) {
+    void import_symbol(const dgtl::object::Symbol& sym, uint64_t section_base = 0) {
         if (!sym.name.empty() && sym.is_defined()) {
-            set(sym.name, sym.value);
+            set(sym.name, section_base + sym.value);
         }
     }
 

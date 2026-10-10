@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  * Project: DGTL (Deep General-purpose Transformation Layer)
  * Component: Production-Grade Semantic & Symbol Table Pipeline Integration Test
@@ -23,7 +23,7 @@ void run_test_t14_semantic_production_stress() {
     dgtl::semantic::SymbolTable symtab(arena, 4096);
     symtab.register_builtin_runtime_symbols();
 
-    dgtl::core::DGTLFunction func(arena, "production_kernel_entry", 1024);
+    dgtl::ir::DGTLFunction func(arena, "production_kernel_entry", 1024);
     auto& stream = func.stream();
 
     symtab.push_scope();

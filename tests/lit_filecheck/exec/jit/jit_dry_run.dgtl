@@ -1,0 +1,9 @@
+; RUN: %dgtl-llc --target=x86_64 --filetype=obj --output=%t.o %s
+; RUN: %dgtl-engine --dry-run %t.o | FileCheck %s
+; FileCheck test for JIT Code Cache Loader and Verification
+; Verifies object loading into executable memory and security validation
+
+op 0x0D 0x00000001 0x0000002A 0x00000000 0x00000000 0x0000
+op 0x65 0x00000000 0x00000001 0x00000000 0x00000000 0x0000
+
+; CHECK: Dry run successful: code verified and cached

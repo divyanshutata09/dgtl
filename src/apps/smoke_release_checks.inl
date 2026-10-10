@@ -269,11 +269,10 @@ bool run_release_smoke_suite(const AppOptions& opts,
 void run_evolution_step(dgtl::ir::IRStream& stream) {
 	dgtl::ir::evolution::IREvolver evolver;
 	for (size_t i = 0; i < stream.size(); ++i) {
-		const auto node = stream.get_node(i);
+		auto node = stream.get_node(i);
 		if (!node.is_terminator() && node.opcode != dgtl::ir::OpCode::NOP) {
-			auto& node_ref = stream.get_node_ref(i);
-			if (evolver.apply_mutation(stream, &node_ref, dgtl::ir::evolution::MutationType::CONSTANT_FOLDING).succeeded) {
-				stream.set_node(i, node_ref);
+			if (evolver.apply_mutation(stream, &node, dgtl::ir::evolution::MutationType::CONSTANT_FOLDING).succeeded) {
+				stream.set_node(i, node);
 			}
 			return;
 		}

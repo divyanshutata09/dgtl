@@ -75,8 +75,12 @@ public:
         return is_generic_opcode(inst_.opcode);
     }
 
-    [[nodiscard]] constexpr bool is_target() const noexcept {
-        return is_target_opcode(inst_.opcode);
+    [[nodiscard]] MachineOpcode target_opcode() const noexcept {
+        return inst_.target_opcode();
+    }
+
+    [[nodiscard]] bool is_target() const noexcept {
+        return inst_.has_target_opcode();
     }
 
     [[nodiscard]] constexpr bool is_commutative() const noexcept {

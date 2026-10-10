@@ -106,40 +106,6 @@ struct CompilationProfile {
     [[nodiscard]] const SIMDMetrics& get_simd() const noexcept { return simd; }
 };
 
-/**
- * @brief Profiling Data - Runtime execution profile for PGO
- */
-struct ProfilingData {
-    struct BlockMetrics {
-        uint64_t execution_count = 0;
-        float hotness_score = 0.0f;
-    };
-    
-    // 🚀 MODERNIZE: Replaced std::unordered_map with custom FastFlatMap
-    dgtl::utils::FastFlatMap<uint32_t, BlockMetrics, 256> block_metrics;
-    uint64_t max_execution_count = 1;
-
-    void record_block_execution(uint32_t block_id) noexcept {
-        auto* m = block_metrics.find(block_id);
-        if (!m) {
-            BlockMetrics bm{1, 0.0f};
-            block_metrics.insert_or_assign(block_id, bm);
-            m = block_metrics.find(block_id);
-        } else {
-            m->execution_count++;
-        }
-        if (m->execution_count > max_execution_count)
-            max_execution_count = m->execution_count;
-    }
-
-    [[nodiscard]] float compute_hotness_score(uint32_t block_id) const noexcept {
-        auto* it = block_metrics.find(block_id);
-        if (!it) return 0.0f;
-        return static_cast<float>(it->execution_count)
-               / static_cast<float>(max_execution_count);
-    }
-};
-
 // ======================================================
 // CFG DATA MODEL
 // ======================================================
@@ -172,8 +138,6 @@ private:
     size_t count = 0;
     size_t _capacity = 0;
 
-    void refresh_joined_buffer_locked(bool trans) const noexcept;
-
     // Guaranteed 64-byte aligned pointers for SoA (Structure of Arrays)
     // Backed by dgtl::core::ThreadLocalArena for deterministic performance
     IRAtom* atoms = nullptr;
@@ -187,36 +151,23 @@ private:
 
     // Atomic transaction state with release/acquire semantics
     std::atomic<bool> in_transaction{false};
-
-    // FIX: track transaction state for joined buffer proxy
-    mutable bool joined_buffer_in_transaction = false;
-
-    // AoS fallback/proxy buffer
-    mutable IRNode* joined_buffer = nullptr;
-    mutable bool joined_valid = false;
-    IRNode fallback_node{};  // sentinel returned on OOB reads; never mutated by const paths
     
     // Stream-level lock used by std::lock_guard in implementation units.
     mutable std::recursive_mutex stream_mutex;
 
     // Memory Ownership Flags
     bool owns_aligned_alloc_storage = false;
-    bool owns_joined_buffer = false;
 
     // ========================================================================
-    // NEW: FRONTEND CONTEXT & LANGUAGE SUPPORT
+    // FRONTEND CONTEXT & LANGUAGE SUPPORT
     // ========================================================================
     FrontendLanguage frontend_lang = FrontendLanguage::UNIVERSAL;
     TypeContext default_type_ctx;
     
-    // 🚀 MODERNIZE: Replacing massive unordered_maps with FastFlatMaps to prevent compilation crashes
+    // Zero-allocation FastFlatMaps for high-throughput metadata
     dgtl::utils::FastFlatMap<uint32_t, OwnershipLifetime, 1024> ownership_tracking;  // Node ID -> ownership info
     dgtl::utils::FastFlatMap<uint32_t, ConcurrencyClass, 1024> concurrency_map;       // Node ID -> concurrency class
     dgtl::utils::FastFlatMap<uint32_t, DSAType, 1024> dsa_map;                       // Node ID -> DSA type
-    
-    // 🚀 FIXED: Lightweight layout tracking vectors bypass private map internals cleanly
-    std::vector<uint32_t> concurrency_keys_;
-    std::vector<uint32_t> dsa_keys_;
 
     // CALL overflow-argument sidecar: node index -> args[3..N-1] virtual IDs.
     dgtl::utils::FastFlatMap<size_t, std::vector<uint32_t>, 1024> call_overflow_args_;
@@ -246,7 +197,7 @@ public:
     IRStream() = default;
 
     IRStream([[maybe_unused]] dgtl::core::DGTL_Arena& arena, size_t node_count);
-    IRStream(IRNode* external_buffer, size_t node_count);
+    IRStream(const IRNode* external_buffer, size_t node_count);
     ~IRStream();
 
     IRStream(IRStream&& other) noexcept;
@@ -261,7 +212,6 @@ public:
     [[nodiscard]] size_t size() const noexcept { return count; }
     [[nodiscard]] size_t capacity() const noexcept { return _capacity; }
     [[nodiscard]] bool is_null() const noexcept;
-    [[nodiscard]] const IRNode* get_joined_buffer() const noexcept { return joined_buffer; }
 
     // NUMA utilities for IR execution/merge callers.
     [[nodiscard]] static uint32_t numa_node_count() noexcept {
@@ -311,9 +261,7 @@ public:
     // ACCESS (TRANSACTION-AWARE)
     // ======================================================
     [[nodiscard]] IRNode get_node(size_t idx) const noexcept;
-    [[nodiscard]] const IRNode& get_node_readonly(size_t idx) const noexcept;
-
-    [[nodiscard]] IRNode& get_node_ref(size_t idx) noexcept;
+    [[nodiscard]] IRNode get_node_readonly(size_t idx) const noexcept { return get_node(idx); }
 
     [[nodiscard]] const IRAtom& get_atom_readonly(size_t idx) const noexcept;
     [[nodiscard]] const IRCore& get_core_readonly(size_t idx) const noexcept;
@@ -398,11 +346,6 @@ public:
     void push_to_shadow(const IRNode& node) noexcept;
     [[nodiscard]] IRNode get_shadow_node_proxy(size_t idx) const noexcept;
 
-    // ======================================================
-    // BUFFER ACCESS (STRICT ALIGNMENT HINTS)
-    // ======================================================
-    [[nodiscard]] IRNode* get_buffer_ptr() const noexcept;
-
     [[nodiscard]] bool hint_aligned_strike() const noexcept {
         if (!atoms || !cores) {
             return false;
@@ -421,18 +364,6 @@ public:
     [[nodiscard]] uint64_t generate_logic_hash() const noexcept;
     [[nodiscard]] uint32_t intent_crc() const noexcept;
     [[nodiscard]] uint32_t get_max_id() const noexcept;
-
-
-    void optimize_memory_access_patterns() noexcept;
-
-    // ============================================================================
-    // ADVANCED OPTIMIZATION PASSES (NEW - BETTER THAN LLVM)
-    // ============================================================================
-    void perform_speculative_optimization() noexcept;
-    void perform_loop_unrolling(uint8_t unroll_factor = 4) noexcept;
-    void optimize_branch_prediction() noexcept;
-    void perform_profile_guided_optimization(const ProfilingData& profile_data) noexcept;
-    void analyze_vectorization_patterns() noexcept;
 
     [[nodiscard]] std::span<const IRBasicBlock> get_cached_cfg_blocks() const noexcept {
         ensure_cfg_cache_locked();
@@ -456,7 +387,7 @@ public:
     }
     
     // ============================================================================
-    // PROFILE-GUIDED OPTIMIZATION &  TIER TRACKING (NEW)
+    // PROFILE-GUIDED OPTIMIZATION & TIER TRACKING
     // ============================================================================
     [[nodiscard]] CompilationProfile get_compilation_profile(uint32_t stream_id) const noexcept;
     [[nodiscard]] CompilationProfile::CompilationTier compute_adaptive_tier(uint32_t function_id) const noexcept;
@@ -470,8 +401,6 @@ public:
                                  double cache_miss_rate,
                                  double branch_mispredict_rate,
                                  uint64_t execution_count) noexcept;
-    void analyze_simd_opportunities() noexcept;
-    void analyze_speculation_opportunities() noexcept;
 
     // ======================================================
     // CFG: BASIC BLOCKS / EDGES / TRAVERSALS
@@ -592,9 +521,6 @@ public:
 
     // Concurrency Tracking Methods
     void mark_concurrent(uint32_t node_id, ConcurrencyClass concur_class) noexcept {
-        if (!concurrency_map.find(node_id)) {
-            concurrency_keys_.push_back(node_id);
-        }
         concurrency_map.insert_or_assign(node_id, concur_class);
     }
 
@@ -605,18 +531,14 @@ public:
 
     [[nodiscard]] uint32_t count_concurrent_ops() const noexcept {
         uint32_t n = 0;
-        for (uint32_t key : concurrency_keys_) {
-            auto* it = concurrency_map.find(key);
-            if (it && *it != ConcurrencyClass::SEQUENTIAL) ++n;
+        for (const auto& pair : concurrency_map) {
+            if (pair.second != ConcurrencyClass::SEQUENTIAL) ++n;
         }
         return n;
     }
 
     // DSA Type Tracking Methods
     void mark_dsa_operation(uint32_t node_id, DSAType dsa_type) noexcept {
-        if (!dsa_map.find(node_id)) {
-            dsa_keys_.push_back(node_id);
-        }
         dsa_map.insert_or_assign(node_id, dsa_type);
     }
 
@@ -626,17 +548,15 @@ public:
     }
 
     [[nodiscard]] bool has_graph_operations() const noexcept {
-        for (uint32_t key : dsa_keys_) {
-            auto* it = dsa_map.find(key);
-            if (it && *it == DSAType::GRAPH) return true;
+        for (const auto& pair : dsa_map) {
+            if (pair.second == DSAType::GRAPH) return true;
         }
         return false;
     }
 
     [[nodiscard]] bool has_tensor_operations() const noexcept {
-        for (uint32_t key : dsa_keys_) {
-            auto* it = dsa_map.find(key);
-            if (it && *it == DSAType::TENSOR) return true;
+        for (const auto& pair : dsa_map) {
+            if (pair.second == DSAType::TENSOR) return true;
         }
         return false;
     }

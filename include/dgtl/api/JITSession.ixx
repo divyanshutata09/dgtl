@@ -20,28 +20,25 @@ module;
 #include <string_view>
 #include <mutex>
 #include <shared_mutex>
-#include <cstdio>
+#include <unordered_map>
 
 // Named module interface declaration
 export module dgtl.api.jit_session;
 
-// Import external monolithic module architectures natively
 import dgtl.ir;
 import dgtl.runtime.numa;
 import dgtl.compiler_context;
 import dgtl.runtime.bulletins;
 import dgtl.ir.stream;
-import dgtl.ir.pipeline.pass_manager_orchestrator;
-import dgtl.jit.jit_orchestrator;
 import dgtl.runtime.tls;
-import dgtl.execution.cache;
-import dgtl.execution.dispatcher;
-import dgtl.flat_map; 
-import dgtl.sync;     
 import dgtl.mir;
 import dgtl.mir.machine_ir;
+import dgtl.mir.pipeline;
+import dgtl.object.file;
+import dgtl.target;
+import dgtl.codegen.driver;
+import dgtl.jit.object_loader;
 
-// Import local base class engine definition safely via its sibling API partition shortcut
 import dgtl.api.execution_engine;
 import dgtl.formal;
 
@@ -51,38 +48,23 @@ namespace api {
 /**
  * @class JITSession
  * @brief Just-In-Time execution engine.
- * Optimized for low-latency on-the-fly compilation of hot paths.
- * Suitable for HFT and latency-critical workloads where compilation
- * must complete in microseconds.
- *
- * ARCHITECTURAL INVARIANT:
- * One Authoritative MIR: dgtl::machine::MachineFunction is the sole source
- * of truth across target lowering and binary emission.
+ * Powered by DGTL's sovereign compilation pipeline:
+ * IRStream -> CodegenDriver -> ObjectFile -> JITObjectLoader -> W^X Memory.
  */
 class alignas(64) JITSession final : public ExecutionEngine {
 public:
     using ExecutionEngine::get_symbol_address;
 
-    /**
-     * @brief Create a JIT session for the given context.
-     * @param context The execution context
-     */
     explicit JITSession(Context& context)
         : context_(context),
-          pipeline_(),
-          orchestrator_(*context.get_impl(), context.get_impl()->get_arena()),
-          code_cache_(16 * 1024 * 1024) {
-        (void)pipeline_.initialize();
+          target_machine_(),
+          pipeline_options_() {
     }
 
     ~JITSession() override = default;
 
     /**
      * @brief Sovereign MachineFunction JIT Compilation.
-     * dgtl::machine::MachineFunction is the authoritative execution and emission contract.
-     *
-     * @param function The verified MachineFunction to compile and load into executable memory
-     * @return true if compilation, verification, and loading succeeded
      */
     [[nodiscard]] bool compile(const dgtl::machine::MachineFunction& function) {
         if (function.instructions().empty()) {
@@ -94,49 +76,75 @@ public:
             return false;
         }
 
-        const std::string name_key = function.name().empty() 
-            ? ("dgtl_mf_" + std::to_string(reinterpret_cast<uintptr_t>(&function)))
+        const std::string name_key = function.name().empty()
+            ? (std::string("dgtl_mf_") + std::to_string(reinterpret_cast<uintptr_t>(&function)))
             : std::string(function.name());
 
+        std::unordered_map<std::string, uintptr_t> host_syms_copy;
+        std::unordered_map<uint32_t, std::string> slot_syms_copy;
         {
             std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
-            if (symbol_map_.find(name_key) != nullptr) {
-                return true;
-            }
+            host_syms_copy = host_symbols_;
+            slot_syms_copy = slot_to_symbol_;
         }
 
-        uintptr_t addr = orchestrator_.compile_mir_to_address(function);
-        if (addr == 0) {
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(
+            function,
+            target_machine_,
+            slot_syms_copy,
+            name_key
+        );
+
+        if (!codegen_res.success) {
             return false;
         }
 
-        const void* code_ptr = reinterpret_cast<const void*>(addr);
-        size_t code_size = orchestrator_.get_last_code_size();
-        (void)code_cache_.store(name_key, code_ptr, code_size);
+        return compile_object_with_name(codegen_res.object, name_key);
+    }
+
+    [[nodiscard]] bool compile_mir(const machine::MachineFunction& fn) override {
+        return compile(fn);
+    }
+
+    [[nodiscard]] bool compile_object(const dgtl::object::ObjectFile& obj) override {
+        return compile_object_with_name(obj, "DGTL_kernel_entry");
+    }
+
+    [[nodiscard]] bool compile_object_with_name(const dgtl::object::ObjectFile& obj, const std::string& name_key) {
+        std::unordered_map<std::string, uintptr_t> host_syms_copy;
+        {
+            std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+            host_syms_copy = host_symbols_;
+        }
+
+        auto load_res = dgtl::jit::JITObjectLoader::load(obj, host_syms_copy, name_key);
+        if (!load_res.success) {
+            return false;
+        }
+
+        uintptr_t entry_addr = load_res.module.entry_point();
 
         {
             std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
-            symbol_map_.insert_or_assign(name_key, addr);
-            symbol_map_.insert_or_assign("DGTL_kernel_entry", addr);
-            symbol_map_.insert_or_assign("main", addr);
+            loaded_modules_.push_back(std::move(load_res.module));
+            const auto* base = static_cast<const uint8_t*>(loaded_modules_.back().memory());
+            if (base) {
+                for (const auto& sym : obj.symbols()) {
+                    if (sym.is_defined() && !sym.name.empty()) {
+                        symbol_map_[sym.name] = reinterpret_cast<uint64_t>(base + sym.value);
+                    }
+                }
+            }
+            symbol_map_[name_key] = entry_addr;
+            symbol_map_["DGTL_kernel_entry"] = entry_addr;
+            symbol_map_["main"] = entry_addr;
         }
 
         return true;
     }
 
     /**
-     * @brief Sovereign MIR MachineFunction compilation override from ExecutionEngine base.
-     */
-    [[nodiscard]] bool compile_mir(const machine::MachineFunction& fn) override {
-        return compile(fn);
-    }
-
-    /**
-     * @brief Compile IRStream with JIT optimizations by lowering to MachineFunction.
-     * Enforces the architectural invariant: IRStream -> MachinePipeline -> MachineFunction -> Binary Emission.
-     *
-     * @param stream The IR to compile
-     * @return true if compilation and execution succeeded
+     * @brief Compile IRStream with MIR optimizations through sovereign CodegenDriver.
      */
     [[nodiscard]] bool compile(ir::IRStream& stream) override {
         if (stream.is_null() || stream.size() == 0) return false;
@@ -144,205 +152,82 @@ public:
         dgtl::runtime::TLSFlushMerge flusher;
         flusher.merge_concurrent(stream);
 
-        uint64_t logic_hash = stream.generate_logic_hash();
-        std::string key = std::to_string(logic_hash);
-
+        std::unordered_map<uint32_t, std::string> slot_syms_copy;
+        std::unordered_map<std::string, uintptr_t> host_syms_copy;
         {
             std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
-            if (symbol_map_.find(key) != nullptr) {
-                return true;
-            }
+            slot_syms_copy = slot_to_symbol_;
+            host_syms_copy = host_symbols_;
         }
 
-        if (pipeline_.execute(stream) != dgtl::pipeline::JITStatus::Success) {
+        auto codegen_res = dgtl::codegen::CodegenDriver::compile(
+            stream,
+            target_machine_,
+            slot_syms_copy,
+            "DGTL_kernel_entry",
+            pipeline_options_
+        );
+
+        if (!codegen_res.success) {
             return false;
         }
 
-        dgtl::machine::MachineFunction mf;
-        auto result = orchestrator_.compile_mir_function(stream, mf);
-        if (!result.success) {
+        auto load_res = dgtl::jit::JITObjectLoader::load(
+            codegen_res.object,
+            host_syms_copy,
+            "DGTL_kernel_entry"
+        );
+
+        if (!load_res.success) {
             return false;
         }
 
-        if (!compile(mf)) {
-            return false;
-        }
+        uintptr_t entry_addr = load_res.module.entry_point();
 
-        uintptr_t addr = 0;
         {
-            std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
-            auto* p_addr = symbol_map_.find("DGTL_kernel_entry");
-            if (p_addr) {
-                addr = *p_addr;
-            }
-        }
-
-        if (addr != 0) {
             std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
-            symbol_map_.insert_or_assign(key, addr);
-
-            for (size_t i = 0; i < stream.size(); ++i) {
-                const auto node = stream.get_node_readonly(i);
-                if (node.opcode == ir::OpCode::LABEL) {
-                    uint32_t label_id = node.result_id != ir::INVALID_SLOT ? node.result_id : node.op_a;
-                    size_t offset = orchestrator_.get_label_offset(label_id);
-                    uintptr_t label_addr = addr + offset;
-
-                    std::string_view name = dgtl::runtime::try_lookup_string(label_id);
-                    if (!name.empty()) {
-                        symbol_map_.insert_or_assign(std::string(name), label_addr);
-                        if (name == "DGTL_kernel_entry" || name == "main") {
-                            symbol_map_.insert_or_assign("DGTL_kernel_entry", label_addr);
-                            symbol_map_.insert_or_assign("main", label_addr);
-                        }
+            loaded_modules_.push_back(std::move(load_res.module));
+            const auto* base = static_cast<const uint8_t*>(loaded_modules_.back().memory());
+            if (base) {
+                for (const auto& sym : codegen_res.object.symbols()) {
+                    if (sym.is_defined() && !sym.name.empty()) {
+                        symbol_map_[sym.name] = reinterpret_cast<uint64_t>(base + sym.value);
                     }
                 }
             }
+            symbol_map_["DGTL_kernel_entry"] = entry_addr;
+            symbol_map_["main"] = entry_addr;
         }
 
         return true;
     }
 
-    /**
-     * @brief Compile an IRStream directly through the Unified MIR Machine Pipeline.
-     * Provides target capability legalization, instruction selection, SSA Phi lowering,
-     * two-address normalization, graph-coloring register allocation, frame lowering,
-     * target ABI lowering, and formal Machine IR structural verification.
-     *
-     * @param stream The IRStream to lower into formal Machine IR
-     * @param options Pipeline pass configuration
-     * @return Pair containing the fully lowered/verified MachineFunction and pipeline result
-     */
-    [[nodiscard]] std::pair<dgtl::machine::MachineFunction, dgtl::mir::MachinePipelineResult> compile_mir(
-        const ir::IRStream& stream,
-        const dgtl::mir::MachinePipelineOptions& options = {}) {
-        dgtl::machine::MachineFunction mf;
-        auto result = orchestrator_.compile_mir_function(stream, mf, options);
-        return {std::move(mf), result};
-    }
-
-    /**
-     * @brief Compile an authoritative MachineFunction directly into executable memory with verification.
-     */
-    [[nodiscard]] bool compile_with_mir(const dgtl::machine::MachineFunction& function) {
-        return compile(function);
-    }
-
-    /**
-     * @brief Compile an IRStream directly through the Unified MIR Machine Pipeline
-     * and load into executable memory with full verification.
-     */
-    [[nodiscard]] bool compile_with_mir(ir::IRStream& stream) {
-        return compile(stream);
-    }
-
-    /**
-     * @brief Compile a MachineFunction using the JIT Tiered Compilation subsystem.
-     *
-     * @param function The MachineFunction to compile
-     * @param queue_tier2 Whether to queue background Tier 2 optimization
-     * @return Function ID for tiered execution dispatch
-     */
-    [[nodiscard]] uint64_t compile_tiered(const dgtl::machine::MachineFunction& function, bool queue_tier2 = true) {
-        return orchestrator_.compile_tiered_function(function, queue_tier2);
-    }
-
-    /**
-     * @brief Compile an IRStream using the JIT Tiered Compilation subsystem.
-     * Starts with ultra-low latency Tier 1 baseline compilation, followed by asynchronous
-     * background Tier 2 optimization and MIR verification.
-     *
-     * @param stream The IRStream to compile
-     * @param queue_tier2 Whether to queue background Tier 2 optimization
-     * @return Function ID for tiered execution dispatch
-     */
-    [[nodiscard]] uint64_t compile_tiered(const ir::IRStream& stream, bool queue_tier2 = true) {
-        return orchestrator_.compile_tiered_function(stream, queue_tier2);
-    }
-
-    /**
-     * @brief Retrieve the verified MachineFunction for an optimized tiered function if available.
-     * @param function_id The tiered function identifier
-     * @return Shared pointer to const MachineFunction, or nullptr if not yet ready
-     */
-    [[nodiscard]] std::shared_ptr<const dgtl::machine::MachineFunction> get_mir_function(uint64_t function_id) const {
-        return orchestrator_.get_tiered_mir_function(function_id);
-    }
-
-    /**
-     * @brief Resolve a symbol by name from JIT code cache.
-     * @param symbol_name The name of the symbol
-     * @return Address of compiled code (0 if not found)
-     */
     [[nodiscard]] uint64_t get_symbol_address(const char* symbol_name) noexcept override {
         if (!symbol_name) return 0;
         std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
-        auto* addr = symbol_map_.find(symbol_name);
-        if (addr) {
-            return *addr;
+        auto it = symbol_map_.find(symbol_name);
+        if (it != symbol_map_.end()) {
+            return it->second;
         }
-        return orchestrator_.lookup_global_symbol(symbol_name);
+        auto h_it = host_symbols_.find(symbol_name);
+        if (h_it != host_symbols_.end()) {
+            return h_it->second;
+        }
+        return 0;
     }
 
     void register_host_symbol(const std::string& symbol_name, uint64_t address) override {
-        orchestrator_.register_runtime_function(symbol_name, static_cast<uintptr_t>(address));
+        std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
+        host_symbols_[symbol_name] = static_cast<uintptr_t>(address);
     }
 
     void register_host_symbol_slot(uint32_t slot, uint64_t address) override {
-        orchestrator_.register_runtime_function_slot(slot, static_cast<uintptr_t>(address));
-    }
-
-    /**
-     * @brief Multi-Module JIT Linking directly from authoritative MachineFunctions.
-     */
-    [[nodiscard]] bool compile_module(
-        const std::vector<std::pair<std::string, const dgtl::machine::MachineFunction*>>& module_functions) noexcept {
-        auto metrics = orchestrator_.fire_module_strike(module_functions);
-        if (metrics.status_code != dgtl::jit::StrikeOrchestrator::STRIKE_OK) {
-            return false;
-        }
-
         std::unique_lock<std::shared_mutex> lock(symbol_mutex_);
-        for (const auto& [name, fn_ptr] : module_functions) {
-            uintptr_t addr = orchestrator_.lookup_global_symbol(name);
-            if (addr != 0) {
-                symbol_map_.insert_or_assign(name, addr);
-            }
-        }
-        return true;
+        const std::string name = std::string("host_sym_") + std::to_string(slot);
+        host_symbols_[name] = static_cast<uintptr_t>(address);
+        slot_to_symbol_[slot] = name;
     }
 
-    /**
-     * @brief Multi-Module JIT Linking to resolve cross-function references from IRStreams.
-     * Lowers each stream to MachineFunction before module strike.
-     */
-    [[nodiscard]] bool compile_module(std::vector<std::pair<std::string, ir::IRStream>>& module_streams) noexcept {
-        dgtl::runtime::TLSFlushMerge flusher;
-        std::vector<dgtl::machine::MachineFunction> lowered_functions;
-        lowered_functions.reserve(module_streams.size());
-
-        for (auto& [name, stream] : module_streams) {
-            flusher.merge_concurrent(stream);
-            if (pipeline_.execute(stream) != dgtl::pipeline::JITStatus::Success) return false;
-
-            dgtl::machine::MachineFunction mf;
-            auto result = orchestrator_.compile_mir_function(stream, mf);
-            if (!result.success) return false;
-            lowered_functions.push_back(std::move(mf));
-        }
-
-        std::vector<std::pair<std::string, const dgtl::machine::MachineFunction*>> mir_modules;
-        mir_modules.reserve(module_streams.size());
-        for (size_t i = 0; i < module_streams.size(); ++i) {
-            mir_modules.emplace_back(module_streams[i].first, &lowered_functions[i]);
-        }
-
-        return compile_module(mir_modules);
-    }
-
-    /**
-     * @brief Verify equivalence using external SMT solver.
-     */
     [[nodiscard]] formal::VerificationResult verify_semantics(
         const ir::IRStream& original_stream,
         const ir::IRStream& optimized_stream,
@@ -354,9 +239,6 @@ public:
         return verifier.verify_with_external_solver(script, solver_name);
     }
 
-    /**
-     * @brief Specialize an IR stream using evolutionary optimization.
-     */
     [[nodiscard]] bool specialize_stream(
         ir::IRStream& stream,
         const ir::evolution::ExecutionFeedback& feedback
@@ -366,17 +248,21 @@ public:
         return res.succeeded;
     }
 
-    [[nodiscard]] dgtl::pipeline::JIT_Pipeline& get_pipeline() noexcept { return pipeline_; }
-    [[nodiscard]] const dgtl::pipeline::JIT_Pipeline& get_pipeline() const noexcept { return pipeline_; }
+    [[nodiscard]] dgtl::mir::MachinePipelineOptions& get_pipeline() noexcept { return pipeline_options_; }
+    [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline() const noexcept { return pipeline_options_; }
+    [[nodiscard]] dgtl::mir::MachinePipelineOptions& get_pipeline_options() noexcept { return pipeline_options_; }
+    [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline_options() const noexcept { return pipeline_options_; }
 
 private:
     Context& context_;
-    dgtl::pipeline::JIT_Pipeline pipeline_;
-    dgtl::jit::StrikeOrchestrator orchestrator_;
-    dgtl::execution::cache::Code_Cache code_cache_;
+    core::TargetMachine target_machine_;
+    dgtl::mir::MachinePipelineOptions pipeline_options_{};
 
+    std::vector<dgtl::jit::JITLoadedModule> loaded_modules_;
+    std::unordered_map<std::string, uintptr_t> host_symbols_;
+    std::unordered_map<uint32_t, std::string> slot_to_symbol_;
+    std::unordered_map<std::string, uint64_t> symbol_map_;
     mutable std::shared_mutex symbol_mutex_;
-    dgtl::utils::FastFlatMap<std::string, uint64_t, 512> symbol_map_;
 
     JITSession(const JITSession&) = delete;
     JITSession& operator=(const JITSession&) = delete;

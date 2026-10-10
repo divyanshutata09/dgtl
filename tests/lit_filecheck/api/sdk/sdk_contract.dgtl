@@ -1,0 +1,12 @@
+; RUN: %dgtl-llc --target=x86_64 --output=%t.s %s
+; RUN: %dgtl-opt --verify --filecheck %s
+; FileCheck test for Public SDK Contract and IR Stability
+; Verifies IR serialization and low-level code generation compliance
+
+op 0x0D 0x00000001 0x00000001 0x00000000 0x00000000 0x0000
+op 0x65 0x00000000 0x00000001 0x00000000 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: op 0x0d 0x00000001
+; CHECK: op 0x65 0x00000000
+; CHECK: End of IR

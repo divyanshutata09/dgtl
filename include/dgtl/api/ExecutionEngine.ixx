@@ -75,6 +75,20 @@ public:
     }
 
     /**
+     * @brief Emit relocatable object file to disk.
+     */
+    [[nodiscard]] virtual bool emit_object([[maybe_unused]] std::string_view output_path) noexcept {
+        return false;
+    }
+
+    /**
+     * @brief Emit standalone executable binary to disk.
+     */
+    [[nodiscard]] virtual bool emit_binary([[maybe_unused]] std::string_view output_path) noexcept {
+        return false;
+    }
+
+    /**
      * @brief Direct native execution of compiled machine function.
      */
     [[nodiscard]] virtual int64_t execute(const machine::MachineFunction& fn, void* ctx = nullptr) {

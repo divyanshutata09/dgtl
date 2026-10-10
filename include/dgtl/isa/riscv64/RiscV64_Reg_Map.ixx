@@ -128,4 +128,4 @@ public:
     }
 };
 
-} // namespace dgtl::isa::riscv64::riscv64
+} // namespace dgtl::isa::riscv64

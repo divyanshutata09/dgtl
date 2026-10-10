@@ -23,6 +23,7 @@ module;
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -51,6 +52,7 @@ struct MachineBasicBlock {
 
     std::vector<MachineRegister> live_ins;
     std::vector<MachineRegister> live_outs;
+    std::vector<MachineRegister> formal_params;
 
     bool entry = false;
     bool exit = false;
@@ -278,7 +280,7 @@ enum class BlockBranchTopology : std::uint8_t {
 };
 
 struct MachineFunctionProperties {
-    bool is_ssa = true;
+    bool is_ssa = false;
     bool tracks_liveness = false;
     bool registers_allocated = false;
     bool frame_lowered = false;
@@ -357,10 +359,7 @@ public:
         blocks_.push_back({});
         blocks_.back().id = id;
         blocks_.back().entry = entry;
-        if (entry) {
-            if (entry_block_ != INVALID_BLOCK_ID) {
-                throw std::logic_error("MachineFunction cannot have multiple entry blocks");
-            }
+        if (entry && entry_block_ == INVALID_BLOCK_ID) {
             entry_block_ = id;
         }
         return blocks_.back();
@@ -420,10 +419,13 @@ public:
         instructions_.push_back({});
         instructions_.back().id = id;
         instructions_.back().opcode = opcode;
+        if (is_target_opcode(opcode)) {
+            (void)instructions_.back().assign_target_opcode_once(opcode);
+        }
         return instructions_.back();
     }
 
-    void insert_instruction_before(BlockId block_id, InstrId cursor_id, InstrId new_instr_id);
+    [[nodiscard]] bool insert_instruction_before(BlockId block_id, InstrId cursor_id, InstrId new_instr_id);
     void remove_instruction(InstrId instr_id);
     void splice_instructions(BlockId dest_block_id, InstrId cursor_id,
                              BlockId src_block_id, InstrId first_instr_id, InstrId last_instr_id);
@@ -478,6 +480,36 @@ public:
         return entry_block_;
     }
 
+    [[nodiscard]] BlockId block_for_label(std::uint32_t label_id) {
+        auto it = label_to_block_.find(label_id);
+        if (it != label_to_block_.end()) {
+            return it->second;
+        }
+        MachineBasicBlock& bb = create_block(blocks_.empty());
+        label_to_block_[label_id] = bb.id;
+        return bb.id;
+    }
+
+    void map_label_to_block(std::uint32_t label_id, BlockId block_id) {
+        label_to_block_[label_id] = block_id;
+    }
+
+    [[nodiscard]] std::optional<BlockId> find_block_for_label(std::uint32_t label_id) const noexcept {
+        auto it = label_to_block_.find(label_id);
+        if (it != label_to_block_.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
+    void add_param(MachineRegister reg) {
+        params_.push_back(reg);
+    }
+
+    [[nodiscard]] std::span<const MachineRegister> params() const noexcept {
+        return params_;
+    }
+
     [[nodiscard]] std::size_t virtual_register_count() const noexcept {
         return next_virtual_reg_;
     }
@@ -490,6 +522,7 @@ public:
 
     [[nodiscard]] bool has_target_opcodes() const noexcept {
         for (const MachineInstruction& inst : instructions_) {
+            if (inst.parent_block == INVALID_BLOCK_ID) continue;
             if (!inst.has_target_opcode()) {
                 return false;
             }
@@ -503,6 +536,7 @@ public:
 
     [[nodiscard]] bool has_virtual_registers() const noexcept {
         for (const MachineInstruction& inst : instructions_) {
+            if (inst.parent_block == INVALID_BLOCK_ID) continue;
             for (const MachineOperand& op : inst.operands) {
                 if (op.kind == MachineOperandKind::Register && op.reg.is_virtual()) {
                     return true;
@@ -525,22 +559,26 @@ public:
         }
 
         bool replaced = false;
+        // Identity of a virtual register is its id; the same vreg can be
+        // referenced with different (compatible) classes, e.g. a value defined
+        // as Address and used as a General memory base. Keep each operand's
+        // own class so class-sensitive consumers still see the right kind.
+        const auto rewrite = [&](MachineRegister& reg) noexcept {
+            if (reg.is_virtual() && reg.id == virtual_reg.id) {
+                const RegisterClassKind cls = reg.reg_class;
+                reg = physical_reg;
+                reg.reg_class = cls;
+                replaced = true;
+            }
+        };
         for (MachineInstruction& inst : instructions_) {
+            if (inst.parent_block == INVALID_BLOCK_ID) continue;
             for (MachineOperand& op : inst.operands) {
-                if (op.kind == MachineOperandKind::Register && op.reg == virtual_reg) {
-                    op.reg = physical_reg;
-                    replaced = true;
-                }
-
-                if (op.kind == MachineOperandKind::Memory) {
-                    if (op.memory.base == virtual_reg) {
-                        op.memory.base = physical_reg;
-                        replaced = true;
-                    }
-                    if (op.memory.index == virtual_reg) {
-                        op.memory.index = physical_reg;
-                        replaced = true;
-                    }
+                if (op.kind == MachineOperandKind::Register) {
+                    rewrite(op.reg);
+                } else if (op.kind == MachineOperandKind::Memory) {
+                    rewrite(op.memory.base);
+                    rewrite(op.memory.index);
                 }
             }
         }
@@ -660,6 +698,8 @@ private:
 
     RegId next_virtual_reg_ = 0;
     BlockId entry_block_ = INVALID_BLOCK_ID;
+    std::unordered_map<std::uint32_t, BlockId> label_to_block_;
+    std::vector<MachineRegister> params_;
 };
 
 /* ============================================================================
@@ -726,6 +766,16 @@ struct MachineSelectionOperand {
         operand.role = role;
         return operand;
     }
+
+    [[nodiscard]] static MachineSelectionOperand symbol_ref(
+        SymbolId sym,
+        OperandRole role = OperandRole::Use) noexcept {
+        MachineSelectionOperand operand;
+        operand.kind = MachineSelectionOperandKind::Symbol;
+        operand.symbol = sym;
+        operand.role = role;
+        return operand;
+    }
 };
 
 struct MachineSelection {
@@ -760,9 +810,6 @@ public:
         RegisterClassKind reg_class = RegisterClassKind::General) {
         if (value_id == INVALID_MACHINE_ID) {
             return {};
-        }
-        if (value_id >= value_registers_.size()) {
-            value_registers_.resize(static_cast<std::size_t>(value_id) + 1u);
         }
         MachineRegister& cached = value_registers_[value_id];
         if (!cached.valid()) {
@@ -885,9 +932,11 @@ public:
             }
         }
 
-        function_.insert_instruction_before(block, INVALID_INSTR_ID, instruction.id);
+        if (!function_.insert_instruction_before(block, INVALID_INSTR_ID, instruction.id)) {
+            throw std::logic_error("failed to append MachineFunction instruction to its block");
+        }
 
-        if (instruction.has_flag(MachineInstrFlag::Call)) {
+        if (instruction.has_flag(MachineInstrFlag::Call) || instruction.form == MachineForm::Call) {
             function_.properties().contains_calls = true;
             function_.frame_info().has_calls = true;
         }
@@ -900,7 +949,7 @@ public:
 
 private:
     MachineFunction& function_;
-    std::vector<MachineRegister> value_registers_;
+    std::unordered_map<std::uint32_t, MachineRegister> value_registers_;
 };
 
 enum class EmissionKind : std::uint8_t {

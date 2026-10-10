@@ -1,0 +1,15 @@
+; RUN: dgtl-opt --verify --pass=inlining --filecheck %s
+; FileCheck test for IR Verifier and Shadow Integrity Verification
+; Verifies that compliant IR streams pass pre-pass and post-pass shadow verification
+
+op 0x0D 0x00000001 0x00000001 0x00000000 0x00000000 0x0000
+op 0x0D 0x00000002 0x00000002 0x00000000 0x00000000 0x0000
+op 0x14 0x00000003 0x00000001 0x00000002 0x00000000 0x0000
+op 0x0B 0x00000004 0x00000003 0x00000000 0x00000000 0x0000
+
+; CHECK: DGTL IR Text Format
+; CHECK: Stream size: 4 nodes
+; CHECK: op 0x14 0x00000003
+; CHECK: op 0x0b 0x00000004
+; CHECK-NOT: VerificationFailed
+; CHECK: End of IR

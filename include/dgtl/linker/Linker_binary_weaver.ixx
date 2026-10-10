@@ -66,6 +66,9 @@ import dgtl.execution.dispatcher;
 import dgtl.isa.wasm.encoder;
 import dgtl.mir.runtime_contract;
 import dgtl.linker.driver;
+import dgtl.linker.elf.sections;
+import dgtl.linker.pe.sections;
+import dgtl.object.readers.elf;
 
 namespace runtime_contract = dgtl::mir::runtime_contract;
 
@@ -76,189 +79,33 @@ namespace generated = dgtl::isa::x64::generated;
 
 #if defined(_WIN32) || defined(_WIN64)
     #define DGTL_MAP_FAILED nullptr
-    struct Elf64_Ehdr { 
-        unsigned char e_ident[16]; uint16_t e_type, e_machine; uint32_t e_version; 
-        uint64_t e_entry, e_phoff, e_shoff; uint32_t e_flags; 
-        uint16_t e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx; 
-    };
-    struct Elf64_Phdr { 
-        uint32_t p_type, p_flags; uint64_t p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align; 
-    };
-    struct Elf64_Shdr {
-        uint32_t sh_name;
-        uint32_t sh_type;
-        uint64_t sh_flags;
-        uint64_t sh_addr;
-        uint64_t sh_offset;
-        uint64_t sh_size;
-        uint32_t sh_link;
-        uint32_t sh_info;
-        uint64_t sh_addralign;
-        uint64_t sh_entsize;
-    };
-    struct Elf64_Sym {
-        uint32_t st_name;
-        unsigned char st_info;
-        unsigned char st_other;
-        uint16_t st_shndx;
-        uint64_t st_value;
-        uint64_t st_size;
-    };
-    struct Elf64_Rela {
-        uint64_t r_offset;
-        uint64_t r_info;
-        int64_t  r_addend;
-    };
-    #ifndef ELFMAG
-        #define ELFMAG "\177ELF"
-        #define SELFMAG 4
-        #define ELFCLASS64 2
-        #define ELFDATA2LSB 1
-        #define EV_CURRENT 1
-        #define ET_REL 1
-        #define ET_EXEC 2
-        #define EM_X86_64 62
-        #define PT_LOAD 1
-        #define SHT_NULL 0
-        #define SHT_PROGBITS 1
-        #define SHT_SYMTAB 2
-        #define SHT_STRTAB 3
-        #define SHT_RELA 4
-        #define SHF_ALLOC 0x2
-        #define SHF_EXECINSTR 0x4
-        #define SHF_INFO_LINK 0x40
-        #define STB_LOCAL 0
-        #define STB_GLOBAL 1
-        #define STT_SECTION 3
-        #define STT_FUNC 2
-        #define SHN_UNDEF 0
-        #define PF_X 1
-        #define PF_R 4
-        #define ELF64_ST_INFO(bind, type) (((bind) << 4) + ((type) & 0x0F))
-        #define ELF64_R_INFO(sym, type) (((uint64_t)(sym) << 32) + ((uint64_t)(type)))
-    #endif
 #else
     #define DGTL_MAP_FAILED MAP_FAILED
 #endif
 
-// --- DGTL COFF Object Format (Platform-Independent Cross-Compilation) ---
-export namespace dgtl::linker::coff {
+#ifndef ELF64_ST_INFO
+#define ELF64_ST_INFO(bind, type) (dgtl::linker::elf::elf64_st_info((bind), (type)))
+#endif
+#ifndef ELF64_R_INFO
+#define ELF64_R_INFO(sym, type) (dgtl::linker::elf::elf64_r_info((sym), (type)))
+#endif
 
-inline constexpr uint16_t MACHINE_AMD64       = 0x8664;
-inline constexpr uint32_t SCN_CNT_CODE        = 0x00000020;
-inline constexpr uint32_t SCN_CNT_INITIALIZED_DATA = 0x00000040;
-inline constexpr uint32_t SCN_MEM_EXECUTE     = 0x20000000;
-inline constexpr uint32_t SCN_MEM_READ        = 0x40000000;
-inline constexpr uint32_t SCN_ALIGN_16BYTES   = 0x00500000;
-inline constexpr uint8_t  SYM_CLASS_EXTERNAL  = 2;
-inline constexpr uint8_t  SYM_CLASS_STATIC    = 3;
-inline constexpr uint16_t SYM_DTYPE_FUNCTION  = 0x0020;
+using namespace dgtl::linker::elf;
+using namespace dgtl::linker::pe;
 
-#pragma pack(push, 1)
-struct FileHeader {
-    uint16_t Machine;
-    uint16_t NumberOfSections;
-    uint32_t TimeDateStamp;
-    uint32_t PointerToSymbolTable;
-    uint32_t NumberOfSymbols;
-    uint16_t SizeOfOptionalHeader;
-    uint16_t Characteristics;
-};
+namespace elf {
+    using namespace dgtl::linker::elf;
+}
 
-struct SectionHeader {
-    char     Name[8];
-    uint32_t VirtualSize;
-    uint32_t VirtualAddress;
-    uint32_t SizeOfRawData;
-    uint32_t PointerToRawData;
-    uint32_t PointerToRelocations;
-    uint32_t PointerToLinenumbers;
-    uint16_t NumberOfRelocations;
-    uint16_t NumberOfLinenumbers;
-    uint32_t Characteristics;
-};
+namespace coff {
+    using namespace dgtl::linker::pe;
+}
 
-struct Symbol {
-    union {
-        char ShortName[8];
-        struct {
-            uint32_t Zeroes;
-            uint32_t Offset;
-        } LongName;
-    } Name;
-    uint32_t Value;
-    int16_t  SectionNumber;
-    uint16_t Type;
-    uint8_t  StorageClass;
-    uint8_t  NumberOfAuxSymbols;
-};
 
-struct ImageDosHeader {
-    uint16_t e_magic;    // "MZ" (0x5A4D)
-    uint16_t e_cblp;
-    uint16_t e_cp;
-    uint16_t e_crlc;
-    uint16_t e_cparhdr;
-    uint16_t e_minalloc;
-    uint16_t e_maxalloc;
-    uint16_t e_ss;
-    uint16_t e_sp;
-    uint16_t e_csum;
-    uint16_t e_ip;
-    uint16_t e_cs;
-    uint16_t e_lfarlc;
-    uint16_t e_ovno;
-    uint16_t e_res[4];
-    uint16_t e_oemid;
-    uint16_t e_oeminfo;
-    uint16_t e_res2[10];
-    uint32_t e_lfanew;   // Offset to NT headers
-};
-
-struct ImageDataDirectory {
-    uint32_t VirtualAddress;
-    uint32_t Size;
-};
-
-struct ImageOptionalHeader64 {
-    uint16_t Magic;                // 0x020B = PE32+
-    uint8_t  MajorLinkerVersion;
-    uint8_t  MinorLinkerVersion;
-    uint32_t SizeOfCode;
-    uint32_t SizeOfInitializedData;
-    uint32_t SizeOfUninitializedData;
-    uint32_t AddressOfEntryPoint;
-    uint32_t BaseOfCode;
-    uint64_t ImageBase;
-    uint32_t SectionAlignment;
-    uint32_t FileAlignment;
-    uint16_t MajorOperatingSystemVersion;
-    uint16_t MinorOperatingSystemVersion;
-    uint16_t MajorImageVersion;
-    uint16_t MinorImageVersion;
-    uint16_t MajorSubsystemVersion;
-    uint16_t MinorSubsystemVersion;
-    uint32_t Win32VersionValue;
-    uint32_t SizeOfImage;
-    uint32_t SizeOfHeaders;
-    uint32_t CheckSum;
-    uint16_t Subsystem;
-    uint16_t DllCharacteristics;
-    uint64_t SizeOfStackReserve;
-    uint64_t SizeOfStackCommit;
-    uint64_t SizeOfHeapReserve;
-    uint64_t SizeOfHeapCommit;
-    uint32_t LoaderFlags;
-    uint32_t NumberOfRvaAndSizes;
-    ImageDataDirectory DataDirectory[16];
-};
-#pragma pack(pop)
-
-} // namespace dgtl::linker::coff
 
 export namespace dgtl::linker {
 
-namespace generated = dgtl::isa::lowering::x64::generated;
+namespace generated = dgtl::isa::x64::generated;
 
 /**
  * @class DGTLLinker
@@ -420,27 +267,8 @@ public:
             return false;
         }
         try {
-            dgtl::execution::loader::Object_Loader loader;
-            auto obj = loader.load_from_memory(data, size);
-            if (!obj) {
-                return false;
-            }
-
-            for (const auto& s : obj->get_symbols()) {
-                if (s.is_extern) {
-                    out_object.add_extern_symbol(s.name, s.binding);
-                } else {
-                    out_object.add_symbol(s.name, s.address, s.size, s.binding, s.type);
-                }
-            }
-            for (const auto& r : obj->get_relocations()) {
-                out_object.add_relocation(r.offset, r.symbol_name, r.addend, r.type);
-            }
-            out_object.get_text_section() = obj->get_text_section();
-            out_object.get_data_section() = obj->get_data_section();
-            out_object.get_rodata_section() = obj->get_rodata_section();
-            out_object.get_bss_section() = obj->get_bss_section();
-            return true;
+            dgtl::object::readers::ELFObjectReader reader;
+            return reader.read(data, size, out_object);
         } catch (...) {
             return false;
         }

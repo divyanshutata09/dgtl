@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  * DGTL Test 12 - IR CFG reconstruction
  *

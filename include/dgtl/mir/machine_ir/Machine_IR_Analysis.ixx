@@ -592,46 +592,59 @@ inline void MachineFunction::invalidate_analysis_caches() noexcept {
     loop_info_valid_ = false;
 }
 
-inline void MachineFunction::insert_instruction_before(BlockId block_id, InstrId cursor_id, InstrId new_instr_id) {
+inline bool MachineFunction::insert_instruction_before(BlockId block_id, InstrId cursor_id, InstrId new_instr_id) {
     MachineBasicBlock* bb = block(block_id);
     MachineInstruction* new_inst = instruction(new_instr_id);
-    if (!bb || !new_inst) return;
-    if (new_inst->parent_block != INVALID_BLOCK_ID) return;
+    if (!bb || !new_inst) return false;
 
+    const auto appears_in_another_block = [&](InstrId candidate, BlockId owner) {
+        for (const MachineBasicBlock& other : blocks_) {
+            if (other.id == owner) continue;
+            if (std::find(other.instructions.begin(), other.instructions.end(), candidate) !=
+                other.instructions.end()) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (appears_in_another_block(new_instr_id, block_id)) return false;
+
+    if (std::find(bb->instructions.begin(), bb->instructions.end(), new_instr_id) != bb->instructions.end()) {
+        return false;
+    }
+
+    std::size_t cursor_index = bb->instructions.size();
     if (cursor_id != INVALID_INSTR_ID) {
         MachineInstruction* cursor = instruction(cursor_id);
-        if (!cursor || cursor->parent_block != block_id) return;
+        if (!cursor || cursor->parent_block != block_id) return false;
+        const auto cursor_it = std::find(bb->instructions.begin(), bb->instructions.end(), cursor_id);
+        if (cursor_it == bb->instructions.end()) return false;
+        cursor_index = static_cast<std::size_t>(cursor_it - bb->instructions.begin());
+    }
+
+    bb->instructions.reserve(bb->instructions.size() + 1u);
+    if (cursor_id == INVALID_INSTR_ID) {
+        bb->instructions.push_back(new_instr_id);
+    } else {
+        bb->instructions.insert(bb->instructions.begin() + cursor_index, new_instr_id);
     }
 
     invalidate_analysis_caches();
-    new_inst->parent_block = block_id;
-    if (cursor_id == INVALID_INSTR_ID || bb->head_instr == INVALID_INSTR_ID) {
-        if (bb->tail_instr != INVALID_INSTR_ID) {
-            instruction(bb->tail_instr)->next_instr = new_instr_id;
-            new_inst->prev_instr = bb->tail_instr;
-            new_inst->next_instr = INVALID_INSTR_ID;
-            bb->tail_instr = new_instr_id;
-        } else {
-            bb->head_instr = bb->tail_instr = new_instr_id;
-            new_inst->prev_instr = new_inst->next_instr = INVALID_INSTR_ID;
-        }
-        bb->instructions.push_back(new_instr_id);
-    } else {
-        MachineInstruction* cursor = instruction(cursor_id);
-        new_inst->next_instr = cursor_id;
-        new_inst->prev_instr = cursor->prev_instr;
-        if (cursor->prev_instr != INVALID_INSTR_ID) {
-            instruction(cursor->prev_instr)->next_instr = new_instr_id;
-        } else {
-            bb->head_instr = new_instr_id;
-        }
-        cursor->prev_instr = new_instr_id;
-
-        const auto it = std::find(bb->instructions.begin(), bb->instructions.end(), cursor_id);
-        if (it == bb->instructions.end()) return;
-        bb->instructions.insert(it, new_instr_id);
+    for (std::size_t index = 0; index < bb->instructions.size(); ++index) {
+        MachineInstruction* current = instruction(bb->instructions[index]);
+        if (!current) continue;
+        current->parent_block = block_id;
+        current->prev_instr = index == 0u
+            ? INVALID_INSTR_ID
+            : bb->instructions[index - 1u];
+        current->next_instr = index + 1u == bb->instructions.size()
+            ? INVALID_INSTR_ID
+            : bb->instructions[index + 1u];
     }
+    bb->head_instr = bb->instructions.empty() ? INVALID_INSTR_ID : bb->instructions.front();
+    bb->tail_instr = bb->instructions.empty() ? INVALID_INSTR_ID : bb->instructions.back();
     bb->instr_count = bb->instructions.size();
+    return true;
 }
 
 inline void MachineFunction::remove_instruction(InstrId instr_id) {

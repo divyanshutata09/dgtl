@@ -40,7 +40,11 @@ export import dgtl.mir.isel_gen;
 export import dgtl.mir.phi_lowering;
 export import dgtl.mir.two_address;
 export import dgtl.mir.stack_spiller;
-export import dgtl.mir.strike_live_manager;
+export import dgtl.mir.inline_spiller;
+export import dgtl.mir.prolog_epilog_inserter;
+export import dgtl.mir.frame_index_elimination;
+export import dgtl.mir.regalloc.universal;
+export import dgtl.mir.target_isel;
 
 // Runtime Contracts & Policies
 export import dgtl.mir.runtime_policy;

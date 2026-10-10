@@ -18,6 +18,7 @@ module;
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <chrono>
@@ -50,7 +51,8 @@ enum class DispatchError : int64_t {
     NoExecutor = -2,
     ExecutionFailed = -3,
     InvalidTarget = -4,
-    FunctionNotResolved = -5
+    FunctionNotResolved = -5,
+    NullFunctionPointer = -6
 };
 
 class Execution_Dispatcher {
@@ -64,6 +66,20 @@ public:
 
     Execution_Dispatcher(const Execution_Dispatcher&) = delete;
     Execution_Dispatcher& operator=(const Execution_Dispatcher&) = delete;
+
+    [[nodiscard]] static constexpr DispatchTarget get_host_target() noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
+        return DispatchTarget::X64_Native;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+        return DispatchTarget::ARM64_Native;
+#elif defined(__arm__) || defined(_M_ARM)
+        return DispatchTarget::ARM32_Native;
+#elif defined(__riscv) && (__riscv_xlen == 64)
+        return DispatchTarget::RiscV64_Native;
+#else
+        return DispatchTarget::X64_Native;
+#endif
+    }
 
     void set_raw_executor(DispatchTarget target, RawExecutionFunc raw_func) noexcept {
         const auto idx = static_cast<uint8_t>(target);
@@ -86,6 +102,22 @@ public:
             raw_executors_[idx].store(nullptr, std::memory_order_release);
             std::unique_lock<std::shared_mutex> lock(mutex_);
             executors_[idx] = nullptr;
+        }
+    }
+
+    void clear_all() {
+        for (size_t i = 0; i < kMaxDispatchTargets; ++i) {
+            raw_executors_[i].store(nullptr, std::memory_order_release);
+        }
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        for (size_t i = 0; i < kMaxDispatchTargets; ++i) {
+            executors_[i] = nullptr;
+        }
+    }
+
+    void reset_stats() noexcept {
+        for (size_t i = 0; i < kMaxDispatchTargets; ++i) {
+            invocation_counts_[i].store(0, std::memory_order_relaxed);
         }
     }
 
@@ -117,14 +149,17 @@ public:
 
     // Direct invocation by function pointer
     [[nodiscard]] static int64_t dispatch_pointer(const void* fn_ptr, void* context = nullptr) noexcept {
-        if (!fn_ptr) return static_cast<int64_t>(DispatchError::NullContext);
+        if (!fn_ptr) return static_cast<int64_t>(DispatchError::NullFunctionPointer);
         auto fn = reinterpret_cast<RawExecutionFunc>(const_cast<void*>(fn_ptr));
         return fn(context);
     }
 
-    // Typed template direct invocation
+    // Typed template direct invocation with null safety
     template <typename Ret, typename... Args>
     [[nodiscard]] static Ret invoke_typed(const void* fn_ptr, Args... args) {
+        if (!fn_ptr) {
+            throw std::invalid_argument("Execution_Dispatcher::invoke_typed: function pointer is null");
+        }
         using FnType = Ret (*)(Args...);
         auto fn = reinterpret_cast<FnType>(const_cast<void*>(fn_ptr));
         return fn(args...);

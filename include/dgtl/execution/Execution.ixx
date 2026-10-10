@@ -12,9 +12,11 @@
 module;
 
 #include <cstdint>
-#include <string_view>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
 export module dgtl.execution;
 
@@ -45,6 +47,23 @@ public:
     [[nodiscard]] loader::Binary_Loader& loader() noexcept { return loader_; }
     [[nodiscard]] const loader::Binary_Loader& loader() const noexcept { return loader_; }
 
+    // Store compiled code in cache
+    [[nodiscard]] bool load_and_cache(std::string_view name, const void* code, size_t size, bool executable = true) {
+        return code_cache_.store(name, code, size, executable);
+    }
+
+    [[nodiscard]] bool load_and_cache(const machine::MachineFunction& fn, const void* code, size_t size, bool executable = true) {
+        return code_cache_.store(fn, code, size, executable);
+    }
+
+    [[nodiscard]] bool load_and_cache(std::string_view name, std::span<const uint8_t> code, bool executable = true) {
+        return code_cache_.store(name, code, executable);
+    }
+
+    [[nodiscard]] bool load_and_cache(const machine::MachineFunction& fn, std::span<const uint8_t> code, bool executable = true) {
+        return code_cache_.store(fn, code, executable);
+    }
+
     // Execute compiled code pointer directly
     [[nodiscard]] int64_t execute_native(const void* fn_ptr, void* ctx = nullptr) const noexcept {
         return dispatcher::Execution_Dispatcher::dispatch_pointer(fn_ptr, ctx);
@@ -62,6 +81,33 @@ public:
     // Execute machine function if already compiled and cached
     [[nodiscard]] int64_t execute(const machine::MachineFunction& fn, void* ctx = nullptr) const {
         return execute(fn.name(), ctx);
+    }
+
+    // Typed direct invocation by cached name
+    template <typename Ret = int64_t, typename... Args>
+    [[nodiscard]] Ret invoke(std::string_view name, Args... args) const {
+        const void* ptr = code_cache_.retrieve(name);
+        if (!ptr) {
+            throw std::runtime_error("ExecutionCoordinator: symbol not found in code cache: " + std::string(name));
+        }
+        return dispatcher::Execution_Dispatcher::invoke_typed<Ret>(ptr, args...);
+    }
+
+    template <typename Ret = int64_t, typename... Args>
+    [[nodiscard]] Ret invoke(const machine::MachineFunction& fn, Args... args) const {
+        return invoke<Ret>(fn.name(), args...);
+    }
+
+    [[nodiscard]] bool is_cached(std::string_view name) const noexcept {
+        return code_cache_.exists(name);
+    }
+
+    [[nodiscard]] bool is_cached(const machine::MachineFunction& fn) const noexcept {
+        return code_cache_.exists(fn);
+    }
+
+    void clear() {
+        code_cache_.clear();
     }
 };
 
