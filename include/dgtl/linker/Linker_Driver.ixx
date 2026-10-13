@@ -1692,7 +1692,7 @@ public:
         sec_rdata->PointerToLinenumbers = 0;
         sec_rdata->NumberOfRelocations = 0;
         sec_rdata->NumberOfLinenumbers = 0;
-        sec_rdata->Characteristics = 0xC0000040; // SCN_CNT_INITIALIZED_DATA | SCN_MEM_READ | SCN_MEM_WRITE
+        sec_rdata->Characteristics = 0x40000040; // SCN_CNT_INITIALIZED_DATA | SCN_MEM_READ (Strict W^X compliance)
 
         std::memcpy(pe_image.data() + kHeadersSize, text_full.data(), text_full.size());
         std::memcpy(pe_image.data() + kHeadersSize + text_raw_size, rdata_full.data(), rdata_full.size());

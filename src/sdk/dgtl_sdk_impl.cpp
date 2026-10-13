@@ -3038,15 +3038,26 @@ struct dgtl_linker {
     }
 };
 
+static std::string_view canonical_section_name(std::string_view name) {
+    if (name == ".text" || name.starts_with(".text$")) return ".text";
+    if (name == ".rdata" || name.starts_with(".rdata$") || name == ".rodata" || name.starts_with(".rodata$")) return ".rdata";
+    if (name == ".data" || name.starts_with(".data$")) return ".data";
+    if (name == ".bss" || name.starts_with(".bss$")) return ".bss";
+    return name;
+}
+
 static bool merge_sdk_object_files(dgtl::object::ObjectFile& target, const dgtl::object::ObjectFile& src) {
     std::unordered_map<std::string, uint64_t> section_offsets;
     std::unordered_map<std::string, uint32_t> section_target_idx;
 
     for (const auto& sec : src.sections()) {
-        auto* existing = target.find_section(sec.name);
+        std::string canon_name(canonical_section_name(sec.name));
+        auto* existing = target.find_section(canon_name);
         if (!existing) {
             uint32_t new_idx = static_cast<uint32_t>(target.sections().size());
-            target.sections().push_back(sec);
+            auto new_sec = sec;
+            new_sec.name = canon_name;
+            target.sections().push_back(std::move(new_sec));
             section_offsets[sec.name] = 0;
             section_target_idx[sec.name] = new_idx;
         } else {
@@ -3081,6 +3092,13 @@ static bool merge_sdk_object_files(dgtl::object::ObjectFile& target, const dgtl:
             }
         }
     }
+    // Fast O(1) symbol lookup index for target symbols
+    std::unordered_map<std::string, size_t> target_symbol_index;
+    target_symbol_index.reserve(target.symbols().size() + src.symbols().size());
+    for (size_t i = 0; i < target.symbols().size(); ++i) {
+        target_symbol_index[target.symbols()[i].name] = i;
+    }
+
     for (const auto& sym : src.symbols()) {
         if (sym.is_defined()) {
             uint64_t shift = 0;
@@ -3092,19 +3110,36 @@ static bool merge_sdk_object_files(dgtl::object::ObjectFile& target, const dgtl:
                 auto it_idx = section_target_idx.find(sec_name);
                 if (it_idx != section_target_idx.end()) target_sec = it_idx->second;
             }
-            auto* existing_sym = target.find_symbol(sym.name);
-            if (!existing_sym) {
+
+            const bool is_section_symbol = sym.name.starts_with(".") ||
+                                           sym.name == ".text" || sym.name == ".data" ||
+                                           sym.name == ".rdata" || sym.name == ".bss";
+            const std::string norm_name = is_section_symbol
+                ? std::string(canonical_section_name(sym.name))
+                : sym.name;
+
+            auto it_sym = target_symbol_index.find(norm_name);
+            if (it_sym == target_symbol_index.end()) {
                 auto new_sym = sym;
-                new_sym.value += shift;
+                new_sym.name = norm_name;
+                new_sym.value = is_section_symbol ? 0 : (sym.value + shift);
                 new_sym.section_index = target_sec;
+                target_symbol_index[norm_name] = target.symbols().size();
                 target.symbols().push_back(std::move(new_sym));
-            } else if (existing_sym->is_external() || !existing_sym->is_defined()) {
-                *existing_sym = sym;
-                existing_sym->value += shift;
-                existing_sym->section_index = target_sec;
+            } else {
+                auto& existing_sym = target.symbols()[it_sym->second];
+                if (is_section_symbol) {
+                    existing_sym.value = 0;
+                    existing_sym.section_index = target_sec;
+                } else if (existing_sym.is_external() || !existing_sym.is_defined()) {
+                    existing_sym = sym;
+                    existing_sym.value += shift;
+                    existing_sym.section_index = target_sec;
+                }
             }
         } else {
-            if (!target.find_symbol(sym.name)) {
+            if (!target_symbol_index.contains(sym.name)) {
+                target_symbol_index[sym.name] = target.symbols().size();
                 target.symbols().push_back(sym);
             }
         }
@@ -3122,6 +3157,13 @@ static bool merge_sdk_object_files(dgtl::object::ObjectFile& target, const dgtl:
         auto new_r = r;
         new_r.offset += shift;
         new_r.section_index = target_sec;
+        if (r.symbol_name.starts_with(".")) {
+            auto it_sym_sec = section_offsets.find(r.symbol_name);
+            if (it_sym_sec != section_offsets.end()) {
+                new_r.addend += static_cast<int64_t>(it_sym_sec->second);
+            }
+            new_r.symbol_name = std::string(canonical_section_name(r.symbol_name));
+        }
         target.relocations().push_back(std::move(new_r));
     }
     return true;
@@ -3161,6 +3203,18 @@ dgtl_err_t DGTL_CALL dgtl_linker_add_object(dgtl_linker_t linker, dgtl_object_t 
     if (!linker || !obj) return DGTL_ERR(1);
     try {
         merge_sdk_object_files(linker->accumulated_object, obj->obj);
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(2);
+    }
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_add_session(dgtl_linker_t linker, void* session_ptr) DGTL_NOEXCEPT {
+    auto* session = static_cast<dgtl_session_t*>(session_ptr);
+    if (!linker || !session || !session->compiled_object.has_value()) return DGTL_ERR(1);
+    try {
+        merge_sdk_object_files(linker->accumulated_object, *session->compiled_object);
         return DGTL_OK;
     } catch (const std::exception& e) {
         set_last_error_msg(e.what());
@@ -3217,6 +3271,51 @@ dgtl_err_t DGTL_CALL dgtl_linker_add_library_search_path(dgtl_linker_t linker, c
     return DGTL_OK;
 }
 
+dgtl_err_t DGTL_CALL dgtl_linker_add_library(dgtl_linker_t linker, const char* lib_name) DGTL_NOEXCEPT {
+    if (!linker || !lib_name) return DGTL_ERR(1);
+    try {
+        std::string name(lib_name);
+        auto file_exists = [](const std::string& filepath) -> bool {
+            FILE* f = std::fopen(filepath.c_str(), "rb");
+            if (f) {
+                std::fclose(f);
+                return true;
+            }
+            return false;
+        };
+
+        if (file_exists(name)) {
+            linker->archives.push_back(name);
+            return DGTL_OK;
+        }
+        std::vector<std::string> candidates = {
+            name,
+            name + ".lib",
+            name + ".a",
+            "lib" + name + ".a",
+            "lib" + name + ".lib"
+        };
+        for (const auto& dir : linker->search_paths) {
+            for (const auto& cand : candidates) {
+                std::string p = dir;
+                if (!p.empty() && p.back() != '/' && p.back() != '\\') {
+                    p.push_back('/');
+                }
+                p += cand;
+                if (file_exists(p)) {
+                    linker->archives.push_back(p);
+                    return DGTL_OK;
+                }
+            }
+        }
+        linker->archives.push_back(name);
+        return DGTL_OK;
+    } catch (const std::exception& e) {
+        set_last_error_msg(e.what());
+        return DGTL_ERR(2);
+    }
+}
+
 dgtl_err_t DGTL_CALL dgtl_linker_link_to_memory(
     dgtl_linker_t linker,
     dgtl_linker_output_kind_t kind,
@@ -3241,30 +3340,35 @@ dgtl_err_t DGTL_CALL dgtl_linker_link_to_memory(
                 bool added_any = true;
                 while (added_any) {
                     added_any = false;
-                    std::unordered_set<std::string> undefined_syms;
 
+                    // 1. Fast O(1) set of currently defined symbols
+                    std::unordered_set<std::string_view> defined_symbols;
+                    defined_symbols.reserve(linker->accumulated_object.symbols().size());
+                    for (const auto& sym : linker->accumulated_object.symbols()) {
+                        if (sym.is_defined() && !sym.is_external()) {
+                            defined_symbols.insert(sym.name);
+                        }
+                    }
+
+                    // 2. Fast O(1) identification of unresolved symbols
+                    std::unordered_set<std::string> undefined_syms;
                     for (const auto& rel : linker->accumulated_object.relocations()) {
-                        if (!rel.symbol_name.empty()) {
-                            const auto* sym = linker->accumulated_object.find_symbol(rel.symbol_name);
-                            if (!sym || sym->is_external() || !sym->is_defined()) {
-                                undefined_syms.insert(rel.symbol_name);
-                            }
+                        if (!rel.symbol_name.empty() && !defined_symbols.contains(rel.symbol_name)) {
+                            undefined_syms.insert(rel.symbol_name);
                         }
                     }
                     for (const auto& sym : linker->accumulated_object.symbols()) {
-                        if (sym.is_external() || !sym.is_defined()) {
+                        if ((sym.is_external() || !sym.is_defined()) && !defined_symbols.contains(sym.name)) {
                             undefined_syms.insert(sym.name);
                         }
                     }
-                    if (!linker->entry_point.empty()) {
-                        const auto* entry = linker->accumulated_object.find_symbol(linker->entry_point);
-                        if (!entry || !entry->is_defined()) {
-                            undefined_syms.insert(linker->entry_point);
-                        }
+                    if (!linker->entry_point.empty() && !defined_symbols.contains(linker->entry_point)) {
+                        undefined_syms.insert(linker->entry_point);
                     }
 
                     if (undefined_syms.empty()) break;
 
+                    // 3. Batch extraction: resolve all required members in one pass
                     for (const auto& sym_name : undefined_syms) {
                         for (size_t a_idx = 0; a_idx < parsed_archives.size(); ++a_idx) {
                             const auto& ar = parsed_archives[a_idx];
@@ -3282,7 +3386,6 @@ dgtl_err_t DGTL_CALL dgtl_linker_link_to_memory(
                                 }
                             }
                         }
-                        if (added_any) break;
                     }
                 }
             }

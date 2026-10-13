@@ -47,8 +47,6 @@ inline constexpr uint32_t kPeSignature           = 0x00004550; // PE\0\0
 inline constexpr uint16_t kMachineAMD64          = 0x8664;
 inline constexpr uint16_t kOptionalHeader64Magic = 0x020B;
 
-inline constexpr uint16_t kNumberOfSections      = 4; // .text, .rdata, .idata, .reloc
-
 inline constexpr uint16_t kCharacteristicsExecutable = 0x0002;
 inline constexpr uint16_t kCharacteristicsLargeAddressAware = 0x0020;
 inline constexpr uint16_t kCharacteristicsRelocsStripped = 0x0001;
@@ -60,10 +58,11 @@ inline constexpr uint16_t kDllCharDynamicBase   = 0x0040;
 inline constexpr uint16_t kDllCharNXCompat      = 0x0100;
 inline constexpr uint16_t kDllCharTerminalServerAware = 0x8000;
 
-inline constexpr uint32_t kSectionMemExecute  = 0x20000000;
-inline constexpr uint32_t kSectionMemRead     = 0x40000000;
-inline constexpr uint32_t kSectionMemWrite    = 0x80000000;
-inline constexpr uint32_t kSectionContainsCode = 0x00000020;
+inline constexpr uint32_t kSectionMemExecute     = 0x20000000;
+inline constexpr uint32_t kSectionMemRead        = 0x40000000;
+inline constexpr uint32_t kSectionMemWrite       = 0x80000000;
+inline constexpr uint32_t kSectionMemDiscardable = 0x02000000;
+inline constexpr uint32_t kSectionContainsCode   = 0x00000020;
 inline constexpr uint32_t kSectionInitializedData = 0x00000040;
 
 inline constexpr uint32_t kDirImport    = 1;
@@ -192,38 +191,115 @@ public:
         std::vector<uint8_t>& out_binary,
         const Options& options = Options{})
     {
-        const auto* text_sec = obj.find_section(".text");
-        if (!text_sec || text_sec->bytes.empty()) {
-            for (const auto& s : obj.sections()) {
-                if (s.is_code() && !s.bytes.empty()) {
-                    text_sec = &s;
-                    break;
-                }
+        // Collect all code sections into a unified code buffer
+        struct SecTextOff {
+            uint32_t sec_index;
+            std::string name;
+            uint64_t offset;
+        };
+        std::vector<uint8_t> user_text;
+        std::vector<SecTextOff> section_text_offsets;
+
+        auto is_code_section = [](const auto& s) {
+            return s.is_code() || s.name == ".text" || s.name.starts_with(".text$");
+        };
+
+        // 1. Place canonical .text first if present
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (sec.name == ".text" && !sec.bytes.empty()) {
+                while ((user_text.size() % 16) != 0) user_text.push_back(0x90);
+                section_text_offsets.push_back({static_cast<uint32_t>(i), sec.name, user_text.size()});
+                user_text.insert(user_text.end(), sec.bytes.begin(), sec.bytes.end());
             }
         }
-        if (!text_sec || text_sec->bytes.empty()) {
+        // 2. Place remaining code sections
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (sec.name != ".text" && is_code_section(sec) && !sec.bytes.empty()) {
+                while ((user_text.size() % 16) != 0) user_text.push_back(0x90);
+                section_text_offsets.push_back({static_cast<uint32_t>(i), sec.name, user_text.size()});
+                user_text.insert(user_text.end(), sec.bytes.begin(), sec.bytes.end());
+            }
+        }
+
+        if (user_text.empty()) {
             return failure(Error::EmptyCode, "DGTL PE linker: ObjectFile has no .text code section");
         }
 
-        const auto& code_bytes = text_sec->bytes;
+        auto find_text_offset = [&](uint32_t sec_idx, std::string_view name) -> std::optional<uint64_t> {
+            if (sec_idx != UINT32_MAX) {
+                for (const auto& item : section_text_offsets) {
+                    if (item.sec_index == sec_idx) return item.offset;
+                }
+            }
+            if (!name.empty()) {
+                for (const auto& item : section_text_offsets) {
+                    if (item.name == name) return item.offset;
+                }
+            }
+            return std::nullopt;
+        };
 
-        // Collect all data sections into a unified rdata buffer
-        struct SecRDataOff {
+        auto is_writable_sec = [](const auto& s) {
+            return s.is_writable() || s.is_bss() || s.name.starts_with(".data") || s.name.starts_with(".bss");
+        };
+
+        // Collect read-only data sections into user_rdata (.rdata)
+        struct SecDataOff {
+            uint32_t sec_index;
             std::string name;
             uint64_t offset;
         };
         std::vector<uint8_t> user_rdata;
-        std::vector<SecRDataOff> section_rdata_offsets;
-        for (const auto& sec : obj.sections()) {
-            if (sec.name == ".rdata" || sec.name == ".rodata" || sec.name == ".data" || sec.name == ".bss") {
+        std::vector<SecDataOff> section_rdata_offsets;
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (is_code_section(sec) || is_writable_sec(sec)) continue;
+            if (sec.name.starts_with(".rdata") || sec.name.starts_with(".rodata") || (!sec.is_code() && !sec.empty())) {
                 while ((user_rdata.size() % 16) != 0) user_rdata.push_back(0);
-                section_rdata_offsets.push_back({sec.name, user_rdata.size()});
+                section_rdata_offsets.push_back({static_cast<uint32_t>(i), sec.name, user_rdata.size()});
                 user_rdata.insert(user_rdata.end(), sec.bytes.begin(), sec.bytes.end());
             }
         }
-        auto find_rdata_offset = [&](std::string_view name) -> std::optional<uint64_t> {
-            for (const auto& item : section_rdata_offsets) {
-                if (item.name == name) return item.offset;
+        auto find_rdata_offset = [&](uint32_t sec_idx, std::string_view name) -> std::optional<uint64_t> {
+            if (sec_idx != UINT32_MAX) {
+                for (const auto& item : section_rdata_offsets) {
+                    if (item.sec_index == sec_idx) return item.offset;
+                }
+            }
+            if (!name.empty()) {
+                for (const auto& item : section_rdata_offsets) {
+                    if (item.name == name) return item.offset;
+                }
+            }
+            return std::nullopt;
+        };
+
+        // Collect mutable and zero-initialized (BSS) data sections into user_data (.data)
+        std::vector<uint8_t> user_data;
+        std::vector<SecDataOff> section_data_offsets;
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (is_code_section(sec) || !is_writable_sec(sec)) continue;
+            while ((user_data.size() % 16) != 0) user_data.push_back(0);
+            section_data_offsets.push_back({static_cast<uint32_t>(i), sec.name, user_data.size()});
+            if (sec.is_bss()) {
+                user_data.resize(user_data.size() + sec.bss_size, 0);
+            } else {
+                user_data.insert(user_data.end(), sec.bytes.begin(), sec.bytes.end());
+            }
+        }
+        auto find_data_offset = [&](uint32_t sec_idx, std::string_view name) -> std::optional<uint64_t> {
+            if (sec_idx != UINT32_MAX) {
+                for (const auto& item : section_data_offsets) {
+                    if (item.sec_index == sec_idx) return item.offset;
+                }
+            }
+            if (!name.empty()) {
+                for (const auto& item : section_data_offsets) {
+                    if (item.name == name) return item.offset;
+                }
             }
             return std::nullopt;
         };
@@ -241,7 +317,17 @@ public:
         }
 
         // Win32 API DLL classification rules
-        auto is_ws2_func = [](std::string_view name) {
+        auto is_valid_c_ident = [](std::string_view name) {
+            if (name.empty()) return false;
+            if (!std::isalpha(static_cast<unsigned char>(name.front())) && name.front() != '_') return false;
+            for (char c : name) {
+                if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+            }
+            return true;
+        };
+
+        auto is_ws2_func = [&](std::string_view name) {
+            if (!is_valid_c_ident(name)) return false;
             return name == "WSAStartup" || name == "WSACleanup" || name == "WSAGetLastError" ||
                    name == "socket" || name == "connect" || name == "send" || name == "recv" ||
                    name == "closesocket" || name == "bind" || name == "listen" || name == "accept" ||
@@ -250,13 +336,39 @@ public:
                    name == "ioctlsocket" || name == "setsockopt" || name == "getsockopt";
         };
 
-        auto is_ntdll_func = [](std::string_view name) {
+        auto is_ntdll_func = [&](std::string_view name) {
+            if (!is_valid_c_ident(name)) return false;
             return name.starts_with("Nt") || name.starts_with("Zw") || name.starts_with("Rtl");
         };
 
-        auto is_msvcrt_func = [](std::string_view name) {
-            if (name.empty()) return false;
-            if (name.starts_with("__") || name.starts_with("_")) return true;
+        auto is_ucrt_func = [&](std::string_view name) {
+            if (!is_valid_c_ident(name)) return false;
+            if (name.starts_with("__acrt") || name.starts_with("__stdio_common")) return true;
+            static constexpr std::string_view ucrt_funcs_list[] = {
+                "atoll", "strtoll", "strtoull", "strtof", "llabs",
+                "log2", "cbrt", "trunc", "round", "remainder", "hypot", "roundf",
+                "copysign", "copysignf", "fmin", "fminf", "fmax", "fmaxf",
+                "fdim", "fdimf", "nearbyint", "nearbyintf", "rint", "rintf",
+                "lrint", "lrintf", "llrint", "llrintf", "tgamma", "tgammaf",
+                "lgamma", "lgammaf", "erf", "erff", "erfc", "erfcf",
+                "exp2", "exp2f", "expm1", "expm1f", "log1p", "log1pf",
+                "logb", "logbf", "ilogb", "ilogbf", "scalbn", "scalbnf",
+                "scalbln", "scalblnf", "cbrtf", "hypotf", "truncf",
+                "__acrt_iob_func"
+            };
+            for (const auto& fn : ucrt_funcs_list) {
+                if (fn == name) return true;
+            }
+            return false;
+        };
+
+        auto is_msvcrt_func = [&](std::string_view name) {
+            if (is_ucrt_func(name)) return false;
+            if (!is_valid_c_ident(name)) return false;
+            if (name.starts_with("__myzon") || name.starts_with("myzon_") || name.starts_with("dgtl_")) return false;
+            if (name == "__iob_func") return true;
+            if (name.find("__") != std::string_view::npos && !name.starts_with("__stdio") && !name.starts_with("__p__")) return false;
+            if (name.starts_with("_") && !name.starts_with("__") && !name.starts_with("_Z") && !name.starts_with("_Unwind")) return true;
             static constexpr std::string_view crt_funcs[] = {
                 "malloc", "free", "realloc", "calloc",
                 "printf", "puts", "putchar", "getchar", "snprintf", "sprintf", "fprintf",
@@ -274,17 +386,39 @@ public:
                 "sinf", "cosf", "tanf", "asinf", "acosf", "atanf", "atan2f", "sqrtf", "powf",
                 "expf", "logf", "ceilf", "floorf", "roundf", "fmodf", "fabsf",
                 "time", "clock", "difftime", "mktime", "strftime",
-                "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "tolower", "toupper"
+                "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "tolower", "toupper",
+                "atexit"
             };
             for (const auto& fn : crt_funcs) {
                 if (fn == name) return true;
             }
-            return std::islower(static_cast<unsigned char>(name.front())) != 0;
+            return false;
+        };
+
+        auto is_kernel32_func = [&](std::string_view name) {
+            if (!is_valid_c_ident(name)) return false;
+            if (name.find("__") != std::string_view::npos || name.starts_with("myzon_") || name.starts_with("dgtl_")) return false;
+            static constexpr std::string_view k32_funcs_list[] = {
+                "ExitProcess", "VirtualAlloc", "VirtualFree", "VirtualProtect", "VirtualQuery",
+                "GetStdHandle", "WriteFile", "ReadFile", "GetProcessHeap", "HeapAlloc", "HeapFree", "HeapReAlloc",
+                "GetModuleHandleA", "GetModuleHandleW", "GetProcAddress", "LoadLibraryA", "LoadLibraryW", "FreeLibrary",
+                "Sleep", "GetLastError", "SetLastError", "CreateFileA", "CreateFileW", "CloseHandle",
+                "GetCommandLineA", "GetCommandLineW", "GetCurrentProcess", "GetCurrentProcessId", "GetCurrentThreadId",
+                "QueryPerformanceCounter", "QueryPerformanceFrequency", "GetSystemTimeAsFileTime",
+                "InitializeCriticalSection", "DeleteCriticalSection", "EnterCriticalSection", "LeaveCriticalSection",
+                "CreateEventA", "CreateEventW", "SetEvent", "ResetEvent", "WaitForSingleObject", "WaitForMultipleObjects",
+                "RtlCaptureContext", "RtlLookupFunctionEntry", "RtlVirtualUnwind", "UnhandledExceptionFilter", "SetUnhandledExceptionFilter"
+            };
+            for (const auto& fn : k32_funcs_list) {
+                if (fn == name) return true;
+            }
+            return std::isupper(static_cast<unsigned char>(name.front())) != 0;
         };
 
         std::vector<std::string> k32_funcs;
         std::vector<std::string> ws2_funcs;
         std::vector<std::string> ntdll_funcs;
+        std::vector<std::string> ucrt_funcs;
         std::vector<std::string> msvcrt_funcs;
 
         const std::string entry_exit = options.entry_import.empty() ? "ExitProcess" : std::string(options.entry_import);
@@ -305,11 +439,15 @@ public:
                 if (std::find(ntdll_funcs.begin(), ntdll_funcs.end(), raw_name) == ntdll_funcs.end()) {
                     ntdll_funcs.push_back(raw_name);
                 }
+            } else if (is_ucrt_func(raw_name)) {
+                if (std::find(ucrt_funcs.begin(), ucrt_funcs.end(), raw_name) == ucrt_funcs.end()) {
+                    ucrt_funcs.push_back(raw_name);
+                }
             } else if (is_msvcrt_func(raw_name)) {
                 if (std::find(msvcrt_funcs.begin(), msvcrt_funcs.end(), raw_name) == msvcrt_funcs.end()) {
                     msvcrt_funcs.push_back(raw_name);
                 }
-            } else {
+            } else if (is_kernel32_func(raw_name)) {
                 if (std::find(k32_funcs.begin(), k32_funcs.end(), raw_name) == k32_funcs.end()) {
                     k32_funcs.push_back(raw_name);
                 }
@@ -337,25 +475,28 @@ public:
             if (!k32_funcs.empty()) import_specs.push_back({"KERNEL32.DLL", k32_funcs});
             if (!ws2_funcs.empty()) import_specs.push_back({"WS2_32.DLL", ws2_funcs});
             if (!ntdll_funcs.empty()) import_specs.push_back({"NTDLL.DLL", ntdll_funcs});
+            if (!ucrt_funcs.empty()) import_specs.push_back({"ucrtbase.dll", ucrt_funcs});
             if (!msvcrt_funcs.empty()) import_specs.push_back({"MSVCRT.DLL", msvcrt_funcs});
         }
 
         constexpr uint32_t trampoline_size = 24;
         Section text;
         Section rdata;
-        Section idata;
+        Section data;
         Section reloc;
 
         initialize_section(text, ".text", pe::kSectionMemExecute | pe::kSectionMemRead | pe::kSectionContainsCode);
         initialize_section(rdata, ".rdata", pe::kSectionMemRead | pe::kSectionInitializedData);
-        initialize_section(idata, ".idata", pe::kSectionMemRead | pe::kSectionMemWrite | pe::kSectionInitializedData);
-        initialize_section(reloc, ".reloc", pe::kSectionMemRead | pe::kSectionInitializedData);
+        initialize_section(data, ".data", pe::kSectionMemRead | pe::kSectionMemWrite | pe::kSectionInitializedData);
+        initialize_section(reloc, ".reloc", pe::kSectionMemRead | pe::kSectionInitializedData | pe::kSectionMemDiscardable);
 
         rdata.data.assign(user_rdata.begin(), user_rdata.end());
+        data.data.assign(user_data.begin(), user_data.end());
+        const bool has_data = !data.data.empty();
 
-        text.data.reserve(trampoline_size + code_bytes.size() + 1024);
+        text.data.reserve(trampoline_size + user_text.size() + 1024);
         text.data.resize(trampoline_size, 0x90);
-        text.data.insert(text.data.end(), code_bytes.begin(), code_bytes.end());
+        text.data.insert(text.data.end(), user_text.begin(), user_text.end());
 
         // Align text before emitting import thunks
         while ((text.data.size() % 16) != 0) text.data.push_back(0x90);
@@ -386,10 +527,12 @@ public:
         const uint32_t text_raw_size = detail::align_up(text_virtual_size, pe::kFileAlignment);
 
         const uint32_t rdata_rva = detail::align_up(text_rva + text_virtual_size, pe::kSectionAlignment);
-        const uint32_t idata_rva = detail::align_up(rdata_rva + static_cast<uint32_t>(rdata.data.size()), pe::kSectionAlignment);
-        const uint32_t reloc_rva = detail::align_up(idata_rva + 0x2000, pe::kSectionAlignment);
 
-        // Build .idata Import Table
+        // Align user rdata before embedding imports
+        while ((rdata.data.size() % 16) != 0) rdata.data.push_back(0);
+        const uint32_t import_base_in_rdata = static_cast<uint32_t>(rdata.data.size());
+
+        // Build Import Table directly inside .rdata (Modern industry-grade consolidated layout)
         const uint32_t num_dlls = static_cast<uint32_t>(import_specs.size());
         const uint32_t descriptor_count = num_dlls + 1u;
         const uint32_t descriptor_size = descriptor_count * static_cast<uint32_t>(sizeof(ImportDescriptor));
@@ -412,21 +555,14 @@ public:
         const uint32_t total_ilt_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
         const uint32_t total_iat_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
 
-        uint32_t import_size = 0;
-        if (!detail::checked_add_u32(descriptor_size, total_ilt_size, import_size) ||
-            !detail::checked_add_u32(import_size, total_iat_size, import_size) ||
-            !detail::checked_add_u32(import_size, total_hint_size, import_size) ||
-            !detail::checked_add_u32(import_size, total_dll_name_size, import_size)) {
-            return failure(Error::RDataTooLarge, "DGTL PE linker: import table size overflow");
-        }
+        const uint32_t desc_off = import_base_in_rdata;
+        const uint32_t ilt_off  = detail::align_up(desc_off + descriptor_size, 8);
+        const uint32_t iat_off  = detail::align_up(ilt_off + total_ilt_size, 8);
+        const uint32_t hint_off = detail::align_up(iat_off + total_iat_size, 8);
+        const uint32_t dll_off  = detail::align_up(hint_off + total_hint_size, 8);
+        const uint32_t import_total_size = (dll_off + total_dll_name_size) - import_base_in_rdata;
 
-        idata.data.assign(import_size + 64, 0);
-
-        const uint32_t desc_off = 0;
-        const uint32_t ilt_off  = desc_off + descriptor_size;
-        const uint32_t iat_off  = ilt_off + total_ilt_size;
-        const uint32_t hint_off = iat_off + total_iat_size;
-        const uint32_t dll_off  = hint_off + total_hint_size;
+        rdata.data.resize(import_base_in_rdata + import_total_size + 64, 0);
 
         uint32_t cur_ilt_off  = ilt_off;
         uint32_t cur_iat_off  = iat_off;
@@ -447,32 +583,32 @@ public:
 
         for (uint32_t d = 0; d < num_dlls; ++d) {
             const auto& spec = import_specs[d];
-            const uint32_t dll_ilt_rva  = idata_rva + cur_ilt_off;
-            const uint32_t dll_iat_rva  = idata_rva + cur_iat_off;
-            const uint32_t dll_name_rva = idata_rva + cur_dll_off;
+            const uint32_t dll_ilt_rva  = rdata_rva + cur_ilt_off;
+            const uint32_t dll_iat_rva  = rdata_rva + cur_iat_off;
+            const uint32_t dll_name_rva = rdata_rva + cur_dll_off;
 
             const uint32_t d_off = desc_off + d * static_cast<uint32_t>(sizeof(ImportDescriptor));
-            write_u32(idata.data, d_off + 0, dll_ilt_rva);
-            write_u32(idata.data, d_off + 4, 0);
-            write_u32(idata.data, d_off + 8, 0);
-            write_u32(idata.data, d_off + 12, dll_name_rva);
-            write_u32(idata.data, d_off + 16, dll_iat_rva);
+            write_u32(rdata.data, d_off + 0, dll_ilt_rva);
+            write_u32(rdata.data, d_off + 4, 0);
+            write_u32(rdata.data, d_off + 8, 0);
+            write_u32(rdata.data, d_off + 12, dll_name_rva);
+            write_u32(rdata.data, d_off + 16, dll_iat_rva);
 
-            write_bytes(idata.data, cur_dll_off, spec.dll_name);
+            write_bytes(rdata.data, cur_dll_off, spec.dll_name);
             cur_dll_off += static_cast<uint32_t>(spec.dll_name.size() + 1u);
 
             for (size_t f = 0; f < spec.function_names.size(); ++f) {
                 const auto& fn_name = spec.function_names[f];
-                const uint32_t fn_hint_rva = idata_rva + cur_hint_off;
-                const uint32_t fn_iat_rva  = idata_rva + cur_iat_off;
+                const uint32_t fn_hint_rva = rdata_rva + cur_hint_off;
+                const uint32_t fn_iat_rva  = rdata_rva + cur_iat_off;
 
                 func_to_iat_rva.push_back({fn_name, fn_iat_rva});
 
-                write_u64(idata.data, cur_ilt_off, fn_hint_rva);
-                write_u64(idata.data, cur_iat_off, fn_hint_rva);
+                write_u64(rdata.data, cur_ilt_off, fn_hint_rva);
+                write_u64(rdata.data, cur_iat_off, fn_hint_rva);
 
-                write_u16(idata.data, cur_hint_off, static_cast<uint16_t>(f));
-                write_bytes(idata.data, cur_hint_off + 2, fn_name);
+                write_u16(rdata.data, cur_hint_off, static_cast<uint16_t>(f));
+                write_bytes(rdata.data, cur_hint_off + 2, fn_name);
 
                 cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
                 cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
@@ -482,11 +618,14 @@ public:
                 cur_hint_off += hsz;
             }
 
-            write_u64(idata.data, cur_ilt_off, 0ULL);
-            write_u64(idata.data, cur_iat_off, 0ULL);
+            write_u64(rdata.data, cur_ilt_off, 0ULL);
+            write_u64(rdata.data, cur_iat_off, 0ULL);
             cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
             cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
         }
+
+        const uint32_t rdata_virtual_size = static_cast<uint32_t>(rdata.data.size());
+        const uint32_t data_rva = detail::align_up(rdata_rva + rdata_virtual_size, pe::kSectionAlignment);
 
         // Patch Import Thunks (FF 25 [disp32]) to jump through IAT slots
         for (const auto& thunk : func_to_thunk_offset) {
@@ -497,45 +636,6 @@ public:
             }
         }
 
-        // Resolve main function entry point
-        uint32_t main_func_offset = 0;
-        if (!options.entry_symbol.empty()) {
-            if (const auto* sym = obj.find_symbol(options.entry_symbol)) {
-                main_func_offset = static_cast<uint32_t>(sym->value);
-            }
-        } else if (const auto* sym = obj.find_symbol("main")) {
-            main_func_offset = static_cast<uint32_t>(sym->value);
-        }
-
-        // Patch Entry Trampoline: sub rsp, 28h; call main; mov ecx, eax; call ExitProcess; add rsp, 28h; ret
-        {
-            const int64_t main_rva = static_cast<int64_t>(text_rva) + static_cast<int64_t>(trampoline_size) + static_cast<int64_t>(main_func_offset);
-            const int64_t call_next_rva = static_cast<int64_t>(text_rva) + 9;
-            const int64_t call_disp = main_rva - call_next_rva;
-
-            if (!detail::fits_int32(call_disp)) {
-                return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: main function is outside rel32 range");
-            }
-
-            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28
-            text.data[4] = 0xE8; // call rel32
-            write_i32(text.data, 5, static_cast<int32_t>(call_disp));
-            text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax
-
-            uint32_t exit_iat_rva = idata_rva + iat_off;
-            if (auto rva = find_iat_rva(entry_exit)) {
-                exit_iat_rva = *rva;
-            }
-            const int64_t iat_disp = static_cast<int64_t>(exit_iat_rva) - static_cast<int64_t>(text_rva + 17);
-            if (!detail::fits_int32(iat_disp)) {
-                return failure(Error::IATDisplacementOutOfRange, "DGTL PE linker: IAT is outside RIP-relative range");
-            }
-            text.data[11] = 0xFF; text.data[12] = 0x15; // call qword ptr [rip + disp32]
-            write_i32(text.data, 13, static_cast<int32_t>(iat_disp));
-            text.data[17] = 0x48; text.data[18] = 0x83; text.data[19] = 0xC4; text.data[20] = 0x28; // add rsp, 0x28
-            text.data[21] = 0xC3; // ret
-        }
-
         // Build Symbol RVA resolution table
         struct SymRvaEntry {
             std::string name;
@@ -544,17 +644,23 @@ public:
         std::vector<SymRvaEntry> symbol_rva_map;
         for (const auto& sym : obj.symbols()) {
             if (sym.is_defined()) {
+                const bool is_sec_sym = sym.name.starts_with(".") ||
+                                       sym.name == ".text" || sym.name == ".data" ||
+                                       sym.name == ".rdata" || sym.name == ".bss";
+                const uint64_t eff_val = is_sec_sym ? 0 : sym.value;
                 if (sym.section_index < obj.sections().size()) {
-                    const auto& sec_name = obj.sections()[sym.section_index].name;
-                    if (sec_name == ".text") {
-                        symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + sym.value});
-                    } else if (auto off = find_rdata_offset(sec_name)) {
-                        symbol_rva_map.push_back({sym.name, rdata_rva + *off + sym.value});
+                    const auto& sec = obj.sections()[sym.section_index];
+                    if (auto toff = find_text_offset(sym.section_index, sec.name)) {
+                        symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + *toff + eff_val});
+                    } else if (auto roff = find_rdata_offset(sym.section_index, sec.name)) {
+                        symbol_rva_map.push_back({sym.name, rdata_rva + *roff + eff_val});
+                    } else if (auto doff = find_data_offset(sym.section_index, sec.name)) {
+                        symbol_rva_map.push_back({sym.name, data_rva + *doff + eff_val});
                     } else {
-                        symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + sym.value});
+                        symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + eff_val});
                     }
                 } else {
-                    symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + sym.value});
+                    symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + eff_val});
                 }
             }
         }
@@ -570,6 +676,12 @@ public:
                       return a.name < b.name;
                   });
 
+        auto last = std::unique(symbol_rva_map.begin(), symbol_rva_map.end(),
+                                [](const SymRvaEntry& a, const SymRvaEntry& b) {
+                                    return a.name == b.name;
+                                });
+        symbol_rva_map.erase(last, symbol_rva_map.end());
+
         auto find_symbol_rva = [&](std::string_view name) -> std::optional<uint64_t> {
             auto it = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), name,
                                        [](const SymRvaEntry& entry, std::string_view val) {
@@ -578,8 +690,60 @@ public:
             if (it != symbol_rva_map.end() && it->name == name) {
                 return it->rva;
             }
+            if (name == ".text") return text_rva + trampoline_size;
+            if (name == ".rdata" || name == ".rodata") return rdata_rva;
+            if (name == ".data") {
+                if (auto doff = find_data_offset(UINT32_MAX, ".data")) return data_rva + *doff;
+                return data_rva;
+            }
+            if (name == ".bss") {
+                if (auto doff = find_data_offset(UINT32_MAX, ".bss")) return data_rva + *doff;
+                return data_rva;
+            }
             return std::nullopt;
         };
+
+        // Resolve main function entry point
+        std::string_view target_entry = !options.entry_symbol.empty() ? options.entry_symbol : "main";
+        uint64_t resolved_entry_rva = 0;
+        if (auto rva = find_symbol_rva(target_entry)) {
+            resolved_entry_rva = *rva;
+        } else if (auto rva = find_symbol_rva("DGTL_kernel_entry")) {
+            resolved_entry_rva = *rva;
+        } else if (auto rva = find_symbol_rva("main")) {
+            resolved_entry_rva = *rva;
+        } else {
+            resolved_entry_rva = text_rva + trampoline_size;
+        }
+
+        // Patch Entry Trampoline: sub rsp, 28h; call entry; mov ecx, eax; call ExitProcess; add rsp, 28h; ret
+        {
+            const int64_t main_rva = static_cast<int64_t>(resolved_entry_rva);
+            const int64_t call_next_rva = static_cast<int64_t>(text_rva) + 9;
+            const int64_t call_disp = main_rva - call_next_rva;
+
+            if (!detail::fits_int32(call_disp)) {
+                return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: main function is outside rel32 range");
+            }
+
+            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28
+            text.data[4] = 0xE8; // call rel32
+            write_i32(text.data, 5, static_cast<int32_t>(call_disp));
+            text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax
+
+            uint32_t exit_iat_rva = rdata_rva + iat_off;
+            if (auto rva = find_iat_rva(entry_exit)) {
+                exit_iat_rva = *rva;
+            }
+            const int64_t iat_disp = static_cast<int64_t>(exit_iat_rva) - static_cast<int64_t>(text_rva + 17);
+            if (!detail::fits_int32(iat_disp)) {
+                return failure(Error::IATDisplacementOutOfRange, "DGTL PE linker: IAT is outside RIP-relative range");
+            }
+            text.data[11] = 0xFF; text.data[12] = 0x15; // call qword ptr [rip + disp32]
+            write_i32(text.data, 13, static_cast<int32_t>(iat_disp));
+            text.data[17] = 0x48; text.data[18] = 0x83; text.data[19] = 0xC4; text.data[20] = 0x28; // add rsp, 0x28
+            text.data[21] = 0xC3; // ret
+        }
 
         struct BaseRelocEntry {
             uint32_t rva;
@@ -600,27 +764,34 @@ public:
                 } else {
                     continue;
                 }
+            } else if (auto imp_rva = find_iat_rva(rel.symbol_name)) {
+                target_rva = *imp_rva;
             } else {
                 continue;
             }
 
-            // Check if relocation target is in text or data
+            // Check if relocation target is in text, rdata, or data
+            bool in_rdata_sec = false;
             bool in_data_sec = false;
-            uint64_t data_base = 0;
+            uint64_t sec_base = 0;
+            uint64_t text_base = 0;
             if (rel.section_index < obj.sections().size()) {
-                const auto& target_sec_name = obj.sections()[rel.section_index].name;
-                if (target_sec_name != ".text") {
-                    if (auto off = find_rdata_offset(target_sec_name)) {
-                        in_data_sec = true;
-                        data_base = *off;
-                    }
+                const auto& target_sec = obj.sections()[rel.section_index];
+                if (auto roff = find_rdata_offset(rel.section_index, target_sec.name)) {
+                    in_rdata_sec = true;
+                    sec_base = *roff;
+                } else if (auto doff = find_data_offset(rel.section_index, target_sec.name)) {
+                    in_data_sec = true;
+                    sec_base = *doff;
+                } else if (auto toff = find_text_offset(rel.section_index, target_sec.name)) {
+                    text_base = *toff;
                 }
             }
 
-            if (in_data_sec) {
-                const uint64_t place_offset = data_base + rel.offset;
-                if (place_offset + 8 <= rdata.data.size()) {
-                    if (rel.kind == dgtl::object::RelocationKind::Absolute64) {
+            if (in_rdata_sec) {
+                const uint64_t place_offset = sec_base + rel.offset;
+                if (place_offset + 4 <= rdata.data.size()) {
+                    if (rel.kind == dgtl::object::RelocationKind::Absolute64 && place_offset + 8 <= rdata.data.size()) {
                         const uint64_t abs_addr = options.image_base + target_rva + rel.addend;
                         write_u64(rdata.data, place_offset, abs_addr);
                         base_relocs.push_back({static_cast<uint32_t>(rdata_rva + place_offset), true});
@@ -628,16 +799,43 @@ public:
                         const uint32_t abs_addr = static_cast<uint32_t>(options.image_base + target_rva + rel.addend);
                         write_u32(rdata.data, place_offset, abs_addr);
                         base_relocs.push_back({static_cast<uint32_t>(rdata_rva + place_offset), false});
+                    } else if (rel.kind == dgtl::object::RelocationKind::SecRel32) {
+                        const uint32_t rva = static_cast<uint32_t>(target_rva + rel.addend);
+                        write_u32(rdata.data, place_offset, rva);
+                    } else if (rel.kind == dgtl::object::RelocationKind::PCRel32) {
+                        const uint64_t reloc_rva = rdata_rva + place_offset;
+                        const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(reloc_rva);
+                        write_i32(rdata.data, place_offset, static_cast<int32_t>(delta));
+                    }
+                }
+            } else if (in_data_sec) {
+                const uint64_t place_offset = sec_base + rel.offset;
+                if (place_offset + 4 <= data.data.size()) {
+                    if (rel.kind == dgtl::object::RelocationKind::Absolute64 && place_offset + 8 <= data.data.size()) {
+                        const uint64_t abs_addr = options.image_base + target_rva + rel.addend;
+                        write_u64(data.data, place_offset, abs_addr);
+                        base_relocs.push_back({static_cast<uint32_t>(data_rva + place_offset), true});
+                    } else if (rel.kind == dgtl::object::RelocationKind::Absolute32) {
+                        const uint32_t abs_addr = static_cast<uint32_t>(options.image_base + target_rva + rel.addend);
+                        write_u32(data.data, place_offset, abs_addr);
+                        base_relocs.push_back({static_cast<uint32_t>(data_rva + place_offset), false});
+                    } else if (rel.kind == dgtl::object::RelocationKind::SecRel32) {
+                        const uint32_t rva = static_cast<uint32_t>(target_rva + rel.addend);
+                        write_u32(data.data, place_offset, rva);
+                    } else if (rel.kind == dgtl::object::RelocationKind::PCRel32) {
+                        const uint64_t reloc_rva = data_rva + place_offset;
+                        const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(reloc_rva);
+                        write_i32(data.data, place_offset, static_cast<int32_t>(delta));
                     }
                 }
             } else {
-                const uint64_t place_offset = trampoline_size + rel.offset;
+                const uint64_t place_offset = trampoline_size + text_base + rel.offset;
                 const uint64_t place_rva = text_rva + place_offset;
 
                 if (place_offset + 4 <= text.data.size()) {
                     if (rel.kind == dgtl::object::RelocationKind::PCRel32 || rel.kind == dgtl::object::RelocationKind::PLT32) {
-                        const uint64_t pc_rva = place_rva + 4;
-                        const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(pc_rva);
+                        const uint64_t reloc_rva = place_rva;
+                        const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(reloc_rva);
                         write_i32(text.data, place_offset, static_cast<int32_t>(delta));
                     } else if (rel.kind == dgtl::object::RelocationKind::Absolute64 && place_offset + 8 <= text.data.size()) {
                         const uint64_t abs_addr = options.image_base + target_rva + rel.addend;
@@ -647,6 +845,9 @@ public:
                         const uint32_t abs_addr = static_cast<uint32_t>(options.image_base + target_rva + rel.addend);
                         write_u32(text.data, place_offset, abs_addr);
                         base_relocs.push_back({static_cast<uint32_t>(place_rva), false});
+                    } else if (rel.kind == dgtl::object::RelocationKind::SecRel32) {
+                        const uint32_t rva = static_cast<uint32_t>(target_rva + rel.addend);
+                        write_u32(text.data, place_offset, rva);
                     }
                 }
             }
@@ -693,22 +894,29 @@ public:
         }
 
         // Section Virtual and Raw size metrics
-        idata.virtual_address = idata_rva;
-        idata.virtual_size = static_cast<uint32_t>(idata.data.size());
-
-        reloc.virtual_address = reloc_rva;
-        reloc.virtual_size = static_cast<uint32_t>(reloc.data.size());
-
         text.virtual_address = text_rva;
         text.virtual_size = static_cast<uint32_t>(text.data.size());
+        text.raw_size = detail::align_up(text.virtual_size, pe::kFileAlignment);
 
         rdata.virtual_address = rdata_rva;
         rdata.virtual_size = static_cast<uint32_t>(rdata.data.size());
-
-        text.raw_size = detail::align_up(text.virtual_size, pe::kFileAlignment);
         rdata.raw_size = detail::align_up(rdata.virtual_size, pe::kFileAlignment);
-        idata.raw_size = detail::align_up(idata.virtual_size, pe::kFileAlignment);
-        reloc.raw_size = detail::align_up(reloc.virtual_size, pe::kFileAlignment);
+
+        data.virtual_address = data_rva;
+        data.virtual_size = static_cast<uint32_t>(data.data.size());
+        data.raw_size = detail::align_up(data.virtual_size, pe::kFileAlignment);
+
+        const uint32_t post_data_rva = has_data
+            ? detail::align_up(data_rva + data.virtual_size, pe::kSectionAlignment)
+            : data_rva;
+        const uint32_t reloc_rva = post_data_rva;
+
+        const bool has_reloc = options.emit_relocations && !base_relocs.empty();
+        if (has_reloc) {
+            reloc.virtual_address = reloc_rva;
+            reloc.virtual_size = static_cast<uint32_t>(reloc.data.size());
+            reloc.raw_size = detail::align_up(reloc.virtual_size, pe::kFileAlignment);
+        }
 
         uint32_t cursor = pe::kHeadersSize;
         text.raw_offset = cursor;
@@ -719,12 +927,12 @@ public:
         if (!detail::checked_add_u32(cursor, rdata.raw_size, cursor)) {
             return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .rdata file offset overflow");
         }
-        idata.raw_offset = cursor;
-        if (!detail::checked_add_u32(cursor, idata.raw_size, cursor)) {
-            return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .idata file offset overflow");
+        if (has_data) {
+            data.raw_offset = cursor;
+            if (!detail::checked_add_u32(cursor, data.raw_size, cursor)) {
+                return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .data file offset overflow");
+            }
         }
-
-        const bool has_reloc = !reloc.data.empty();
         if (has_reloc) {
             reloc.raw_offset = cursor;
             if (!detail::checked_add_u32(cursor, reloc.raw_size, cursor)) {
@@ -735,7 +943,9 @@ public:
         const uint32_t file_size = cursor;
         uint32_t image_end = text_rva + detail::align_up(text.virtual_size, pe::kSectionAlignment);
         image_end = std::max(image_end, rdata_rva + detail::align_up(rdata.virtual_size, pe::kSectionAlignment));
-        image_end = std::max(image_end, idata_rva + detail::align_up(idata.virtual_size, pe::kSectionAlignment));
+        if (has_data) {
+            image_end = std::max(image_end, data_rva + detail::align_up(data.virtual_size, pe::kSectionAlignment));
+        }
         if (has_reloc) {
             image_end = std::max(image_end, reloc_rva + detail::align_up(reloc.virtual_size, pe::kSectionAlignment));
         }
@@ -745,9 +955,26 @@ public:
         dos.e_magic = pe::kDosMagic;
         dos.e_lfanew = pe::kDosHeaderOffsetToNT;
 
+        std::vector<SectionHeader> section_headers;
+        section_headers.push_back({});
+        fill_section_header(section_headers.back(), text);
+
+        section_headers.push_back({});
+        fill_section_header(section_headers.back(), rdata);
+
+        if (has_data) {
+            section_headers.push_back({});
+            fill_section_header(section_headers.back(), data);
+        }
+
+        if (has_reloc) {
+            section_headers.push_back({});
+            fill_section_header(section_headers.back(), reloc);
+        }
+
         FileHeader file_hdr{};
         file_hdr.Machine = pe::kMachineAMD64;
-        file_hdr.NumberOfSections = pe::kNumberOfSections;
+        file_hdr.NumberOfSections = static_cast<uint16_t>(section_headers.size());
         file_hdr.TimeDateStamp = options.deterministic ? 0 : options.timestamp;
         file_hdr.SizeOfOptionalHeader = 240;
         file_hdr.Characteristics = pe::kCharacteristicsExecutable | pe::kCharacteristicsLargeAddressAware;
@@ -759,7 +986,7 @@ public:
         opt.Magic = pe::kOptionalHeader64Magic;
         opt.MajorLinkerVersion = 14;
         opt.SizeOfCode = text.raw_size;
-        opt.SizeOfInitializedData = rdata.raw_size + idata.raw_size + reloc.raw_size;
+        opt.SizeOfInitializedData = rdata.raw_size + (has_data ? data.raw_size : 0) + (has_reloc ? reloc.raw_size : 0);
         opt.AddressOfEntryPoint = text_rva;
         opt.BaseOfCode = text_rva;
         opt.ImageBase = options.image_base;
@@ -771,7 +998,7 @@ public:
         opt.SizeOfHeaders = pe::kHeadersSize;
         opt.Subsystem = pe::kSubsystemWindowsCUI;
         opt.DllCharacteristics = pe::kDllCharNXCompat | pe::kDllCharTerminalServerAware;
-        if (options.enable_aslr && (has_reloc || base_relocs.empty())) {
+        if (options.enable_aslr && has_reloc) {
             opt.DllCharacteristics |= pe::kDllCharDynamicBase | pe::kDllCharHighEntropyVA;
         }
         opt.SizeOfStackReserve = pe::kStackReserve;
@@ -779,9 +1006,9 @@ public:
         opt.SizeOfHeapReserve = pe::kHeapReserve;
         opt.SizeOfHeapCommit = pe::kHeapCommit;
         opt.NumberOfRvaAndSizes = 16;
-        opt.DataDirectories[pe::kDirImport].VirtualAddress = idata_rva + desc_off;
+        opt.DataDirectories[pe::kDirImport].VirtualAddress = rdata_rva + desc_off;
         opt.DataDirectories[pe::kDirImport].Size = descriptor_size;
-        opt.DataDirectories[pe::kDirIAT].VirtualAddress = idata_rva + iat_off;
+        opt.DataDirectories[pe::kDirIAT].VirtualAddress = rdata_rva + iat_off;
         opt.DataDirectories[pe::kDirIAT].Size = total_iat_size;
         if (has_reloc) {
             opt.DataDirectories[pe::kDirBaseReloc].VirtualAddress = reloc_rva;
@@ -790,12 +1017,6 @@ public:
             opt.DataDirectories[pe::kDirBaseReloc].VirtualAddress = 0;
             opt.DataDirectories[pe::kDirBaseReloc].Size = 0;
         }
-
-        std::array<SectionHeader, pe::kNumberOfSections> section_headers{};
-        fill_section_header(section_headers[0], text);
-        fill_section_header(section_headers[1], rdata);
-        fill_section_header(section_headers[2], idata);
-        fill_section_header(section_headers[3], reloc);
 
         out_binary.assign(file_size, 0);
         write_dos_header(out_binary, 0, dos);
@@ -820,7 +1041,9 @@ public:
 
         copy_bytes(out_binary, text.raw_offset, text.data);
         copy_bytes(out_binary, rdata.raw_offset, rdata.data);
-        copy_bytes(out_binary, idata.raw_offset, idata.data);
+        if (has_data) {
+            copy_bytes(out_binary, data.raw_offset, data.data);
+        }
         if (has_reloc) {
             copy_bytes(out_binary, reloc.raw_offset, reloc.data);
         }
@@ -908,13 +1131,11 @@ public:
 
         Section text;
         Section rdata;
-        Section idata;
         Section reloc;
 
         initialize_section(text, ".text", pe::kSectionMemExecute | pe::kSectionMemRead | pe::kSectionContainsCode);
         initialize_section(rdata, ".rdata", pe::kSectionMemRead | pe::kSectionInitializedData);
-        initialize_section(idata, ".idata", pe::kSectionMemRead | pe::kSectionMemWrite | pe::kSectionInitializedData);
-        initialize_section(reloc, ".reloc", pe::kSectionMemRead | pe::kSectionInitializedData);
+        initialize_section(reloc, ".reloc", pe::kSectionMemRead | pe::kSectionInitializedData | pe::kSectionMemDiscardable);
 
         rdata.data.assign(user_rdata.begin(), user_rdata.end());
 
@@ -932,10 +1153,8 @@ public:
         }
 
         const uint32_t rdata_rva = detail::align_up(text_rva + text_virtual_size, pe::kSectionAlignment);
-        const uint32_t idata_rva = detail::align_up(rdata_rva + static_cast<uint32_t>(rdata.data.size()), pe::kSectionAlignment);
-        const uint32_t reloc_rva = detail::align_up(idata_rva + 0x1000, pe::kSectionAlignment);
 
-        // Build .idata Import Table Layout
+        // Build Import Table Layout directly inside .rdata (Consolidated PE Architecture)
         struct ImportSpec {
             std::string dll_name;
             std::vector<std::string> function_names;
@@ -960,6 +1179,10 @@ public:
             import_specs.push_back(std::move(default_spec));
         }
 
+        // Align user rdata before embedding imports
+        while ((rdata.data.size() % 16) != 0) rdata.data.push_back(0);
+        const uint32_t import_base_in_rdata = static_cast<uint32_t>(rdata.data.size());
+
         const uint32_t num_dlls = static_cast<uint32_t>(import_specs.size());
         const uint32_t descriptor_count = num_dlls + 1u;
         const uint32_t descriptor_size = descriptor_count * static_cast<uint32_t>(sizeof(ImportDescriptor));
@@ -982,21 +1205,14 @@ public:
         const uint32_t total_ilt_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
         const uint32_t total_iat_size = total_thunk_count * static_cast<uint32_t>(sizeof(uint64_t));
 
-        uint32_t import_size = 0;
-        if (!detail::checked_add_u32(descriptor_size, total_ilt_size, import_size) ||
-            !detail::checked_add_u32(import_size, total_iat_size, import_size) ||
-            !detail::checked_add_u32(import_size, total_hint_size, import_size) ||
-            !detail::checked_add_u32(import_size, total_dll_name_size, import_size)) {
-            return failure(Error::RDataTooLarge, "DGTL PE linker: import table size overflow");
-        }
+        const uint32_t desc_off = import_base_in_rdata;
+        const uint32_t ilt_off  = detail::align_up(desc_off + descriptor_size, 8);
+        const uint32_t iat_off  = detail::align_up(ilt_off + total_ilt_size, 8);
+        const uint32_t hint_off = detail::align_up(iat_off + total_iat_size, 8);
+        const uint32_t dll_off  = detail::align_up(hint_off + total_hint_size, 8);
+        const uint32_t import_total_size = (dll_off + total_dll_name_size) - import_base_in_rdata;
 
-        idata.data.assign(import_size + 64, 0);
-
-        const uint32_t desc_off = 0;
-        const uint32_t ilt_off  = desc_off + descriptor_size;
-        const uint32_t iat_off  = ilt_off + total_ilt_size;
-        const uint32_t hint_off = iat_off + total_iat_size;
-        const uint32_t dll_off  = hint_off + total_hint_size;
+        rdata.data.resize(import_base_in_rdata + import_total_size + 64, 0);
 
         uint32_t cur_ilt_off  = ilt_off;
         uint32_t cur_iat_off  = iat_off;
@@ -1011,32 +1227,32 @@ public:
 
         for (uint32_t d = 0; d < num_dlls; ++d) {
             const auto& spec = import_specs[d];
-            const uint32_t dll_ilt_rva  = idata_rva + cur_ilt_off;
-            const uint32_t dll_iat_rva  = idata_rva + cur_iat_off;
-            const uint32_t dll_name_rva = idata_rva + cur_dll_off;
+            const uint32_t dll_ilt_rva  = rdata_rva + cur_ilt_off;
+            const uint32_t dll_iat_rva  = rdata_rva + cur_iat_off;
+            const uint32_t dll_name_rva = rdata_rva + cur_dll_off;
 
             const uint32_t d_off = desc_off + d * static_cast<uint32_t>(sizeof(ImportDescriptor));
-            write_u32(idata.data, d_off + 0, dll_ilt_rva);
-            write_u32(idata.data, d_off + 4, 0);
-            write_u32(idata.data, d_off + 8, 0);
-            write_u32(idata.data, d_off + 12, dll_name_rva);
-            write_u32(idata.data, d_off + 16, dll_iat_rva);
+            write_u32(rdata.data, d_off + 0, dll_ilt_rva);
+            write_u32(rdata.data, d_off + 4, 0);
+            write_u32(rdata.data, d_off + 8, 0);
+            write_u32(rdata.data, d_off + 12, dll_name_rva);
+            write_u32(rdata.data, d_off + 16, dll_iat_rva);
 
-            write_bytes(idata.data, cur_dll_off, spec.dll_name);
+            write_bytes(rdata.data, cur_dll_off, spec.dll_name);
             cur_dll_off += static_cast<uint32_t>(spec.dll_name.size() + 1u);
 
             for (size_t f = 0; f < spec.function_names.size(); ++f) {
                 const auto& fn_name = spec.function_names[f];
-                const uint32_t fn_hint_rva = idata_rva + cur_hint_off;
-                const uint32_t fn_iat_rva  = idata_rva + cur_iat_off;
+                const uint32_t fn_hint_rva = rdata_rva + cur_hint_off;
+                const uint32_t fn_iat_rva  = rdata_rva + cur_iat_off;
 
                 func_to_iat_rva.push_back({fn_name, fn_iat_rva});
 
-                write_u64(idata.data, cur_ilt_off, fn_hint_rva);
-                write_u64(idata.data, cur_iat_off, fn_hint_rva);
+                write_u64(rdata.data, cur_ilt_off, fn_hint_rva);
+                write_u64(rdata.data, cur_iat_off, fn_hint_rva);
 
-                write_u16(idata.data, cur_hint_off, static_cast<uint16_t>(f));
-                write_bytes(idata.data, cur_hint_off + 2, fn_name);
+                write_u16(rdata.data, cur_hint_off, static_cast<uint16_t>(f));
+                write_bytes(rdata.data, cur_hint_off + 2, fn_name);
 
                 cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
                 cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
@@ -1046,31 +1262,31 @@ public:
                 cur_hint_off += hsz;
             }
 
-            write_u64(idata.data, cur_ilt_off, 0ULL);
-            write_u64(idata.data, cur_iat_off, 0ULL);
+            write_u64(rdata.data, cur_ilt_off, 0ULL);
+            write_u64(rdata.data, cur_iat_off, 0ULL);
             cur_ilt_off += static_cast<uint32_t>(sizeof(uint64_t));
             cur_iat_off += static_cast<uint32_t>(sizeof(uint64_t));
         }
 
-        idata.virtual_address = idata_rva;
-        idata.virtual_size = static_cast<uint32_t>(idata.data.size());
+        const uint32_t rdata_virtual_size = static_cast<uint32_t>(rdata.data.size());
+        const uint32_t reloc_rva = detail::align_up(rdata_rva + rdata_virtual_size, pe::kSectionAlignment);
 
-        if (options.emit_relocations) {
+        bool has_reloc = options.emit_relocations;
+        if (has_reloc) {
             reloc.data.clear();
+            reloc.virtual_address = reloc_rva;
+            reloc.virtual_size = static_cast<uint32_t>(reloc.data.size());
+            reloc.raw_size = detail::align_up(reloc.virtual_size, pe::kFileAlignment);
         }
-        reloc.virtual_address = reloc_rva;
-        reloc.virtual_size = static_cast<uint32_t>(reloc.data.size());
 
         text.virtual_address = text_rva;
         text.virtual_size = text_virtual_size;
 
         rdata.virtual_address = rdata_rva;
-        rdata.virtual_size = static_cast<uint32_t>(rdata.data.size());
+        rdata.virtual_size = rdata_virtual_size;
 
         text.raw_size = text_raw_size;
         rdata.raw_size = detail::align_up(rdata.virtual_size, pe::kFileAlignment);
-        idata.raw_size = detail::align_up(idata.virtual_size, pe::kFileAlignment);
-        reloc.raw_size = detail::align_up(reloc.virtual_size, pe::kFileAlignment);
 
         uint32_t cursor = pe::kHeadersSize;
         text.raw_offset = cursor;
@@ -1081,23 +1297,16 @@ public:
         if (!detail::checked_add_u32(cursor, rdata.raw_size, cursor)) {
             return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .rdata file offset overflow");
         }
-        idata.raw_offset = cursor;
-        if (!detail::checked_add_u32(cursor, idata.raw_size, cursor)) {
-            return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .idata file offset overflow");
-        }
-
-        const bool has_reloc = !reloc.data.empty();
         if (has_reloc) {
             reloc.raw_offset = cursor;
             if (!detail::checked_add_u32(cursor, reloc.raw_size, cursor)) {
                 return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .reloc file offset overflow");
             }
         }
-        const uint32_t file_size = cursor;
 
+        const uint32_t file_size = cursor;
         uint32_t image_end = text_rva + detail::align_up(text.virtual_size, pe::kSectionAlignment);
         image_end = std::max(image_end, rdata_rva + detail::align_up(rdata.virtual_size, pe::kSectionAlignment));
-        image_end = std::max(image_end, idata_rva + detail::align_up(idata.virtual_size, pe::kSectionAlignment));
         if (has_reloc) {
             image_end = std::max(image_end, reloc_rva + detail::align_up(reloc.virtual_size, pe::kSectionAlignment));
         }
@@ -1118,7 +1327,7 @@ public:
             write_i32(text.data, 5, static_cast<int32_t>(call_disp));
             text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax
 
-            uint32_t exit_iat_rva = idata_rva + iat_off;
+            uint32_t exit_iat_rva = rdata_rva + iat_off;
             for (const auto& entry : func_to_iat_rva) {
                 if (entry.name == options.entry_import) {
                     exit_iat_rva = entry.rva;
@@ -1135,22 +1344,37 @@ public:
             text.data[21] = 0xC3; // ret
         }
 
+        std::vector<SectionHeader> section_headers;
+        section_headers.push_back({});
+        fill_section_header(section_headers.back(), text);
+
+        section_headers.push_back({});
+        fill_section_header(section_headers.back(), rdata);
+
+        if (has_reloc) {
+            section_headers.push_back({});
+            fill_section_header(section_headers.back(), reloc);
+        }
+
         DosHeader dos{};
         dos.e_magic = pe::kDosMagic;
         dos.e_lfanew = pe::kDosHeaderOffsetToNT;
 
         FileHeader file_hdr{};
         file_hdr.Machine = pe::kMachineAMD64;
-        file_hdr.NumberOfSections = pe::kNumberOfSections;
+        file_hdr.NumberOfSections = static_cast<uint16_t>(section_headers.size());
         file_hdr.TimeDateStamp = options.deterministic ? 0 : options.timestamp;
         file_hdr.SizeOfOptionalHeader = 240;
         file_hdr.Characteristics = pe::kCharacteristicsExecutable | pe::kCharacteristicsLargeAddressAware;
+        if (!has_reloc) {
+            file_hdr.Characteristics |= pe::kCharacteristicsRelocsStripped;
+        }
 
         OptionalHeader64 opt{};
         opt.Magic = pe::kOptionalHeader64Magic;
         opt.MajorLinkerVersion = 14;
         opt.SizeOfCode = text.raw_size;
-        opt.SizeOfInitializedData = rdata.raw_size + idata.raw_size + reloc.raw_size;
+        opt.SizeOfInitializedData = rdata.raw_size + (has_reloc ? reloc.raw_size : 0);
         opt.AddressOfEntryPoint = text_rva;
         opt.BaseOfCode = text_rva;
         opt.ImageBase = options.image_base;
@@ -1162,7 +1386,7 @@ public:
         opt.SizeOfHeaders = pe::kHeadersSize;
         opt.Subsystem = pe::kSubsystemWindowsCUI;
         opt.DllCharacteristics = pe::kDllCharNXCompat | pe::kDllCharTerminalServerAware;
-        if (options.enable_aslr) {
+        if (options.enable_aslr && has_reloc) {
             opt.DllCharacteristics |= pe::kDllCharDynamicBase | pe::kDllCharHighEntropyVA;
         }
         opt.SizeOfStackReserve = pe::kStackReserve;
@@ -1170,16 +1394,17 @@ public:
         opt.SizeOfHeapReserve = pe::kHeapReserve;
         opt.SizeOfHeapCommit = pe::kHeapCommit;
         opt.NumberOfRvaAndSizes = 16;
-        opt.DataDirectories[pe::kDirImport].VirtualAddress = idata_rva + desc_off;
+        opt.DataDirectories[pe::kDirImport].VirtualAddress = rdata_rva + desc_off;
         opt.DataDirectories[pe::kDirImport].Size = descriptor_size;
-        opt.DataDirectories[pe::kDirIAT].VirtualAddress = idata_rva + iat_off;
+        opt.DataDirectories[pe::kDirIAT].VirtualAddress = rdata_rva + iat_off;
         opt.DataDirectories[pe::kDirIAT].Size = total_iat_size;
-
-        std::array<SectionHeader, pe::kNumberOfSections> section_headers{};
-        fill_section_header(section_headers[0], text);
-        fill_section_header(section_headers[1], rdata);
-        fill_section_header(section_headers[2], idata);
-        fill_section_header(section_headers[3], reloc);
+        if (has_reloc) {
+            opt.DataDirectories[pe::kDirBaseReloc].VirtualAddress = reloc_rva;
+            opt.DataDirectories[pe::kDirBaseReloc].Size = reloc.virtual_size;
+        } else {
+            opt.DataDirectories[pe::kDirBaseReloc].VirtualAddress = 0;
+            opt.DataDirectories[pe::kDirBaseReloc].Size = 0;
+        }
 
         binary.assign(file_size, 0);
         write_dos_header(binary, 0, dos);
@@ -1204,7 +1429,6 @@ public:
 
         copy_bytes(binary, text.raw_offset, text.data);
         copy_bytes(binary, rdata.raw_offset, rdata.data);
-        copy_bytes(binary, idata.raw_offset, idata.data);
         if (has_reloc) {
             copy_bytes(binary, reloc.raw_offset, reloc.data);
         }

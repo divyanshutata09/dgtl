@@ -621,7 +621,15 @@ int compile_all_modules() {
         "dgtl.ir_core.riscv64_emitter",
         "dgtl.ir_core.wasmsimd_fma_emitter",
         "dgtl.backend.isa.win64_frame_lowering",
-        "dgtl.backend.linker.pe",
+        "dgtl.object.file",
+        "dgtl.object.symbol",
+        "dgtl.object.section",
+        "dgtl.object.relocation",
+        "dgtl.object.readers.pe",
+        "dgtl.object.readers.elf",
+        "dgtl.object.archive",
+        "dgtl.linker.pe.sections",
+        "dgtl.linker.pe",
         "dgtl.isa.x64.isel_gen",
         "dgtl.isa.x64.isel_rules",
         "dgtl.isa.arm64.isel_gen",
@@ -1248,13 +1256,7 @@ int build_tools_optimized(const fs::path& prod_main,
         if (file_exists(exe)) {
             copy_file_if_exists(exe, tools_dir / exe.filename());
             copy_file_if_exists(exe, sdk_bin_dir / exe.filename());
-            std::string fname = exe.filename().string();
-            if (fname.find('-') != std::string::npos) {
-                std::string alt_name = fname;
-                std::replace(alt_name.begin(), alt_name.end(), '-', '_');
-                copy_file_if_exists(exe, tools_dir / alt_name);
-                copy_file_if_exists(exe, g_config.build_dir / alt_name);
-            }
+            copy_file_if_exists(exe, g_config.build_dir / exe.filename());
         }
     };
 
@@ -1276,6 +1278,17 @@ int build_tools_optimized(const fs::path& prod_main,
                     if (get_file_mtime(obj) > output_time) {
                         needs_link = true;
                         break;
+                    }
+                }
+                if (!needs_link) {
+                    std::error_code ec_mod;
+                    for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
+                        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+                            if (get_file_mtime(entry.path()) > output_time) {
+                                needs_link = true;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1545,6 +1558,8 @@ int build_sdk_static_library() {
     int ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << sdk_lib.string() << std::endl;
+        copy_file_if_exists(sdk_lib, g_config.build_dir / "dgtl.lib");
+        copy_file_if_exists(sdk_lib, g_config.root / "dgtl.lib");
 
         // Compile & stage dgtl-config discovery tool
         const fs::path sdk_bin_dir = g_config.build_dir / "DGTL_SDK" / "bin";

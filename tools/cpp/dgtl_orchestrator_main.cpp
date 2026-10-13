@@ -494,7 +494,15 @@ int compile_all_modules() {
         "dgtl.ir_core.riscv64_emitter",
         "dgtl.ir_core.wasmsimd_fma_emitter",
         "dgtl.backend.isa.win64_frame_lowering",
-        "dgtl.backend.linker.pe",
+        "dgtl.object.file",
+        "dgtl.object.symbol",
+        "dgtl.object.section",
+        "dgtl.object.relocation",
+        "dgtl.object.readers.pe",
+        "dgtl.object.readers.elf",
+        "dgtl.object.archive",
+        "dgtl.linker.pe.sections",
+        "dgtl.linker.pe",
         "dgtl.isa.x64.isel_gen",
         "dgtl.isa.x64.isel_rules",
         "dgtl.isa.arm64.isel_gen",
@@ -619,6 +627,20 @@ int compile_all_modules() {
                 break;
             }
         }
+        if (!needs_link && opts.output.extension() == ".exe") {
+            std::error_code ec_mod;
+            fs::path mod_obj_dir = g_config.build_dir / "obj" / "modules";
+            if (fs::exists(mod_obj_dir, ec_mod)) {
+                for (const auto& entry : fs::directory_iterator(mod_obj_dir, ec_mod)) {
+                    if (entry.is_regular_file() && entry.path().extension() == ".o") {
+                        if (get_file_mtime(entry.path()) > out_time) {
+                            needs_link = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (!needs_link) {
@@ -688,6 +710,7 @@ int compile_all_modules() {
     };
 
     if (invoke_compiler(opts) == BuildResult::Error) return 1;
+
 
     CommandBuilder cmd(output.string());
     for (const auto& arg : args) cmd.add(arg);

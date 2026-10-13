@@ -49,6 +49,7 @@ struct SectionInfo {
     uint64_t file_size{0};
     uint32_t alignment{1};
     uint32_t flags{0};
+    uint64_t reloc_offset{0};
     uint32_t reloc_count{0};
     bool is_code{false};
     bool is_readable{true};
@@ -72,6 +73,7 @@ struct RelocationInfo {
     uint64_t offset{0};
     std::string symbol_name;
     uint32_t type{0};
+    std::string type_name;
     int64_t addend{0};
     std::string section_name;
 };
@@ -81,6 +83,13 @@ struct DumpReport {
     BinaryFormat format{BinaryFormat::Unknown};
     std::string arch{"x86_64"};
     uint64_t entry_point{0};
+    uint64_t image_base{0};
+    uint32_t import_rva{0};
+    uint32_t import_size{0};
+    uint32_t reloc_rva{0};
+    uint32_t reloc_size{0};
+    uint32_t iat_rva{0};
+    uint32_t iat_size{0};
     std::vector<SectionInfo> sections;
     std::vector<SymbolInfo> symbols;
     std::vector<RelocationInfo> relocations;
@@ -102,6 +111,24 @@ inline uint32_t read32_le(const uint8_t* p) {
 inline uint64_t read64_le(const uint8_t* p) {
     return static_cast<uint64_t>(read32_le(p)) |
           (static_cast<uint64_t>(read32_le(p + 4)) << 32);
+}
+
+inline std::string coff_reloc_type_to_string(uint16_t type) {
+    switch (type) {
+        case 0x0000: return "IMAGE_REL_AMD64_ABSOLUTE";
+        case 0x0001: return "IMAGE_REL_AMD64_ADDR64";
+        case 0x0002: return "IMAGE_REL_AMD64_ADDR32";
+        case 0x0003: return "IMAGE_REL_AMD64_ADDR32NB";
+        case 0x0004: return "IMAGE_REL_AMD64_REL32";
+        case 0x0005: return "IMAGE_REL_AMD64_REL32_1";
+        case 0x0006: return "IMAGE_REL_AMD64_REL32_2";
+        case 0x0007: return "IMAGE_REL_AMD64_REL32_3";
+        case 0x0008: return "IMAGE_REL_AMD64_REL32_4";
+        case 0x0009: return "IMAGE_REL_AMD64_REL32_5";
+        case 0x000A: return "IMAGE_REL_AMD64_SECTION";
+        case 0x000B: return "IMAGE_REL_AMD64_SECREL";
+        default: return "0x" + std::to_string(type);
+    }
 }
 
 DumpReport inspect_object(const fs::path& file_path) {
@@ -239,8 +266,47 @@ DumpReport inspect_object(const fs::path& file_path) {
 
             if (opt_hdr_size >= 24) {
                 const uint32_t opt_off = coff_off + 20;
+                const uint16_t magic = read16_le(raw + opt_off);
                 report.entry_point = read32_le(raw + opt_off + 16);
+                if (magic == 0x020B && opt_hdr_size >= 120) { // PE32+
+                    report.image_base = read64_le(raw + opt_off + 24);
+                    if (opt_hdr_size >= 240) {
+                        const uint32_t dirs = opt_off + 112;
+                        report.import_rva  = read32_le(raw + dirs + 8);
+                        report.import_size = read32_le(raw + dirs + 12);
+                        report.reloc_rva   = read32_le(raw + dirs + 40);
+                        report.reloc_size  = read32_le(raw + dirs + 44);
+                        report.iat_rva     = read32_le(raw + dirs + 96);
+                        report.iat_size    = read32_le(raw + dirs + 100);
+                    }
+                } else if (magic == 0x010B && opt_hdr_size >= 104) { // PE32
+                    report.image_base = read32_le(raw + opt_off + 28);
+                    if (opt_hdr_size >= 224) {
+                        const uint32_t dirs = opt_off + 96;
+                        report.import_rva  = read32_le(raw + dirs + 8);
+                        report.import_size = read32_le(raw + dirs + 12);
+                        report.reloc_rva   = read32_le(raw + dirs + 40);
+                        report.reloc_size  = read32_le(raw + dirs + 44);
+                        report.iat_rva     = read32_le(raw + dirs + 96);
+                        report.iat_size    = read32_le(raw + dirs + 100);
+                    }
+                }
             }
+
+            const uint32_t symtab_offset = read32_le(raw + coff_off + 8);
+            const uint32_t num_symbols = read32_le(raw + coff_off + 12);
+            const size_t string_table_offset = symtab_offset + (static_cast<size_t>(num_symbols) * 18);
+
+            const auto get_string = [&](uint32_t str_offset) -> std::string {
+                if (str_offset < 4 || string_table_offset + str_offset >= file_size) {
+                    return {};
+                }
+                const char* start = reinterpret_cast<const char*>(raw + string_table_offset + str_offset);
+                const char* end = reinterpret_cast<const char*>(raw + file_size);
+                const char* p = start;
+                while (p < end && *p != '\0') ++p;
+                return std::string(start, static_cast<size_t>(p - start));
+            };
 
             const uint32_t sec_table_off = coff_off + 20 + opt_hdr_size;
             for (uint16_t i = 0; i < num_sections && sec_table_off + (i + 1) * 40 <= file_size; ++i) {
@@ -249,11 +315,20 @@ DumpReport inspect_object(const fs::path& file_path) {
                 std::memcpy(name, sec, 8);
 
                 SectionInfo s;
-                s.name = name;
+                if (name[0] == '/') {
+                    uint32_t str_idx = static_cast<uint32_t>(std::strtoul(name + 1, nullptr, 10));
+                    s.name = get_string(str_idx);
+                    if (s.name.empty()) s.name = name;
+                } else {
+                    s.name = name;
+                }
+
                 s.virtual_size = read32_le(sec + 8);
                 s.virtual_address = read32_le(sec + 12);
                 s.file_size = read32_le(sec + 16);
                 s.file_offset = read32_le(sec + 20);
+                s.reloc_offset = read32_le(sec + 24);
+                s.reloc_count = read16_le(sec + 32);
                 s.flags = read32_le(sec + 36);
 
                 s.is_code = (s.flags & 0x00000020) != 0;
@@ -264,6 +339,101 @@ DumpReport inspect_object(const fs::path& file_path) {
                     s.data.assign(raw + s.file_offset, raw + s.file_offset + s.file_size);
                 }
                 report.sections.push_back(std::move(s));
+            }
+
+            // Decode COFF Symbol Table
+            std::vector<std::string> coff_symbol_names;
+            if (symtab_offset != 0 && symtab_offset + (static_cast<size_t>(num_symbols) * 18) <= file_size) {
+                coff_symbol_names.resize(num_symbols);
+                for (uint32_t i = 0; i < num_symbols; ++i) {
+                    const size_t soff = symtab_offset + (static_cast<size_t>(i) * 18);
+                    const uint8_t* sptr = raw + soff;
+
+                    uint32_t zero_check = 0;
+                    std::memcpy(&zero_check, sptr, 4);
+                    std::string sym_name;
+                    if (zero_check == 0) {
+                        uint32_t str_off = 0;
+                        std::memcpy(&str_off, sptr + 4, 4);
+                        sym_name = get_string(str_off);
+                    } else {
+                        char sname[9] = {0};
+                        std::memcpy(sname, sptr, 8);
+                        sym_name = sname;
+                    }
+
+                    uint32_t val = 0;
+                    int16_t sec_num = 0;
+                    uint16_t stype = 0;
+                    uint8_t sclass = sptr[16];
+                    uint8_t num_aux = sptr[17];
+                    std::memcpy(&val, sptr + 8, 4);
+                    std::memcpy(&sec_num, sptr + 12, 2);
+                    std::memcpy(&stype, sptr + 14, 2);
+
+                    if (sym_name.empty() && sec_num > 0 && static_cast<size_t>(sec_num - 1) < report.sections.size()) {
+                        sym_name = report.sections[static_cast<size_t>(sec_num - 1)].name;
+                    }
+
+                    coff_symbol_names[i] = sym_name;
+
+                    if (!sym_name.empty()) {
+                        SymbolInfo sym;
+                        sym.name = sym_name;
+                        sym.value = val;
+                        sym.section_index = sec_num;
+                        if (sec_num > 0 && static_cast<size_t>(sec_num - 1) < report.sections.size()) {
+                            sym.section_name = report.sections[static_cast<size_t>(sec_num - 1)].name;
+                        } else if (sec_num == 0) {
+                            sym.section_name = "*UND*";
+                            sym.is_external = true;
+                        } else {
+                            sym.section_name = "*ABS*";
+                        }
+                        sym.is_global = (sclass == 2);
+                        sym.is_function = (stype == 0x20);
+                        report.symbols.push_back(std::move(sym));
+                    }
+
+                    for (uint8_t a = 1; a <= num_aux && (i + a) < num_symbols; ++a) {
+                        coff_symbol_names[i + a] = {};
+                    }
+                    i += num_aux;
+                }
+            }
+
+            // Decode COFF Relocations
+            for (const auto& s : report.sections) {
+                if (s.reloc_offset != 0 && s.reloc_count > 0 &&
+                    s.reloc_offset + (static_cast<size_t>(s.reloc_count) * 10) <= file_size) {
+                    for (uint16_t r = 0; r < s.reloc_count; ++r) {
+                        const size_t roff = s.reloc_offset + (static_cast<size_t>(r) * 10);
+                        const uint8_t* rptr = raw + roff;
+
+                        uint32_t rva = read32_le(rptr);
+                        uint32_t sym_idx = read32_le(rptr + 4);
+                        uint16_t rtype = read16_le(rptr + 8);
+
+                        RelocationInfo rel;
+                        rel.offset = rva;
+                        rel.type = rtype;
+                        rel.type_name = coff_reloc_type_to_string(rtype);
+                        rel.section_name = s.name;
+                        if (sym_idx < coff_symbol_names.size()) {
+                            rel.symbol_name = coff_symbol_names[sym_idx];
+                        }
+                        if (s.file_offset + rva + 4 <= file_size) {
+                            if (rtype == 0x0001 && s.file_offset + rva + 8 <= file_size) {
+                                std::memcpy(&rel.addend, raw + s.file_offset + rva, 8);
+                            } else {
+                                int32_t a32 = 0;
+                                std::memcpy(&a32, raw + s.file_offset + rva, 4);
+                                rel.addend = a32;
+                            }
+                        }
+                        report.relocations.push_back(std::move(rel));
+                    }
+                }
             }
         }
         return report;
@@ -408,6 +578,24 @@ int main(int argc, char* argv[]) {
     std::cout << "\narchitecture: " << report.arch << ", flags: 0x00000000\n";
     std::cout << "start address: 0x" << std::hex << std::setw(16) << std::setfill('0') << report.entry_point << std::dec << "\n\n";
 
+    if ((show_file_header || show_all) && report.format == dgtl::objdump::BinaryFormat::PE_COFF && report.image_base > 0) {
+        std::cout << "PE/COFF Header & Data Directories:\n";
+        std::cout << "  Image Base:         0x" << std::hex << report.image_base << std::dec << "\n";
+        std::cout << "  Entry Point (RVA):  0x" << std::hex << report.entry_point << std::dec << "\n";
+        std::cout << "  Import Table:       RVA 0x" << std::hex << report.import_rva << " (0x" << report.import_size << " bytes)" << std::dec;
+        for (const auto& s : report.sections) {
+            if (report.import_rva != 0 && s.virtual_address <= report.import_rva &&
+                report.import_rva < s.virtual_address + s.virtual_size) {
+                std::cout << " [in " << s.name << "]";
+                if (s.name == ".rdata") std::cout << " (Modern Consolidated)";
+                break;
+            }
+        }
+        std::cout << "\n";
+        std::cout << "  Base Relocations:   RVA 0x" << std::hex << report.reloc_rva << " (0x" << report.reloc_size << " bytes)" << std::dec << "\n";
+        std::cout << "  Import Address Tab: RVA 0x" << std::hex << report.iat_rva << " (0x" << report.iat_size << " bytes)" << std::dec << "\n\n";
+    }
+
     if (show_headers || show_all) {
         std::cout << "Sections:\n";
         std::cout << "Idx Name          Size      VMA               LMA               File off  Algn\n";
@@ -415,7 +603,7 @@ int main(int argc, char* argv[]) {
             const auto& s = report.sections[idx];
             std::cout << std::right << std::setw(3) << idx << " "
                       << std::left << std::setw(13) << s.name << " "
-                      << std::hex << std::setw(8) << std::setfill('0') << s.virtual_size << "  "
+                      << std::right << std::hex << std::setw(8) << std::setfill('0') << s.virtual_size << "  "
                       << std::setw(16) << std::setfill('0') << s.virtual_address << "  "
                       << std::setw(16) << std::setfill('0') << s.virtual_address << "  "
                       << std::setw(8) << std::setfill('0') << s.file_offset << "  "
@@ -430,12 +618,36 @@ int main(int argc, char* argv[]) {
     if (show_symbols && !report.symbols.empty()) {
         std::cout << "SYMBOL TABLE:\n";
         for (const auto& sym : report.symbols) {
-            std::cout << std::hex << std::setw(16) << std::setfill('0') << sym.value << " "
+            std::cout << std::right << std::hex << std::setw(16) << std::setfill('0') << sym.value << " "
                       << (sym.is_global ? "g" : "l")
                       << (sym.is_function ? "     F " : "       ")
                       << std::left << std::setw(12) << (sym.section_index == 0 ? "*UND*" : sym.section_name) << " "
-                      << std::hex << std::setw(8) << std::setfill('0') << sym.size << " "
+                      << std::right << std::hex << std::setw(8) << std::setfill('0') << sym.size << " "
                       << sym.name << "\n";
+        }
+        std::cout << std::dec << "\n";
+    }
+
+    if ((show_relocs || show_all) && !report.relocations.empty()) {
+        std::cout << "RELOCATION RECORDS:\n";
+        std::string current_sec;
+        for (const auto& rel : report.relocations) {
+            if (rel.section_name != current_sec) {
+                current_sec = rel.section_name;
+                std::cout << "RELOCATION RECORDS FOR [" << current_sec << "]:\n";
+                std::cout << "OFFSET           TYPE                     VALUE\n";
+            }
+            std::cout << std::hex << std::setw(16) << std::setfill('0') << rel.offset << " "
+                      << std::left << std::setw(24) << (rel.type_name.empty() ? ("0x" + std::to_string(rel.type)) : rel.type_name) << " "
+                      << rel.symbol_name;
+            if (rel.addend != 0) {
+                if (rel.addend > 0) {
+                    std::cout << " + 0x" << std::hex << rel.addend;
+                } else {
+                    std::cout << " - 0x" << std::hex << (-rel.addend);
+                }
+            }
+            std::cout << "\n";
         }
         std::cout << std::dec << "\n";
     }

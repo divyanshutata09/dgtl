@@ -28,6 +28,11 @@
 #include <unordered_set>
 #include <vector>
 
+// Work around MinGW/GCC modules linker quirk where vector implementation
+// symbols may not be emitted transitively from imported modules.
+template class std::vector<unsigned char>;
+template class std::vector<std::string>;
+
 import dgtl.object.archive;
 import dgtl.object.file;
 
@@ -84,35 +89,124 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Strip leading hyphen if present (e.g. -rcs -> rcs)
-    if (!first_arg.empty() && first_arg[0] == '-') {
-        first_arg = first_arg.substr(1);
+    // If invoked with a single file argument, default to open and display (tv)
+    if (argc == 2 && first_arg != "--help" && first_arg != "-h" && first_arg != "--version" && first_arg != "-v" && first_arg != "-V") {
+        std::error_code ec;
+        if (fs::exists(first_arg, ec)) {
+            op = "tv";
+            archive_path = first_arg;
+        }
     }
-    op = first_arg;
 
-    if (arg_idx < argc) {
-        archive_path = argv[arg_idx++];
-    } else {
-        std::cerr << "error[dgtl-ar]: no archive file specified\n";
-        return 1;
+    if (archive_path.empty()) {
+        // Strip leading hyphen if present (e.g. -rcs -> rcs)
+        if (!first_arg.empty() && first_arg[0] == '-') {
+            first_arg = first_arg.substr(1);
+        }
+        op = first_arg;
+
+        if (arg_idx < argc) {
+            archive_path = argv[arg_idx++];
+        } else {
+            std::cerr << "error[dgtl-ar]: no archive or binary file specified\n";
+            return 1;
+        }
     }
 
     while (arg_idx < argc) {
         member_files.emplace_back(argv[arg_idx++]);
     }
 
-    bool is_insert = (op.find('r') != std::string::npos || op.find('q') != std::string::npos || op.find('c') != std::string::npos);
-    bool is_list   = (op.find('t') != std::string::npos);
-    bool is_extract = (op.find('x') != std::string::npos);
-    bool is_delete = (op.find('d') != std::string::npos);
-    bool is_verbose = (op.find('v') != std::string::npos);
+    bool is_run    = (op == "run" || op == "-run" || op == "--run" || op == "exec");
+    bool is_insert = (!is_run && (op.find('r') != std::string::npos || op.find('q') != std::string::npos || op.find('c') != std::string::npos));
+    bool is_list   = (!is_run && (op.find('t') != std::string::npos || op.find('v') != std::string::npos));
+    bool is_extract = (!is_run && (op.find('x') != std::string::npos));
+    bool is_delete = (!is_run && (op.find('d') != std::string::npos));
+    bool is_verbose = (op.find('v') != std::string::npos || is_run);
+
+    // ─── Direct Execution / Result Display (run / exec) ──────────────────────
+    if (is_run) {
+        UniversalArchiveReader reader;
+        if (!reader.load_archive(archive_path)) {
+            std::cerr << "error[dgtl-ar]: failed to load binary executable: " << archive_path << "\n";
+            return 2;
+        }
+
+        std::cout << "======================================================================\n";
+        std::cout << "[dgtl-ar] Executing Native Test Binary: " << archive_path << "\n";
+        std::cout << "[dgtl-ar] Format: " << reader.format_description()
+                  << " | EntryPoint RVA: 0x" << std::hex << reader.entry_point_rva() << std::dec << "\n";
+        std::cout << "======================================================================\n";
+
+        std::string run_cmd;
+#if defined(_WIN32)
+        run_cmd = "\"\"" + fs::path(archive_path).make_preferred().string() + "\"\"";
+#else
+        run_cmd = "\"" + fs::path(archive_path).make_preferred().string() + "\"";
+#endif
+        int run_rc = std::system(run_cmd.c_str());
+        std::cout << "\n======================================================================\n";
+        std::cout << "[dgtl-ar] Execution Result: exit code " << run_rc;
+        if (run_rc == 0) {
+            std::cout << " (SUCCESS: 0 errors)\n";
+        } else if (run_rc == -1073741515 || run_rc == static_cast<int>(0xC0000139)) {
+            std::cout << " (FATAL: STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139 - missing DLL export)\n";
+        } else {
+            std::cout << " (ABNORMAL TERMINATION)\n";
+        }
+        std::cout << "======================================================================\n";
+        return run_rc;
+    }
 
     // ─── Table of contents (t / tv) ───────────────────────────────────────────
     if (is_list) {
         UniversalArchiveReader reader;
         if (!reader.load_archive(archive_path)) {
-            std::cerr << "error[dgtl-ar]: failed to load or read archive: " << archive_path << "\n";
+            std::cerr << "error[dgtl-ar]: failed to load or read container: " << archive_path << "\n";
             return 2;
+        }
+
+        if (reader.is_executable()) {
+            std::cout << "[dgtl-ar] Binary Executable Container: " << archive_path << "\n";
+            std::cout << "[dgtl-ar] Architecture : " << reader.format_description() << "\n";
+            std::cout << "[dgtl-ar] EntryPoint   : 0x" << std::hex << reader.entry_point_rva()
+                      << " (ImageBase: 0x" << reader.image_base() << ")" << std::dec << "\n";
+            std::cout << "[dgtl-ar] Sections     : " << reader.members().size() << "\n";
+
+            if (!reader.imported_dlls().empty()) {
+                size_t total_imports = 0;
+                for (const auto& dll : reader.imported_dlls()) total_imports += dll.functions.size();
+                std::cout << "[dgtl-ar] Dynamic Linked Libraries (" << reader.imported_dlls().size()
+                          << " DLLs, " << total_imports << " imported symbols):\n";
+                for (const auto& dll : reader.imported_dlls()) {
+                    std::cout << "  - " << std::left << std::setw(16) << dll.dll_name
+                              << " (" << dll.functions.size() << " imports";
+                    if (is_verbose && !dll.functions.empty()) {
+                        std::cout << ": ";
+                        for (size_t fi = 0; fi < std::min<size_t>(dll.functions.size(), 8); ++fi) {
+                            if (fi > 0) std::cout << ", ";
+                            std::cout << dll.functions[fi];
+                        }
+                        if (dll.functions.size() > 8) {
+                            std::cout << ", ... (" << (dll.functions.size() - 8) << " more)";
+                        }
+                    }
+                    std::cout << ")\n";
+                }
+            }
+
+            std::cout << "\n[dgtl-ar] Sections Table:\n";
+            std::cout << "----------------------------------------------------------------------\n";
+            for (const auto& m : reader.members()) {
+                std::cout << std::left << std::setw(24) << m.filename
+                          << " " << std::right << std::setw(10) << m.data.size() << " bytes"
+                          << "  [Offset: 0x" << std::hex << m.data_offset << std::dec << "]";
+                if (is_verbose && !m.symbols.empty()) {
+                    std::cout << " (" << m.symbols.size() << " symbols)";
+                }
+                std::cout << "\n";
+            }
+            return 0;
         }
 
         if (is_verbose) {

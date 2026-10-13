@@ -48,8 +48,8 @@ enum class X64ZmmReg : uint8_t {
 
 class X64SinglePassRegisterMapper {
 private:
-    static constexpr std::array<X64Reg, 5> kNonVolatileGprs = {
-        X64Reg::RBX, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
+    static constexpr std::array<X64Reg, 7> kNonVolatileGprs = {
+        X64Reg::RBX, X64Reg::RSI, X64Reg::RDI, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
     };
 
     static constexpr std::array<X64Reg, 4> kVolatileGprs = {
@@ -57,8 +57,8 @@ private:
     };
 
     // Map virtual registers to callee-saved GPRs (preserved across runtime helper calls)
-    static constexpr std::array<X64Reg, 5> kAllocatableGprs = {
-        X64Reg::RBX, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
+    static constexpr std::array<X64Reg, 7> kAllocatableGprs = {
+        X64Reg::RBX, X64Reg::RSI, X64Reg::RDI, X64Reg::R12, X64Reg::R13, X64Reg::R14, X64Reg::R15,
     };
 
 public:

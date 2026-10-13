@@ -193,8 +193,8 @@ public:
                 const uint64_t place_vaddr = code_vaddr + place_off;
                 if (place_off + 4 <= code.size()) {
                     if (rel.kind == dgtl::object::RelocationKind::PCRel32 || rel.kind == dgtl::object::RelocationKind::PLT32) {
-                        const uint64_t pc = place_vaddr + 4;
-                        const int64_t delta = static_cast<int64_t>(target_vaddr) + rel.addend - static_cast<int64_t>(pc);
+                        const uint64_t reloc_va = place_vaddr;
+                        const int64_t delta = static_cast<int64_t>(target_vaddr) + rel.addend - static_cast<int64_t>(reloc_va);
                         const auto val = static_cast<int32_t>(delta);
                         for (int i = 0; i < 4; ++i) code[place_off + i] = static_cast<uint8_t>((val >> (i * 8)) & 0xFF);
                     } else if (rel.kind == dgtl::object::RelocationKind::Absolute64 && place_off + 8 <= code.size()) {

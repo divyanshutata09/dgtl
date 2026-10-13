@@ -109,6 +109,17 @@ struct InspectionReport {
     std::vector<std::string> verification_warnings;
     MemoryBudget budget;
 
+    // PE Optional Header & Data Directory Metadata
+    uint64_t entry_point{0};
+    uint64_t image_base{0};
+    uint32_t import_rva{0};
+    uint32_t import_size{0};
+    std::string import_section;
+    uint32_t reloc_rva{0};
+    uint32_t reloc_size{0};
+    uint32_t iat_rva{0};
+    uint32_t iat_size{0};
+
     [[nodiscard]] bool is_compliant() const noexcept {
         return verification_errors.empty();
     }
@@ -189,6 +200,36 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
     const uint32_t num_symbols = *reinterpret_cast<const uint32_t*>(&buf[coff_hdr_start + 12]);
     const uint16_t opt_hdr_size = *reinterpret_cast<const uint16_t*>(&buf[coff_hdr_start + 16]);
 
+    if (opt_hdr_size >= 120 && coff_hdr_start + 20 + opt_hdr_size <= buf.size()) {
+        const size_t opt_hdr_start = coff_hdr_start + 20;
+        const uint16_t magic = *reinterpret_cast<const uint16_t*>(&buf[opt_hdr_start]);
+        if (magic == 0x020B) { // PE32+ (64-bit)
+            report.entry_point = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 16]);
+            report.image_base = *reinterpret_cast<const uint64_t*>(&buf[opt_hdr_start + 24]);
+            if (opt_hdr_size >= 240) {
+                const size_t dirs_start = opt_hdr_start + 112;
+                report.import_rva  = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 8]);
+                report.import_size = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 12]);
+                report.reloc_rva   = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 40]);
+                report.reloc_size  = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 44]);
+                report.iat_rva     = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 96]);
+                report.iat_size    = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 100]);
+            }
+        } else if (magic == 0x010B) { // PE32 (32-bit)
+            report.entry_point = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 16]);
+            report.image_base = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 28]);
+            if (opt_hdr_size >= 224) {
+                const size_t dirs_start = opt_hdr_start + 96;
+                report.import_rva  = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 8]);
+                report.import_size = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 12]);
+                report.reloc_rva   = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 40]);
+                report.reloc_size  = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 44]);
+                report.iat_rva     = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 96]);
+                report.iat_size    = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 100]);
+            }
+        }
+    }
+
     const size_t sec_hdr_start = coff_hdr_start + 20 + opt_hdr_size;
     if (buf.size() < sec_hdr_start + num_sections * 40) return false;
 
@@ -235,6 +276,16 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
         }
 
         report.sections.push_back(std::move(sec));
+    }
+
+    if (report.import_rva != 0) {
+        for (const auto& sec : report.sections) {
+            if (report.import_rva >= sec.virtual_address &&
+                report.import_rva < sec.virtual_address + std::max(sec.virtual_size, sec.file_size)) {
+                report.import_section = sec.name;
+                break;
+            }
+        }
     }
 
     // Decode Symbols
@@ -749,6 +800,14 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
         if (s.is_zerofill) prot += "[BSS ZEROFILL] ";
         if (s.is_tls) prot += "[TLS] ";
         if (s.is_unwind) prot += "[UNWIND] ";
+        if (report.import_rva != 0 && s.virtual_address <= report.import_rva &&
+            report.import_rva < s.virtual_address + std::max(s.virtual_size, s.file_size)) {
+            prot += "[IMPORTS] ";
+        }
+        if (report.reloc_rva != 0 && s.virtual_address <= report.reloc_rva &&
+            report.reloc_rva < s.virtual_address + std::max(s.virtual_size, s.file_size)) {
+            prot += "[RELOCS] ";
+        }
 
         std::cout << "  "
                   << std::left << std::setw(16) << s.name
@@ -758,6 +817,26 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
                   << "0x" << std::hex << std::setw(6) << std::setfill('0') << s.file_offset << std::dec << std::setfill(' ') << "  "
                   << std::setw(6) << s.alignment << "  "
                   << prot << "\n";
+    }
+
+    if (report.format == BinaryFormat::PE_COFF && report.image_base > 0) {
+        std::cout << "\n[1.1] PE OPTIONAL HEADER & DATA DIRECTORIES:\n"
+                  << "  - Entry Point RVA                    : 0x" << std::hex << report.entry_point
+                  << " (VMA: 0x" << (report.image_base + report.entry_point) << ")" << std::dec << "\n"
+                  << "  - Image Base Address                 : 0x" << std::hex << report.image_base << std::dec << "\n"
+                  << "  - Import Table Directory (Dir 1)     : RVA 0x" << std::hex << report.import_rva
+                  << " (Size: " << std::dec << report.import_size << " bytes)";
+        if (!report.import_section.empty()) {
+            std::cout << " -> Embedded in '" << report.import_section << "'";
+            if (report.import_section == ".rdata") {
+                std::cout << " (Consolidated: saves 40-byte header & 4KB virtual page)";
+            }
+        }
+        std::cout << "\n"
+                  << "  - Import Address Table (Dir 12)      : RVA 0x" << std::hex << report.iat_rva
+                  << " (Size: " << std::dec << report.iat_size << " bytes)\n"
+                  << "  - Base Relocation Directory (Dir 5)  : RVA 0x" << std::hex << report.reloc_rva
+                  << " (Size: " << std::dec << report.reloc_size << " bytes)\n";
     }
 
     std::cout << "\n[2] MEMORY FOOTPRINT & BUDGET BREAKDOWN:\n";

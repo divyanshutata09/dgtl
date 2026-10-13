@@ -510,7 +510,33 @@ public:
             auto& frame = function.frame_info();
             frame.stack_alignment = std::max<std::uint32_t>(1u, frame_info->stack_alignment());
 
-            std::uint64_t current_offset = 0;
+            // Discover non-volatile registers to preserve if not already populated
+            if (frame.callee_saved_registers.empty()) {
+                for (const auto& instruction : function.instructions()) {
+                    for (const auto& operand : instruction.operands) {
+                        if (operand.kind != MachineOperandKind::Register || !operand.reg.is_physical())
+                            continue;
+                        if (operand.reg.reg_class != RegisterClassKind::General &&
+                            operand.reg.reg_class != RegisterClassKind::Integer &&
+                            operand.reg.reg_class != RegisterClassKind::Address)
+                            continue;
+                        const auto id = operand.reg.id;
+                        if (id == 3u || id == 6u || id == 7u || id == 12u || id == 13u || id == 14u || id == 15u) {
+                            if (std::none_of(frame.callee_saved_registers.begin(), frame.callee_saved_registers.end(),
+                                             [&](const auto& r) { return r.id == id; })) {
+                                frame.callee_saved_registers.push_back(operand.reg);
+                            }
+                        }
+                    }
+                }
+                std::sort(frame.callee_saved_registers.begin(), frame.callee_saved_registers.end(),
+                          [](const auto& a, const auto& b) { return a.id < b.id; });
+                frame.callee_saved_bytes = static_cast<std::uint32_t>(frame.callee_saved_registers.size() * 8u);
+            }
+
+            // Stack slots start below the saved RBP (8 bytes) and saved non-volatile registers
+            const std::uint64_t callee_saved_offset = 8u + (static_cast<std::uint64_t>(frame.callee_saved_registers.size()) * 8u);
+            std::uint64_t current_offset = frame.slots.empty() ? 0u : callee_saved_offset;
             frame.spill_bytes = 0;
             frame.local_bytes = 0;
 
@@ -528,8 +554,9 @@ public:
                 }
             }
 
+            const std::uint32_t outgoing_bytes = frame.has_calls ? std::max<std::uint32_t>(32u, frame.outgoing_argument_bytes) : 0u;
             frame.total_frame_bytes = static_cast<std::uint32_t>(
-                align_up(current_offset, frame.stack_alignment));
+                align_up(current_offset + outgoing_bytes, frame.stack_alignment));
 
             PrologEpilogInserter::run(function, *frame_info);
 

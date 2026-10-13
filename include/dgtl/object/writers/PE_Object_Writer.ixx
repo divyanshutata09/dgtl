@@ -209,6 +209,7 @@ public:
                 emit_u32(out, 0);
                 emit_u32(out, strtab_offsets[i]);
             }
+            emit_u32(out, static_cast<std::uint32_t>(sym.value));
             std::uint16_t sec_num = 0;
             if (!sym.external) {
                 sec_num = 1;

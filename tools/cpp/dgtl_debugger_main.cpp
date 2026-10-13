@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -28,6 +29,18 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32) || defined(_WIN64)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#include <tlhelp32.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -326,11 +339,29 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
             opts.all_logs = true;
         } else if (arg == "--write-baseline") {
             opts.write_baseline = true;
-        } else if (arg == "--help") {
+        } else if (arg == "--help" || arg == "-h") {
             std::cout
-                << "DGTL forensic debugger\n"
-                << "Usage: dgtl-debugger [--root <path>] [--log <path>]... [--export <path>] [--baseline <path>] [--focus <text>] [--top <n>]\n"
-                << "                     [--summary-only] [--relative-paths] [--json] [--all-logs] [--write-baseline] [--no-deep-symbols]\n";
+                << "================================================================================\n"
+                << "                  DGTL ENTERPRISE NATIVE & FORENSIC DEBUGGER                    \n"
+                << "================================================================================\n\n"
+                << "NATIVE EXECUTION & CRASH INTERCEPTION:\n"
+                << "  dgtl-debugger run <executable.exe> [args...]\n"
+                << "      Launch target under Win32 native debug interceptor.\n"
+                << "      Captures hardware exceptions (0xC0000005, 0xC000001D, 0xC0000094, etc.),\n"
+                << "      performs unmapped memory page diagnosis (VirtualQueryEx), dumps 64-bit\n"
+                << "      register context, disassembles faulting RIP, and unwinds stack backtrace.\n\n"
+                << "PE STRUCTURAL AUDIT & SECTION FORENSICS:\n"
+                << "  dgtl-debugger inspect-exe <executable.exe>\n"
+                << "      Deep structural validation of PE32+ binaries: header checks, section\n"
+                << "      alignments, zero-size BSS detection, out-of-bounds RVAs, section overlaps,\n"
+                << "      Import Directory Table (IAT/ILT) integrity, and entry point disassembly.\n\n"
+                << "STATIC LOG, CYCLE, & COLLISION ANALYSIS:\n"
+                << "  dgtl-debugger [--root <path>] [--log <path>]... [--export <path>] [--focus <text>]\n"
+                << "      Scans C++20 module graphs, detects circular dependencies, tracks symbol\n"
+                << "      collisions, clusters build errors, and exports JSON / Markdown diagnostics.\n\n"
+                << "DIRECT SHORTCUTS:\n"
+                << "  dgtl-debugger <executable.exe>  ->  Shorthand for 'dgtl-debugger run <executable.exe>'\n"
+                << "================================================================================\n";
             return ParseStatus::Help;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
@@ -1891,7 +1922,932 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
 
 } // namespace
 
+namespace dgtl::debug {
+
+// ============================================================================
+// 1. PURE C++ x86_64 DISASSEMBLER
+// ============================================================================
+struct DecodedInstruction {
+    std::string text;
+    size_t length{1};
+    uint64_t target_mem_address{0};
+    bool has_mem_ref{false};
+};
+
+class X64Disassembler {
+public:
+    static DecodedInstruction decode(const uint8_t* code, size_t max_len, uint64_t rip) {
+        DecodedInstruction res;
+        if (!code || max_len == 0) {
+            res.text = "db 0x00";
+            res.length = 1;
+            return res;
+        }
+
+        size_t offset = 0;
+        bool rex_w = false, rex_r = false, rex_x = false, rex_b = false;
+        bool has_66 = false, has_67 = false, has_f2 = false, has_f3 = false;
+
+        // Decode prefixes
+        while (offset < max_len) {
+            uint8_t pfx = code[offset];
+            if (pfx == 0x66) { has_66 = true; ++offset; }
+            else if (pfx == 0x67) { has_67 = true; ++offset; }
+            else if (pfx == 0xF2) { has_f2 = true; ++offset; }
+            else if (pfx == 0xF3) { has_f3 = true; ++offset; }
+            else if (pfx >= 0x40 && pfx <= 0x4F) {
+                rex_w = (pfx & 0x08) != 0;
+                rex_r = (pfx & 0x04) != 0;
+                rex_x = (pfx & 0x02) != 0;
+                rex_b = (pfx & 0x01) != 0;
+                ++offset;
+                break;
+            } else if (pfx == 0x2E || pfx == 0x36 || pfx == 0x3E || pfx == 0x26 || pfx == 0x64 || pfx == 0x65) {
+                ++offset;
+            } else {
+                break;
+            }
+        }
+
+        if (offset >= max_len) {
+            res.text = "db 0x" + to_hex(code[0]);
+            res.length = 1;
+            return res;
+        }
+
+        static const char* r64[] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+                                     "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15" };
+        static const char* r32[] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
+                                     "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
+        static const char* r16[] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di",
+                                     "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w" };
+        static const char* r8[]  = { "al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil",
+                                     "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b" };
+        static const char* xmm[] = { "xmm0", "xmm1", "xmm2",  "xmm3",  "xmm4",  "xmm5",  "xmm6",  "xmm7",
+                                     "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
+
+        auto reg_name = [&](uint8_t id, bool is_64, bool is_16, bool is_8) -> std::string {
+            id &= 0x0F;
+            if (is_64) return r64[id];
+            if (is_16) return r16[id];
+            if (is_8)  return r8[id];
+            return r32[id];
+        };
+
+        uint8_t op = code[offset++];
+
+        auto decode_modrm = [&](bool is_64, bool is_16, bool is_8,
+                                std::string& out_rm, std::string& out_reg, uint8_t& out_reg_id, uint8_t& out_rm_id) -> bool {
+            if (offset >= max_len) return false;
+            uint8_t modrm = code[offset++];
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t reg = ((modrm >> 3) & 7) | (rex_r ? 8 : 0);
+            uint8_t rm  = (modrm & 7) | (rex_b ? 8 : 0);
+            out_reg_id = reg;
+            out_rm_id = rm;
+            out_reg = reg_name(reg, is_64, is_16, is_8);
+
+            if (mod == 3) {
+                out_rm = reg_name(rm, is_64, is_16, is_8);
+                return true;
+            }
+
+            res.has_mem_ref = true;
+            std::string ptr_size = is_64 ? "qword ptr " : (is_16 ? "word ptr " : (is_8 ? "byte ptr " : "dword ptr "));
+
+            bool has_sib = ((rm & 7) == 4);
+            uint8_t scale = 1, idx = 0, base = 0;
+            bool has_index = false;
+
+            if (has_sib) {
+                if (offset >= max_len) return false;
+                uint8_t sib = code[offset++];
+                scale = 1 << ((sib >> 6) & 3);
+                idx = ((sib >> 3) & 7) | (rex_x ? 8 : 0);
+                base = (sib & 7) | (rex_b ? 8 : 0);
+                has_index = (idx != 4);
+            }
+
+            int64_t disp = 0;
+            if (mod == 0) {
+                if (!has_sib && (rm & 7) == 5) {
+                    if (offset + 4 > max_len) return false;
+                    int32_t d32 = 0;
+                    std::memcpy(&d32, &code[offset], 4);
+                    offset += 4;
+                    res.target_mem_address = rip + offset + d32;
+                    std::ostringstream ss;
+                    ss << ptr_size << "[rip " << (d32 >= 0 ? "+ " : "- ") << "0x" << std::hex << std::abs(d32) << "]";
+                    out_rm = ss.str();
+                    return true;
+                }
+                if (has_sib && (base & 7) == 5) {
+                    if (offset + 4 > max_len) return false;
+                    int32_t d32 = 0;
+                    std::memcpy(&d32, &code[offset], 4);
+                    offset += 4;
+                    disp = d32;
+                }
+            } else if (mod == 1) {
+                if (offset >= max_len) return false;
+                int8_t d8 = static_cast<int8_t>(code[offset++]);
+                disp = d8;
+            } else if (mod == 2) {
+                if (offset + 4 > max_len) return false;
+                int32_t d32 = 0;
+                std::memcpy(&d32, &code[offset], 4);
+                offset += 4;
+                disp = d32;
+            }
+
+            std::ostringstream mem_ss;
+            mem_ss << ptr_size << "[";
+            bool has_base = !(mod == 0 && has_sib && (base & 7) == 5);
+            if (has_base) {
+                mem_ss << (has_sib ? r64[base] : r64[rm]);
+            }
+            if (has_sib && has_index) {
+                if (has_base) mem_ss << " + ";
+                mem_ss << r64[idx];
+                if (scale > 1) mem_ss << "*" << (int)scale;
+            }
+            if (disp != 0 || !has_base) {
+                if (disp >= 0) {
+                    if (has_base || (has_sib && has_index)) mem_ss << " + ";
+                    mem_ss << "0x" << std::hex << disp;
+                } else {
+                    mem_ss << " - 0x" << std::hex << -disp;
+                }
+            }
+            mem_ss << "]";
+            out_rm = mem_ss.str();
+            return true;
+        };
+
+        if (op >= 0x50 && op <= 0x57) {
+            uint8_t r = (op - 0x50) | (rex_b ? 8 : 0);
+            res.text = "push " + std::string(r64[r]);
+        } else if (op >= 0x58 && op <= 0x5F) {
+            uint8_t r = (op - 0x58) | (rex_b ? 8 : 0);
+            res.text = "pop " + std::string(r64[r]);
+        } else if (op == 0xC3) {
+            res.text = "ret";
+        } else if (op == 0x90) {
+            res.text = "nop";
+        } else if (op == 0xE8) {
+            if (offset + 4 <= max_len) {
+                int32_t rel = 0;
+                std::memcpy(&rel, &code[offset], 4);
+                offset += 4;
+                uint64_t target = rip + offset + rel;
+                std::ostringstream ss;
+                ss << "call 0x" << std::hex << target;
+                res.text = ss.str();
+            }
+        } else if (op == 0xE9) {
+            if (offset + 4 <= max_len) {
+                int32_t rel = 0;
+                std::memcpy(&rel, &code[offset], 4);
+                offset += 4;
+                uint64_t target = rip + offset + rel;
+                std::ostringstream ss;
+                ss << "jmp 0x" << std::hex << target;
+                res.text = ss.str();
+            }
+        } else if (op == 0xEB) {
+            if (offset < max_len) {
+                int8_t rel = static_cast<int8_t>(code[offset++]);
+                uint64_t target = rip + offset + rel;
+                std::ostringstream ss;
+                ss << "jmp 0x" << std::hex << target;
+                res.text = ss.str();
+            }
+        } else if (op >= 0x70 && op <= 0x7F) {
+            static const char* jcc[] = { "jo", "jno", "jb", "jnb", "jz", "jnz", "jbe", "ja",
+                                         "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg" };
+            if (offset < max_len) {
+                int8_t rel = static_cast<int8_t>(code[offset++]);
+                uint64_t target = rip + offset + rel;
+                std::ostringstream ss;
+                ss << jcc[op - 0x70] << " 0x" << std::hex << target;
+                res.text = ss.str();
+            }
+        } else if (op == 0x89) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                res.text = "mov " + rm_str + ", " + reg_str;
+            }
+        } else if (op == 0x8B) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                res.text = "mov " + reg_str + ", " + rm_str;
+            }
+        } else if (op == 0x8D) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                res.text = "lea " + reg_str + ", " + rm_str;
+            }
+        } else if (op == 0x31) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                res.text = "xor " + rm_str + ", " + reg_str;
+            }
+        } else if (op == 0x33) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                res.text = "xor " + reg_str + ", " + rm_str;
+            }
+        } else if (op == 0x85) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                res.text = "test " + rm_str + ", " + reg_str;
+            }
+        } else if (op == 0x83) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                if (offset < max_len) {
+                    int8_t imm = static_cast<int8_t>(code[offset++]);
+                    static const char* mnem[] = { "add", "or", "adc", "sbb", "and", "sub", "xor", "cmp" };
+                    std::ostringstream ss;
+                    ss << mnem[r_id & 7] << " " << rm_str << ", 0x" << std::hex << (int)(uint8_t)imm;
+                    res.text = ss.str();
+                }
+            }
+        } else if (op == 0x81) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                if (offset + 4 <= max_len) {
+                    uint32_t imm = 0;
+                    std::memcpy(&imm, &code[offset], 4);
+                    offset += 4;
+                    static const char* mnem[] = { "add", "or", "adc", "sbb", "and", "sub", "xor", "cmp" };
+                    std::ostringstream ss;
+                    ss << mnem[r_id & 7] << " " << rm_str << ", 0x" << std::hex << imm;
+                    res.text = ss.str();
+                }
+            }
+        } else if (op == 0x80) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(false, false, true, rm_str, reg_str, r_id, rm_id)) {
+                if (offset < max_len) {
+                    uint8_t imm = code[offset++];
+                    static const char* mnem[] = { "add", "or", "adc", "sbb", "and", "sub", "xor", "cmp" };
+                    std::ostringstream ss;
+                    ss << mnem[r_id & 7] << " " << rm_str << ", 0x" << std::hex << (int)imm;
+                    res.text = ss.str();
+                }
+            }
+        } else if (op == 0xC7) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                if (offset + 4 <= max_len) {
+                    uint32_t imm = 0;
+                    std::memcpy(&imm, &code[offset], 4);
+                    offset += 4;
+                    std::ostringstream ss;
+                    ss << "mov " << rm_str << ", 0x" << std::hex << imm;
+                    res.text = ss.str();
+                }
+            }
+        } else if (op >= 0xB8 && op <= 0xBF) {
+            uint8_t r = (op - 0xB8) | (rex_b ? 8 : 0);
+            if (rex_w) {
+                if (offset + 8 <= max_len) {
+                    uint64_t imm = 0;
+                    std::memcpy(&imm, &code[offset], 8);
+                    offset += 8;
+                    std::ostringstream ss;
+                    ss << "mov " << r64[r] << ", 0x" << std::hex << imm;
+                    res.text = ss.str();
+                }
+            } else {
+                if (offset + 4 <= max_len) {
+                    uint32_t imm = 0;
+                    std::memcpy(&imm, &code[offset], 4);
+                    offset += 4;
+                    std::ostringstream ss;
+                    ss << "mov " << r32[r] << ", 0x" << std::hex << imm;
+                    res.text = ss.str();
+                }
+            }
+        } else if (op == 0xFF) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+                uint8_t subop = r_id & 7;
+                if (subop == 0) res.text = "inc " + rm_str;
+                else if (subop == 1) res.text = "dec " + rm_str;
+                else if (subop == 2) res.text = "call " + rm_str;
+                else if (subop == 4) res.text = "jmp " + rm_str;
+                else if (subop == 6) res.text = "push " + rm_str;
+                else res.text = "grp5_" + std::to_string(subop) + " " + rm_str;
+            }
+        } else if (op == 0x0F) {
+            if (offset < max_len) {
+                uint8_t op2 = code[offset++];
+                if (op2 >= 0x80 && op2 <= 0x8F) {
+                    static const char* jcc[] = { "jo", "jno", "jb", "jnb", "jz", "jnz", "jbe", "ja",
+                                                 "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg" };
+                    if (offset + 4 <= max_len) {
+                        int32_t rel = 0;
+                        std::memcpy(&rel, &code[offset], 4);
+                        offset += 4;
+                        uint64_t target = rip + offset + rel;
+                        std::ostringstream ss;
+                        ss << jcc[op2 - 0x80] << " 0x" << std::hex << target;
+                        res.text = ss.str();
+                    }
+                } else if (op2 == 0x10 || op2 == 0x11) {
+                    std::string rm_str, reg_str;
+                    uint8_t r_id = 0, rm_id = 0;
+                    if (decode_modrm(rex_w, false, false, rm_str, reg_str, r_id, rm_id)) {
+                        std::string mnem = has_f2 ? "movsd" : (has_f3 ? "movss" : "movups");
+                        if (op2 == 0x10) res.text = mnem + " " + std::string(xmm[r_id & 0xF]) + ", " + rm_str;
+                        else res.text = mnem + " " + rm_str + ", " + std::string(xmm[r_id & 0xF]);
+                    }
+                } else if (op2 == 0xB6 || op2 == 0xB7) {
+                    std::string rm_str, reg_str;
+                    uint8_t r_id = 0, rm_id = 0;
+                    if (decode_modrm(false, op2 == 0xB7, op2 == 0xB6, rm_str, reg_str, r_id, rm_id)) {
+                        res.text = "movzx " + std::string(r32[r_id & 0xF]) + ", " + rm_str;
+                    }
+                }
+            }
+        }
+
+        if (res.text.empty()) {
+            std::ostringstream ss;
+            ss << "db 0x" << std::hex << (int)op;
+            res.text = ss.str();
+        }
+
+        res.length = std::max<size_t>(1, offset);
+        return res;
+    }
+
+private:
+    static std::string to_hex(uint8_t val) {
+        std::ostringstream ss;
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)val;
+        return ss.str();
+    }
+};
+
+// ============================================================================
+// 2. PE/COFF EXECUTABLE AND OBJECT AUDITOR
+// ============================================================================
+class PeInspector {
+public:
+    static bool audit(const fs::path& path, std::ostream& out = std::cout) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            out << "[dgtl-pe] Error: Unable to open file: " << path.string() << "\n";
+            return false;
+        }
+
+        file.seekg(0, std::ios::end);
+        size_t file_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+
+        std::vector<uint8_t> buffer(file_size);
+        file.read(reinterpret_cast<char*>(buffer.data()), file_size);
+
+        if (file_size < 0x40) {
+            out << "[dgtl-pe] Error: File too small to contain DOS header (" << file_size << " bytes)\n";
+            return false;
+        }
+
+        out << "================================================================================\n";
+        out << "            DGTL SOVEREIGN PE/COFF EXECUTABLE STRUCTURAL AUDITOR                \n";
+        out << "================================================================================\n";
+        out << "Target Binary: " << path.string() << " (" << file_size << " bytes / " << (file_size / 1024.0) << " KB)\n\n";
+
+        // DOS Header
+        uint16_t dos_magic = 0;
+        std::memcpy(&dos_magic, buffer.data(), 2);
+        if (dos_magic != 0x5A4D) {
+            out << "[dgtl-pe] [FAIL] Invalid DOS Header magic (expected 0x5A4D 'MZ', got 0x" << std::hex << dos_magic << std::dec << ")\n";
+            return false;
+        }
+        out << "[dgtl-pe] [PASS] DOS Signature: 'MZ' (0x5A4D)\n";
+
+        uint32_t pe_offset = 0;
+        std::memcpy(&pe_offset, buffer.data() + 0x3C, 4);
+        if (pe_offset + 24 > file_size) {
+            out << "[dgtl-pe] [FAIL] Invalid e_lfanew offset (0x" << std::hex << pe_offset << std::dec << ")\n";
+            return false;
+        }
+
+        uint32_t pe_sig = 0;
+        std::memcpy(&pe_sig, buffer.data() + pe_offset, 4);
+        if (pe_sig != 0x00004550) {
+            out << "[dgtl-pe] [FAIL] Invalid PE Signature (expected 'PE\\0\\0', got 0x" << std::hex << pe_sig << std::dec << ")\n";
+            return false;
+        }
+        out << "[dgtl-pe] [PASS] PE Signature: 'PE\\0\\0' at offset 0x" << std::hex << pe_offset << std::dec << "\n";
+
+        // COFF File Header
+        const uint8_t* coff_hdr = buffer.data() + pe_offset + 4;
+        uint16_t machine = 0, num_sections = 0, opt_hdr_size = 0, characteristics = 0;
+        uint32_t timestamp = 0;
+        std::memcpy(&machine, coff_hdr, 2);
+        std::memcpy(&num_sections, coff_hdr + 2, 2);
+        std::memcpy(&timestamp, coff_hdr + 4, 4);
+        std::memcpy(&opt_hdr_size, coff_hdr + 16, 2);
+        std::memcpy(&characteristics, coff_hdr + 18, 2);
+
+        out << "[dgtl-pe] Architecture: " << (machine == 0x8664 ? "x86_64 (AMD64)" : (machine == 0x14C ? "x86 (i386)" : "Unknown 0x" + std::to_string(machine)))
+            << " | Sections: " << num_sections << " | OptHdrSize: " << opt_hdr_size << " bytes\n";
+
+        if (machine != 0x8664) {
+            out << "[dgtl-pe] [WARN] Expected x86_64 machine type\n";
+        }
+
+        if (opt_hdr_size < 112) {
+            out << "[dgtl-pe] [FAIL] Optional Header size too small for PE32+ (" << opt_hdr_size << " bytes)\n";
+            return false;
+        }
+
+        // Optional Header
+        const uint8_t* opt_hdr = coff_hdr + 20;
+        uint16_t opt_magic = 0;
+        std::memcpy(&opt_magic, opt_hdr, 2);
+        if (opt_magic != 0x20B) {
+            out << "[dgtl-pe] [FAIL] Not PE32+ 64-bit binary (magic=0x" << std::hex << opt_magic << std::dec << ")\n";
+            return false;
+        }
+
+        uint32_t entry_rva = 0, section_align = 0, file_align = 0, image_size = 0, headers_size = 0;
+        uint64_t image_base = 0;
+        uint16_t subsystem = 0;
+
+        std::memcpy(&entry_rva, opt_hdr + 16, 4);
+        std::memcpy(&image_base, opt_hdr + 24, 8);
+        std::memcpy(&section_align, opt_hdr + 32, 4);
+        std::memcpy(&file_align, opt_hdr + 36, 4);
+        std::memcpy(&image_size, opt_hdr + 56, 4);
+        std::memcpy(&headers_size, opt_hdr + 60, 4);
+        std::memcpy(&subsystem, opt_hdr + 68, 2);
+
+        out << "--------------------------------------------------------------------------------\n";
+        out << "OPTIONAL HEADER (PE32+):\n";
+        out << "  ImageBase          : 0x" << std::hex << image_base << "\n";
+        out << "  AddressOfEntryPoint: 0x" << entry_rva << " (VA: 0x" << (image_base + entry_rva) << ")\n";
+        out << "  SizeOfImage        : 0x" << image_size << " (" << std::dec << image_size << " bytes)\n";
+        out << "  SizeOfHeaders      : 0x" << std::hex << headers_size << "\n";
+        out << "  SectionAlignment   : 0x" << section_align << "\n";
+        out << "  FileAlignment      : 0x" << file_align << "\n";
+        out << "  Subsystem          : " << (subsystem == 3 ? "IMAGE_SUBSYSTEM_WINDOWS_CUI (Console)" : (subsystem == 2 ? "IMAGE_SUBSYSTEM_WINDOWS_GUI" : std::to_string(subsystem))) << std::dec << "\n";
+
+        // Section Headers
+        const uint8_t* sec_hdr_start = opt_hdr + opt_hdr_size;
+        out << "--------------------------------------------------------------------------------\n";
+        out << "SECTION TABLE AUDIT (" << num_sections << " sections):\n";
+        out << "Idx Name          VirtSize  VirtAddr  RawSize   RawOff    Flags       Status\n";
+
+        struct SectionView {
+            std::string name;
+            uint32_t va{0};
+            uint32_t vsz{0};
+            uint32_t rsz{0};
+            uint32_t roff{0};
+            uint32_t flags{0};
+            bool is_code{false};
+            bool is_writable{false};
+            bool is_bss{false};
+        };
+        std::vector<SectionView> sections;
+        bool has_critical_error = false;
+        bool entry_point_found = false;
+
+        for (uint16_t i = 0; i < num_sections; ++i) {
+            const uint8_t* sh = sec_hdr_start + (i * 40);
+            if (sh + 40 > buffer.data() + file_size) break;
+
+            char name_buf[9] = {0};
+            std::memcpy(name_buf, sh, 8);
+            std::string sec_name(name_buf);
+
+            uint32_t vsz = 0, va = 0, rsz = 0, roff = 0, flags = 0;
+            std::memcpy(&vsz, sh + 8, 4);
+            std::memcpy(&va, sh + 12, 4);
+            std::memcpy(&rsz, sh + 16, 4);
+            std::memcpy(&roff, sh + 20, 4);
+            std::memcpy(&flags, sh + 36, 4);
+
+            bool is_code = (flags & 0x00000020) != 0;
+            bool is_writable = (flags & 0x80000000) != 0;
+            bool is_bss = sec_name == ".bss" || (flags & 0x00000080) != 0;
+
+            sections.push_back({sec_name, va, vsz, rsz, roff, flags, is_code, is_writable, is_bss});
+
+            std::string status = "OK";
+            if (vsz == 0) {
+                status = "[CRITICAL] Zero VirtualSize!";
+                has_critical_error = true;
+            } else if (va + vsz > image_size) {
+                status = "[CRITICAL] Out-of-bounds (exceeds SizeOfImage)!";
+                has_critical_error = true;
+            }
+
+            if (entry_rva >= va && entry_rva < va + vsz) {
+                entry_point_found = true;
+                if (!is_code) {
+                    status += " [CRITICAL] Entry point in non-code section!";
+                    has_critical_error = true;
+                }
+            }
+
+            out << std::right << std::setw(3) << i << " "
+                << std::left << std::setw(13) << sec_name << " "
+                << std::right << std::hex << std::setw(8) << std::setfill('0') << vsz << "  "
+                << std::setw(8) << std::setfill('0') << va << "  "
+                << std::setw(8) << std::setfill('0') << rsz << "  "
+                << std::setw(8) << std::setfill('0') << roff << "  "
+                << "0x" << std::setw(8) << std::setfill('0') << flags << "  "
+                << status << "\n" << std::dec;
+        }
+
+        if (!entry_point_found) {
+            out << "[dgtl-pe] [CRITICAL ERROR] Entry point RVA 0x" << std::hex << entry_rva << std::dec << " does NOT fall into any section!\n";
+            has_critical_error = true;
+        }
+
+        // Import Directory Table (DataDirectory[1])
+        uint32_t import_rva = 0, import_size = 0;
+        if (opt_hdr_size >= 128) {
+            std::memcpy(&import_rva, opt_hdr + 120, 4);
+            std::memcpy(&import_size, opt_hdr + 124, 4);
+        }
+
+        out << "--------------------------------------------------------------------------------\n";
+        out << "IMPORT DIRECTORY AUDIT (RVA 0x" << std::hex << import_rva << ", 0x" << import_size << " bytes):\n" << std::dec;
+
+        auto rva_to_offset = [&](uint32_t rva) -> size_t {
+            for (const auto& s : sections) {
+                uint32_t limit = (s.vsz > 0) ? s.vsz : s.rsz;
+                if (rva >= s.va && rva < s.va + limit) {
+                    return s.roff + (rva - s.va);
+                }
+            }
+            return 0;
+        };
+
+        if (import_rva != 0 && import_rva < image_size) {
+            size_t idt_off = rva_to_offset(import_rva);
+            if (idt_off != 0 && idt_off < file_size) {
+                size_t curr = idt_off;
+                size_t dll_count = 0;
+                while (curr + 20 <= file_size) {
+                    uint32_t ilt_rva = 0, name_rva = 0, iat_rva = 0;
+                    std::memcpy(&ilt_rva, buffer.data() + curr, 4);
+                    std::memcpy(&name_rva, buffer.data() + curr + 12, 4);
+                    std::memcpy(&iat_rva, buffer.data() + curr + 16, 4);
+                    if (ilt_rva == 0 && name_rva == 0 && iat_rva == 0) break;
+
+                    std::string dll_name = "unknown";
+                    size_t name_off = rva_to_offset(name_rva);
+                    if (name_off != 0 && name_off < file_size) {
+                        dll_name = reinterpret_cast<const char*>(buffer.data() + name_off);
+                    }
+
+                    out << "  [DLL " << ++dll_count << "] " << dll_name << " (IAT RVA: 0x" << std::hex << iat_rva << ", ILT RVA: 0x" << ilt_rva << ")\n" << std::dec;
+
+                    uint32_t thunk_rva = (ilt_rva != 0) ? ilt_rva : iat_rva;
+                    size_t thunk_off = rva_to_offset(thunk_rva);
+                    size_t fn_count = 0;
+                    if (thunk_off != 0) {
+                        while (thunk_off + 8 <= file_size) {
+                            uint64_t val = 0;
+                            std::memcpy(&val, buffer.data() + thunk_off, 8);
+                            if (val == 0) break;
+                            std::string fn_name;
+                            if ((val & 0x8000000000000000ULL) != 0) {
+                                fn_name = "Ordinal #" + std::to_string(val & 0xFFFF);
+                            } else {
+                                size_t ib_off = rva_to_offset(static_cast<uint32_t>(val));
+                                if (ib_off != 0 && ib_off + 2 < file_size) {
+                                    fn_name = reinterpret_cast<const char*>(buffer.data() + ib_off + 2);
+                                }
+                            }
+                            if (++fn_count <= 8) {
+                                out << "    - " << fn_name << "\n";
+                            }
+                            thunk_off += 8;
+                        }
+                        if (fn_count > 8) {
+                            out << "    ... (" << (fn_count - 8) << " more imports)\n";
+                        }
+                    }
+                    curr += 20;
+                }
+            }
+        } else {
+            out << "  [WARN] No Import Directory Table found.\n";
+        }
+
+        // Disassemble entry point
+        out << "--------------------------------------------------------------------------------\n";
+        out << "ENTRY POINT DISASSEMBLY (Starting at 0x" << std::hex << (image_base + entry_rva) << "):\n" << std::dec;
+        size_t ep_off = rva_to_offset(entry_rva);
+        if (ep_off != 0 && ep_off < file_size) {
+            uint64_t cur_rip = image_base + entry_rva;
+            size_t cur_off = ep_off;
+            for (int i = 0; i < 20 && cur_off < file_size; ++i) {
+                size_t rem = file_size - cur_off;
+                DecodedInstruction instr = X64Disassembler::decode(buffer.data() + cur_off, rem, cur_rip);
+                out << "  0x" << std::hex << std::setw(16) << std::setfill('0') << cur_rip << ": ";
+                for (size_t b = 0; b < 6; ++b) {
+                    if (b < instr.length) {
+                        out << std::setw(2) << std::setfill('0') << (int)buffer[cur_off + b] << " ";
+                    } else {
+                        out << "   ";
+                    }
+                }
+                out << "  " << instr.text << "\n" << std::dec;
+                cur_off += instr.length;
+                cur_rip += instr.length;
+                if (instr.text == "ret") break;
+            }
+        } else {
+            out << "  [FAIL] Cannot map entry point RVA to file offset!\n";
+        }
+
+        out << "================================================================================\n";
+        out << "AUDIT RESULT: " << (has_critical_error ? "[FAIL] Binary has critical layout defects!" : "[PASS] Binary structure is valid.") << "\n";
+        out << "================================================================================\n\n";
+
+        return !has_critical_error;
+    }
+};
+
+// ============================================================================
+// 3. SOVEREIGN NATIVE PROCESS DEBUGGER
+// ============================================================================
+class NativeDebugger {
+public:
+    static int run(int argc, char** argv) {
+        if (argc < 2) {
+            std::cerr << "Usage: dgtl-debugger run <executable_path> [args...]\n";
+            return 1;
+        }
+
+        fs::path exe_path = argv[1];
+        if (!fs::exists(exe_path)) {
+            std::cerr << "[dgtl-debugger] Error: Executable does not exist: " << exe_path.string() << "\n";
+            return 1;
+        }
+
+        std::cout << "[dgtl-debugger] Pre-flight PE structural inspection of " << exe_path.filename().string() << "...\n";
+        PeInspector::audit(exe_path);
+
+#if defined(_WIN32) || defined(_WIN64)
+        std::string cmdline = "\"" + exe_path.string() + "\"";
+        for (int i = 2; i < argc; ++i) {
+            cmdline += " \"";
+            cmdline += argv[i];
+            cmdline += "\"";
+        }
+
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+
+        std::cout << "[dgtl-debugger] Launching under Win32 native debug interceptor: " << cmdline << "\n";
+        std::cout << "================================================================================\n";
+
+        BOOL created = CreateProcessA(
+            nullptr,
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            DEBUG_ONLY_THIS_PROCESS,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
+        );
+
+        if (!created) {
+            std::cerr << "[dgtl-debugger] Failed to launch child process. Win32 Error: " << GetLastError() << "\n";
+            return 1;
+        }
+
+        DEBUG_EVENT dbg{};
+        bool running = true;
+        DWORD exit_code = 0;
+        uint64_t image_base = 0;
+        uint64_t entry_point = 0;
+
+        struct DllInfo {
+            std::string name;
+            uint64_t base{0};
+        };
+        std::vector<DllInfo> loaded_dlls;
+
+        while (running) {
+            if (!WaitForDebugEvent(&dbg, INFINITE)) break;
+            DWORD continue_status = DBG_CONTINUE;
+
+            switch (dbg.dwDebugEventCode) {
+            case CREATE_PROCESS_DEBUG_EVENT: {
+                image_base = reinterpret_cast<uint64_t>(dbg.u.CreateProcessInfo.lpBaseOfImage);
+                entry_point = reinterpret_cast<uint64_t>(dbg.u.CreateProcessInfo.lpStartAddress);
+                std::cout << "[dgtl-debugger] [EVENT] Process Created. ImageBase=0x" << std::hex << image_base
+                          << ", EntryPoint=0x" << entry_point << std::dec << "\n";
+                if (dbg.u.CreateProcessInfo.hFile) CloseHandle(dbg.u.CreateProcessInfo.hFile);
+                break;
+            }
+            case LOAD_DLL_DEBUG_EVENT: {
+                uint64_t dll_base = reinterpret_cast<uint64_t>(dbg.u.LoadDll.lpBaseOfDll);
+                char dll_name_buf[MAX_PATH] = {0};
+                if (dbg.u.LoadDll.hFile) {
+                    GetFinalPathNameByHandleA(dbg.u.LoadDll.hFile, dll_name_buf, MAX_PATH, FILE_NAME_NORMALIZED);
+                    CloseHandle(dbg.u.LoadDll.hFile);
+                }
+                std::string dname = dll_name_buf[0] ? fs::path(dll_name_buf).filename().string() : ("dll_at_0x" + std::to_string(dll_base));
+                loaded_dlls.push_back({dname, dll_base});
+                break;
+            }
+            case EXCEPTION_DEBUG_EVENT: {
+                const auto& rec = dbg.u.Exception.ExceptionRecord;
+                DWORD code = rec.ExceptionCode;
+
+                if (code == STATUS_BREAKPOINT) {
+                    continue_status = DBG_CONTINUE;
+                    break;
+                }
+
+                std::cout << "\n================================================================================\n";
+                std::cout << "          DGTL NATIVE CRASH INTERCEPTOR: HARDWARE EXCEPTION TRAPPED             \n";
+                std::cout << "================================================================================\n";
+
+                std::string exc_name = "UNKNOWN_EXCEPTION";
+                if (code == 0xC0000005) exc_name = "STATUS_ACCESS_VIOLATION (0xC0000005)";
+                else if (code == 0xC000001D) exc_name = "STATUS_ILLEGAL_INSTRUCTION (0xC000001D)";
+                else if (code == 0xC0000094) exc_name = "STATUS_INTEGER_DIVIDE_BY_ZERO (0xC0000094)";
+                else if (code == 0xC00000FD) exc_name = "STATUS_STACK_OVERFLOW (0xC00000FD)";
+
+                uint64_t fault_rip = reinterpret_cast<uint64_t>(rec.ExceptionAddress);
+                std::cout << "[!] EXCEPTION CATEGORY : " << exc_name << " (0x" << std::hex << code << ")\n";
+                std::cout << "[!] FAULTING RIP       : 0x" << fault_rip << "\n";
+
+                if (code == 0xC0000005 && rec.NumberParameters >= 2) {
+                    uint64_t access_type = rec.ExceptionInformation[0];
+                    uint64_t fault_addr = rec.ExceptionInformation[1];
+                    std::cout << "[!] ACCESS VIOLATION   : " << (access_type == 0 ? "READ" : (access_type == 1 ? "WRITE" : "EXECUTE (DEP)"))
+                              << " of memory address 0x" << fault_addr << "\n";
+
+                    MEMORY_BASIC_INFORMATION mbi{};
+                    if (VirtualQueryEx(pi.hProcess, reinterpret_cast<LPCVOID>(fault_addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+                        const char* state_str = (mbi.State == MEM_COMMIT) ? "MEM_COMMIT" : ((mbi.State == MEM_RESERVE) ? "MEM_RESERVE" : "MEM_FREE (UNMAPPED!)");
+                        std::cout << "[!] MEMORY PAGE STATUS : " << state_str << " | RegionSize=0x" << mbi.RegionSize << " | Protect=0x" << mbi.Protect << "\n";
+                        if (mbi.State != MEM_COMMIT) {
+                            std::cout << "\n[!] ROOT CAUSE DIAGNOSIS:\n";
+                            std::cout << "    The process crashed because it attempted to access UNCOMMITTED/UNMAPPED virtual memory.\n";
+                            std::cout << "    Target address 0x" << fault_addr << " is outside the valid allocated memory space of the executable!\n";
+                        }
+                    }
+                }
+
+                HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, dbg.dwThreadId);
+                if (hThread) {
+                    CONTEXT ctx{};
+                    ctx.ContextFlags = CONTEXT_ALL;
+                    if (GetThreadContext(hThread, &ctx)) {
+                        std::cout << "--------------------------------------------------------------------------------\n";
+                        std::cout << "CPU REGISTERS (x86_64):\n";
+                        std::cout << "  RAX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rax
+                                  << "   RBX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rbx
+                                  << "   RCX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rcx << "\n";
+                        std::cout << "  RDX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rdx
+                                  << "   RSI = 0x" << std::setw(16) << std::setfill('0') << ctx.Rsi
+                                  << "   RDI = 0x" << std::setw(16) << std::setfill('0') << ctx.Rdi << "\n";
+                        std::cout << "  RBP = 0x" << std::setw(16) << std::setfill('0') << ctx.Rbp
+                                  << "   RSP = 0x" << std::setw(16) << std::setfill('0') << ctx.Rsp
+                                  << "   RIP = 0x" << std::setw(16) << std::setfill('0') << ctx.Rip << "\n";
+                        std::cout << "  R8  = 0x" << std::setw(16) << std::setfill('0') << ctx.R8
+                                  << "   R9  = 0x" << std::setw(16) << std::setfill('0') << ctx.R9
+                                  << "   R10 = 0x" << std::setw(16) << std::setfill('0') << ctx.R10 << "\n";
+                        std::cout << "  R11 = 0x" << std::setw(16) << std::setfill('0') << ctx.R11
+                                  << "   R12 = 0x" << std::setw(16) << std::setfill('0') << ctx.R12
+                                  << "   R13 = 0x" << std::setw(16) << std::setfill('0') << ctx.R13 << "\n";
+                        std::cout << "  R14 = 0x" << std::setw(16) << std::setfill('0') << ctx.R14
+                                  << "   R15 = 0x" << std::setw(16) << std::setfill('0') << ctx.R15
+                                  << "   EFL = 0x" << std::setw(8) << std::setfill('0') << ctx.EFlags << "\n" << std::dec;
+
+                        std::cout << "--------------------------------------------------------------------------------\n";
+                        std::cout << "DISASSEMBLY AT FAULTING INSTRUCTION:\n";
+                        uint8_t code_buf[64] = {0};
+                        SIZE_T read_bytes = 0;
+                        if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(ctx.Rip), code_buf, sizeof(code_buf), &read_bytes) && read_bytes > 0) {
+                            uint64_t cur_rip = ctx.Rip;
+                            size_t cur_off = 0;
+                            for (int i = 0; i < 5 && cur_off < read_bytes; ++i) {
+                                auto instr = X64Disassembler::decode(code_buf + cur_off, read_bytes - cur_off, cur_rip);
+                                std::cout << (i == 0 ? "  --> 0x" : "      0x") << std::hex << std::setw(16) << std::setfill('0') << cur_rip << ": ";
+                                for (size_t b = 0; b < 6; ++b) {
+                                    if (b < instr.length) {
+                                        std::cout << std::setw(2) << std::setfill('0') << (int)code_buf[cur_off + b] << " ";
+                                    } else {
+                                        std::cout << "   ";
+                                    }
+                                }
+                                std::cout << "  " << instr.text << "\n" << std::dec;
+                                cur_off += instr.length;
+                                cur_rip += instr.length;
+                            }
+                        }
+
+                        std::cout << "--------------------------------------------------------------------------------\n";
+                        std::cout << "CALL STACK DUMP (RSP = 0x" << std::hex << ctx.Rsp << "):\n" << std::dec;
+                        uint64_t stack_slots[16] = {0};
+                        if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(ctx.Rsp), stack_slots, sizeof(stack_slots), &read_bytes)) {
+                            size_t count = read_bytes / 8;
+                            for (size_t i = 0; i < count; ++i) {
+                                uint64_t val = stack_slots[i];
+                                std::string owner = "unknown";
+                                for (const auto& dll : loaded_dlls) {
+                                    if (val >= dll.base && val < dll.base + 0x10000000) {
+                                        owner = dll.name + "+0x" + std::to_string(val - dll.base);
+                                        break;
+                                    }
+                                }
+                                if (val >= image_base && val < image_base + 0x1000000) {
+                                    owner = exe_path.filename().string() + "+0x" + std::to_string(val - image_base);
+                                }
+                                std::cout << "  [RSP+" << std::setw(2) << (i * 8) << "] 0x" << std::hex << std::setw(16) << std::setfill('0') << val
+                                          << "  (" << owner << ")\n" << std::dec;
+                            }
+                        }
+                    }
+                    CloseHandle(hThread);
+                }
+
+                std::cout << "================================================================================\n\n";
+                TerminateProcess(pi.hProcess, code);
+                running = false;
+                exit_code = code;
+                break;
+            }
+            case EXIT_PROCESS_DEBUG_EVENT: {
+                exit_code = dbg.u.ExitProcess.dwExitCode;
+                running = false;
+                std::cout << "\n[dgtl-debugger] Process Exited with Code: " << exit_code
+                          << " (0x" << std::hex << exit_code << std::dec << ")\n";
+                if (exit_code == 0) {
+                    std::cout << "[dgtl-debugger] SUCCESS: Executable completed with exit code 0.\n";
+                }
+                break;
+            }
+            default:
+                break;
+            }
+
+            ContinueDebugEvent(dbg.dwProcessId, dbg.dwThreadId, continue_status);
+        }
+
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return static_cast<int>(exit_code);
+#else
+        std::cerr << "[dgtl-debugger] Native execution debugger currently supports Windows host.\n";
+        return 1;
+#endif
+    }
+};
+
+} // namespace dgtl::debug
+
 int main(int argc, char** argv) {
+    if (argc >= 2) {
+        std::string_view subcmd = argv[1];
+        if (subcmd == "run" || subcmd == "exec") {
+            return dgtl::debug::NativeDebugger::run(argc - 1, argv + 1);
+        }
+        if (subcmd == "inspect-exe" || subcmd == "check-exe" || subcmd == "inspect") {
+            if (argc < 3) {
+                std::cerr << "Usage: dgtl-debugger inspect-exe <path_to_exe>\n";
+                return 1;
+            }
+            return dgtl::debug::PeInspector::audit(argv[2]) ? 0 : 1;
+        }
+        if (subcmd.ends_with(".exe") && fs::exists(subcmd)) {
+            return dgtl::debug::NativeDebugger::run(argc, argv);
+        }
+    }
+
     Options opts;
     const ParseStatus parse_status = parse_args(argc, argv, opts);
     if (parse_status == ParseStatus::Help) {

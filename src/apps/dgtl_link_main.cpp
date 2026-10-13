@@ -254,15 +254,27 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
     return opts;
 }
 
+static std::string_view canonical_section_name(std::string_view name) {
+    if (name == ".text" || name.starts_with(".text$")) return ".text";
+    if (name == ".rdata" || name.starts_with(".rdata$") || name == ".rodata" || name.starts_with(".rodata$") ||
+        name == ".idata" || name.starts_with(".idata$")) return ".rdata";
+    if (name == ".data" || name.starts_with(".data$")) return ".data";
+    if (name == ".bss" || name.starts_with(".bss$")) return ".bss";
+    return name;
+}
+
 bool merge_object_file(dgtl::object::ObjectFile& target, const dgtl::object::ObjectFile& src) {
     std::unordered_map<std::string, uint64_t> section_offsets;
     std::unordered_map<std::string, uint32_t> section_target_idx;
 
     for (const auto& sec : src.sections()) {
-        auto* existing = target.find_section(sec.name);
+        std::string canon_name(canonical_section_name(sec.name));
+        auto* existing = target.find_section(canon_name);
         if (!existing) {
             uint32_t new_idx = static_cast<uint32_t>(target.sections().size());
-            target.sections().push_back(sec);
+            auto new_sec = sec;
+            new_sec.name = canon_name;
+            target.sections().push_back(std::move(new_sec));
             section_offsets[sec.name] = 0;
             section_target_idx[sec.name] = new_idx;
         } else {
@@ -308,12 +320,24 @@ bool merge_object_file(dgtl::object::ObjectFile& target, const dgtl::object::Obj
                 auto it_idx = section_target_idx.find(sec_name);
                 if (it_idx != section_target_idx.end()) target_sec = it_idx->second;
             }
-            auto* existing_sym = target.find_symbol(sym.name);
+
+            const bool is_section_symbol = sym.name.starts_with(".") ||
+                                           sym.name == ".text" || sym.name == ".data" ||
+                                           sym.name == ".rdata" || sym.name == ".bss";
+            const std::string norm_name = is_section_symbol
+                ? std::string(canonical_section_name(sym.name))
+                : sym.name;
+
+            auto* existing_sym = target.find_symbol(norm_name);
             if (!existing_sym) {
                 auto new_sym = sym;
-                new_sym.value += shift;
+                new_sym.name = norm_name;
+                new_sym.value = is_section_symbol ? 0 : (sym.value + shift);
                 new_sym.section_index = target_sec;
                 target.symbols().push_back(std::move(new_sym));
+            } else if (is_section_symbol) {
+                existing_sym->value = 0;
+                existing_sym->section_index = target_sec;
             } else if (existing_sym->is_external() || !existing_sym->is_defined()) {
                 *existing_sym = sym;
                 existing_sym->value += shift;
@@ -338,6 +362,13 @@ bool merge_object_file(dgtl::object::ObjectFile& target, const dgtl::object::Obj
         auto new_r = r;
         new_r.offset += shift;
         new_r.section_index = target_sec;
+        if (r.symbol_name.starts_with(".")) {
+            auto it_sym_sec = section_offsets.find(r.symbol_name);
+            if (it_sym_sec != section_offsets.end()) {
+                new_r.addend += static_cast<int64_t>(it_sym_sec->second);
+            }
+            new_r.symbol_name = std::string(canonical_section_name(r.symbol_name));
+        }
         target.relocations().push_back(std::move(new_r));
     }
     return true;

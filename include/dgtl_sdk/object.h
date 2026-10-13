@@ -19,11 +19,12 @@ extern "C" {
 #endif
 
 typedef enum dgtl_object_format {
-    DGTL_OBJECT_FMT_PE   = 0,
-    DGTL_OBJECT_FMT_COFF = 1,
-    DGTL_OBJECT_FMT_ELF  = 2,
-    DGTL_OBJECT_FMT_MACHO= 3,
-    DGTL_OBJECT_FMT_WASM = 4
+    DGTL_OBJECT_FMT_PE    = 0,
+    DGTL_OBJECT_FMT_COFF  = 1,
+    DGTL_OBJECT_FMT_ELF   = 2,
+    DGTL_OBJECT_FMT_ELF64 = 2,
+    DGTL_OBJECT_FMT_MACHO = 3,
+    DGTL_OBJECT_FMT_WASM  = 4
 } dgtl_object_format_t;
 
 typedef enum dgtl_section_flags {

@@ -215,6 +215,14 @@ typedef dgtl_err_t dgtl_status_t;
 #  define DGTL_OK          (dgtl_err_t{0, DGTL_SEV_INFO})
 #  define DGTL_ERR(c)      (dgtl_err_t{(int32_t)(c), DGTL_SEV_ERROR})
 #  define DGTL_WARN(c)     (dgtl_err_t{(int32_t)(c), DGTL_SEV_WARNING})
+extern "C++" {
+inline bool operator==(const dgtl_err& a, const dgtl_err& b) noexcept {
+    return a.code == b.code;
+}
+inline bool operator!=(const dgtl_err& a, const dgtl_err& b) noexcept {
+    return a.code != b.code;
+}
+}
 #else
 #  define DGTL_OK          ((dgtl_err_t){0, DGTL_SEV_INFO})
 #  define DGTL_ERR(c)      ((dgtl_err_t){(int32_t)(c), DGTL_SEV_ERROR})
@@ -1757,6 +1765,8 @@ private:
     dgtl_module_t mod_ = nullptr;
 };
 
+#ifndef DGTL_LINKER_CLASS_DEFINED
+#define DGTL_LINKER_CLASS_DEFINED
 class Linker {
 public:
     explicit Linker(dgtl_object_format_t fmt = DGTL_OBJECT_FMT_PE)
@@ -1779,9 +1789,12 @@ public:
     dgtl_err_t set_image_base(uint64_t image_base) noexcept { return dgtl_linker_set_image_base(linker_, image_base); }
     dgtl_err_t set_subsystem(dgtl_subsystem_t sub) noexcept { return dgtl_linker_set_subsystem(linker_, sub); }
     dgtl_err_t add_object(const ObjectFile& obj) noexcept { return dgtl_linker_add_object(linker_, obj.get()); }
+    dgtl_err_t add_object(dgtl_object_t obj) noexcept { return dgtl_linker_add_object(linker_, obj); }
+    dgtl_err_t add_session(void* session) noexcept { return dgtl_linker_add_session(linker_, session); }
     dgtl_err_t add_object_file(const char* path) noexcept { return dgtl_linker_add_object_file(linker_, path); }
     dgtl_err_t add_archive(const char* path) noexcept { return dgtl_linker_add_archive(linker_, path); }
     dgtl_err_t add_library_search_path(const char* dir) noexcept { return dgtl_linker_add_library_search_path(linker_, dir); }
+    dgtl_err_t add_library(const char* lib_name) noexcept { return dgtl_linker_add_library(linker_, lib_name); }
     dgtl_err_t link_to_file(dgtl_linker_output_kind_t kind, const char* out_path) noexcept {
         return dgtl_linker_link_to_file(linker_, kind, out_path);
     }
@@ -1791,6 +1804,7 @@ public:
 private:
     dgtl_linker_t linker_ = nullptr;
 };
+#endif /* DGTL_LINKER_CLASS_DEFINED */
 
 class JITEngine {
 public:

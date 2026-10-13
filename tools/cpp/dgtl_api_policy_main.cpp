@@ -156,7 +156,14 @@ int main(int argc, char** argv) {
         "include/dgtl/linker/driver/Backend_Driver_API.ixx",
         "include/dgtl/api/Runtime_API.ixx",
         "include/dgtl/runtime/TaskScheduler.ixx",
-        "tests/functional/frontend/t07_frontend_pipeline_lowerer.cpp"
+        "tests/functional/frontend/t07_frontend_pipeline_lowerer.cpp",
+
+        // Sovereign Object Librarian & Native Linker Modules
+        "include/dgtl/object/Archive.ixx",
+        "include/dgtl/linker/pe/PE_Linker.ixx",
+        "include/dgtl/linker/pe/PE_Sections.ixx",
+        "src/apps/dgtl_ar_main.cpp",
+        "src/apps/dgtl_link_main.cpp"
     };
 
     for (const auto& rel : required_files) {
@@ -246,6 +253,14 @@ int main(int argc, char** argv) {
     rules.push_back(Rule{"tools/cpp/dgtl_main.cpp", "api-status", "main orchestrator must expose api-status command", true});
     rules.push_back(Rule{"tools/cpp/dgtl_orchestrator_main.cpp", "api-status", "secondary orchestrator must expose api-status command", true});
     rules.push_back(Rule{"tests/functional/frontend/t07_frontend_pipeline_lowerer.cpp", "run_test_t07_frontend_pipeline_lowerer", "aggregate suite must include frontend pipeline lowerer test", true});
+
+    // --- Tier 6: Sovereign Object Librarian & Native Linker Invariants ---
+    rules.push_back(Rule{"include/dgtl/object/Archive.ixx", "parse_pe_binary", "sovereign archiver must implement PE executable container inspection", true});
+    rules.push_back(Rule{"include/dgtl/linker/pe/PE_Linker.ixx", "ucrtbase\\.dll", "PE linker must provide ucrtbase.dll dynamic import mapping", true});
+    rules.push_back(Rule{"tools/cpp/dgtl_main.cpp", "dgtl\\.object\\.archive", "main orchestrator must bootstrap dgtl.object.archive module", true});
+    rules.push_back(Rule{"tools/cpp/dgtl_main.cpp", "dgtl\\.linker\\.pe", "main orchestrator must bootstrap dgtl.linker.pe module", true});
+    rules.push_back(Rule{"tools/cpp/dgtl_orchestrator_main.cpp", "dgtl\\.object\\.archive", "secondary orchestrator must bootstrap dgtl.object.archive module", true});
+    rules.push_back(Rule{"tools/cpp/dgtl_orchestrator_main.cpp", "dgtl\\.linker\\.pe", "secondary orchestrator must bootstrap dgtl.linker.pe module", true});
 
     for (const auto& rule : rules) {
         const fs::path file = root / rule.relative_path;

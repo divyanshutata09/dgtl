@@ -292,9 +292,11 @@ private:
 
             auto& sec = out.add_section(sh.name, alignment, flags, kind);
             sec.address = sh.virtual_address;
-            sec.bss_size = (kind == dgtl::object::SectionKind::BSS) ? sh.virtual_size : 0;
+            const uint32_t sec_size = (sh.virtual_size > 0) ? sh.virtual_size : sh.raw_data_size;
+            sec.bss_size = (kind == dgtl::object::SectionKind::BSS) ? sec_size : 0;
 
-            if (sh.raw_data_offset != 0 && sh.raw_data_size > 0 &&
+            if (kind != dgtl::object::SectionKind::BSS &&
+                sh.raw_data_offset != 0 && sh.raw_data_size > 0 &&
                 sh.raw_data_offset + sh.raw_data_size <= buffer.size()) {
                 sec.append_bytes(buffer.data() + sh.raw_data_offset, sh.raw_data_size);
             }
@@ -303,7 +305,7 @@ private:
         // Decode COFF Symbol Table
         std::vector<CoffSymbolView> parsed_symbols;
         if (symtab_offset != 0 && symtab_offset + (static_cast<size_t>(num_symbols) * 18) <= buffer.size()) {
-            parsed_symbols.reserve(num_symbols);
+            parsed_symbols.resize(num_symbols);
             for (uint32_t i = 0; i < num_symbols; ++i) {
                 const size_t soff = symtab_offset + (static_cast<size_t>(i) * 18);
                 const uint8_t* sptr = buffer.data() + soff;
@@ -328,6 +330,11 @@ private:
                 sym.storage_class = sptr[16];
                 sym.num_aux = sptr[17];
 
+                if (sym.name.empty() && sym.section_number > 0 &&
+                    static_cast<size_t>(sym.section_number) <= section_headers.size()) {
+                    sym.name = section_headers[static_cast<size_t>(sym.section_number - 1)].name;
+                }
+
                 if (!sym.name.empty()) {
                     const bool is_func = (sym.type == 0x20);
                     const bool is_global = (sym.storage_class == 2);
@@ -348,7 +355,10 @@ private:
                     }
                 }
 
-                parsed_symbols.push_back(sym);
+                parsed_symbols[i] = sym;
+                for (uint8_t a = 1; a <= sym.num_aux && (i + a) < num_symbols; ++a) {
+                    parsed_symbols[i + a] = CoffSymbolView{};
+                }
                 i += sym.num_aux;
             }
         }
@@ -373,6 +383,23 @@ private:
                     std::string target_sym;
                     if (sym_idx < parsed_symbols.size()) {
                         target_sym = parsed_symbols[sym_idx].name;
+                    }
+
+                    // Extract in-place addend from section raw data
+                    int64_t in_place_addend = 0;
+                    if (sh.raw_data_offset != 0 && rva < sh.raw_data_size) {
+                        const size_t place_in_buf = sh.raw_data_offset + rva;
+                        if (rtype == 0x0001) { // IMAGE_REL_AMD64_ADDR64
+                            if (place_in_buf + 8 <= buffer.size()) {
+                                std::memcpy(&in_place_addend, buffer.data() + place_in_buf, 8);
+                            }
+                        } else {
+                            if (place_in_buf + 4 <= buffer.size()) {
+                                int32_t add32 = 0;
+                                std::memcpy(&add32, buffer.data() + place_in_buf, 4);
+                                in_place_addend = add32;
+                            }
+                        }
                     }
 
                     dgtl::object::RelocationKind kind = dgtl::object::RelocationKind::PCRel32;
@@ -400,7 +427,13 @@ private:
                             break;
                     }
 
-                    dgtl::object::Relocation rel(rva, std::move(target_sym), 0, rtype, kind, static_cast<uint32_t>(sec_idx));
+                    int64_t universal_addend = in_place_addend;
+                    if (rtype >= 0x0004 && rtype <= 0x0009) {
+                        const int32_t extra = static_cast<int32_t>(rtype - 0x0004);
+                        universal_addend -= (4 + extra);
+                    }
+
+                    dgtl::object::Relocation rel(rva, std::move(target_sym), universal_addend, rtype, kind, static_cast<uint32_t>(sec_idx));
                     rel.symbol_index = sym_idx;
                     out.add_relocation(std::move(rel));
                 }

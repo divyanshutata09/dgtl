@@ -714,19 +714,32 @@ private:
                 return true;
             }
 
-            // StoreStack: source register -> stack slot. The old emitter
-            // accidentally reversed this direction.
-            if (first.kind != MachineOperandKind::Register) return false;
-            const std::string src = mir_register_name(first.reg);
-            const std::string dst = mir_operand_text(function, second);
+            // StoreStack: register <-> stack slot memory reference
+            std::string src;
+            std::string dst;
+            MachineRegister reg{};
+            const MachineOperand* reg_op = nullptr;
+            if (first.kind == MachineOperandKind::Register) {
+                src = mir_register_name(first.reg);
+                dst = mir_operand_text(function, second);
+                reg = first.reg;
+                reg_op = &first;
+            } else if (second.kind == MachineOperandKind::Register) {
+                dst = mir_operand_text(function, first);
+                src = mir_register_name(second.reg);
+                reg = second.reg;
+                reg_op = &second;
+            } else {
+                return false;
+            }
             if (src.empty() || dst.empty()) return false;
 
-            if (first.reg.reg_class == RegisterClassKind::FloatingPoint) {
-                const bool f32 = first.subregister == 32u;
+            if (reg.reg_class == RegisterClassKind::FloatingPoint) {
+                const bool f32 = (reg_op != nullptr && reg_op->subregister == 32u);
                 append_line(std::string("    ") + (f32 ? "movss " : "movsd ") + dst + ", " + src);
                 return true;
             }
-            if (first.reg.reg_class == RegisterClassKind::Vector) {
+            if (reg.reg_class == RegisterClassKind::Vector) {
                 return false;
             }
             append_line("    mov " + dst + ", " + src);

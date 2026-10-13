@@ -71,6 +71,8 @@ struct ABIParameter {
     [[nodiscard]] constexpr uint32_t get_register_id() const noexcept { return register_id; }
     [[nodiscard]] constexpr uint32_t get_register_id_high() const noexcept { return register_id_high; }
     [[nodiscard]] constexpr uint32_t get_stack_offset() const noexcept { return stack_offset; }
+    [[nodiscard]] constexpr uint32_t get_caller_stack_offset() const noexcept { return stack_offset; }
+    [[nodiscard]] constexpr uint32_t get_callee_stack_offset() const noexcept { return stack_offset + 16u; }
 };
 
 struct ABICallLayout {

@@ -70,11 +70,40 @@ public:
 
         const InstrId cursor = entry->instructions.empty() ? INVALID_INSTR_ID : entry->instructions.front();
         auto& frame = function.frame_info();
-        std::uint32_t needed_bytes = frame.total_frame_bytes;
-        if (frame.has_calls && needed_bytes < 32u) {
-            needed_bytes = 32u;
+
+        // Discover Win64 non-volatile registers clobbered by the function if not already populated
+        if (frame.callee_saved_registers.empty()) {
+            for (const auto& instruction : function.instructions()) {
+                for (const auto& operand : instruction.operands) {
+                    if (operand.kind != MachineOperandKind::Register || !operand.reg.is_physical())
+                        continue;
+                    if (operand.reg.reg_class != RegisterClassKind::General &&
+                        operand.reg.reg_class != RegisterClassKind::Integer &&
+                        operand.reg.reg_class != RegisterClassKind::Address)
+                        continue;
+                    const auto id = operand.reg.id;
+                    // Win64 non-volatile GPRs: RBX=3, RSI=6, RDI=7, R12=12, R13=13, R14=14, R15=15
+                    if (id == 3u || id == 6u || id == 7u || id == 12u || id == 13u || id == 14u || id == 15u) {
+                        if (std::none_of(frame.callee_saved_registers.begin(), frame.callee_saved_registers.end(),
+                                         [&](const auto& r) { return r.id == id; })) {
+                            frame.callee_saved_registers.push_back(operand.reg);
+                        }
+                    }
+                }
+            }
+            std::sort(frame.callee_saved_registers.begin(), frame.callee_saved_registers.end(),
+                      [](const auto& a, const auto& b) { return a.id < b.id; });
+            frame.callee_saved_bytes = static_cast<std::uint32_t>(frame.callee_saved_registers.size() * 8u);
         }
-        const std::uint32_t frame_bytes = (needed_bytes + 15u) & ~15u;
+
+        const std::uint32_t saved_bytes = static_cast<std::uint32_t>(frame.callee_saved_registers.size() * 8u);
+        std::uint32_t needed_bytes = frame.total_frame_bytes;
+        const std::uint32_t outgoing_bytes = frame.has_calls ? std::max<std::uint32_t>(32u, frame.outgoing_argument_bytes) : 0u;
+        if (needed_bytes < outgoing_bytes) {
+            needed_bytes = outgoing_bytes;
+        }
+        const std::uint32_t total_needed = saved_bytes + needed_bytes;
+        const std::uint32_t frame_bytes = (total_needed + 15u) & ~15u;
 
         MachineRegister rsp{4u, RegisterKind::Physical, RegisterClassKind::Address};
         MachineRegister rbp{5u, RegisterKind::Physical, RegisterClassKind::Address};
@@ -120,6 +149,27 @@ public:
             throw std::logic_error("DGTL x64 ABI invariant violation: failed to insert mov rbp, rsp in prologue");
         }
 
+        // Save non-volatile registers to [rbp - 8*(i+1)]
+        for (std::size_t i = 0; i < frame.callee_saved_registers.size(); ++i) {
+            const auto& reg = frame.callee_saved_registers[i];
+            const std::int64_t disp = -static_cast<std::int64_t>((i + 1) * 8u);
+            MachineInstruction& save_reg = function.create_instruction(GM_STORE);
+            save_reg.form = MachineForm::StoreStack;
+            save_reg.semantic_kind = MachineSemanticKind::StoreStack;
+            save_reg.add_flag(MachineInstrFlag::FrameSetup);
+            MachineMemoryOperand mem_save{};
+            mem_save.base = rbp;
+            mem_save.displacement = disp;
+            mem_save.size_bytes = 8;
+            mem_save.store = true;
+            save_reg.add_operand(MachineOperand::memory_ref(mem_save));
+            save_reg.add_operand(MachineOperand::use(reg));
+            save_reg.parent_block = entry_id;
+            if (!function.insert_instruction_before(entry_id, cursor, save_reg.id)) {
+                throw std::logic_error("DGTL x64 ABI invariant violation: failed to insert callee-saved register save in prologue");
+            }
+        }
+
         if (frame_bytes > 0) {
             // sub rsp, frame_bytes
             MachineInstruction& sub_frame = function.create_instruction(GM_ISUB64);
@@ -142,9 +192,31 @@ public:
         if (!bb || bb->instructions.empty()) return;
 
         const InstrId ret_id = bb->tail_instr;
+        auto& frame = function.frame_info();
 
         MachineRegister rsp{4u, RegisterKind::Physical, RegisterClassKind::Address};
         MachineRegister rbp{5u, RegisterKind::Physical, RegisterClassKind::Address};
+
+        // Restore non-volatile registers from [rbp - 8*(i+1)]
+        for (std::size_t i = 0; i < frame.callee_saved_registers.size(); ++i) {
+            const auto& reg = frame.callee_saved_registers[i];
+            const std::int64_t disp = -static_cast<std::int64_t>((i + 1) * 8u);
+            MachineInstruction& restore_reg = function.create_instruction(GM_LOAD);
+            restore_reg.form = MachineForm::LoadStack;
+            restore_reg.semantic_kind = MachineSemanticKind::LoadStack;
+            restore_reg.add_flag(MachineInstrFlag::FrameDestroy);
+            MachineMemoryOperand mem_restore{};
+            mem_restore.base = rbp;
+            mem_restore.displacement = disp;
+            mem_restore.size_bytes = 8;
+            mem_restore.load = true;
+            restore_reg.add_operand(MachineOperand::def(reg));
+            restore_reg.add_operand(MachineOperand::memory_ref(mem_restore));
+            restore_reg.parent_block = return_block;
+            if (!function.insert_instruction_before(return_block, ret_id, restore_reg.id)) {
+                throw std::logic_error("DGTL x64 ABI invariant violation: failed to insert callee-saved register restore in epilogue");
+            }
+        }
 
         // mov rsp, rbp
         MachineInstruction& mov_rsp = function.create_instruction(GM_COPY);
@@ -337,6 +409,25 @@ public:
         return {5u, dgtl::machine::RegisterKind::Physical, dgtl::machine::RegisterClassKind::Address}; // RBP
     }
 
+    // Windows x64 ABI stack argument helpers
+    static constexpr std::uint32_t SHADOW_SPACE_BYTES = 32u;
+    static constexpr std::uint32_t SLOT_SIZE = 8u;
+
+    // Caller side: writing the 5th argument onward before a CALL instruction
+    // arg_index is 0-based across all arguments (i.e. arg_index >= 4)
+    [[nodiscard]] static constexpr std::int32_t get_caller_stack_arg_offset(std::uint32_t arg_index) noexcept {
+        return static_cast<std::int32_t>(SHADOW_SPACE_BYTES + (arg_index - 4u) * SLOT_SIZE);
+        // Stores to: [RSP + offset]
+    }
+
+    // Callee side: loading the 5th argument onward inside the function
+    // With standard RBP frame (push rbp [8] + ret_addr [8] + shadow_space [32] = 48)
+    [[nodiscard]] static constexpr std::int32_t get_callee_stack_arg_offset(std::uint32_t arg_index) noexcept {
+        constexpr std::uint32_t FRAME_HEADER = 16u; // return address + saved RBP
+        return static_cast<std::int32_t>(FRAME_HEADER + SHADOW_SPACE_BYTES + (arg_index - 4u) * SLOT_SIZE);
+        // Loads from: [RBP + offset]
+    }
+
     bool lower_formal_arguments_for_block(
         dgtl::machine::MachineFunction& function,
         dgtl::machine::BlockId block_id,
@@ -364,6 +455,27 @@ public:
             copy_inst.add_operand(MachineOperand::use(phys));
             copy_inst.parent_block = block_id;
             if (!function.insert_instruction_before(block_id, cursor, copy_inst.id)) {
+                return false;
+            }
+        }
+
+        // Win64 stack parameters (5th parameter onwards, i >= 4)
+        for (std::size_t i = 4; i < param_vregs.size(); ++i) {
+            MachineRegister param_vreg = param_vregs[i];
+            const std::int64_t disp = get_callee_stack_arg_offset(static_cast<std::uint32_t>(i));
+
+            MachineInstruction& load_inst = function.create_instruction(GM_LOAD);
+            load_inst.form = MachineForm::LoadStack;
+            load_inst.semantic_kind = MachineSemanticKind::LoadStack;
+            MachineMemoryOperand mem{};
+            mem.base = MachineRegister{5u, RegisterKind::Physical, RegisterClassKind::Address}; // RBP
+            mem.displacement = disp;
+            mem.size_bytes = 8;
+            mem.load = true;
+            load_inst.add_operand(MachineOperand::def(param_vreg));
+            load_inst.add_operand(MachineOperand::memory_ref(mem));
+            load_inst.parent_block = block_id;
+            if (!function.insert_instruction_before(block_id, cursor, load_inst.id)) {
                 return false;
             }
         }
@@ -410,6 +522,37 @@ public:
                 return false;
             }
         }
+
+        // Win64 outgoing stack parameters (5th parameter onwards, i >= 4)
+        MachineRegister rsp{4u, RegisterKind::Physical, RegisterClassKind::Address};
+        for (std::size_t i = 4; i < arg_operands.size(); ++i) {
+            const std::int64_t disp = get_caller_stack_arg_offset(static_cast<std::uint32_t>(i));
+            MachineInstruction& store_inst = function.create_instruction(GM_STORE);
+            store_inst.form = MachineForm::StoreStack;
+            store_inst.semantic_kind = MachineSemanticKind::StoreStack;
+            MachineMemoryOperand mem{};
+            mem.base = rsp;
+            mem.displacement = disp;
+            mem.size_bytes = 8;
+            mem.store = true;
+            store_inst.add_operand(MachineOperand::memory_ref(mem));
+            store_inst.add_operand(MachineOperand::use(arg_operands[i].reg));
+            store_inst.parent_block = block;
+            if (!function.insert_instruction_before(block, call_instr, store_inst.id)) {
+                return false;
+            }
+        }
+
+        const std::uint32_t call_outgoing_bytes = static_cast<std::uint32_t>(
+            std::max<std::size_t>(32u, arg_operands.size() * 8u));
+        function.frame_info().has_calls = true;
+        if (call_outgoing_bytes > function.frame_info().outgoing_argument_bytes) {
+            function.frame_info().outgoing_argument_bytes = call_outgoing_bytes;
+        }
+
+        // Re-acquire instruction pointer: create_instruction may have reallocated instructions_ vector
+        inst = function.instruction(call_instr);
+        if (!inst) return false;
 
         static constexpr std::uint32_t kCallerSaved[7] = {0u, 1u, 2u, 8u, 9u, 10u, 11u};
         for (std::uint32_t reg_id : kCallerSaved) {
@@ -665,17 +808,268 @@ public:
         return {5u, dgtl::machine::RegisterKind::Physical, dgtl::machine::RegisterClassKind::Address}; // RBP
     }
 
+    [[nodiscard]] static constexpr std::int32_t get_systemv_caller_stack_arg_offset(std::uint32_t arg_index) noexcept {
+        constexpr std::uint32_t SLOT_SIZE = 8u;
+        return static_cast<std::int32_t>((arg_index - 6u) * SLOT_SIZE);
+    }
+
+    [[nodiscard]] static constexpr std::int32_t get_systemv_callee_stack_arg_offset(std::uint32_t arg_index) noexcept {
+        constexpr std::uint32_t FRAME_HEADER = 16u; // return address + saved RBP
+        constexpr std::uint32_t SLOT_SIZE = 8u;
+        return static_cast<std::int32_t>(FRAME_HEADER + (arg_index - 6u) * SLOT_SIZE);
+    }
+
+    bool lower_formal_arguments_for_block(
+        dgtl::machine::MachineFunction& function,
+        dgtl::machine::BlockId block_id,
+        std::span<const dgtl::machine::MachineRegister> param_vregs) const {
+        using namespace dgtl::machine;
+        static constexpr std::uint32_t kSysVGprArgs[6] = {7u, 6u, 2u, 1u, 8u, 9u}; // RDI, RSI, RDX, RCX, R8, R9
+        if (param_vregs.empty() || function.blocks().empty()) return true;
+
+        MachineBasicBlock* entry = function.block(block_id);
+        if (!entry) return true;
+
+        const InstrId cursor = entry->instructions.empty() ? INVALID_INSTR_ID : entry->instructions.front();
+
+        std::size_t gpr_idx = 0;
+        std::size_t fp_idx = 0;
+
+        for (std::size_t i = 0; i < param_vregs.size(); ++i) {
+            MachineRegister param_vreg = param_vregs[i];
+            const bool is_fp = (param_vreg.reg_class == RegisterClassKind::FloatingPoint ||
+                                param_vreg.reg_class == RegisterClassKind::Vector);
+
+            if (is_fp && fp_idx < 8u) {
+                const std::uint32_t reg_id = static_cast<std::uint32_t>(fp_idx++);
+                MachineRegister phys = MachineRegister::physical_reg(reg_id, param_vreg.reg_class);
+
+                MachineInstruction& copy_inst = function.create_instruction(GM_COPY);
+                copy_inst.form = MachineForm::Move;
+                copy_inst.semantic_kind = MachineSemanticKind::Move;
+                copy_inst.add_operand(MachineOperand::def(param_vreg));
+                copy_inst.add_operand(MachineOperand::use(phys));
+                copy_inst.parent_block = block_id;
+                if (!function.insert_instruction_before(block_id, cursor, copy_inst.id)) {
+                    return false;
+                }
+            } else if (!is_fp && gpr_idx < 6u) {
+                const std::uint32_t reg_id = kSysVGprArgs[gpr_idx++];
+                MachineRegister phys = MachineRegister::physical_reg(reg_id, param_vreg.reg_class);
+
+                MachineInstruction& copy_inst = function.create_instruction(GM_COPY);
+                copy_inst.form = MachineForm::Move;
+                copy_inst.semantic_kind = MachineSemanticKind::Move;
+                copy_inst.add_operand(MachineOperand::def(param_vreg));
+                copy_inst.add_operand(MachineOperand::use(phys));
+                copy_inst.parent_block = block_id;
+                if (!function.insert_instruction_before(block_id, cursor, copy_inst.id)) {
+                    return false;
+                }
+            } else {
+                // Stack parameter (i >= 6 for GPRs / i >= 8 for FPRs)
+                const std::uint32_t stack_idx = static_cast<std::uint32_t>(is_fp ? (fp_idx++) : (gpr_idx++));
+                const std::int64_t disp = get_systemv_callee_stack_arg_offset(stack_idx);
+
+                MachineInstruction& load_inst = function.create_instruction(GM_LOAD);
+                load_inst.form = MachineForm::LoadStack;
+                load_inst.semantic_kind = MachineSemanticKind::LoadStack;
+                MachineMemoryOperand mem{};
+                mem.base = MachineRegister{5u, RegisterKind::Physical, RegisterClassKind::Address}; // RBP
+                mem.displacement = disp;
+                mem.size_bytes = 8;
+                mem.load = true;
+                load_inst.add_operand(MachineOperand::def(param_vreg));
+                load_inst.add_operand(MachineOperand::memory_ref(mem));
+                load_inst.parent_block = block_id;
+                if (!function.insert_instruction_before(block_id, cursor, load_inst.id)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool lower_formal_arguments(
+        dgtl::machine::MachineFunction& function,
+        std::span<const dgtl::machine::MachineRegister> param_vregs) const override {
+        using namespace dgtl::machine;
+        BlockId entry_id = function.entry_block();
+        if (entry_id == INVALID_BLOCK_ID) entry_id = 0;
+        return lower_formal_arguments_for_block(function, entry_id, param_vregs);
+    }
+
+    bool lower_call(
+        dgtl::machine::MachineFunction& function,
+        dgtl::machine::BlockId block,
+        dgtl::machine::InstrId call_instr) const override {
+        using namespace dgtl::machine;
+        static constexpr std::uint32_t kSysVGprArgs[6] = {7u, 6u, 2u, 1u, 8u, 9u};
+        MachineInstruction* inst = function.instruction(call_instr);
+        if (!inst) return false;
+
+        std::vector<MachineOperand> arg_operands;
+        for (const auto& op : inst->operands) {
+            if (op.is_register() && op.is_use()) {
+                arg_operands.push_back(op);
+            }
+        }
+
+        std::size_t gpr_idx = 0;
+        std::size_t fp_idx = 0;
+        MachineRegister rsp{4u, RegisterKind::Physical, RegisterClassKind::Address};
+
+        for (std::size_t i = 0; i < arg_operands.size(); ++i) {
+            const bool is_fp = (arg_operands[i].reg.reg_class == RegisterClassKind::FloatingPoint ||
+                                arg_operands[i].reg.reg_class == RegisterClassKind::Vector);
+
+            if (is_fp && fp_idx < 8u) {
+                const std::uint32_t reg_id = static_cast<std::uint32_t>(fp_idx++);
+                MachineRegister phys = MachineRegister::physical_reg(reg_id, arg_operands[i].reg.reg_class);
+                MachineInstruction& copy_inst = function.create_instruction(GM_COPY);
+                copy_inst.form = MachineForm::Move;
+                copy_inst.semantic_kind = MachineSemanticKind::Move;
+                copy_inst.add_operand(MachineOperand::def(phys));
+                copy_inst.add_operand(MachineOperand::use(arg_operands[i].reg));
+                copy_inst.parent_block = block;
+                if (!function.insert_instruction_before(block, call_instr, copy_inst.id)) {
+                    return false;
+                }
+            } else if (!is_fp && gpr_idx < 6u) {
+                const std::uint32_t reg_id = kSysVGprArgs[gpr_idx++];
+                MachineRegister phys = MachineRegister::physical_reg(reg_id, arg_operands[i].reg.reg_class);
+                MachineInstruction& copy_inst = function.create_instruction(GM_COPY);
+                copy_inst.form = MachineForm::Move;
+                copy_inst.semantic_kind = MachineSemanticKind::Move;
+                copy_inst.add_operand(MachineOperand::def(phys));
+                copy_inst.add_operand(MachineOperand::use(arg_operands[i].reg));
+                copy_inst.parent_block = block;
+                if (!function.insert_instruction_before(block, call_instr, copy_inst.id)) {
+                    return false;
+                }
+            } else {
+                const std::uint32_t stack_idx = static_cast<std::uint32_t>(is_fp ? (fp_idx++) : (gpr_idx++));
+                const std::int64_t disp = get_systemv_caller_stack_arg_offset(stack_idx);
+                MachineInstruction& store_inst = function.create_instruction(GM_STORE);
+                store_inst.form = MachineForm::StoreStack;
+                store_inst.semantic_kind = MachineSemanticKind::StoreStack;
+                MachineMemoryOperand mem{};
+                mem.base = rsp;
+                mem.displacement = disp;
+                mem.size_bytes = 8;
+                mem.store = true;
+                store_inst.add_operand(MachineOperand::memory_ref(mem));
+                store_inst.add_operand(MachineOperand::use(arg_operands[i].reg));
+                store_inst.parent_block = block;
+                if (!function.insert_instruction_before(block, call_instr, store_inst.id)) {
+                    return false;
+                }
+            }
+        }
+
+        const std::uint32_t stack_args = static_cast<std::uint32_t>(
+            (gpr_idx > 6u ? (gpr_idx - 6u) : 0u) + (fp_idx > 8u ? (fp_idx - 8u) : 0u));
+        const std::uint32_t call_outgoing_bytes = stack_args * 8u;
+        function.frame_info().has_calls = true;
+        if (call_outgoing_bytes > function.frame_info().outgoing_argument_bytes) {
+            function.frame_info().outgoing_argument_bytes = call_outgoing_bytes;
+        }
+
+        inst = function.instruction(call_instr);
+        if (!inst) return false;
+
+        static constexpr std::uint32_t kSysVCallerSaved[9] = {0u, 1u, 2u, 6u, 7u, 8u, 9u, 10u, 11u};
+        for (std::uint32_t reg_id : kSysVCallerSaved) {
+            MachineOperand clobber;
+            clobber.kind = MachineOperandKind::Register;
+            clobber.role = OperandRole::ImplicitDef;
+            clobber.reg = MachineRegister::physical_reg(reg_id, RegisterClassKind::General);
+            inst->add_operand(clobber);
+        }
+        for (std::uint32_t xmm_id = 0u; xmm_id < 16u; ++xmm_id) {
+            MachineOperand clobber;
+            clobber.kind = MachineOperandKind::Register;
+            clobber.role = OperandRole::ImplicitDef;
+            clobber.reg = MachineRegister::physical_reg(xmm_id, RegisterClassKind::FloatingPoint);
+            inst->add_operand(clobber);
+        }
+
+        const MachineOperand* def_op = inst->get_def();
+        if (def_op && def_op->reg.is_virtual()) {
+            MachineRegister result_vreg = def_op->reg;
+            MachineRegister phys_ret = MachineRegister::physical_reg(0u, result_vreg.reg_class);
+
+            const InstrId next_cursor = inst->next_instr;
+            MachineInstruction& copy_res = function.create_instruction(GM_COPY);
+            copy_res.form = MachineForm::Move;
+            copy_res.semantic_kind = MachineSemanticKind::Move;
+            copy_res.add_operand(MachineOperand::def(result_vreg));
+            copy_res.add_operand(MachineOperand::use(phys_ret));
+            copy_res.parent_block = block;
+            if (!function.insert_instruction_before(block, next_cursor, copy_res.id)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool lower_return(
+        dgtl::machine::MachineFunction& function,
+        dgtl::machine::BlockId block,
+        dgtl::machine::InstrId ret_instr) const override {
+        using namespace dgtl::machine;
+        MachineInstruction* inst = function.instruction(ret_instr);
+        if (!inst) return false;
+
+        for (const auto& op : inst->operands) {
+            if (op.is_register() && op.is_use()) {
+                MachineRegister phys_ret = MachineRegister::physical_reg(0u, op.reg.reg_class);
+                MachineInstruction& copy_inst = function.create_instruction(GM_COPY);
+                copy_inst.form = MachineForm::Move;
+                copy_inst.semantic_kind = MachineSemanticKind::Move;
+                copy_inst.add_operand(MachineOperand::def(phys_ret));
+                copy_inst.add_operand(MachineOperand::use(op.reg));
+                copy_inst.parent_block = block;
+                if (!function.insert_instruction_before(block, ret_instr, copy_inst.id)) {
+                    return false;
+                }
+                break;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] bool lower_function(
         dgtl::machine::MachineFunction& function) const override {
         using namespace dgtl::machine;
+
+        BlockId entry_id = function.entry_block();
+        if (entry_id == INVALID_BLOCK_ID && !function.blocks().empty()) entry_id = 0;
+        if (entry_id != INVALID_BLOCK_ID) {
+            MachineBasicBlock* entry = function.block(entry_id);
+            if (entry && !entry->live_ins.empty()) {
+                std::vector<MachineRegister> params = entry->live_ins;
+                if (!lower_formal_arguments_for_block(function, entry_id, params)) {
+                    return false;
+                }
+            }
+        }
+
         for (std::size_t b_idx = 0; b_idx < function.blocks().size(); ++b_idx) {
             MachineBasicBlock* bb = function.block(static_cast<BlockId>(b_idx));
             if (!bb) continue;
-            for (const InstrId id : bb->instructions) {
+
+            const std::vector<InstrId> instructions = bb->instructions;
+            for (const InstrId id : instructions) {
                 MachineInstruction* inst = function.instruction(id);
                 if (!inst) continue;
-                if (inst->semantic_kind == MachineSemanticKind::IntegerDiv ||
-                    inst->semantic_kind == MachineSemanticKind::IntegerMod) {
+                if (inst->is_call()) {
+                    if (!lower_call(function, bb->id, id)) return false;
+                } else if (inst->is_return()) {
+                    if (!lower_return(function, bb->id, id)) return false;
+                } else if (inst->semantic_kind == MachineSemanticKind::IntegerDiv ||
+                           inst->semantic_kind == MachineSemanticKind::IntegerMod) {
                     static constexpr std::uint32_t kDivClobbers[3] = {0u, 2u, 11u};
                     for (std::uint32_t reg_id : kDivClobbers) {
                         MachineOperand clobber;

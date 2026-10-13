@@ -555,6 +555,8 @@ int main(int argc, char** argv) {
                 std::cout << "\n[dgtl-llc] Section & Footprint Analysis for '" << opts.output_file << "':\n"
                           << "  - File Size: " << obj_bytes.size() << " bytes\n"
                           << "  - Sections:  .text (executable machine code)\n"
+                          << "               .rdata (read-only constants, strings & embedded imports)\n"
+                          << "               .data (mutable globals / BSS)\n"
                           << "               .xdata (Win64 SEH UNWIND_INFO prolog & frame opcodes)\n"
                           << "               .pdata (Win64 RUNTIME_FUNCTION exception descriptors)\n"
                           << "  - Security:  W^X verified (0 writable executable pages)\n"

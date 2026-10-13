@@ -153,7 +153,7 @@ bool assemble_file(const AssemblerOptions& opts) {
             } else if (dir == ".data") {
                 cur_sec = &data_sec;
                 cur_sec_name = ".data";
-            } else if (dir == ".rdata" || dir == ".rodata") {
+            } else if (dir == ".rdata" || dir == ".rodata" || dir == ".idata") {
                 cur_sec = &rdata_sec;
                 cur_sec_name = ".rdata";
             } else if (dir == ".bss") {
@@ -269,8 +269,9 @@ bool assemble_file(const AssemblerOptions& opts) {
             cur_sec->bytes.push_back(0x00);
             cur_sec->bytes.push_back(0x00);
 
-            // Record PCRel32 relocation
-            obj.add_relocation(rel_offset, target, -4, 0, dgtl::object::RelocationKind::PCRel32);
+            // Record PCRel32 relocation with industry-standard addend A = -4
+            const uint32_t r_type = (opts.format == AssemblerFormat::COFF) ? 4u : 2u;
+            obj.add_relocation(rel_offset, target, -4, r_type, dgtl::object::RelocationKind::PCRel32);
         } else if (mnemonic == "push") {
             std::string reg;
             ss >> reg;

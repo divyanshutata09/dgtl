@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -201,6 +201,14 @@ typedef dgtl_err_t dgtl_status_t;
 #  define DGTL_OK          (dgtl_err_t{0, DGTL_SEV_INFO})
 #  define DGTL_ERR(c)      (dgtl_err_t{(int32_t)(c), DGTL_SEV_ERROR})
 #  define DGTL_WARN(c)     (dgtl_err_t{(int32_t)(c), DGTL_SEV_WARNING})
+extern "C++" {
+inline bool operator==(const dgtl_err& a, const dgtl_err& b) noexcept {
+    return a.code == b.code;
+}
+inline bool operator!=(const dgtl_err& a, const dgtl_err& b) noexcept {
+    return a.code != b.code;
+}
+}
 #else
 #  define DGTL_OK          ((dgtl_err_t){0, DGTL_SEV_INFO})
 #  define DGTL_ERR(c)      ((dgtl_err_t){(int32_t)(c), DGTL_SEV_ERROR})
