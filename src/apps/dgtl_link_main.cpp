@@ -72,13 +72,15 @@ struct LinkOptions {
     LinkFormat format = LinkFormat::Auto;
     std::string entry_symbol = "DGTL_kernel_entry";
     uint64_t image_base = 0;
+    std::vector<std::string> libraries;
+    std::vector<std::string> lib_search_paths;
     bool is_archive = false;
     bool verbose = false;
     bool time_report = false;
 };
 
 void print_version() {
-    std::cout << "dgtl-link: DGTL Sovereign Binary Linker v2.0.0 (TataG Systems)\n"
+    std::cout << "dgtl-link: DGTL Sovereign Binary Linker v2.1.0 (TataG Systems)\n"
               << "Standards: C++26 / Multi-Target Object & Executable Synthesis Engine\n";
 }
 
@@ -94,6 +96,8 @@ void print_usage(std::string_view prog_name) {
               << "                            (default: auto-detected from output extension)\n"
               << "  -e, --entry=<symbol>    Entry point symbol (default: 'DGTL_kernel_entry' or 'main')\n"
               << "  -b, --base=<hex_addr>   Preferred image base address (e.g. 0x140000000)\n"
+              << "  -l, --lib=<name>        Link against imported dynamic library (e.g. ws2_32, kernel32)\n"
+              << "  -L<dir>                 Add directory to library search path\n"
               << "  -a, --archive           Build static library archive (.lib / .a)\n"
               << "  -v, --verbose           Display detailed section layout and symbol mappings\n"
               << "  -t, --time              Measure and display link-time performance metrics\n"
@@ -101,7 +105,7 @@ void print_usage(std::string_view prog_name) {
               << "  -h, --help              Display this help message\n\n"
               << "EXAMPLES:\n"
               << "  " << prog_name << " -o kernel.exe module1.o module2.o\n"
-              << "  " << prog_name << " --format=pe -e main -o app.exe main.obj\n"
+              << "  " << prog_name << " --format=pe -e main -l ws2_32 -o app.exe main.obj\n"
               << "  " << prog_name << " --archive -o libmath.lib math1.obj math2.obj\n";
 }
 
@@ -224,9 +228,33 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
             opts.entry_symbol = std::string(arg.substr(pos + 1));
             continue;
         }
-        if (arg.rfind("-b=", 0) == 0 || arg.rfind("--base=", 0) == 0) {
+        if (arg == "-l") {
+            if (i + 1 < argc) {
+                opts.libraries.push_back(argv[++i]);
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: -l requires a library name\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("-l", 0) == 0 && arg.size() > 2) {
+            opts.libraries.push_back(std::string(arg.substr(2)));
+            continue;
+        }
+        if (arg.rfind("--lib=", 0) == 0 || arg.rfind("--library=", 0) == 0) {
             auto pos = arg.find('=');
-            opts.image_base = std::stoull(std::string(arg.substr(pos + 1)), nullptr, 16);
+            opts.libraries.push_back(std::string(arg.substr(pos + 1)));
+            continue;
+        }
+        if (arg == "-L") {
+            if (i + 1 < argc) {
+                opts.lib_search_paths.push_back(argv[++i]);
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: -L requires a directory path\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("-L", 0) == 0 && arg.size() > 2) {
+            opts.lib_search_paths.push_back(std::string(arg.substr(2)));
             continue;
         }
 
@@ -584,6 +612,7 @@ int run_link(const LinkOptions& opts) {
         if (opts.image_base != 0) {
             pe_opts.image_base = opts.image_base;
         }
+        pe_opts.additional_imports = opts.libraries;
         auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(merged_obj, out_binary, pe_opts);
         if (!res.success) {
             std::cerr << "error[dgtl-link]: PE synthesis failed: " << res.message << "\n";

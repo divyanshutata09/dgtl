@@ -328,12 +328,21 @@ public:
 
         auto is_ws2_func = [&](std::string_view name) {
             if (!is_valid_c_ident(name)) return false;
-            return name == "WSAStartup" || name == "WSACleanup" || name == "WSAGetLastError" ||
-                   name == "socket" || name == "connect" || name == "send" || name == "recv" ||
-                   name == "closesocket" || name == "bind" || name == "listen" || name == "accept" ||
-                   name == "select" || name == "htons" || name == "ntohs" || name == "htonl" ||
-                   name == "ntohl" || name == "getaddrinfo" || name == "freeaddrinfo" ||
-                   name == "ioctlsocket" || name == "setsockopt" || name == "getsockopt";
+            if (name.starts_with("WSA") || name.starts_with("wsa")) return true;
+            static constexpr std::string_view ws2_list[] = {
+                "socket", "closesocket", "bind", "listen", "accept", "connect", "shutdown",
+                "send", "recv", "sendto", "recvfrom", "select",
+                "ioctlsocket", "setsockopt", "getsockopt", "getsockname", "getpeername",
+                "htons", "ntohs", "htonl", "ntohl",
+                "inet_addr", "inet_ntoa", "inet_pton", "inet_ntop",
+                "getaddrinfo", "freeaddrinfo", "getnameinfo",
+                "gethostbyname", "gethostbyaddr", "gethostname",
+                "__WSAFDIsSet"
+            };
+            for (const auto& fn : ws2_list) {
+                if (fn == name) return true;
+            }
+            return false;
         };
 
         auto is_ntdll_func = [&](std::string_view name) {

@@ -376,7 +376,7 @@ public:
             }
 
             (void)active_selector.append_to_machine_function(
-                builder, current_block_id, selected, RegisterClassKind::General);
+                builder, current_block_id, selected, selected.result_class);
         }
 
         // Connect CFG edges and resolve IR labels in BasicBlock operands

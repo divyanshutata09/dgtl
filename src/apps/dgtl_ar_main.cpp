@@ -151,6 +151,8 @@ int main(int argc, char* argv[]) {
             std::cout << " (SUCCESS: 0 errors)\n";
         } else if (run_rc == -1073741515 || run_rc == static_cast<int>(0xC0000139)) {
             std::cout << " (FATAL: STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139 - missing DLL export)\n";
+        } else if (run_rc == -1073741819 || run_rc == static_cast<int>(0xC0000005)) {
+            std::cout << " (FATAL: STATUS_ACCESS_VIOLATION 0xC0000005 - memory access fault / null call)\n";
         } else {
             std::cout << " (ABNORMAL TERMINATION)\n";
         }

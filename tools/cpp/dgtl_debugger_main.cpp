@@ -2678,6 +2678,7 @@ public:
                 }
                 std::string dname = dll_name_buf[0] ? fs::path(dll_name_buf).filename().string() : ("dll_at_0x" + std::to_string(dll_base));
                 loaded_dlls.push_back({dname, dll_base});
+                std::cout << "[dgtl-debugger] [EVENT] Loaded DLL: " << dname << " at 0x" << std::hex << dll_base << std::dec << "\n";
                 break;
             }
             case EXCEPTION_DEBUG_EVENT: {
@@ -2695,6 +2696,7 @@ public:
 
                 std::string exc_name = "UNKNOWN_EXCEPTION";
                 if (code == 0xC0000005) exc_name = "STATUS_ACCESS_VIOLATION (0xC0000005)";
+                else if (code == 0xC0000139) exc_name = "STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139 - missing imported DLL symbol)";
                 else if (code == 0xC000001D) exc_name = "STATUS_ILLEGAL_INSTRUCTION (0xC000001D)";
                 else if (code == 0xC0000094) exc_name = "STATUS_INTEGER_DIVIDE_BY_ZERO (0xC0000094)";
                 else if (code == 0xC00000FD) exc_name = "STATUS_STACK_OVERFLOW (0xC00000FD)";
@@ -2713,7 +2715,11 @@ public:
                     if (VirtualQueryEx(pi.hProcess, reinterpret_cast<LPCVOID>(fault_addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
                         const char* state_str = (mbi.State == MEM_COMMIT) ? "MEM_COMMIT" : ((mbi.State == MEM_RESERVE) ? "MEM_RESERVE" : "MEM_FREE (UNMAPPED!)");
                         std::cout << "[!] MEMORY PAGE STATUS : " << state_str << " | RegionSize=0x" << mbi.RegionSize << " | Protect=0x" << mbi.Protect << "\n";
-                        if (mbi.State != MEM_COMMIT) {
+                        if (fault_addr == 0 || fault_addr < 0x1000) {
+                            std::cout << "\n[!] ROOT CAUSE DIAGNOSIS:\n";
+                            std::cout << "    NULL Pointer Dereference / Unresolved Call (faulting address = 0x" << std::hex << fault_addr << std::dec << ")!\n";
+                            std::cout << "    An unlinked function pointer or null relocation thunk was executed or dereferenced.\n";
+                        } else if (mbi.State != MEM_COMMIT) {
                             std::cout << "\n[!] ROOT CAUSE DIAGNOSIS:\n";
                             std::cout << "    The process crashed because it attempted to access UNCOMMITTED/UNMAPPED virtual memory.\n";
                             std::cout << "    Target address 0x" << fault_addr << " is outside the valid allocated memory space of the executable!\n";

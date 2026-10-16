@@ -79,6 +79,8 @@ struct SelectedInstruction {
     bool matched_rule = false;
     std::optional<machine::MachineMemoryOperand> memory_operand = std::nullopt;
     std::vector<uint32_t> overflow_operands{};
+    machine::RegisterClassKind result_class = machine::RegisterClassKind::General;
+    std::vector<machine::RegisterClassKind> call_arg_classes{};
 };
 
 /* ============================================================================
@@ -331,7 +333,9 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
         dgtl::ir::schema::stable_id(selected.semantic_opcode);
     selection.debug_id = 0;
     selection.result_value = selected.node.result_id;
-    selection.result_class = result_class;
+    selection.result_class = (result_class != machine::RegisterClassKind::Invalid && result_class != machine::RegisterClassKind::General)
+                                 ? result_class
+                                 : selected.result_class;
     selection.intent_hash = selected.node.intent_hash;
 
     // Lossless transfer of IR schema traits, domains, and attributes
@@ -367,26 +371,35 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
         }
     } else if (selected.form == MachineForm::Call) {
         selection.flags = selection.flags | machine::MachineInstrFlag::Call;
+        size_t arg_idx = 0;
+        auto get_arg_class = [&](size_t idx) -> machine::RegisterClassKind {
+            return (idx < selected.call_arg_classes.size()) ? selected.call_arg_classes[idx] : machine::RegisterClassKind::General;
+        };
+
         if (selected.node.op_a != ir::INVALID_SLOT) {
             selection.operands.push_back(
                 machine::MachineSelectionOperand::symbol_ref(selected.node.op_a, machine::OperandRole::Use));
         }
         if (selected.node.op_b != ir::INVALID_SLOT) {
-            selection.operands.push_back(
-                machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use));
+            auto op = machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use);
+            op.reg_class = get_arg_class(arg_idx++);
+            selection.operands.push_back(op);
         }
         if (selected.node.op_c != ir::INVALID_SLOT) {
-            selection.operands.push_back(
-                machine::MachineSelectionOperand::value_ref(selected.node.op_c, machine::OperandRole::Use));
+            auto op = machine::MachineSelectionOperand::value_ref(selected.node.op_c, machine::OperandRole::Use);
+            op.reg_class = get_arg_class(arg_idx++);
+            selection.operands.push_back(op);
         }
         if (selected.node.logic_flags != ir::INVALID_SLOT && selected.node.logic_flags != 0u) {
-            selection.operands.push_back(
-                machine::MachineSelectionOperand::value_ref(selected.node.logic_flags, machine::OperandRole::Use));
+            auto op = machine::MachineSelectionOperand::value_ref(selected.node.logic_flags, machine::OperandRole::Use);
+            op.reg_class = get_arg_class(arg_idx++);
+            selection.operands.push_back(op);
         }
         for (uint32_t ov : selected.overflow_operands) {
             if (ov != ir::INVALID_SLOT) {
-                selection.operands.push_back(
-                    machine::MachineSelectionOperand::value_ref(ov, machine::OperandRole::Use));
+                auto op = machine::MachineSelectionOperand::value_ref(ov, machine::OperandRole::Use);
+                op.reg_class = get_arg_class(arg_idx++);
+                selection.operands.push_back(op);
             }
         }
     } else if (selected.form == MachineForm::LoadImmediate ||
@@ -444,11 +457,15 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
             selected.node.op_a, selected.node.op_b, selected.node.op_c
         };
 
+        const bool is_fp_op = (selection.result_class == machine::RegisterClassKind::FloatingPoint);
         for (std::size_t i = 0; i < 3; ++i) {
             if (operands[i] != ir::INVALID_SLOT) {
-                selection.operands.push_back(
-                    machine::MachineSelectionOperand::value_ref(
-                        operands[i], machine::OperandRole::Use));
+                auto op = machine::MachineSelectionOperand::value_ref(
+                    operands[i], machine::OperandRole::Use);
+                if (is_fp_op) {
+                    op.reg_class = machine::RegisterClassKind::FloatingPoint;
+                }
+                selection.operands.push_back(op);
             }
         }
     }
@@ -1224,10 +1241,47 @@ public:
         selected.form = classify_machine_form_with_fallback(target, selected.node);
         selected.semantic_kind = dgtl::mir::semantic_kind(target, selected.semantic_opcode);
 
+        if (selected.node.result_id != ir::INVALID_SLOT) {
+            const auto tc = stream.get_result_type_code(selected.node.result_id);
+            if (ir::is_floating_type_code(tc)) {
+                selected.result_class = machine::RegisterClassKind::FloatingPoint;
+            }
+        }
+        if (selected.form == MachineForm::FloatBinary32 ||
+            selected.form == MachineForm::FloatBinary64 ||
+            selected.form == MachineForm::FloatTernaryFma32) {
+            selected.result_class = machine::RegisterClassKind::FloatingPoint;
+        }
+
         if (selected.form == MachineForm::Call) {
             const auto overflow = stream.get_call_overflow_args(index);
             if (!overflow.empty()) {
                 selected.overflow_operands.assign(overflow.begin(), overflow.end());
+            }
+
+            auto classify_arg = [&](uint32_t arg_val) -> machine::RegisterClassKind {
+                if (arg_val != ir::INVALID_SLOT) {
+                    const auto tc = stream.get_result_type_code(arg_val);
+                    if (ir::is_floating_type_code(tc)) {
+                        return machine::RegisterClassKind::FloatingPoint;
+                    }
+                }
+                return machine::RegisterClassKind::General;
+            };
+
+            if (selected.node.op_b != ir::INVALID_SLOT) {
+                selected.call_arg_classes.push_back(classify_arg(selected.node.op_b));
+            }
+            if (selected.node.op_c != ir::INVALID_SLOT) {
+                selected.call_arg_classes.push_back(classify_arg(selected.node.op_c));
+            }
+            if (selected.node.logic_flags != ir::INVALID_SLOT && selected.node.logic_flags != 0u) {
+                selected.call_arg_classes.push_back(classify_arg(selected.node.logic_flags));
+            }
+            for (uint32_t ov : selected.overflow_operands) {
+                if (ov != ir::INVALID_SLOT) {
+                    selected.call_arg_classes.push_back(classify_arg(ov));
+                }
             }
         }
 
@@ -1251,7 +1305,7 @@ public:
         machine::MachineFunctionBuilder& builder,
         machine::BlockId block,
         const SelectedInstruction& selected,
-        machine::RegisterClassKind result_class = machine::RegisterClassKind::General) const {
+        machine::RegisterClassKind result_class = machine::RegisterClassKind::Invalid) const {
         if (block == machine::INVALID_BLOCK_ID ||
             selected.form == MachineForm::Unhandled ||
             selected.semantic_kind == machine::MachineSemanticKind::None ||
@@ -1260,7 +1314,10 @@ public:
             throw std::invalid_argument(
                 "DGTL ISel contract violation: invalid HIR-to-MIR semantic/form pair or block ID");
         }
-        return builder.append(block, to_machine_selection(selected, result_class), result_class);
+        const auto effective_class = (result_class != machine::RegisterClassKind::Invalid && result_class != machine::RegisterClassKind::General)
+                                         ? result_class
+                                         : selected.result_class;
+        return builder.append(block, to_machine_selection(selected, effective_class), effective_class);
     }
 
     [[nodiscard]] bool empty() const noexcept {

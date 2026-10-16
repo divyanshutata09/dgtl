@@ -814,6 +814,8 @@ public:
         MachineRegister& cached = value_registers_[value_id];
         if (!cached.valid()) {
             cached = function_.create_virtual_register(reg_class);
+        } else if (cached.reg_class != reg_class && reg_class != RegisterClassKind::General && reg_class != RegisterClassKind::Invalid) {
+            cached.reg_class = reg_class;
         }
         return cached;
     }

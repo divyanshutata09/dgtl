@@ -5,8 +5,8 @@
  * Owner:       Divyanshu Tata
  * Repository:  github.com/TataG-Systems/DGTL
  *
- * Component:   DGTL Sovereign Native Assembler (dgtl-as)
- * Standards:   C++26 / Clang 18+ / MSVC 19.40+ / GCC 14+
+ * Component:   DGTL Sovereign Native Assembler (dgtl-as) v2.1.0
+ * Standards:   C++26 / Clang 18+ / MSVC 19.40+ / GCC 14+ / PE-COFF v2.1.0
  *
  * This software is the proprietary property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.

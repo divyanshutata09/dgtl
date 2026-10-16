@@ -82,8 +82,13 @@ struct Options {
     bool filecheck_mode = false;  ///< When true, run FileCheck directives on output
 };
 
+void print_version() {
+    std::cout << "dgtl-opt: DGTL Sovereign IR Optimizer v2.1.0 (TataG Systems)\n"
+              << "Standards: C++26 / Multi-Pass Parallel IR Optimization & Verification Engine\n";
+}
+
 void print_usage(std::string_view prog_name) {
-    std::cout << "DGTL Optimizer (dgtl-opt) - Ultra-High-Performance IR Pass Testing & Optimization Engine\n"
+    std::cout << "DGTL Optimizer (dgtl-opt) v2.1.0 - Ultra-High-Performance IR Pass Testing & Optimization Engine\n"
               << "\nUSAGE:\n"
               << "  " << prog_name << " [OPTIONS] <input.dgtl>\n"
               << "\nOPTIONS:\n"
@@ -97,7 +102,8 @@ void print_usage(std::string_view prog_name) {
               << "  --no-verify           Skip IR verification\n"
               << "  --show-diff           Show IR before/after (diffs)\n"
               << "  --verbose             Print diagnostic information\n"
-              << "  --help                Display this message\n";
+              << "  --version, -v         Display version information\n"
+              << "  --help, -h            Display this message\n";
 }
 
 bool parse_args(int argc, char** argv, Options& opts) {
@@ -109,9 +115,13 @@ bool parse_args(int argc, char** argv, Options& opts) {
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
 
-        if (arg == "--help") {
+        if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
-            return false;
+            std::exit(0);
+        }
+        if (arg == "--version" || arg == "-v" || arg == "-V") {
+            print_version();
+            std::exit(0);
         }
         if (arg == "--verbose") {
             opts.verbose = true;

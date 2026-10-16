@@ -92,8 +92,13 @@ struct Options {
     int optimization_level = 3; // 0-3 (O0, O1, O2, O3)
 };
 
+void print_version() {
+    std::cout << "dgtl-llc: DGTL Low-Level Code Generator v2.1.0 (TataG Systems)\n"
+              << "Standards: C++26 / True MIR Native Pipeline & Object Emitter\n";
+}
+
 void print_usage(std::string_view prog_name) {
-    std::cout << "DGTL Low-Level Code Generator (dgtl-llc)\n"
+    std::cout << "DGTL Low-Level Code Generator (dgtl-llc) v2.1.0\n"
               << "\nUSAGE:\n"
               << "  " << prog_name << " [OPTIONS] <input.dgtl>\n"
               << "\nOPTIONS:\n"
@@ -106,7 +111,8 @@ void print_usage(std::string_view prog_name) {
               << "  --verify              Enable IR verification (default: on)\n"
               << "  --no-verify           Skip IR verification\n"
               << "  --verbose             Print diagnostic information\n"
-              << "  --help                Display this message\n"
+              << "  --version, -v         Display version information\n"
+              << "  --help, -h            Display this message\n"
               << "\nEXAMPLES:\n"
               << "  " << prog_name << " --target=x86_64 --output=out.s opt.dgtl\n"
               << "  " << prog_name << " --filetype=obj --inspect --O3 prog.dgtl\n";
@@ -123,9 +129,13 @@ bool parse_args(int argc, char** argv, Options& opts) {
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
 
-        if (arg == "--help") {
+        if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
-            return false;
+            std::exit(0);
+        }
+        if (arg == "--version" || arg == "-v" || arg == "-V") {
+            print_version();
+            std::exit(0);
         }
         if (arg == "--verbose") {
             opts.verbose = true;

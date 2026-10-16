@@ -120,6 +120,12 @@ struct InspectionReport {
     uint32_t iat_rva{0};
     uint32_t iat_size{0};
 
+    struct ImportedDll {
+        std::string name;
+        std::vector<std::string> functions;
+    };
+    std::vector<ImportedDll> imported_dlls;
+
     [[nodiscard]] bool is_compliant() const noexcept {
         return verification_errors.empty();
     }
@@ -284,6 +290,56 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
                 report.import_rva < sec.virtual_address + std::max(sec.virtual_size, sec.file_size)) {
                 report.import_section = sec.name;
                 break;
+            }
+        }
+
+        auto rva_to_offset = [&](uint32_t rva) -> size_t {
+            for (const auto& s : report.sections) {
+                uint32_t limit = (s.virtual_size > 0) ? s.virtual_size : static_cast<uint32_t>(s.file_size);
+                if (rva >= s.virtual_address && rva < s.virtual_address + limit) {
+                    return s.file_offset + (rva - s.virtual_address);
+                }
+            }
+            return 0;
+        };
+
+        size_t idt_off = rva_to_offset(report.import_rva);
+        if (idt_off != 0 && idt_off + 20 <= buf.size()) {
+            size_t curr = idt_off;
+            while (curr + 20 <= buf.size()) {
+                uint32_t ilt_rva = *reinterpret_cast<const uint32_t*>(&buf[curr]);
+                uint32_t name_rva = *reinterpret_cast<const uint32_t*>(&buf[curr + 12]);
+                uint32_t iat_rva = *reinterpret_cast<const uint32_t*>(&buf[curr + 16]);
+                if (ilt_rva == 0 && name_rva == 0 && iat_rva == 0) break;
+
+                size_t name_off = rva_to_offset(name_rva);
+                std::string dll_name = "unknown";
+                if (name_off != 0 && name_off < buf.size()) {
+                    dll_name = reinterpret_cast<const char*>(&buf[name_off]);
+                }
+
+                InspectionReport::ImportedDll dll_entry;
+                dll_entry.name = dll_name;
+
+                uint32_t thunk_rva = (ilt_rva != 0) ? ilt_rva : iat_rva;
+                size_t thunk_off = rva_to_offset(thunk_rva);
+                if (thunk_off != 0) {
+                    while (thunk_off + 8 <= buf.size()) {
+                        uint64_t val = *reinterpret_cast<const uint64_t*>(&buf[thunk_off]);
+                        if (val == 0) break;
+                        if ((val & 0x8000000000000000ULL) != 0) {
+                            dll_entry.functions.push_back("Ordinal#" + std::to_string(val & 0xFFFF));
+                        } else {
+                            size_t ib_off = rva_to_offset(static_cast<uint32_t>(val));
+                            if (ib_off != 0 && ib_off + 2 < buf.size()) {
+                                dll_entry.functions.push_back(reinterpret_cast<const char*>(&buf[ib_off + 2]));
+                            }
+                        }
+                        thunk_off += 8;
+                    }
+                }
+                report.imported_dlls.push_back(std::move(dll_entry));
+                curr += 20;
             }
         }
     }
@@ -837,6 +893,23 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
                   << " (Size: " << std::dec << report.iat_size << " bytes)\n"
                   << "  - Base Relocation Directory (Dir 5)  : RVA 0x" << std::hex << report.reloc_rva
                   << " (Size: " << std::dec << report.reloc_size << " bytes)\n";
+        if (!report.imported_dlls.empty()) {
+            std::cout << "  - Linked Dynamic Libraries (" << report.imported_dlls.size() << " DLLs):\n";
+            for (const auto& dll : report.imported_dlls) {
+                std::cout << "      * " << dll.name << " (" << dll.functions.size() << " functions";
+                if (!dll.functions.empty()) {
+                    std::cout << ": ";
+                    for (size_t fi = 0; fi < std::min<size_t>(dll.functions.size(), 6); ++fi) {
+                        if (fi > 0) std::cout << ", ";
+                        std::cout << dll.functions[fi];
+                    }
+                    if (dll.functions.size() > 6) {
+                        std::cout << ", ... (" << (dll.functions.size() - 6) << " more)";
+                    }
+                }
+                std::cout << ")\n";
+            }
+        }
     }
 
     std::cout << "\n[2] MEMORY FOOTPRINT & BUDGET BREAKDOWN:\n";
@@ -890,7 +963,7 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
 // ============================================================================
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cout << "DGTL Object & Section Inspector Tool (dgtl-inspect)\n\n"
+        std::cout << "DGTL Object & Section Inspector Tool (dgtl-inspect) v2.1.0 (TataG Systems)\n\n"
                   << "USAGE:\n"
                   << "  dgtl-inspect [OPTIONS] <file.obj|file.o|file.wasm>\n\n"
                   << "OPTIONS:\n"

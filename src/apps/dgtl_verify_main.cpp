@@ -79,8 +79,13 @@ struct Options {
     int timeout_seconds = 30;
 };
 
+void print_version() {
+    std::cout << "dgtl-verify: DGTL Formal Verification Tool v2.1.0 (TataG Systems)\n"
+              << "Standards: C++26 / SMT-LIB2 Mathematical Equivalence & Translation Validation\n";
+}
+
 void print_usage(std::string_view prog_name) {
-    std::cout << "DGTL Formal Verification Tool (dgtl-verify)\n"
+    std::cout << "DGTL Formal Verification Tool (dgtl-verify) v2.1.0\n"
               << "\nUSAGE:\n"
               << "  " << prog_name << " --original=<before.dgtl> --optimized=<after.dgtl> [OPTIONS]\n"
               << "\nREQUIRED:\n"
@@ -94,7 +99,8 @@ void print_usage(std::string_view prog_name) {
               << "  --smtlib=<file>         Export SMT-LIB2 script to file\n"
               << "  --timeout=<seconds>     Solver timeout (default: 30)\n"
               << "  --verbose               Print diagnostic information\n"
-              << "  --help                  Display this message\n"
+              << "  --version, -v           Display version information\n"
+              << "  --help, -h              Display this message\n"
               << "\nEXAMPLES:\n"
               << "  " << prog_name << " --original=test_before.dgtl --optimized=test_after.dgtl --pass=gvn\n"
               << "  " << prog_name << " --original=before.dgtl --optimized=after.dgtl --level=full --solver=cvc5\n"
@@ -110,9 +116,13 @@ bool parse_args(int argc, char** argv, Options& opts) {
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
 
-        if (arg == "--help") {
+        if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
-            return false;
+            std::exit(0);
+        }
+        if (arg == "--version" || arg == "-v" || arg == "-V") {
+            print_version();
+            std::exit(0);
         }
         if (arg == "--verbose") {
             opts.verbose = true;

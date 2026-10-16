@@ -90,6 +90,7 @@ struct DumpReport {
     uint32_t reloc_size{0};
     uint32_t iat_rva{0};
     uint32_t iat_size{0};
+    std::vector<std::string> imported_dlls;
     std::vector<SectionInfo> sections;
     std::vector<SymbolInfo> symbols;
     std::vector<RelocationInfo> relocations;
@@ -339,6 +340,34 @@ DumpReport inspect_object(const fs::path& file_path) {
                     s.data.assign(raw + s.file_offset, raw + s.file_offset + s.file_size);
                 }
                 report.sections.push_back(std::move(s));
+            }
+
+            auto rva_to_offset = [&](uint32_t rva) -> size_t {
+                for (const auto& s : report.sections) {
+                    uint32_t limit = (s.virtual_size > 0) ? s.virtual_size : static_cast<uint32_t>(s.file_size);
+                    if (rva >= s.virtual_address && rva < s.virtual_address + limit) {
+                        return s.file_offset + (rva - s.virtual_address);
+                    }
+                }
+                return 0;
+            };
+
+            if (report.import_rva != 0 && report.import_rva < file_size) {
+                size_t idt_off = rva_to_offset(report.import_rva);
+                if (idt_off != 0 && idt_off + 20 <= file_size) {
+                    size_t curr = idt_off;
+                    while (curr + 20 <= file_size) {
+                        uint32_t ilt_rva = read32_le(raw + curr);
+                        uint32_t name_rva = read32_le(raw + curr + 12);
+                        uint32_t iat_rva = read32_le(raw + curr + 16);
+                        if (ilt_rva == 0 && name_rva == 0 && iat_rva == 0) break;
+                        size_t name_off = rva_to_offset(name_rva);
+                        if (name_off != 0 && name_off < file_size) {
+                            report.imported_dlls.push_back(reinterpret_cast<const char*>(raw + name_off));
+                        }
+                        curr += 20;
+                    }
+                }
             }
 
             // Decode COFF Symbol Table
@@ -593,7 +622,16 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "\n";
         std::cout << "  Base Relocations:   RVA 0x" << std::hex << report.reloc_rva << " (0x" << report.reloc_size << " bytes)" << std::dec << "\n";
-        std::cout << "  Import Address Tab: RVA 0x" << std::hex << report.iat_rva << " (0x" << report.iat_size << " bytes)" << std::dec << "\n\n";
+        std::cout << "  Import Address Tab: RVA 0x" << std::hex << report.iat_rva << " (0x" << report.iat_size << " bytes)" << std::dec << "\n";
+        if (!report.imported_dlls.empty()) {
+            std::cout << "  Imported DLLs:      ";
+            for (size_t i = 0; i < report.imported_dlls.size(); ++i) {
+                if (i > 0) std::cout << ", ";
+                std::cout << report.imported_dlls[i];
+            }
+            std::cout << "\n";
+        }
+        std::cout << "\n";
     }
 
     if (show_headers || show_all) {

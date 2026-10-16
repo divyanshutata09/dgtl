@@ -58,7 +58,7 @@ struct EngineOptions {
 };
 
 void print_version() {
-    std::cout << "dgtl-engine: DGTL Sovereign JIT Engine v2.0.0 (TataG Systems)\n"
+    std::cout << "dgtl-engine: DGTL Sovereign JIT Engine v2.1.0 (TataG Systems)\n"
               << "Standards: C++26 / Zero-Overhead Native Execution Coordinator\n";
 }
 
