@@ -33,7 +33,7 @@ SmokeCheck run_folding_check(dgtl::core::DGTL_Arena& arena, dgtl::analysis::DGTL
 SmokeCheck run_fusion_check(dgtl::core::DGTL_Arena& arena) {
 	dgtl::ir::IRStream stream(arena, 32);
 	if (!build_fusion_ir(stream)) {
-		return {"fusion", false, "failed to build fusion IR"};
+		return {"fusion", false, "failed to build fusion F32 IR"};
 	}
 
 	const size_t size_before = stream.size();
@@ -44,11 +44,28 @@ SmokeCheck run_fusion_check(dgtl::core::DGTL_Arena& arena) {
 	// Fusion either transforms nodes or shrinks the stream post-DCE.
 	// Valid if stream was modified OR if consumer still exists as FMA
 	const auto consumer = find_node_by_result(stream, 21);
-	const bool consumer_is_fma = consumer.has_value() && 
+	const bool consumer_is_fma32 = consumer.has_value() && 
 		consumer->opcode == dgtl::ir::OpCode::FMA_F32;
 
-	const bool fusion_applied = (stream.size() != size_before) || consumer_is_fma;
-	return {"fusion", fusion_applied, "mul+add -> fma structural check"};
+	const bool fusion32_applied = (stream.size() != size_before) || consumer_is_fma32;
+
+	// Also verify F64 FMA synthesis
+	dgtl::ir::IRStream stream_f64(arena, 32);
+	if (!build_fusion_f64_ir(stream_f64)) {
+		return {"fusion", false, "failed to build fusion F64 IR"};
+	}
+
+	const size_t size_before_f64 = stream_f64.size();
+	fusion.execute(stream_f64);
+
+	const auto consumer_f64 = find_node_by_result(stream_f64, 41);
+	const bool consumer_is_fma64 = consumer_f64.has_value() &&
+		consumer_f64->opcode == dgtl::ir::OpCode::FMA_F64;
+
+	const bool fusion64_applied = (stream_f64.size() != size_before_f64) || consumer_is_fma64;
+
+	const bool all_fused = fusion32_applied && fusion64_applied;
+	return {"fusion", all_fused, "mul+add -> fma structural check (F32 and F64)"};
 }
 
 SmokeCheck run_simd_check(dgtl::core::DGTL_Arena& arena, BackendKind backend) {
@@ -169,7 +186,7 @@ SmokeCheck run_determinism_check(dgtl::core::DGTL_Arena& arena,
 			emit_ok = emit_arm32(asm_a) && emit_arm32(asm_b);
 			break;
 		case BackendKind::riscv64:
-			emit_ok = emit_riscv64(asm_a) && emit_riscv64(asm_b);
+			emit_ok = emit_riscv64(a, asm_a) && emit_riscv64(b, asm_b);
 			break;
 		case BackendKind::cuda:
 			emit_ok = emit_cuda(a, asm_a) && emit_cuda(b, asm_b);

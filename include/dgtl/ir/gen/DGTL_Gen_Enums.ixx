@@ -76,10 +76,25 @@ enum class OpCode : std::uint16_t {
     DIV_F32 = 0x21,
     FMA_F32 = 0x23,
     FMA_WIDEN_F16_F32 = 0x24,
+    SIN_F32 = 0x86,
+    COS_F32 = 0x87,
+    TAN_F32 = 0x88,
+    EXP_F32 = 0x89,
+    LOG_F32 = 0x8A,
+    POW_F32 = 0x8B,
     ADD_F64 = 0x46,
     SUB_F64 = 0x47,
     MUL_F64 = 0x48,
     DIV_F64 = 0x49,
+    FMA_F64 = 0x4A,
+    SQRT_F32 = 0x4B,
+    SQRT_F64 = 0x4C,
+    SIN_F64 = 0x4D,
+    COS_F64 = 0x4E,
+    TAN_F64 = 0x4F,
+    EXP_F64 = 0x5D,
+    LOG_F64 = 0x5E,
+    POW_F64 = 0x5F,
     CMP_EQ_I32 = 0x28,
     CMP_NE_I32 = 0x29,
     CMP_LT_I32 = 0x2A,
@@ -199,6 +214,11 @@ enum class OpCode : std::uint16_t {
     SOFTMAX_FAST = 0x483,
     LAYER_NORM = 0x484,
     ROPE_EMBED = 0x485,
+    GELU_F32 = 0x486,
+    SILU_F32 = 0x487,
+    SIGMOID_F32 = 0x488,
+    SWIGLU_F32 = 0x489,
+    RMS_NORM_F32 = 0x48A,
     FAST_INV_SQRT = 0x700,
     VEC3_CROSS = 0x701,
     VEC4_DOT = 0x702,
@@ -568,10 +588,25 @@ inline constexpr std::uint16_t kMaxOpcode = []() constexpr {
     if (value < 0x21) value = 0x21;
     if (value < 0x23) value = 0x23;
     if (value < 0x24) value = 0x24;
+    if (value < 0x86) value = 0x86;
+    if (value < 0x87) value = 0x87;
+    if (value < 0x88) value = 0x88;
+    if (value < 0x89) value = 0x89;
+    if (value < 0x8A) value = 0x8A;
+    if (value < 0x8B) value = 0x8B;
     if (value < 0x46) value = 0x46;
     if (value < 0x47) value = 0x47;
     if (value < 0x48) value = 0x48;
     if (value < 0x49) value = 0x49;
+    if (value < 0x4A) value = 0x4A;
+    if (value < 0x4B) value = 0x4B;
+    if (value < 0x4C) value = 0x4C;
+    if (value < 0x4D) value = 0x4D;
+    if (value < 0x4E) value = 0x4E;
+    if (value < 0x4F) value = 0x4F;
+    if (value < 0x5D) value = 0x5D;
+    if (value < 0x5E) value = 0x5E;
+    if (value < 0x5F) value = 0x5F;
     if (value < 0x28) value = 0x28;
     if (value < 0x29) value = 0x29;
     if (value < 0x2A) value = 0x2A;
@@ -691,6 +726,11 @@ inline constexpr std::uint16_t kMaxOpcode = []() constexpr {
     if (value < 0x483) value = 0x483;
     if (value < 0x484) value = 0x484;
     if (value < 0x485) value = 0x485;
+    if (value < 0x486) value = 0x486;
+    if (value < 0x487) value = 0x487;
+    if (value < 0x488) value = 0x488;
+    if (value < 0x489) value = 0x489;
+    if (value < 0x48A) value = 0x48A;
     if (value < 0x700) value = 0x700;
     if (value < 0x701) value = 0x701;
     if (value < 0x702) value = 0x702;
@@ -705,7 +745,7 @@ inline constexpr std::uint16_t kMaxOpcode = []() constexpr {
     return value;
 }();
 inline constexpr std::uint16_t kMaxTypeCode = 30;
-inline constexpr std::size_t kCanonicalOpCount = 183;
+inline constexpr std::size_t kCanonicalOpCount = 203;
 
 [[nodiscard]] constexpr std::uint16_t to_underlying(OpCode op) noexcept {
     return static_cast<std::uint16_t>(op);
@@ -766,10 +806,25 @@ static_assert(static_cast<std::uint16_t>(OpCode::MUL_F32) == 0x20, "DGTL stable 
 static_assert(static_cast<std::uint16_t>(OpCode::DIV_F32) == 0x21, "DGTL stable opcode ID drift: DIV_F32");
 static_assert(static_cast<std::uint16_t>(OpCode::FMA_F32) == 0x23, "DGTL stable opcode ID drift: FMA_F32");
 static_assert(static_cast<std::uint16_t>(OpCode::FMA_WIDEN_F16_F32) == 0x24, "DGTL stable opcode ID drift: FMA_WIDEN_F16_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::SIN_F32) == 0x86, "DGTL stable opcode ID drift: SIN_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::COS_F32) == 0x87, "DGTL stable opcode ID drift: COS_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::TAN_F32) == 0x88, "DGTL stable opcode ID drift: TAN_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::EXP_F32) == 0x89, "DGTL stable opcode ID drift: EXP_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::LOG_F32) == 0x8A, "DGTL stable opcode ID drift: LOG_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::POW_F32) == 0x8B, "DGTL stable opcode ID drift: POW_F32");
 static_assert(static_cast<std::uint16_t>(OpCode::ADD_F64) == 0x46, "DGTL stable opcode ID drift: ADD_F64");
 static_assert(static_cast<std::uint16_t>(OpCode::SUB_F64) == 0x47, "DGTL stable opcode ID drift: SUB_F64");
 static_assert(static_cast<std::uint16_t>(OpCode::MUL_F64) == 0x48, "DGTL stable opcode ID drift: MUL_F64");
 static_assert(static_cast<std::uint16_t>(OpCode::DIV_F64) == 0x49, "DGTL stable opcode ID drift: DIV_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::FMA_F64) == 0x4A, "DGTL stable opcode ID drift: FMA_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::SQRT_F32) == 0x4B, "DGTL stable opcode ID drift: SQRT_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::SQRT_F64) == 0x4C, "DGTL stable opcode ID drift: SQRT_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::SIN_F64) == 0x4D, "DGTL stable opcode ID drift: SIN_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::COS_F64) == 0x4E, "DGTL stable opcode ID drift: COS_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::TAN_F64) == 0x4F, "DGTL stable opcode ID drift: TAN_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::EXP_F64) == 0x5D, "DGTL stable opcode ID drift: EXP_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::LOG_F64) == 0x5E, "DGTL stable opcode ID drift: LOG_F64");
+static_assert(static_cast<std::uint16_t>(OpCode::POW_F64) == 0x5F, "DGTL stable opcode ID drift: POW_F64");
 static_assert(static_cast<std::uint16_t>(OpCode::CMP_EQ_I32) == 0x28, "DGTL stable opcode ID drift: CMP_EQ_I32");
 static_assert(static_cast<std::uint16_t>(OpCode::CMP_NE_I32) == 0x29, "DGTL stable opcode ID drift: CMP_NE_I32");
 static_assert(static_cast<std::uint16_t>(OpCode::CMP_LT_I32) == 0x2A, "DGTL stable opcode ID drift: CMP_LT_I32");
@@ -889,6 +944,11 @@ static_assert(static_cast<std::uint16_t>(OpCode::SDPA_F16) == 0x482, "DGTL stabl
 static_assert(static_cast<std::uint16_t>(OpCode::SOFTMAX_FAST) == 0x483, "DGTL stable opcode ID drift: SOFTMAX_FAST");
 static_assert(static_cast<std::uint16_t>(OpCode::LAYER_NORM) == 0x484, "DGTL stable opcode ID drift: LAYER_NORM");
 static_assert(static_cast<std::uint16_t>(OpCode::ROPE_EMBED) == 0x485, "DGTL stable opcode ID drift: ROPE_EMBED");
+static_assert(static_cast<std::uint16_t>(OpCode::GELU_F32) == 0x486, "DGTL stable opcode ID drift: GELU_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::SILU_F32) == 0x487, "DGTL stable opcode ID drift: SILU_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::SIGMOID_F32) == 0x488, "DGTL stable opcode ID drift: SIGMOID_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::SWIGLU_F32) == 0x489, "DGTL stable opcode ID drift: SWIGLU_F32");
+static_assert(static_cast<std::uint16_t>(OpCode::RMS_NORM_F32) == 0x48A, "DGTL stable opcode ID drift: RMS_NORM_F32");
 static_assert(static_cast<std::uint16_t>(OpCode::FAST_INV_SQRT) == 0x700, "DGTL stable opcode ID drift: FAST_INV_SQRT");
 static_assert(static_cast<std::uint16_t>(OpCode::VEC3_CROSS) == 0x701, "DGTL stable opcode ID drift: VEC3_CROSS");
 static_assert(static_cast<std::uint16_t>(OpCode::VEC4_DOT) == 0x702, "DGTL stable opcode ID drift: VEC4_DOT");

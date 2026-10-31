@@ -106,6 +106,7 @@ struct OpWrapperBase {
     [[nodiscard]] static constexpr bool is_hardware_intrinsic() noexcept { return has_trait(GenTrait::IsHardwareIntrinsic); }
     [[nodiscard]] static constexpr bool is_guard() noexcept { return has_trait(GenTrait::IsGuard); }
     [[nodiscard]] static constexpr bool is_latency_critical() noexcept { return has_trait(GenTrait::IsLatencyCritical); }
+    [[nodiscard]] static constexpr bool is_constant_foldable() noexcept { return has_trait(GenTrait::ConstantFoldable); }
 
     [[nodiscard]] static constexpr bool classof(const dgtl::ir::IRNode* node) noexcept {
         return node && node->opcode == Derived::kOpcode;
@@ -164,6 +165,10 @@ concept IsDGTLTensorOp = IsDGTLOp<T> &&
 template <typename T>
 concept IsDGTLAsyncOp = IsDGTLOp<T> &&
     ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsAsyncSpawnable)) != 0ULL);
+
+template <typename T>
+concept IsDGTLConstantFoldableOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::ConstantFoldable)) != 0ULL);
 
 // LLVM-style RTTI casting support
 template <typename Op>
@@ -2388,7 +2393,7 @@ struct AddF32Op : public OpWrapperBase<AddF32Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 3ULL;
+    static constexpr uint64_t kTraitBits = 131075ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2439,7 +2444,7 @@ struct SubF32Op : public OpWrapperBase<SubF32Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kTraitBits = 131074ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2490,7 +2495,7 @@ struct MulF32Op : public OpWrapperBase<MulF32Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 3ULL;
+    static constexpr uint64_t kTraitBits = 131075ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2541,7 +2546,7 @@ struct DivF32Op : public OpWrapperBase<DivF32Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kTraitBits = 131074ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2592,7 +2597,7 @@ struct FmaF32Op : public OpWrapperBase<FmaF32Op> {
     static constexpr int kOperandsCount = 3;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kTraitBits = 131074ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2683,6 +2688,312 @@ struct FmaWidenF16F32Op : public OpWrapperBase<FmaWidenF16F32Op> {
     }
 };
 
+struct SinF32Op : public OpWrapperBase<SinF32Op> {
+    using OpWrapperBase<SinF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SinF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SIN_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit sine";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct CosF32Op : public OpWrapperBase<CosF32Op> {
+    using OpWrapperBase<CosF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "CosF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::COS_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit cosine";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct TanF32Op : public OpWrapperBase<TanF32Op> {
+    using OpWrapperBase<TanF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "TanF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::TAN_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit tangent";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct ExpF32Op : public OpWrapperBase<ExpF32Op> {
+    using OpWrapperBase<ExpF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "ExpF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::EXP_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit exponential";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct LogF32Op : public OpWrapperBase<LogF32Op> {
+    using OpWrapperBase<LogF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "LogF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::LOG_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit natural logarithm";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct PowF32Op : public OpWrapperBase<PowF32Op> {
+    using OpWrapperBase<PowF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "PowF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::POW_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit power";
+    static constexpr int kOperandsCount = 2;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_binary(uint32_t result_id, uint32_t lhs, uint32_t rhs, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, lhs, rhs, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
 struct AddF64Op : public OpWrapperBase<AddF64Op> {
     using OpWrapperBase<AddF64Op>::OpWrapperBase;
     static constexpr std::string_view kName = "AddF64";
@@ -2694,7 +3005,7 @@ struct AddF64Op : public OpWrapperBase<AddF64Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 3ULL;
+    static constexpr uint64_t kTraitBits = 131075ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2745,7 +3056,7 @@ struct SubF64Op : public OpWrapperBase<SubF64Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kTraitBits = 131074ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2796,7 +3107,7 @@ struct MulF64Op : public OpWrapperBase<MulF64Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 3ULL;
+    static constexpr uint64_t kTraitBits = 131075ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -2847,7 +3158,466 @@ struct DivF64Op : public OpWrapperBase<DivF64Op> {
     static constexpr int kOperandsCount = 2;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_binary(uint32_t result_id, uint32_t lhs, uint32_t rhs, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, lhs, rhs, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct FmaF64Op : public OpWrapperBase<FmaF64Op> {
+    using OpWrapperBase<FmaF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "FmaF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::FMA_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit fused multiply-add";
+    static constexpr int kOperandsCount = 3;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_ternary(uint32_t result_id, uint32_t a, uint32_t b, uint32_t c, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, a, b, c, flags);
+    }
+};
+
+struct SqrtF32Op : public OpWrapperBase<SqrtF32Op> {
+    using OpWrapperBase<SqrtF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SqrtF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SQRT_F32;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "32-bit square root";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct SqrtF64Op : public OpWrapperBase<SqrtF64Op> {
+    using OpWrapperBase<SqrtF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SqrtF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SQRT_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit square root";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct SinF64Op : public OpWrapperBase<SinF64Op> {
+    using OpWrapperBase<SinF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SinF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SIN_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit sine";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct CosF64Op : public OpWrapperBase<CosF64Op> {
+    using OpWrapperBase<CosF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "CosF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::COS_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit cosine";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct TanF64Op : public OpWrapperBase<TanF64Op> {
+    using OpWrapperBase<TanF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "TanF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::TAN_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit tangent";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct ExpF64Op : public OpWrapperBase<ExpF64Op> {
+    using OpWrapperBase<ExpF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "ExpF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::EXP_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit exponential";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct LogF64Op : public OpWrapperBase<LogF64Op> {
+    using OpWrapperBase<LogF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "LogF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::LOG_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit natural logarithm";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
+    static constexpr uint64_t kInterfaceBits = 1ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct PowF64Op : public OpWrapperBase<PowF64Op> {
+    using OpWrapperBase<PowF64Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "PowF64";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::POW_F64;
+    static constexpr std::string_view kDialect = "core";
+    static constexpr std::string_view kResultType = "F64";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F64;
+    static constexpr std::string_view kDescription = "64-bit power";
+    static constexpr int kOperandsCount = 2;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 131074ULL;
     static constexpr uint64_t kInterfaceBits = 1ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -7317,7 +8087,7 @@ struct TensorReluOp : public OpWrapperBase<TensorReluOp> {
     static constexpr int kOperandsCount = 1;
     static constexpr bool kIsVariadicOperands = false;
     static constexpr bool kIsVariadicResults = false;
-    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kTraitBits = 131074ULL;
     static constexpr uint64_t kInterfaceBits = 257ULL;
     static constexpr uint64_t kAttributeBits = 0ULL;
 
@@ -8300,7 +9070,7 @@ struct BranchLikelyOp : public OpWrapperBase<BranchLikelyOp> {
         n.op_a = op_a;
         n.op_b = op_b;
         n.op_c = op_c;
-        n.logic_flags = 0;
+        n.logic_flags = dgtl::ir::ExtendedFlags::HOT_PATH;
         n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
         return n;
     }
@@ -8351,7 +9121,7 @@ struct BranchUnlikelyOp : public OpWrapperBase<BranchUnlikelyOp> {
         n.op_a = op_a;
         n.op_b = op_b;
         n.op_c = op_c;
-        n.logic_flags = 0;
+        n.logic_flags = dgtl::ir::ExtendedFlags::COLD_PATH;
         n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
         return n;
     }
@@ -8858,6 +9628,261 @@ struct RoPEOp : public OpWrapperBase<RoPEOp> {
     }
 };
 
+struct GeluF32Op : public OpWrapperBase<GeluF32Op> {
+    using OpWrapperBase<GeluF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "GeluF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::GELU_F32;
+    static constexpr std::string_view kDialect = "ai";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "GELU activation function";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kInterfaceBits = 8192ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct SiluF32Op : public OpWrapperBase<SiluF32Op> {
+    using OpWrapperBase<SiluF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SiluF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SILU_F32;
+    static constexpr std::string_view kDialect = "ai";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "SiLU / Swish activation function";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kInterfaceBits = 8192ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct SigmoidF32Op : public OpWrapperBase<SigmoidF32Op> {
+    using OpWrapperBase<SigmoidF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SigmoidF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SIGMOID_F32;
+    static constexpr std::string_view kDialect = "ai";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "Sigmoid activation function";
+    static constexpr int kOperandsCount = 1;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kInterfaceBits = 8192ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_unary(uint32_t result_id, uint32_t operand, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, operand, dgtl::ir::INVALID_SLOT, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct SwigluF32Op : public OpWrapperBase<SwigluF32Op> {
+    using OpWrapperBase<SwigluF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "SwigluF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::SWIGLU_F32;
+    static constexpr std::string_view kDialect = "ai";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "SwiGLU gated activation";
+    static constexpr int kOperandsCount = 2;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kInterfaceBits = 8192ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_binary(uint32_t result_id, uint32_t lhs, uint32_t rhs, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, lhs, rhs, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
+struct RmsNormF32Op : public OpWrapperBase<RmsNormF32Op> {
+    using OpWrapperBase<RmsNormF32Op>::OpWrapperBase;
+    static constexpr std::string_view kName = "RmsNormF32";
+    static constexpr dgtl::ir::OpCode kOpcode = dgtl::ir::OpCode::RMS_NORM_F32;
+    static constexpr std::string_view kDialect = "ai";
+    static constexpr std::string_view kResultType = "F32";
+    static constexpr dgtl::ir::TypeCode kResultTypeCode = dgtl::ir::TypeCode::F32;
+    static constexpr std::string_view kDescription = "RMS Normalization kernel";
+    static constexpr int kOperandsCount = 2;
+    static constexpr bool kIsVariadicOperands = false;
+    static constexpr bool kIsVariadicResults = false;
+    static constexpr uint64_t kTraitBits = 2ULL;
+    static constexpr uint64_t kInterfaceBits = 8192ULL;
+    static constexpr uint64_t kAttributeBits = 0ULL;
+
+    [[nodiscard]] static constexpr std::string_view op_name() noexcept { return kName; }
+    [[nodiscard]] static constexpr std::string_view name() noexcept { return kName; }
+    [[nodiscard]] static constexpr dgtl::ir::OpCode opcode() noexcept { return kOpcode; }
+    [[nodiscard]] static constexpr std::string_view dialect() noexcept { return kDialect; }
+    [[nodiscard]] static constexpr std::string_view result_type() noexcept { return kResultType; }
+    [[nodiscard]] static constexpr dgtl::ir::TypeCode result_type_code() noexcept { return kResultTypeCode; }
+    [[nodiscard]] static constexpr std::string_view description() noexcept { return kDescription; }
+    [[nodiscard]] static constexpr int operand_count() noexcept { return kOperandsCount; }
+    [[nodiscard]] static constexpr bool is_variadic_operands() noexcept { return kIsVariadicOperands; }
+    [[nodiscard]] static constexpr bool is_variadic_results() noexcept { return kIsVariadicResults; }
+    [[nodiscard]] static constexpr uint64_t trait_bits() noexcept { return kTraitBits; }
+    [[nodiscard]] static constexpr uint64_t interface_bits() noexcept { return kInterfaceBits; }
+    [[nodiscard]] static constexpr uint64_t attribute_bits() noexcept { return kAttributeBits; }
+
+    [[nodiscard]] static dgtl::ir::IRNode build(
+        uint32_t result_id = dgtl::ir::INVALID_SLOT,
+        uint32_t op_a = dgtl::ir::INVALID_SLOT,
+        uint32_t op_b = dgtl::ir::INVALID_SLOT,
+        uint32_t op_c = dgtl::ir::INVALID_SLOT,
+        uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        dgtl::ir::IRNode n{};
+        n.opcode = kOpcode;
+        n.flags = flags;
+        n.result_id = result_id;
+        n.op_a = op_a;
+        n.op_b = op_b;
+        n.op_c = op_c;
+        n.logic_flags = 0;
+        n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
+        return n;
+    }
+    [[nodiscard]] static dgtl::ir::IRNode build_binary(uint32_t result_id, uint32_t lhs, uint32_t rhs, uint16_t flags = dgtl::ir::Flags::NONE) noexcept {
+        return build(result_id, lhs, rhs, dgtl::ir::INVALID_SLOT, flags);
+    }
+};
+
 struct FastInvSqrtOp : public OpWrapperBase<FastInvSqrtOp> {
     using OpWrapperBase<FastInvSqrtOp>::OpWrapperBase;
     static constexpr std::string_view kName = "FastInvSqrt";
@@ -8900,7 +9925,7 @@ struct FastInvSqrtOp : public OpWrapperBase<FastInvSqrtOp> {
         n.op_a = op_a;
         n.op_b = op_b;
         n.op_c = op_c;
-        n.logic_flags = 0;
+        n.logic_flags = dgtl::ir::ExtendedFlags::FAST_MATH;
         n.intent_hash = dgtl::ir::IRNode::calculate_hash(n.opcode, n.result_id, n.op_a, n.op_b, n.op_c);
         return n;
     }
@@ -9488,10 +10513,25 @@ static_assert(validate_all_op_types<
     DivF32Op,
     FmaF32Op,
     FmaWidenF16F32Op,
+    SinF32Op,
+    CosF32Op,
+    TanF32Op,
+    ExpF32Op,
+    LogF32Op,
+    PowF32Op,
     AddF64Op,
     SubF64Op,
     MulF64Op,
     DivF64Op,
+    FmaF64Op,
+    SqrtF32Op,
+    SqrtF64Op,
+    SinF64Op,
+    CosF64Op,
+    TanF64Op,
+    ExpF64Op,
+    LogF64Op,
+    PowF64Op,
     CmpEqI32Op,
     CmpNeI32Op,
     CmpLtI32Op,
@@ -9611,6 +10651,11 @@ static_assert(validate_all_op_types<
     SoftmaxFastOp,
     LayerNormOp,
     RoPEOp,
+    GeluF32Op,
+    SiluF32Op,
+    SigmoidF32Op,
+    SwigluF32Op,
+    RmsNormF32Op,
     FastInvSqrtOp,
     Vec3CrossOp,
     Vec4DotOp,

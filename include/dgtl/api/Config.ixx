@@ -44,6 +44,24 @@ enum class OptimizationLevel : uint8_t {
 };
 
 /**
+ * @enum TargetArch
+ * @brief Sovereign target architecture configuration for code generation.
+ */
+enum class TargetArch : uint8_t {
+    Host = 0,
+    X86_64 = 1,
+    ARM64 = 2,
+    ARM32 = 3,
+    RISCV64 = 4,
+    WASM = 5,
+    CUDA = 6,
+    ROCm = 7,
+    SPIRV = 8,
+    PTX = 9,
+    AMDGPU = 10
+};
+
+/**
  * @struct Config
  * @brief Runtime configuration for DGTL compilation pipeline.
  * Encapsulates execution parameters.
@@ -51,6 +69,7 @@ enum class OptimizationLevel : uint8_t {
 struct Config {
     ExecutionMode mode = ExecutionMode::JIT;
     OptimizationLevel opt_level = OptimizationLevel::O3;
+    TargetArch target_arch = TargetArch::Host;
     uint64_t timeout_us = 1000000;
     bool enable_temporal_fusion = true;
     bool enable_polyhedral_scop = true;

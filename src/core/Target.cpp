@@ -366,6 +366,15 @@ void TargetDescription::setup_registers() noexcept {
         case ArchType::FPGA_VERILOG:
             supported_scalar_widths_ = kWidth32 | kWidth64 | kWidth128;
             break;
+
+        case ArchType::SPIRV_LOGICAL: {
+            for (uint16_t i = 0; i < 32; ++i) {
+                add_gp(i, "id", true);
+            }
+            supported_scalar_widths_ = kWidth32 | kWidth64;
+            supported_vector_widths_ = kWidth32 | kWidth64 | kWidth128 | kWidth256;
+            break;
+        }
     }
 }
 
@@ -459,6 +468,12 @@ void TargetDescription::setup_calling_convention(CallingConventionKind calling_c
             calling_convention_.name = "bare-metal";
             calling_convention_.stack_alignment = 16;
             break;
+
+        case ArchType::SPIRV_LOGICAL:
+            calling_convention_.kind = CallingConventionKind::BareMetal;
+            calling_convention_.name = "spirv-logical";
+            calling_convention_.stack_alignment = 16;
+            break;
     }
 }
 
@@ -526,6 +541,7 @@ void TargetDescription::setup_instruction_table() noexcept {
 
         case ArchType::CUDA_PTX:
         case ArchType::ROCM_AMDGCN:
+        case ArchType::SPIRV_LOGICAL:
             supports_fma_ = true;
             add_instruction(OpCode::ADD_I32, 1, 1, kWidth32, false);
             add_instruction(OpCode::ADD_I64, 1, 1, kWidth64, false);
@@ -576,8 +592,13 @@ std::optional<ArchType> TargetMachine::arch_from_target_name(std::string_view na
         return ArchType::CUDA_PTX;
     }
     if (eq(name, "rocm") || eq(name, "amdgcn") || eq(name, "amd-gcn") ||
-        eq(name, "amdgcn-gfx") || eq(name, "hip") || eq(name, "rocm_amdgcn")) {
+        eq(name, "amdgcn-gfx") || eq(name, "hip") || eq(name, "rocm_amdgcn") ||
+        eq(name, "amdgpu")) {
         return ArchType::ROCM_AMDGCN;
+    }
+    if (eq(name, "spirv") || eq(name, "spirv_logical") || eq(name, "spir-v") ||
+        eq(name, "spirv64") || eq(name, "spv")) {
+        return ArchType::SPIRV_LOGICAL;
     }
     return std::nullopt;
 }

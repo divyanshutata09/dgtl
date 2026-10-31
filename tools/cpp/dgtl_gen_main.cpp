@@ -837,6 +837,7 @@ struct OpWrapperBase {
     [[nodiscard]] static constexpr bool is_hardware_intrinsic() noexcept { return has_trait(GenTrait::IsHardwareIntrinsic); }
     [[nodiscard]] static constexpr bool is_guard() noexcept { return has_trait(GenTrait::IsGuard); }
     [[nodiscard]] static constexpr bool is_latency_critical() noexcept { return has_trait(GenTrait::IsLatencyCritical); }
+    [[nodiscard]] static constexpr bool is_constant_foldable() noexcept { return has_trait(GenTrait::ConstantFoldable); }
 
     [[nodiscard]] static constexpr bool classof(const dgtl::ir::IRNode* node) noexcept {
         return node && node->opcode == Derived::kOpcode;
@@ -896,6 +897,10 @@ template <typename T>
 concept IsDGTLAsyncOp = IsDGTLOp<T> &&
     ((T::kTraitBits & static_cast<uint64_t>(GenTrait::IsAsyncSpawnable)) != 0ULL);
 
+template <typename T>
+concept IsDGTLConstantFoldableOp = IsDGTLOp<T> &&
+    ((T::kTraitBits & static_cast<uint64_t>(GenTrait::ConstantFoldable)) != 0ULL);
+
 // LLVM-style RTTI casting support
 template <typename Op>
 [[nodiscard]] constexpr bool isa(const dgtl::ir::IRNode* node) noexcept {
@@ -942,6 +947,12 @@ template <typename Op>
             op_c_assign_expr = "(op_c == dgtl::ir::INVALID_SLOT ? 0u : op_c)";
         } else if (op.name == "BoolSelect") {
             flags_assign_expr = "static_cast<uint16_t>(flags | dgtl::ir::Flags::IS_PREDICATED)";
+        } else if (std::find(op.attributes.begin(), op.attributes.end(), "FastMath") != op.attributes.end()) {
+            default_logic_flags = "dgtl::ir::ExtendedFlags::FAST_MATH";
+        } else if (std::find(op.attributes.begin(), op.attributes.end(), "HotPath") != op.attributes.end()) {
+            default_logic_flags = "dgtl::ir::ExtendedFlags::HOT_PATH";
+        } else if (std::find(op.attributes.begin(), op.attributes.end(), "ColdPath") != op.attributes.end()) {
+            default_logic_flags = "dgtl::ir::ExtendedFlags::COLD_PATH";
         }
 
         const uint64_t t_bits = compute_bits(op.traits, trait_indices);
@@ -1679,6 +1690,13 @@ struct TypeContext {
               << operations.size() << " operations, explicit stable IDs\n";
     std::cout << "[dgtl-gen] Generated DGTL_Gen_Enums.ixx + metadata + typed wrappers from canonical DSL\n";
     std::cout << "[dgtl-gen] Metadata: " << opts.output_file.string() << "\n";
+
+    const fs::path bundled_dsl = root / "include/dgtl/ir/gen/defs/phase1_core_ops.dgtl_def";
+    if (fs::exists(bundled_dsl.parent_path()) && def_path != bundled_dsl) {
+        std::error_code copy_ec;
+        fs::copy_file(def_path, bundled_dsl, fs::copy_options::overwrite_existing, copy_ec);
+    }
+
     return 0;
 }
 

@@ -100,7 +100,7 @@ public:
             if (!obj.find_symbol(r.symbol)) {
                 obj.add_external_symbol(r.symbol);
             }
-            obj.add_relocation(r.text_offset, r.symbol, 0, m::ARM64_RELOC_BRANCH26, dgtl::object::RelocationKind::PCRel32);
+            obj.add_relocation(r.text_offset, r.symbol, 0, m::ARM64_RELOC_BRANCH26, dgtl::object::RelocationKind::Branch26);
         }
 
         return write(obj, out);
@@ -251,7 +251,7 @@ public:
 
             if (layout.is_zerofill) {
                 layout.file_offset = 0;
-                layout.size = layout.sec->bytes.empty() ? 64 : layout.sec->bytes.size();
+                layout.size = layout.sec->is_bss() ? layout.sec->bss_size : layout.sec->size();
             } else {
                 cur_offset = static_cast<uint32_t>((cur_offset + (align_bytes - 1)) & ~(align_bytes - 1));
                 layout.file_offset = cur_offset;
@@ -263,6 +263,21 @@ public:
         }
 
         // 4. Symbols and Strings table
+        std::vector<dgtl::object::Symbol> all_symbols = obj.symbols();
+        std::unordered_map<std::string, uint32_t> symbol_indices;
+        for (std::size_t i = 0; i < all_symbols.size(); ++i) {
+            symbol_indices[all_symbols[i].name] = static_cast<uint32_t>(i);
+        }
+
+        for (const auto& rel : obj.relocations()) {
+            if (rel.symbol_name.empty()) continue;
+            if (!symbol_indices.contains(rel.symbol_name)) {
+                symbol_indices[rel.symbol_name] = static_cast<uint32_t>(all_symbols.size());
+                all_symbols.push_back(dgtl::object::Symbol::make_external(
+                    rel.symbol_name, dgtl::object::SymbolType::Function, 1));
+            }
+        }
+
         std::string strtab;
         strtab.push_back('\0'); // Mach-O string table starts with \0
 
@@ -275,7 +290,7 @@ public:
         };
         std::vector<SymRecord> sym_records;
 
-        for (const auto& sym : obj.symbols()) {
+        for (const auto& sym : all_symbols) {
             std::string macho_name = sym.name;
             if (!macho_name.empty() && macho_name.front() != '_') {
                 macho_name.insert(macho_name.begin(), '_');
@@ -333,11 +348,9 @@ public:
             m::RelocationInfo ri{};
             ri.r_address = static_cast<int32_t>(r.offset);
             uint32_t s_idx = 0;
-            for (uint32_t i = 0; i < obj.symbols().size(); ++i) {
-                if (obj.symbols()[i].name == r.symbol_name) {
-                    s_idx = i;
-                    break;
-                }
+            auto it = symbol_indices.find(r.symbol_name);
+            if (it != symbol_indices.end()) {
+                s_idx = it->second;
             }
 
             uint32_t pcrel = 1u;
@@ -549,6 +562,39 @@ private:
 
         MachOObjectWriter writer;
         return writer.write(obj, out);
+    }
+
+public:
+    [[nodiscard]] bool build_archive(
+        const std::vector<std::uint8_t>& object_bytes,
+        std::vector<std::uint8_t>& out,
+        std::string_view member_name = "module.o") const {
+        out.clear();
+        std::string header_name(member_name);
+        if (header_name.empty()) header_name = "module.o";
+        if (header_name.size() > 15) header_name.resize(15);
+        header_name.push_back('/');
+
+        std::array<char, 60> hdr{};
+        std::fill(hdr.begin(), hdr.end(), ' ');
+
+        std::snprintf(hdr.data(), 17, "%-16s", header_name.c_str());
+        std::snprintf(hdr.data() + 16, 13, "%-12d", 0);
+        std::snprintf(hdr.data() + 28, 7, "%-6d", 0);
+        std::snprintf(hdr.data() + 34, 7, "%-6d", 0);
+        std::snprintf(hdr.data() + 40, 9, "%-8o", 0644);
+        std::snprintf(hdr.data() + 48, 11, "%-10u", static_cast<unsigned int>(object_bytes.size()));
+        hdr[58] = '`';
+        hdr[59] = '\n';
+
+        static constexpr char kArMagic[] = "!<arch>\n";
+        out.insert(out.end(), kArMagic, kArMagic + 8);
+        out.insert(out.end(), hdr.begin(), hdr.end());
+        out.insert(out.end(), object_bytes.begin(), object_bytes.end());
+        if ((object_bytes.size() & 1U) != 0U) {
+            out.push_back('\n');
+        }
+        return true;
     }
 };
 

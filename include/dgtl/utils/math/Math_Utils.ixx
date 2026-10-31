@@ -297,6 +297,14 @@ namespace detail {
     return y;
 }
 
+[[nodiscard]] inline float fast_inv_sqrt(float x) noexcept {
+    return fast_inv_sqrt_f32(x);
+}
+
+[[nodiscard]] inline double fast_inv_sqrt(double x) noexcept {
+    return fast_inv_sqrt_f64(x);
+}
+
 // ============================================================================
 // SECTION 3: INTEGER & BITWISE MATH EXTRAS (SUPERIOR TO LLVM MathExtras.h)
 // ============================================================================

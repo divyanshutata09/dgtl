@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <span>
 
 #if defined(_WIN32) || defined(_WIN64)
     #include <windows.h>
@@ -34,6 +35,7 @@
     #include <unistd.h>
 #endif
 
+import dgtl.tools.common;
 import dgtl.execution;
 import dgtl.execution.cache;
 import dgtl.execution.dispatcher;
@@ -57,12 +59,12 @@ struct EngineOptions {
     bool dry_run = false;
 };
 
-void print_version() {
+static void print_version() {
     std::cout << "dgtl-engine: DGTL Sovereign JIT Engine v2.1.0 (TataG Systems)\n"
               << "Standards: C++26 / Zero-Overhead Native Execution Coordinator\n";
 }
 
-void print_usage(std::string_view prog_name) {
+static void print_usage(std::string_view prog_name) {
     std::cout << "DGTL Sovereign JIT Execution Engine (dgtl-engine)\n"
               << "Direct-to-memory JIT execution coordinator and native code runner\n\n"
               << "USAGE:\n"
@@ -82,23 +84,28 @@ void print_usage(std::string_view prog_name) {
               << "  " << prog_name << " --bench=100000 fast_pipeline.bin\n";
 }
 
-std::optional<EngineOptions> parse_args(int argc, char* argv[]) {
-    if (argc < 2) {
-        print_usage(argv[0]);
-        return std::nullopt;
+enum class ParseStatus {
+    Success,
+    HelpOrVersion,
+    Error
+};
+
+ParseStatus parse_args(const std::vector<std::string>& args, std::string_view prog_name, EngineOptions& opts) {
+    if (args.empty()) {
+        print_usage(prog_name);
+        return ParseStatus::Error;
     }
 
-    EngineOptions opts;
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
+    for (size_t i = 0; i < args.size(); ++i) {
+        std::string_view arg = args[i];
 
         if (arg == "-h" || arg == "--help") {
-            print_usage(argv[0]);
-            return std::nullopt;
+            print_usage(prog_name);
+            return ParseStatus::HelpOrVersion;
         }
         if (arg == "--version") {
             print_version();
-            return std::nullopt;
+            return ParseStatus::HelpOrVersion;
         }
         if (arg == "-v" || arg == "--verbose") {
             opts.verbose = true;
@@ -113,12 +120,12 @@ std::optional<EngineOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-e") {
-            if (i + 1 < argc) {
-                opts.entry_symbol = argv[++i];
+            if (i + 1 < args.size()) {
+                opts.entry_symbol = args[++i];
                 continue;
             }
             std::cerr << "error[dgtl-engine]: -e requires an entry symbol name\n";
-            return std::nullopt;
+            return ParseStatus::Error;
         }
         if (arg.rfind("-e=", 0) == 0 || arg.rfind("--entry=", 0) == 0) {
             auto pos = arg.find('=');
@@ -126,12 +133,12 @@ std::optional<EngineOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-c" || arg == "--cache-size") {
-            if (i + 1 < argc) {
-                opts.cache_size_mb = std::stoull(argv[++i]);
+            if (i + 1 < args.size()) {
+                opts.cache_size_mb = std::stoull(args[++i]);
                 continue;
             }
             std::cerr << "error[dgtl-engine]: -c requires a cache size in MB\n";
-            return std::nullopt;
+            return ParseStatus::Error;
         }
         if (arg.rfind("-c=", 0) == 0 || arg.rfind("--cache-size=", 0) == 0) {
             auto pos = arg.find('=');
@@ -139,12 +146,12 @@ std::optional<EngineOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-b" || arg == "--bench") {
-            if (i + 1 < argc) {
-                opts.benchmark_iterations = std::stoull(argv[++i]);
+            if (i + 1 < args.size()) {
+                opts.benchmark_iterations = std::stoull(args[++i]);
                 continue;
             }
             std::cerr << "error[dgtl-engine]: -b requires iteration count\n";
-            return std::nullopt;
+            return ParseStatus::Error;
         }
         if (arg.rfind("-b=", 0) == 0 || arg.rfind("--bench=", 0) == 0) {
             auto pos = arg.find('=');
@@ -154,23 +161,23 @@ std::optional<EngineOptions> parse_args(int argc, char* argv[]) {
 
         if (arg.front() == '-') {
             std::cerr << "error[dgtl-engine]: unrecognized option '" << arg << "'\n";
-            return std::nullopt;
+            return ParseStatus::Error;
         }
 
         if (opts.input_file.empty()) {
             opts.input_file = std::string(arg);
         } else {
             std::cerr << "error[dgtl-engine]: multiple input files specified: '" << arg << "'\n";
-            return std::nullopt;
+            return ParseStatus::Error;
         }
     }
 
     if (opts.input_file.empty()) {
         std::cerr << "error[dgtl-engine]: no input file specified\n";
-        return std::nullopt;
+        return ParseStatus::Error;
     }
 
-    return opts;
+    return ParseStatus::Success;
 }
 
 int run_engine(const EngineOptions& opts) {
@@ -216,6 +223,16 @@ int run_engine(const EngineOptions& opts) {
         }
         executable_code = text_sec->bytes;
 
+        for (const auto& sec : obj.sections()) {
+            if (sec.name == ".rodata") {
+                if (opts.verbose) std::cout << "[dgtl-engine] Loaded ELF .rodata: " << sec.bytes.size() << " bytes\n";
+            } else if (sec.name == ".data") {
+                if (opts.verbose) std::cout << "[dgtl-engine] Loaded ELF .data: " << sec.bytes.size() << " bytes\n";
+            } else if (sec.is_bss() || sec.name == ".bss") {
+                if (opts.verbose) std::cout << "[dgtl-engine] Reserved ELF .bss zero-fill memory: " << sec.size() << " bytes\n";
+            }
+        }
+
         const auto* sym = obj.find_symbol(opts.entry_symbol);
         if (sym) {
             entry_offset = sym->value;
@@ -234,6 +251,16 @@ int run_engine(const EngineOptions& opts) {
         }
         executable_code = text_sec->bytes;
 
+        for (const auto& sec : obj.sections()) {
+            if (sec.name == ".rdata") {
+                if (opts.verbose) std::cout << "[dgtl-engine] Loaded PE/COFF .rdata: " << sec.bytes.size() << " bytes\n";
+            } else if (sec.name == ".data") {
+                if (opts.verbose) std::cout << "[dgtl-engine] Loaded PE/COFF .data: " << sec.bytes.size() << " bytes\n";
+            } else if (sec.is_bss() || sec.name == ".bss") {
+                if (opts.verbose) std::cout << "[dgtl-engine] Reserved PE/COFF .bss zero-fill memory: " << sec.size() << " bytes\n";
+            }
+        }
+
         const auto* sym = obj.find_symbol(opts.entry_symbol);
         if (sym) {
             entry_offset = (obj.format() == dgtl::object::ObjectFormat::PE && sym->value >= text_sec->address)
@@ -244,6 +271,43 @@ int run_engine(const EngineOptions& opts) {
                                ? (main_sym->value - text_sec->address)
                                : main_sym->value;
         }
+    } else if (buffer.size() >= 32 && (*reinterpret_cast<const uint32_t*>(buffer.data()) == 0xFEEDFACF || *reinterpret_cast<const uint32_t*>(buffer.data()) == 0xCFFAEDFE)) {
+        const int32_t cputype = *reinterpret_cast<const int32_t*>(buffer.data() + 4);
+        std::string arch = (cputype == 0x0100000C) ? "arm64" : ((cputype == 0x01000007) ? "x86_64" : "macho");
+        if (opts.verbose) {
+            std::cout << "[dgtl-engine] Identified input as Mach-O 64 container (" << arch << ")\n";
+        }
+        const uint32_t ncmds = *reinterpret_cast<const uint32_t*>(buffer.data() + 16);
+        size_t cursor = 32;
+        for (uint32_t c = 0; c < ncmds && cursor + 8 <= buffer.size(); ++c) {
+            const uint32_t cmd = *reinterpret_cast<const uint32_t*>(buffer.data() + cursor);
+            const uint32_t cmdsize = *reinterpret_cast<const uint32_t*>(buffer.data() + cursor + 4);
+            if (cmd == 0x19 /* LC_SEGMENT_64 */ && cursor + 72 <= buffer.size()) {
+                const uint32_t nsects = *reinterpret_cast<const uint32_t*>(buffer.data() + cursor + 64);
+                size_t sect_cursor = cursor + 72;
+                for (uint32_t s = 0; s < nsects && sect_cursor + 80 <= buffer.size(); ++s) {
+                    char sname[17] = {0};
+                    std::memcpy(sname, buffer.data() + sect_cursor, 16);
+                    if (std::strcmp(sname, "__text") == 0) {
+                        uint32_t text_off = *reinterpret_cast<const uint32_t*>(buffer.data() + sect_cursor + 48);
+                        uint64_t text_sz  = *reinterpret_cast<const uint64_t*>(buffer.data() + sect_cursor + 40);
+                        if (text_off + text_sz <= buffer.size()) {
+                            executable_code.assign(buffer.begin() + text_off, buffer.begin() + text_off + text_sz);
+                        }
+                    }
+                    sect_cursor += 80;
+                }
+            }
+            cursor += cmdsize;
+        }
+        if (executable_code.empty()) {
+            executable_code = std::move(buffer);
+        }
+    } else if (buffer.size() >= 8 && buffer[0] == 0x00 && buffer[1] == 'a' && buffer[2] == 's' && buffer[3] == 'm') {
+        if (opts.verbose) {
+            std::cout << "[dgtl-engine] Identified input as WebAssembly (WASM) binary module\n";
+        }
+        executable_code = std::move(buffer);
     } else {
         if (opts.verbose) {
             std::cout << "[dgtl-engine] Processing input as raw executable native code stream\n";
@@ -316,10 +380,17 @@ int run_engine(const EngineOptions& opts) {
 
 } // namespace dgtl::cli::engine
 
-int main(int argc, char* argv[]) {
-    auto opts = dgtl::cli::engine::parse_args(argc, argv);
-    if (!opts.has_value()) {
+int dgtl_engine_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    std::string prog_name = invoked_as.empty() ? "dgtl-engine" : std::string(invoked_as);
+    std::vector<std::string> expanded = dgtl::tools::ArgExpander::expand(raw_args);
+
+    dgtl::cli::engine::EngineOptions opts;
+    auto status = dgtl::cli::engine::parse_args(expanded, prog_name, opts);
+    if (status == dgtl::cli::engine::ParseStatus::HelpOrVersion) {
+        return 0;
+    }
+    if (status == dgtl::cli::engine::ParseStatus::Error) {
         return 1;
     }
-    return dgtl::cli::engine::run_engine(*opts);
+    return dgtl::cli::engine::run_engine(opts);
 }

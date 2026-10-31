@@ -25,7 +25,7 @@ module;
 
 export module dgtl.mir.pipeline;
 
-import dgtl.ir;
+import dgtl.ir.stream;
 import dgtl.ir_enums;
 import dgtl.target;
 import dgtl.mir.machine_ir;
@@ -213,16 +213,14 @@ public:
 
             std::vector<InstrId> to_remove;
             bool saw_terminator = false;
+            bool saw_barrier = false;
 
             for (const InstrId inst_id : bb->instructions) {
                 auto* inst = function.instruction(inst_id);
                 if (!inst) continue;
 
-                // Branch folding runs again after target lowering. Do not
-                // rewrite an instruction whose target opcode is now fixed.
-                if (inst->has_target_opcode()) continue;
-
-                if (saw_terminator) {
+                // 1. Process dead instruction removal FIRST (must eliminate all instructions violating verifier invariants)
+                if (saw_barrier || (saw_terminator && !inst->is_terminator())) {
                     inst->form = MachineForm::NoOp;
                     inst->semantic_kind = MachineSemanticKind::Other;
                     inst->opcode = GM_NOOP;
@@ -232,6 +230,19 @@ public:
                     continue;
                 }
 
+                // 2. Track terminator/barrier status using complete predicates
+                if (inst->is_terminator()) {
+                    saw_terminator = true;
+                    if (inst->is_barrier()) {
+                        saw_barrier = true;
+                    }
+                }
+
+                // 3. Branch folding runs again after target lowering. Do not
+                // rewrite an instruction whose target opcode is now fixed.
+                if (inst->has_target_opcode()) continue;
+
+                // 4. Fallthrough branch folding for Goto to next layout block
                 if (inst->form == MachineForm::Goto && !inst->operands.empty()) {
                     const auto& target_op = inst->operands[0];
                     if (target_op.kind == MachineOperandKind::BasicBlock &&
@@ -244,10 +255,6 @@ public:
                         modified = true;
                         continue;
                     }
-
-                    saw_terminator = true;
-                } else if (inst->form == MachineForm::Return) {
-                    saw_terminator = true;
                 }
             }
             for (const InstrId id : to_remove) {
@@ -368,6 +375,15 @@ public:
                 continue;
             }
 
+            // Drop unreachable dead instructions following an unconditional barrier until next LABEL
+            const auto* curr_bb = function.block(current_block_id);
+            if (curr_bb && !curr_bb->instructions.empty()) {
+                const auto* tail_inst = function.instruction(curr_bb->tail_instr);
+                if (tail_inst && tail_inst->is_barrier()) {
+                    continue;
+                }
+            }
+
             const SelectedInstruction selected =
                 active_selector.select_instruction(*active_stream, i, node, target);
 
@@ -398,6 +414,11 @@ public:
                     }
                 }
             }
+        }
+ 
+        // Pass 2.5: Pre-RA Branch Folding & Dead Code Pruning
+        if (options.run_branch_folding) {
+            BranchFolder::run(function);
         }
 
         // Pass 3: SSA Deconstruction & Critical-Edge-Aware Phi Lowering

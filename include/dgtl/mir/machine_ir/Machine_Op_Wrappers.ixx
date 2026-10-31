@@ -84,7 +84,7 @@ public:
     }
 
     [[nodiscard]] constexpr bool is_commutative() const noexcept {
-        return inst_.has_trait(MachineTrait::Commutative);
+        return inst_.has_trait(MachineTrait::Commutative) || inst_.has_flag(MachineInstrFlag::Commutable);
     }
 
     [[nodiscard]] constexpr bool has_no_wrap() const noexcept {

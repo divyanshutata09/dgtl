@@ -29,6 +29,16 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(_WIN32) || defined(_WIN64)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 import dgtl.object.file;
 import dgtl.object.section;
 import dgtl.object.symbol;
@@ -44,11 +54,13 @@ import dgtl.linker.driver;
 import dgtl.linker.driver_api;
 import dgtl.linker.pe;
 import dgtl.linker.elf;
+import dgtl.linker.macho;
 import dgtl.linker.wasm;
 import dgtl.linker.context;
 import dgtl.linker.layout;
 import dgtl.linker.symbols;
 import dgtl.linker.entry_point;
+import dgtl.tools.common;
 
 namespace fs = std::filesystem;
 
@@ -63,6 +75,8 @@ enum class LinkFormat {
     ELFObject,
     StaticArchive,
     MachOObject,
+    MachOExecutable,
+    MachOArchive,
     WASMBinary
 };
 
@@ -70,6 +84,7 @@ struct LinkOptions {
     std::vector<std::string> input_files;
     std::string output_file;
     LinkFormat format = LinkFormat::Auto;
+    std::string target_arch = "x64";
     std::string entry_symbol = "DGTL_kernel_entry";
     uint64_t image_base = 0;
     std::vector<std::string> libraries;
@@ -77,14 +92,18 @@ struct LinkOptions {
     bool is_archive = false;
     bool verbose = false;
     bool time_report = false;
+    uint64_t stack_reserve = 0;
+    uint64_t stack_commit = 0;
+    uint64_t heap_reserve = 0;
+    uint64_t heap_commit = 0;
 };
 
-void print_version() {
+static void print_version() {
     std::cout << "dgtl-link: DGTL Sovereign Binary Linker v2.1.0 (TataG Systems)\n"
               << "Standards: C++26 / Multi-Target Object & Executable Synthesis Engine\n";
 }
 
-void print_usage(std::string_view prog_name) {
+static void print_usage(std::string_view prog_name) {
     std::cout << "DGTL Sovereign Binary Linker (dgtl-link)\n"
               << "Direct-to-binary in-memory linker for PE/COFF, ELF64, Mach-O, and WASM\n\n"
               << "USAGE:\n"
@@ -94,17 +113,24 @@ void print_usage(std::string_view prog_name) {
               << "  -f, --format=<fmt>      Output binary format:\n"
               << "                            pe, coff, elf, macho, wasm, lib, archive\n"
               << "                            (default: auto-detected from output extension)\n"
+              << "  -m, --arch=<arch>       Target architecture (x64, arm64, riscv64; default: x64)\n"
               << "  -e, --entry=<symbol>    Entry point symbol (default: 'DGTL_kernel_entry' or 'main')\n"
               << "  -b, --base=<hex_addr>   Preferred image base address (e.g. 0x140000000)\n"
               << "  -l, --lib=<name>        Link against imported dynamic library (e.g. ws2_32, kernel32)\n"
               << "  -L<dir>                 Add directory to library search path\n"
               << "  -a, --archive           Build static library archive (.lib / .a)\n"
+              << "  --stack-reserve=<size>  PE stack reserve size (e.g. 0x400000, 4M; default: 4M)\n"
+              << "  --stack-commit=<size>   PE stack commit size (e.g. 0x100000, 1M; default: 1M)\n"
+              << "  --heap-reserve=<size>   PE heap reserve size (e.g. 0x100000, 1M; default: 1M)\n"
+              << "  --heap-commit=<size>    PE heap commit size (e.g. 0x1000, 4K; default: 4K)\n"
               << "  -v, --verbose           Display detailed section layout and symbol mappings\n"
               << "  -t, --time              Measure and display link-time performance metrics\n"
               << "  --version               Display linker version information\n"
               << "  -h, --help              Display this help message\n\n"
               << "EXAMPLES:\n"
               << "  " << prog_name << " -o kernel.exe module1.o module2.o\n"
+              << "  " << prog_name << " --format=elf --arch=arm64 -o kernel_arm64.elf mod1.o\n"
+              << "  " << prog_name << " --format=macho --arch=arm64 -e main -o app_darwin mod1.o\n"
               << "  " << prog_name << " --format=pe -e main -l ws2_32 -o app.exe main.obj\n"
               << "  " << prog_name << " --archive -o libmath.lib math1.obj math2.obj\n";
 }
@@ -115,7 +141,11 @@ LinkFormat detect_format_from_path(std::string_view path, bool is_archive) {
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
     if (is_archive || ext == ".lib" || ext == ".a") {
+#if defined(__APPLE__)
+        return LinkFormat::MachOArchive;
+#else
         return (ext == ".lib") ? LinkFormat::COFFArchive : LinkFormat::StaticArchive;
+#endif
     }
     if (ext == ".exe" || ext == ".dll") {
         return LinkFormat::PEExecutable;
@@ -129,8 +159,11 @@ LinkFormat detect_format_from_path(std::string_view path, bool is_archive) {
     if (ext == ".wasm") {
         return LinkFormat::WASMBinary;
     }
-    if (ext == ".dylib" || ext == ".macho") {
+    if (ext == ".dylib") {
         return LinkFormat::MachOObject;
+    }
+    if (ext == ".macho") {
+        return LinkFormat::MachOExecutable;
     }
     if (ext == ".elf") {
         return LinkFormat::ELFExecutable;
@@ -138,7 +171,7 @@ LinkFormat detect_format_from_path(std::string_view path, bool is_archive) {
 #if defined(__linux__) || defined(__ELF__)
     return LinkFormat::ELFExecutable;
 #elif defined(__APPLE__)
-    return LinkFormat::MachOObject;
+    return LinkFormat::MachOExecutable;
 #else
     return LinkFormat::PEExecutable;
 #endif
@@ -154,23 +187,50 @@ LinkFormat parse_format_str(std::string_view s) {
     if (f == "elf" || f == "elf-exe" || f == "elf64") return LinkFormat::ELFExecutable;
     if (f == "elf-obj" || f == "o") return LinkFormat::ELFObject;
     if (f == "a" || f == "archive" || f == "staticlib") return LinkFormat::StaticArchive;
-    if (f == "macho" || f == "dylib" || f == "macho64") return LinkFormat::MachOObject;
+    if (f == "macho" || f == "macho-exe" || f == "macho64") return LinkFormat::MachOExecutable;
+    if (f == "macho-obj" || f == "dylib") return LinkFormat::MachOObject;
+    if (f == "macho-a" || f == "macho-archive" || f == "macho-lib") return LinkFormat::MachOArchive;
     if (f == "wasm") return LinkFormat::WASMBinary;
     return LinkFormat::Auto;
 }
 
-std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
-    if (argc < 2) {
-        print_usage(argv[0]);
+static uint64_t parse_size_bytes(std::string_view sv) {
+    if (sv.empty()) return 0;
+    std::string s(sv);
+    uint64_t mult = 1;
+    char last = s.back();
+    if (last == 'k' || last == 'K') {
+        mult = 1024ULL;
+        s.pop_back();
+    } else if (last == 'm' || last == 'M') {
+        mult = 1024ULL * 1024ULL;
+        s.pop_back();
+    } else if (last == 'g' || last == 'G') {
+        mult = 1024ULL * 1024ULL * 1024ULL;
+        s.pop_back();
+    }
+    try {
+        if (s.starts_with("0x") || s.starts_with("0X")) {
+            return std::stoull(s, nullptr, 16) * mult;
+        }
+        return std::stoull(s, nullptr, 10) * mult;
+    } catch (...) {
+        return 0;
+    }
+}
+
+std::optional<LinkOptions> parse_args(const std::vector<std::string>& args, std::string_view prog_name) {
+    if (args.empty()) {
+        print_usage(prog_name);
         return std::nullopt;
     }
 
     LinkOptions opts;
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
+    for (size_t i = 0; i < args.size(); ++i) {
+        std::string_view arg = args[i];
 
         if (arg == "-h" || arg == "--help") {
-            print_usage(argv[0]);
+            print_usage(prog_name);
             return std::nullopt;
         }
         if (arg == "--version") {
@@ -190,8 +250,8 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-o") {
-            if (i + 1 < argc) {
-                opts.output_file = argv[++i];
+            if (i + 1 < args.size()) {
+                opts.output_file = args[++i];
                 continue;
             }
             std::cerr << "error[dgtl-link]: -o requires an output path\n";
@@ -203,8 +263,8 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-f") {
-            if (i + 1 < argc) {
-                opts.format = parse_format_str(argv[++i]);
+            if (i + 1 < args.size()) {
+                opts.format = parse_format_str(args[++i]);
                 continue;
             }
             std::cerr << "error[dgtl-link]: -f requires a format name\n";
@@ -216,8 +276,8 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-e") {
-            if (i + 1 < argc) {
-                opts.entry_symbol = argv[++i];
+            if (i + 1 < args.size()) {
+                opts.entry_symbol = args[++i];
                 continue;
             }
             std::cerr << "error[dgtl-link]: -e requires an entry symbol name\n";
@@ -229,8 +289,8 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-l") {
-            if (i + 1 < argc) {
-                opts.libraries.push_back(argv[++i]);
+            if (i + 1 < args.size()) {
+                opts.libraries.push_back(args[++i]);
                 continue;
             }
             std::cerr << "error[dgtl-link]: -l requires a library name\n";
@@ -246,15 +306,76 @@ std::optional<LinkOptions> parse_args(int argc, char* argv[]) {
             continue;
         }
         if (arg == "-L") {
-            if (i + 1 < argc) {
-                opts.lib_search_paths.push_back(argv[++i]);
+            if (i + 1 < args.size()) {
+                opts.lib_search_paths.push_back(args[++i]);
                 continue;
             }
             std::cerr << "error[dgtl-link]: -L requires a directory path\n";
             return std::nullopt;
         }
-        if (arg.rfind("-L", 0) == 0 && arg.size() > 2) {
-            opts.lib_search_paths.push_back(std::string(arg.substr(2)));
+        if (arg == "-m" || arg == "--arch") {
+            if (i + 1 < args.size()) {
+                opts.target_arch = args[++i];
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: --arch requires an architecture name\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("-m=", 0) == 0 || arg.rfind("--arch=", 0) == 0 || arg.rfind("-march=", 0) == 0) {
+            auto pos = arg.find('=');
+            opts.target_arch = std::string(arg.substr(pos + 1));
+            continue;
+        }
+        if (arg == "--stack-reserve") {
+            if (i + 1 < args.size()) {
+                opts.stack_reserve = parse_size_bytes(args[++i]);
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: --stack-reserve requires a size\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("--stack-reserve=", 0) == 0) {
+            auto pos = arg.find('=');
+            opts.stack_reserve = parse_size_bytes(arg.substr(pos + 1));
+            continue;
+        }
+        if (arg == "--stack-commit") {
+            if (i + 1 < args.size()) {
+                opts.stack_commit = parse_size_bytes(args[++i]);
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: --stack-commit requires a size\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("--stack-commit=", 0) == 0) {
+            auto pos = arg.find('=');
+            opts.stack_commit = parse_size_bytes(arg.substr(pos + 1));
+            continue;
+        }
+        if (arg == "--heap-reserve") {
+            if (i + 1 < args.size()) {
+                opts.heap_reserve = parse_size_bytes(args[++i]);
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: --heap-reserve requires a size\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("--heap-reserve=", 0) == 0) {
+            auto pos = arg.find('=');
+            opts.heap_reserve = parse_size_bytes(arg.substr(pos + 1));
+            continue;
+        }
+        if (arg == "--heap-commit") {
+            if (i + 1 < args.size()) {
+                opts.heap_commit = parse_size_bytes(args[++i]);
+                continue;
+            }
+            std::cerr << "error[dgtl-link]: --heap-commit requires a size\n";
+            return std::nullopt;
+        }
+        if (arg.rfind("--heap-commit=", 0) == 0) {
+            auto pos = arg.find('=');
+            opts.heap_commit = parse_size_bytes(arg.substr(pos + 1));
             continue;
         }
 
@@ -512,6 +633,42 @@ int run_link(const LinkOptions& opts) {
         }
     }
 
+    // Discover and load library archives from search paths (-L and -l)
+    std::vector<std::string> effective_search_paths = opts.lib_search_paths;
+    effective_search_paths.push_back(".");
+    effective_search_paths.push_back("lib");
+    effective_search_paths.push_back("build/lib");
+    effective_search_paths.push_back("build/DGTL_SDK/lib/x64");
+
+    for (const auto& lib_name : opts.libraries) {
+        bool found = false;
+        std::vector<std::string> cand_names = {
+            lib_name,
+            lib_name + ".lib",
+            "lib" + lib_name + ".a",
+            lib_name + ".a"
+        };
+        for (const auto& search_dir : effective_search_paths) {
+            for (const auto& cand : cand_names) {
+                fs::path full_p = fs::path(search_dir) / cand;
+                if (fs::exists(full_p)) {
+                    dgtl::object::archive::UniversalArchiveReader ar;
+                    if (ar.load_archive(full_p.string())) {
+                        if (opts.verbose) {
+                            std::cout << "[dgtl-link] Loaded library archive from search path: " << full_p.string()
+                                      << " (" << ar.members().size() << " members, "
+                                      << ar.symbol_map().size() << " symbols)\n";
+                        }
+                        archives.push_back(std::move(ar));
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+    }
+
     // Iteratively resolve undefined external symbols from archives
     if (!archives.empty()) {
         std::unordered_set<std::string> loaded_keys;
@@ -547,16 +704,27 @@ int run_link(const LinkOptions& opts) {
             for (const auto& sym_name : undefined_syms) {
                 for (size_t a_idx = 0; a_idx < archives.size(); ++a_idx) {
                     const auto& ar = archives[a_idx];
+                    std::string match_sym;
                     if (ar.has_symbol(sym_name)) {
-                        uint32_t mem_off = ar.symbol_map().at(sym_name);
+                        match_sym = sym_name;
+                    } else if (!sym_name.starts_with("__myzon_") && !sym_name.starts_with("__builtin_") && !sym_name.starts_with("__dgtl_rt_")) {
+                        if (size_t pos = sym_name.rfind("__"); pos != std::string::npos && pos > 0) {
+                            std::string bare = sym_name.substr(pos + 2);
+                            if (ar.has_symbol(bare)) {
+                                match_sym = bare;
+                            }
+                        }
+                    }
+                    if (!match_sym.empty()) {
+                        uint32_t mem_off = ar.symbol_map().at(match_sym);
                         std::string key = std::to_string(a_idx) + ":" + std::to_string(mem_off);
                         if (loaded_keys.contains(key)) continue;
                         loaded_keys.insert(key);
 
                         dgtl::object::ObjectFile member_obj(obj_fmt);
-                        if (ar.extract_object_file_for_symbol(sym_name, member_obj)) {
+                        if (ar.extract_object_file_for_symbol(match_sym, member_obj)) {
                             if (opts.verbose) {
-                                std::cout << "[dgtl-link] Extracted archive member for symbol: " << sym_name << "\n";
+                                std::cout << "[dgtl-link] Extracted archive member for symbol: " << sym_name << " (" << match_sym << ")\n";
                             }
                             merge_object_file(merged_obj, member_obj);
                             added_any = true;
@@ -568,8 +736,89 @@ int run_link(const LinkOptions& opts) {
         }
     }
 
-    if (!merged_obj.find_symbol(opts.entry_symbol)) {
-        merged_obj.add_function_symbol(opts.entry_symbol, 0, merged_obj.get_text_section().size(), true);
+    // Check remaining undefined symbols for DGTL sovereign math runtime intrinsics
+    std::vector<std::string> unresolved_math_intrinsics;
+    for (const auto& rel : merged_obj.relocations()) {
+        if (rel.symbol_name.empty()) continue;
+        const auto* sym = merged_obj.find_symbol(rel.symbol_name);
+        if (!sym || sym->is_external() || !sym->is_defined()) {
+            uint64_t dummy = 0;
+            if (dgtl::linker::SymbolResolver::resolve_builtin_runtime_symbol(rel.symbol_name, dummy)) {
+                unresolved_math_intrinsics.push_back(rel.symbol_name);
+            }
+        }
+    }
+    if (!unresolved_math_intrinsics.empty()) {
+        std::sort(unresolved_math_intrinsics.begin(), unresolved_math_intrinsics.end());
+        unresolved_math_intrinsics.erase(std::unique(unresolved_math_intrinsics.begin(), unresolved_math_intrinsics.end()), unresolved_math_intrinsics.end());
+
+        // Automatically merge sovereign static runtime modules for zero-dependency standalone execution
+        static constexpr std::string_view kCandidateRuntimeObjects[] = {
+            "build/obj/modules/dgtl_runtime_Runtime_Maths.o",
+            "build/obj/modules/dgtl_runtime_Runtime_Intrinsics.o",
+            "obj/modules/dgtl_runtime_Runtime_Maths.o",
+            "obj/modules/dgtl_runtime_Runtime_Intrinsics.o",
+            "dgtl_runtime_Runtime_Maths.o",
+            "dgtl_runtime_Runtime_Intrinsics.o",
+            "dgtl.lib",
+            "build/lib/dgtl.lib",
+            "build/lib/libdgtl_rt.a",
+            "lib/dgtl.lib"
+        };
+
+        std::vector<fs::path> candidate_dirs = {
+            fs::current_path(),
+            fs::current_path() / "build",
+            fs::current_path() / "build" / "lib",
+        };
+#if defined(_WIN32) || defined(_WIN64)
+        char mod_path[MAX_PATH] = {0};
+        if (::GetModuleFileNameA(nullptr, mod_path, MAX_PATH) > 0) {
+            fs::path exe_dir = fs::path(mod_path).parent_path();
+            candidate_dirs.push_back(exe_dir);
+            candidate_dirs.push_back(exe_dir.parent_path());
+            candidate_dirs.push_back(exe_dir.parent_path().parent_path());
+        }
+#endif
+        if (const char* env_dgtl = std::getenv("DGTL_ROOT")) {
+            candidate_dirs.push_back(fs::path(env_dgtl));
+            candidate_dirs.push_back(fs::path(env_dgtl) / "build");
+        }
+        if (const char* env_sdk = std::getenv("DGTL_SDK_ROOT")) {
+            candidate_dirs.push_back(fs::path(env_sdk));
+            candidate_dirs.push_back(fs::path(env_sdk) / "build");
+        }
+
+        std::unordered_set<std::string> loaded_rt_paths;
+        for (const auto& base_dir : candidate_dirs) {
+            for (const auto& rt_rel : kCandidateRuntimeObjects) {
+                fs::path full_p = base_dir / rt_rel;
+                std::error_code ec;
+                if (!fs::exists(full_p, ec) || fs::is_directory(full_p, ec)) continue;
+                std::string full_str = full_p.string();
+                if (loaded_rt_paths.contains(full_str)) continue;
+                loaded_rt_paths.insert(full_str);
+
+                dgtl::object::ObjectFile rt_obj(obj_fmt);
+                if (elf_reader.read_file(full_str, rt_obj) || pe_reader.read_file(full_str, rt_obj)) {
+                    merge_object_file(merged_obj, rt_obj);
+                    if (opts.verbose) {
+                        std::cout << "[dgtl-link] Statically embedded sovereign runtime module: " << full_str << "\n";
+                    }
+                }
+            }
+        }
+    }
+
+    std::string effective_entry = opts.entry_symbol;
+    if (opts.entry_symbol == "DGTL_kernel_entry" && !merged_obj.find_symbol("DGTL_kernel_entry")) {
+        if (merged_obj.find_symbol("main")) {
+            effective_entry = "main";
+        }
+    }
+
+    if (!merged_obj.find_symbol(effective_entry)) {
+        merged_obj.add_function_symbol(effective_entry, 0, merged_obj.get_text_section().size(), true);
     }
 
     std::vector<uint8_t> out_binary;
@@ -598,6 +847,12 @@ int run_link(const LinkOptions& opts) {
         case LinkFormat::MachOObject:
             driver_fmt = dgtl::linker::OutputFormat::MachOObject;
             break;
+        case LinkFormat::MachOExecutable:
+            driver_fmt = dgtl::linker::OutputFormat::MachOExecutable;
+            break;
+        case LinkFormat::MachOArchive:
+            driver_fmt = dgtl::linker::OutputFormat::MachOArchive;
+            break;
         case LinkFormat::WASMBinary:
             driver_fmt = dgtl::linker::OutputFormat::WASMBinary;
             break;
@@ -608,28 +863,77 @@ int run_link(const LinkOptions& opts) {
 
     if (opts.format == LinkFormat::PEExecutable) {
         dgtl::linker::pe::SovereignPELinkerOptions pe_opts;
-        pe_opts.entry_symbol = opts.entry_symbol;
+        pe_opts.entry_symbol = effective_entry;
         if (opts.image_base != 0) {
             pe_opts.image_base = opts.image_base;
         }
-        pe_opts.additional_imports = opts.libraries;
+        if (opts.stack_reserve != 0) {
+            pe_opts.stack_reserve = opts.stack_reserve;
+        }
+        if (opts.stack_commit != 0) {
+            pe_opts.stack_commit = opts.stack_commit;
+        }
+        if (opts.heap_reserve != 0) {
+            pe_opts.heap_reserve = opts.heap_reserve;
+        }
+        if (opts.heap_commit != 0) {
+            pe_opts.heap_commit = opts.heap_commit;
+        }
+        pe_opts.sovereign = true;
         auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(merged_obj, out_binary, pe_opts);
         if (!res.success) {
             std::cerr << "error[dgtl-link]: PE synthesis failed: " << res.message << "\n";
+            return 3;
+        }
+    } else if (opts.format == LinkFormat::MachOExecutable) {
+        dgtl::linker::macho::SovereignMachOLinker::Options macho_opts;
+        macho_opts.entry_symbol = opts.entry_symbol;
+        if (opts.image_base != 0) {
+            macho_opts.image_base = opts.image_base;
+        }
+        std::string lowered_arch = opts.target_arch;
+        std::transform(lowered_arch.begin(), lowered_arch.end(), lowered_arch.begin(), ::tolower);
+        if (lowered_arch == "arm64" || lowered_arch == "aarch64") {
+            macho_opts.cpu_type = dgtl::linker::macho::CPU_TYPE_ARM64_VAL;
+            macho_opts.page_size = 0x4000;
+        } else {
+            macho_opts.cpu_type = dgtl::linker::macho::CPU_TYPE_X86_64_VAL;
+            macho_opts.page_size = 0x1000;
+        }
+        macho_opts.emit_ad_hoc_signature = true;
+        macho_opts.sovereign = true;
+        if (!dgtl::linker::macho::SovereignMachOLinker::link_executable(merged_obj, out_binary, macho_opts)) {
+            std::cerr << "error[dgtl-link]: Mach-O executable synthesis failed\n";
             return 3;
         }
     } else if (opts.format == LinkFormat::WASMBinary) {
         dgtl::linker::wasm::WASMBinaryLink wasm_linker;
         dgtl::linker::wasm::WASMLinkerOptions wasm_opts;
         wasm_opts.entry_symbol = opts.entry_symbol;
+        wasm_opts.sovereign = true;
         if (!wasm_linker.link(merged_obj, out_binary, wasm_opts)) {
             std::cerr << "error[dgtl-link]: WASM binary synthesis failed\n";
             return 3;
         }
     } else if (opts.format == LinkFormat::ELFExecutable) {
         dgtl::linker::elf::ELFLinker elf_linker;
-        uint64_t base = (opts.image_base != 0) ? opts.image_base : 0x400000;
-        if (!elf_linker.link_executable(merged_obj, out_binary, base, opts.entry_symbol)) {
+        dgtl::linker::elf::ELFLinker::SovereignELFLinkerOptions elf_opts;
+        elf_opts.image_base = (opts.image_base != 0) ? opts.image_base : 0x400000;
+        elf_opts.entry_symbol = opts.entry_symbol;
+        elf_opts.sovereign = true;
+        std::string lowered_arch = opts.target_arch;
+        std::transform(lowered_arch.begin(), lowered_arch.end(), lowered_arch.begin(), ::tolower);
+        if (lowered_arch == "arm64" || lowered_arch == "aarch64") {
+            elf_opts.target_machine = dgtl::linker::elf::EM_AARCH64;
+            elf_opts.page_size = 0x10000;
+        } else if (lowered_arch == "riscv" || lowered_arch == "riscv64") {
+            elf_opts.target_machine = dgtl::linker::elf::EM_RISCV;
+            elf_opts.page_size = 0x1000;
+        } else {
+            elf_opts.target_machine = dgtl::linker::elf::EM_X86_64;
+            elf_opts.page_size = 0x1000;
+        }
+        if (!elf_linker.link_executable(merged_obj, out_binary, elf_opts)) {
             std::cerr << "error[dgtl-link]: ELF executable synthesis failed\n";
             return 3;
         }
@@ -670,8 +974,10 @@ int run_link(const LinkOptions& opts) {
 
 } // namespace dgtl::cli::link
 
-int main(int argc, char* argv[]) {
-    auto opts = dgtl::cli::link::parse_args(argc, argv);
+int dgtl_link_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    const std::string prog_name = invoked_as.empty() ? "dgtl-link" : std::string(invoked_as);
+    auto expanded = dgtl::tools::ArgExpander::expand_args(raw_args);
+    auto opts = dgtl::cli::link::parse_args(expanded, prog_name);
     if (!opts.has_value()) {
         return 1;
     }

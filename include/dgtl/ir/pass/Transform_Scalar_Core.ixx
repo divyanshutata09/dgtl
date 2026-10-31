@@ -45,12 +45,16 @@ module;
 export module dgtl.ir.pass.transform_scalar_core;
 
 import dgtl.arena;
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir.gen;
+import dgtl.ir_enums;
+import dgtl.ir_node;
 import dgtl.op_traits;
 import dgtl.ir.pipeline.pass_manager_config;
 import dgtl.ir.analysis.cost_model;
 import dgtl.ir_formal_verifier;
 import dgtl.ir.analysis.liveness_memory_dependency_unified;
+import dgtl.math;
 
 export namespace dgtl::ir::pass {
 
@@ -125,10 +129,31 @@ inline constexpr std::uint16_t kBarrierFlagMask = static_cast<std::uint16_t>(
         case ir::OpCode::MUL_F32:
         case ir::OpCode::DIV_F32:
         case ir::OpCode::FMA_F32:
+        case ir::OpCode::FAST_INV_SQRT:
+        case ir::OpCode::SQRT_F32:
+        case ir::OpCode::SIN_F32:
+        case ir::OpCode::COS_F32:
+        case ir::OpCode::TAN_F32:
+        case ir::OpCode::EXP_F32:
+        case ir::OpCode::LOG_F32:
+        case ir::OpCode::POW_F32:
         case ir::OpCode::ADD_F64:
         case ir::OpCode::SUB_F64:
         case ir::OpCode::MUL_F64:
         case ir::OpCode::DIV_F64:
+        case ir::OpCode::FMA_F64:
+        case ir::OpCode::SQRT_F64:
+        case ir::OpCode::SIN_F64:
+        case ir::OpCode::COS_F64:
+        case ir::OpCode::TAN_F64:
+        case ir::OpCode::EXP_F64:
+        case ir::OpCode::LOG_F64:
+        case ir::OpCode::POW_F64:
+        case ir::OpCode::GELU_F32:
+        case ir::OpCode::SILU_F32:
+        case ir::OpCode::SIGMOID_F32:
+        case ir::OpCode::SWIGLU_F32:
+        case ir::OpCode::RMS_NORM_F32:
         case ir::OpCode::CMP_EQ_I32:
         case ir::OpCode::CMP_NE_I32:
         case ir::OpCode::CMP_LT_I32:
@@ -170,8 +195,10 @@ inline constexpr std::uint16_t kBarrierFlagMask = static_cast<std::uint16_t>(
         case ir::OpCode::XOR_I64:
         case ir::OpCode::ADD_F32:
         case ir::OpCode::MUL_F32:
+        case ir::OpCode::FMA_F32:
         case ir::OpCode::ADD_F64:
         case ir::OpCode::MUL_F64:
+        case ir::OpCode::FMA_F64:
             return true;
         default:
             return false;
@@ -667,7 +694,7 @@ public:
                     s_core.op_c = ir::INVALID_SLOT;
 
                     if (node.result_id < const_table.size()) {
-                        const_table[node.result_id] = static_cast<uint64_t>(collapsed->low);
+                        const_table[node.result_id] = (static_cast<uint64_t>(collapsed->high) << 32) | static_cast<uint64_t>(collapsed->low);
                     }
                 } else {
                     s_atom.opcode = simpler->opcode;
@@ -699,9 +726,9 @@ public:
 
 private:
     void propagate_const(const ir::IRNode& node) noexcept {
-        if (node.opcode == ir::OpCode::LOAD_IMM) {
+        if (node.opcode == ir::OpCode::LOAD_IMM || node.opcode == ir::OpCode::IMMEDIATE) {
             if (node.result_id < const_table.size()) {
-                const_table[node.result_id] = static_cast<uint64_t>(node.op_a);
+                const_table[node.result_id] = (static_cast<uint64_t>(node.op_b) << 32) | static_cast<uint64_t>(node.op_a);
             }
         }
     }
@@ -744,37 +771,224 @@ private:
         auto a = get_const(node.op_a);
         auto b = get_const(node.op_b);
 
+        auto to_i64_res = [](uint64_t v) noexcept -> dgtl::core::ConstantResult {
+            return dgtl::core::ConstantResult{
+                static_cast<uint32_t>(v & 0xFFFFFFFFu),
+                static_cast<uint32_t>((v >> 32) & 0xFFFFFFFFu)
+            };
+        };
+
+        auto as_f32 = [](uint64_t v) noexcept -> float {
+            const uint32_t u = static_cast<uint32_t>(v);
+            return std::bit_cast<float>(u);
+        };
+
+        auto to_f32_res = [](float f) noexcept -> dgtl::core::ConstantResult {
+            const uint32_t u = std::bit_cast<uint32_t>(f);
+            return dgtl::core::ConstantResult{ u, 0 };
+        };
+
+        auto as_f64 = [](uint64_t v) noexcept -> double {
+            return std::bit_cast<double>(v);
+        };
+
+        auto to_f64_res = [](double d) noexcept -> dgtl::core::ConstantResult {
+            const uint64_t u = std::bit_cast<uint64_t>(d);
+            return dgtl::core::ConstantResult{
+                static_cast<uint32_t>(u & 0xFFFFFFFFu),
+                static_cast<uint32_t>((u >> 32) & 0xFFFFFFFFu)
+            };
+        };
+
         switch (node.opcode) {
+            // 32-bit Integer Arithmetic
             case ir::OpCode::ADD_I32:
-                if (a && b)
-                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a + *b), 0 };
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a + *b), 0 };
+                if (b && *b == 0) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a), 0 };
+                if (a && *a == 0) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*b), 0 };
                 break;
             case ir::OpCode::MUL_I32:
-                if (a && b)
-                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a * *b), 0 };
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a * *b), 0 };
+                if ((a && *a == 0) || (b && *b == 0)) return dgtl::core::ConstantResult{ 0, 0 };
+                if (b && *b == 1 && a) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a), 0 };
+                if (a && *a == 1 && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*b), 0 };
                 break;
             case ir::OpCode::SUB_I32:
-                if (a && b)
-                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a - *b), 0 };
-                if (node.op_a == node.op_b && !node.is_volatile())
-                    return dgtl::core::ConstantResult{0, 0};
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a - *b), 0 };
+                if (node.op_a == node.op_b && !node.is_volatile()) return dgtl::core::ConstantResult{0, 0};
+                if (b && *b == 0 && a) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a), 0 };
                 break;
             case ir::OpCode::AND_I32:
-                if (a && b)
-                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a & *b), 0 };
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a & *b), 0 };
+                if ((a && *a == 0) || (b && *b == 0)) return dgtl::core::ConstantResult{0, 0};
+                if (node.op_a == node.op_b && a) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a), 0 };
                 break;
             case ir::OpCode::OR_I32:
-                if (a && b)
-                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a | *b), 0 };
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a | *b), 0 };
+                if (node.op_a == node.op_b && a) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a), 0 };
                 break;
             case ir::OpCode::XOR_I32:
-                if (a && b)
-                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a ^ *b), 0 };
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a ^ *b), 0 };
+                if (node.op_a == node.op_b && !node.is_volatile()) return dgtl::core::ConstantResult{0, 0};
                 break;
             case ir::OpCode::DIV_I32:
-                if (a && b && *b != 0)
+                if (a && b && static_cast<uint32_t>(*b) != 0)
                     return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a / *b), 0 };
                 break;
+            case ir::OpCode::MOD_I32:
+                if (a && b && static_cast<uint32_t>(*b) != 0)
+                    return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a % *b), 0 };
+                break;
+            case ir::OpCode::SHL_I32:
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a << (*b & 31u)), 0 };
+                break;
+            case ir::OpCode::SHR_I32:
+                if (a && b) return dgtl::core::ConstantResult{ static_cast<uint32_t>(*a >> (*b & 31u)), 0 };
+                break;
+
+            // 64-bit Integer Arithmetic
+            case ir::OpCode::ADD_I64:
+                if (a && b) return to_i64_res(*a + *b);
+                if (b && *b == 0 && a) return to_i64_res(*a);
+                if (a && *a == 0 && b) return to_i64_res(*b);
+                break;
+            case ir::OpCode::SUB_I64:
+                if (a && b) return to_i64_res(*a - *b);
+                if (node.op_a == node.op_b && !node.is_volatile()) return to_i64_res(0);
+                if (b && *b == 0 && a) return to_i64_res(*a);
+                break;
+            case ir::OpCode::MUL_I64:
+                if (a && b) return to_i64_res(*a * *b);
+                if ((a && *a == 0) || (b && *b == 0)) return to_i64_res(0);
+                if (b && *b == 1 && a) return to_i64_res(*a);
+                if (a && *a == 1 && b) return to_i64_res(*b);
+                break;
+            case ir::OpCode::DIV_I64:
+                if (a && b && *b != 0) return to_i64_res(*a / *b);
+                break;
+            case ir::OpCode::MOD_I64:
+                if (a && b && *b != 0) return to_i64_res(*a % *b);
+                break;
+            case ir::OpCode::AND_I64:
+                if (a && b) return to_i64_res(*a & *b);
+                if ((a && *a == 0) || (b && *b == 0)) return to_i64_res(0);
+                if (node.op_a == node.op_b && a) return to_i64_res(*a);
+                break;
+            case ir::OpCode::OR_I64:
+                if (a && b) return to_i64_res(*a | *b);
+                if (node.op_a == node.op_b && a) return to_i64_res(*a);
+                break;
+            case ir::OpCode::XOR_I64:
+                if (a && b) return to_i64_res(*a ^ *b);
+                if (node.op_a == node.op_b && !node.is_volatile()) return to_i64_res(0);
+                break;
+
+            // 32-bit Floating Point Arithmetic & Sovereign Math
+            case ir::OpCode::ADD_F32:
+                if (a && b) return to_f32_res(as_f32(*a) + as_f32(*b));
+                break;
+            case ir::OpCode::SUB_F32:
+                if (a && b) return to_f32_res(as_f32(*a) - as_f32(*b));
+                break;
+            case ir::OpCode::MUL_F32:
+                if (a && b) return to_f32_res(as_f32(*a) * as_f32(*b));
+                break;
+            case ir::OpCode::DIV_F32:
+                if (a && b && as_f32(*b) != 0.0f) return to_f32_res(as_f32(*a) / as_f32(*b));
+                break;
+            case ir::OpCode::SQRT_F32:
+                if (a && as_f32(*a) >= 0.0f)
+                    return to_f32_res(static_cast<float>(dgtl::utils::math::sqrt(as_f32(*a))));
+                break;
+            case ir::OpCode::FMA_F32: {
+                auto c = get_const(node.op_c);
+                if (a && b && c)
+                    return to_f32_res(static_cast<float>(dgtl::utils::math::fma(as_f32(*a), as_f32(*b), as_f32(*c))));
+                break;
+            }
+            case ir::OpCode::SIN_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::utils::math::sin(static_cast<double>(as_f32(*a)))));
+                break;
+            case ir::OpCode::COS_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::utils::math::cos(static_cast<double>(as_f32(*a)))));
+                break;
+            case ir::OpCode::TAN_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::utils::math::tan(static_cast<double>(as_f32(*a)))));
+                break;
+            case ir::OpCode::EXP_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::utils::math::exp(static_cast<double>(as_f32(*a)))));
+                break;
+            case ir::OpCode::LOG_F32:
+                if (a && as_f32(*a) > 0.0f) return to_f32_res(static_cast<float>(dgtl::utils::math::log(static_cast<double>(as_f32(*a)))));
+                break;
+            case ir::OpCode::POW_F32:
+                if (a && b) return to_f32_res(static_cast<float>(dgtl::utils::math::pow(static_cast<double>(as_f32(*a)), static_cast<double>(as_f32(*b)))));
+                break;
+
+            // 64-bit Floating Point Arithmetic & Sovereign Math
+            case ir::OpCode::ADD_F64:
+                if (a && b) return to_f64_res(as_f64(*a) + as_f64(*b));
+                break;
+            case ir::OpCode::SUB_F64:
+                if (a && b) return to_f64_res(as_f64(*a) - as_f64(*b));
+                break;
+            case ir::OpCode::MUL_F64:
+                if (a && b) return to_f64_res(as_f64(*a) * as_f64(*b));
+                break;
+            case ir::OpCode::DIV_F64:
+                if (a && b && as_f64(*b) != 0.0) return to_f64_res(as_f64(*a) / as_f64(*b));
+                break;
+            case ir::OpCode::SQRT_F64:
+                if (a && as_f64(*a) >= 0.0)
+                    return to_f64_res(dgtl::utils::math::sqrt(as_f64(*a)));
+                break;
+            case ir::OpCode::FMA_F64: {
+                auto c = get_const(node.op_c);
+                if (a && b && c)
+                    return to_f64_res(dgtl::utils::math::fma(as_f64(*a), as_f64(*b), as_f64(*c)));
+                break;
+            }
+
+            // Transcendental Functions via dgtl.math_utils
+            case ir::OpCode::SIN_F64:
+                if (a) return to_f64_res(dgtl::utils::math::sin(as_f64(*a)));
+                break;
+            case ir::OpCode::COS_F64:
+                if (a) return to_f64_res(dgtl::utils::math::cos(as_f64(*a)));
+                break;
+            case ir::OpCode::TAN_F64:
+                if (a) return to_f64_res(dgtl::utils::math::tan(as_f64(*a)));
+                break;
+            case ir::OpCode::EXP_F64:
+                if (a) return to_f64_res(dgtl::utils::math::exp(as_f64(*a)));
+                break;
+            case ir::OpCode::LOG_F64:
+                if (a && as_f64(*a) > 0.0) return to_f64_res(dgtl::utils::math::log(as_f64(*a)));
+                break;
+            case ir::OpCode::POW_F64:
+                if (a && b) return to_f64_res(dgtl::utils::math::pow(as_f64(*a), as_f64(*b)));
+                break;
+
+            // Neural & GenAI Activations via dgtl.math.genai
+            case ir::OpCode::GELU_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::math::genai::fast_gelu(as_f32(*a))));
+                break;
+            case ir::OpCode::SILU_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::math::genai::silu(as_f32(*a))));
+                break;
+            case ir::OpCode::SIGMOID_F32:
+                if (a) return to_f32_res(static_cast<float>(dgtl::math::genai::sigmoid(as_f32(*a))));
+                break;
+            case ir::OpCode::SWIGLU_F32:
+                if (a && b) return to_f32_res(static_cast<float>(dgtl::math::genai::swiglu(as_f32(*a), as_f32(*b))));
+                break;
+
+            // Spatial Math
+            case ir::OpCode::FAST_INV_SQRT:
+                if (a && as_f32(*a) > 0.0f)
+                    return to_f32_res(1.0f / static_cast<float>(dgtl::utils::math::sqrt(as_f32(*a))));
+                break;
+
             case ir::OpCode::SELECT: {
                 auto c = get_const(node.op_c);
                 if (a && b && c) {
@@ -896,7 +1110,7 @@ private:
     }
 
     static bool is_mul(ir::OpCode op) noexcept {
-        return op == ir::OpCode::MUL_I32 || op == ir::OpCode::MUL_F32;
+        return op == ir::OpCode::MUL_I32 || op == ir::OpCode::MUL_F32 || op == ir::OpCode::MUL_F64;
     }
 
     void sync_to_shadow(ir::IRStream& s, uint32_t idx) noexcept {
@@ -925,25 +1139,38 @@ private:
             if (is_barrier(consumer)) break;
 
             if (consumer.opcode == ir::OpCode::ADD_I32 ||
-                consumer.opcode == ir::OpCode::ADD_F32) {
+                consumer.opcode == ir::OpCode::ADD_F32 ||
+                consumer.opcode == ir::OpCode::ADD_F64) {
 
-                if (consumer.op_a == producer.result_id ||
-                    consumer.op_b == producer.result_id) {
+                if ((producer.opcode == ir::OpCode::MUL_F32 && consumer.opcode == ir::OpCode::ADD_F32) ||
+                    (producer.opcode == ir::OpCode::MUL_F64 && consumer.opcode == ir::OpCode::ADD_F64) ||
+                    (producer.opcode == ir::OpCode::MUL_I32 && consumer.opcode == ir::OpCode::ADD_I32)) {
 
-                    if (has_multiple_users(s, producer.result_id)) return std::nullopt;
+                    if (consumer.op_a == producer.result_id ||
+                        consumer.op_b == producer.result_id) {
 
-                    return FusionMatch{
-                        j,
-                        (producer.opcode == ir::OpCode::MUL_F32)
-                            ? ir::OpCode::FMA_F32
-                            : ir::OpCode::ADD_I32,
-                        producer.op_a,
-                        producer.op_b,
-                        (consumer.op_a == producer.result_id)
-                            ? consumer.op_b
-                            : consumer.op_a,
-                        consumer.result_id
-                    };
+                        if (has_multiple_users(s, producer.result_id)) return std::nullopt;
+
+                        ir::OpCode fused = ir::OpCode::NOP;
+                        if (producer.opcode == ir::OpCode::MUL_F32) {
+                            fused = ir::OpCode::FMA_F32;
+                        } else if (producer.opcode == ir::OpCode::MUL_F64) {
+                            fused = ir::OpCode::FMA_F64;
+                        } else {
+                            fused = ir::OpCode::ADD_I32;
+                        }
+
+                        return FusionMatch{
+                            j,
+                            fused,
+                            producer.op_a,
+                            producer.op_b,
+                            (consumer.op_a == producer.result_id)
+                                ? consumer.op_b
+                                : consumer.op_a,
+                            consumer.result_id
+                        };
+                    }
                 }
             }
         }

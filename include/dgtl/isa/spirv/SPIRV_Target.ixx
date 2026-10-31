@@ -32,15 +32,27 @@ export namespace dgtl::isa::spirv {
 inline constexpr std::string_view kTargetName = "spirv";
 inline constexpr std::string_view kTargetTripleDefault = "spirv64-unknown-unknown";
 
+struct SPIRVTargetSubtarget {
+    SPIRVTargetRegisterInfo reg_info{};
+    SPIRVTargetInstructionInfo instr_info{};
+    SPIRVFrameInfo frame_info{};
+    SPIRVABI spirv_abi{};
+    emitter::SPIRVCodeEmitter code_emitter{};
+
+    [[nodiscard]] const dgtl::machine::TargetABI& abi() const noexcept {
+        return spirv_abi;
+    }
+
+    [[nodiscard]] dgtl::machine::TargetSubtarget as_subtarget() const noexcept {
+        return dgtl::machine::TargetSubtarget{
+            reg_info, instr_info, frame_info, spirv_abi, &code_emitter
+        };
+    }
+};
+
 [[nodiscard]] inline const dgtl::machine::TargetSubtarget& get_spirv_target_subtarget() noexcept {
-    static const SPIRVTargetRegisterInfo reg_info{};
-    static const SPIRVTargetInstructionInfo instr_info{};
-    static const SPIRVFrameInfo frame_info{};
-    static const SPIRVABI spirv_abi{};
-    static const emitter::SPIRVCodeEmitter code_emitter{};
-    static const dgtl::machine::TargetSubtarget subtarget{
-        reg_info, instr_info, frame_info, spirv_abi, &code_emitter
-    };
+    static const SPIRVTargetSubtarget subtarget_holder{};
+    static const dgtl::machine::TargetSubtarget subtarget = subtarget_holder.as_subtarget();
     return subtarget;
 }
 

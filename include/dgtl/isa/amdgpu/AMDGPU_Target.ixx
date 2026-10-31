@@ -32,14 +32,27 @@ export namespace dgtl::isa::amdgpu {
 inline constexpr std::string_view kTargetName = "amdgcn";
 inline constexpr std::string_view kTargetTripleDefault = "amdgcn-amd-amdhsa";
 
+struct AMDGPUTargetSubtarget {
+    ROCmTargetRegisterInfo reg_info{};
+    ROCmTargetInstructionInfo instr_info{};
+    ROCmFrameInfo frame_info{};
+    ROCmABI rocm_abi{};
+    ROCmEmitter emitter{};
+
+    [[nodiscard]] const dgtl::machine::TargetABI& abi() const noexcept {
+        return rocm_abi;
+    }
+
+    [[nodiscard]] dgtl::machine::TargetSubtarget as_subtarget() const noexcept {
+        return dgtl::machine::TargetSubtarget{
+            reg_info, instr_info, frame_info, rocm_abi, &emitter
+        };
+    }
+};
+
 [[nodiscard]] inline const dgtl::machine::TargetSubtarget& get_amdgpu_target_subtarget() noexcept {
-    static const ROCmTargetRegisterInfo reg_info{};
-    static const ROCmTargetInstructionInfo instr_info{};
-    static const ROCmFrameInfo frame_info{};
-    static const ROCmABI rocm_abi{};
-    static const dgtl::machine::TargetSubtarget subtarget{
-        reg_info, instr_info, frame_info, rocm_abi, nullptr
-    };
+    static const AMDGPUTargetSubtarget subtarget_holder{};
+    static const dgtl::machine::TargetSubtarget subtarget = subtarget_holder.as_subtarget();
     return subtarget;
 }
 

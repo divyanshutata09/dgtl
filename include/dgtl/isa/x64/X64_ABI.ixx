@@ -283,6 +283,17 @@ public:
         std::uint32_t arg_index = 0;
         std::uint32_t stack_offset = 32u; // starts after the 32-byte shadow space
 
+        // Win64 ABI sret: if return value is an aggregate larger than 8 bytes,
+        // RCX is allocated for the hidden return pointer and user arguments start at RDX (arg_index = 1).
+        const bool has_sret = return_value.has_value() &&
+            (return_value->size_bytes > 8u &&
+             return_value->kind != ABIValueKind::FloatingPoint &&
+             return_value->kind != ABIValueKind::Vector);
+
+        if (has_sret) {
+            arg_index = 1u;
+        }
+
         for (const ABIValue& value : arguments) {
             const bool fp =
                 value.kind == ABIValueKind::FloatingPoint ||
@@ -292,11 +303,12 @@ public:
 
             const std::uint32_t size = std::max<std::uint32_t>(value.size_bytes, 1u);
             const std::uint32_t aligned = (size + 7u) & ~7u;
+            const std::uint32_t slots = std::max<std::uint32_t>((aligned + 7u) / 8u, 1u);
 
             ABIArgLocation location{};
             location.size_bytes = size;
 
-            if (arg_index < 4u) {
+            if (arg_index + slots <= 4u) {
                 location.kind = ABIArgLocationKind::Register;
                 if (fp) {
                     location.reg = {
@@ -317,14 +329,15 @@ public:
                             : RegisterClassKind::General
                     };
                 }
+                arg_index += slots;
             } else {
                 location.kind = ABIArgLocationKind::Stack;
                 location.stack_offset = static_cast<std::int32_t>(stack_offset);
                 stack_offset += aligned;
+                arg_index = std::max<std::uint32_t>(arg_index + slots, 4u);
             }
 
             plan.arguments.push_back(location);
-            ++arg_index;
         }
 
         plan.stack_bytes = (stack_offset + 15u) & ~15u;
@@ -346,6 +359,17 @@ public:
                         value.preferred_class == RegisterClassKind::Vector
                             ? RegisterClassKind::Vector
                             : RegisterClassKind::FloatingPoint
+                    },
+                    0,
+                    value.size_bytes
+                };
+            } else if (has_sret) {
+                plan.return_value = {
+                    ABIArgLocationKind::Indirect,
+                    {
+                        0u, // RAX (callee returns hidden pointer in RAX)
+                        RegisterKind::Physical,
+                        RegisterClassKind::Address
                     },
                     0,
                     value.size_bytes

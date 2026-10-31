@@ -11,6 +11,5 @@
 
 export module dgtl.api.backend_driver;
 
-export import dgtl.ir;
 export import dgtl.linker.driver.api;
 export import dgtl.linker.utils;

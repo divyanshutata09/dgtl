@@ -505,27 +505,55 @@ public:
                             break;
 
                         // Floating-point Arithmetic
-                        case dgtl::machine::MachineSemanticKind::FloatAdd:
-                            emit_mir_binop(body, wasm_op::F64_ADD, inst, max_reg);
+                        case dgtl::machine::MachineSemanticKind::FloatAdd: {
+                            const bool is_f32 = (inst.form == dgtl::machine::MachineForm::FloatBinary32 || inst.opcode == dgtl::machine::GM_FADD32);
+                            emit_mir_binop(body, is_f32 ? wasm_op::F32_ADD : wasm_op::F64_ADD, inst, max_reg);
                             break;
-                        case dgtl::machine::MachineSemanticKind::FloatSub:
-                            emit_mir_binop(body, wasm_op::F64_SUB, inst, max_reg);
+                        }
+                        case dgtl::machine::MachineSemanticKind::FloatSub: {
+                            const bool is_f32 = (inst.form == dgtl::machine::MachineForm::FloatBinary32 || inst.opcode == dgtl::machine::GM_FSUB32);
+                            emit_mir_binop(body, is_f32 ? wasm_op::F32_SUB : wasm_op::F64_SUB, inst, max_reg);
                             break;
-                        case dgtl::machine::MachineSemanticKind::FloatMul:
-                            emit_mir_binop(body, wasm_op::F64_MUL, inst, max_reg);
+                        }
+                        case dgtl::machine::MachineSemanticKind::FloatMul: {
+                            const bool is_f32 = (inst.form == dgtl::machine::MachineForm::FloatBinary32 || inst.opcode == dgtl::machine::GM_FMUL32);
+                            emit_mir_binop(body, is_f32 ? wasm_op::F32_MUL : wasm_op::F64_MUL, inst, max_reg);
                             break;
-                        case dgtl::machine::MachineSemanticKind::FloatDiv:
-                            emit_mir_binop(body, wasm_op::F64_DIV, inst, max_reg);
+                        }
+                        case dgtl::machine::MachineSemanticKind::FloatDiv: {
+                            const bool is_f32 = (inst.form == dgtl::machine::MachineForm::FloatBinary32 || inst.opcode == dgtl::machine::GM_FDIV32);
+                            emit_mir_binop(body, is_f32 ? wasm_op::F32_DIV : wasm_op::F64_DIV, inst, max_reg);
                             break;
+                        }
+                        case dgtl::machine::MachineSemanticKind::FloatFma: {
+                            if (inst.operands.size() >= 3 && inst.operands[0].is_register()) {
+                                const uint32_t dst = inst.operands[0].reg.id;
+                                const bool is_f32 = (inst.opcode == dgtl::machine::GM_FFMA32);
+                                body.push_back(wasm_op::LOCAL_GET);
+                                emit_leb128_to(body, inst.operands[1].reg.id);
+                                body.push_back(wasm_op::LOCAL_GET);
+                                emit_leb128_to(body, inst.operands[2].reg.id);
+                                body.push_back(is_f32 ? wasm_op::F32_MUL : wasm_op::F64_MUL);
+                                if (inst.operands.size() >= 4 && inst.operands[3].is_register()) {
+                                    body.push_back(wasm_op::LOCAL_GET);
+                                    emit_leb128_to(body, inst.operands[3].reg.id);
+                                    body.push_back(is_f32 ? wasm_op::F32_ADD : wasm_op::F64_ADD);
+                                }
+                                body.push_back(wasm_op::LOCAL_SET);
+                                emit_leb128_to(body, dst);
+                            }
+                            break;
+                        }
 
                         // Algebra & Math
                         case dgtl::machine::MachineSemanticKind::FloatSqrt: {
                             if (!inst.operands.empty() && inst.operands[0].is_register()) {
                                 const uint32_t dst = inst.operands[0].reg.id;
                                 const uint32_t src = inst.operands.size() > 1 && inst.operands[1].is_register() ? inst.operands[1].reg.id : dst;
+                                const bool is_f32 = (inst.form == dgtl::machine::MachineForm::FloatBinary32 || inst.opcode == dgtl::machine::GM_FSQRT32);
                                 body.push_back(wasm_op::LOCAL_GET);
                                 emit_leb128_to(body, src);
-                                body.push_back(wasm_op::F64_SQRT);
+                                body.push_back(is_f32 ? wasm_op::F32_SQRT : wasm_op::F64_SQRT);
                                 body.push_back(wasm_op::LOCAL_SET);
                                 emit_leb128_to(body, dst);
                             }
@@ -593,8 +621,11 @@ public:
                         case dgtl::machine::MachineSemanticKind::StringCopy:
                         case dgtl::machine::MachineSemanticKind::StringEquals:
                         case dgtl::machine::MachineSemanticKind::StringFind:
-                        case dgtl::machine::MachineSemanticKind::StringHash: {
-                            if (const char* sym = dgtl::mir::runtime_contract::runtime_symbol_for_semantic_kind(inst.semantic_kind)) {
+                        case dgtl::machine::MachineSemanticKind::StringHash:
+                        case dgtl::machine::MachineSemanticKind::TensorOp: {
+                            const char* sym = dgtl::mir::runtime_contract::runtime_symbol_for_semantic_kind(inst.semantic_kind);
+                            if (!sym) sym = dgtl::mir::runtime_contract::runtime_symbol_for_opcode(inst.opcode);
+                            if (sym) {
                                 auto it = std::find(runtime_imports.begin(), runtime_imports.end(), sym);
                                 if (it != runtime_imports.end()) {
                                     const uint32_t func_idx = static_cast<uint32_t>(std::distance(runtime_imports.begin(), it));
@@ -676,9 +707,68 @@ public:
                         }
 
                         // Comparison
-                        case dgtl::machine::MachineSemanticKind::Compare:
-                            emit_mir_binop(body, wasm_op::I32_EQ, inst, max_reg);
+                        case dgtl::machine::MachineSemanticKind::Compare: {
+                            const auto pred = inst.comparison_predicate();
+                            const bool is_i64 = (inst.opcode == dgtl::machine::GM_ICMP64 ||
+                                                (inst.opcode >= dgtl::machine::GM_ICMP64_EQ && inst.opcode <= dgtl::machine::GM_ICMP64_GE));
+                            const bool is_f32 = (inst.opcode == dgtl::machine::GM_FCMP32 ||
+                                                (inst.opcode >= dgtl::machine::GM_FCMP32_EQ && inst.opcode <= dgtl::machine::GM_FCMP32_GE));
+                            const bool is_f64 = (inst.opcode == dgtl::machine::GM_FCMP64 ||
+                                                (inst.opcode >= dgtl::machine::GM_FCMP64_EQ && inst.opcode <= dgtl::machine::GM_FCMP64_GE));
+
+                            uint8_t wasm_cmp = wasm_op::I32_EQ;
+                            if (is_f64) {
+                                switch (pred) {
+                                    case dgtl::machine::ComparisonPredicate::Equal: wasm_cmp = wasm_op::F64_EQ; break;
+                                    case dgtl::machine::ComparisonPredicate::NotEqual: wasm_cmp = wasm_op::F64_NE; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessThan: wasm_cmp = wasm_op::F64_LT; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessEqual: wasm_cmp = wasm_op::F64_LE; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterThan: wasm_cmp = wasm_op::F64_GT; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterEqual: wasm_cmp = wasm_op::F64_GE; break;
+                                    default: wasm_cmp = wasm_op::F64_EQ; break;
+                                }
+                            } else if (is_f32) {
+                                switch (pred) {
+                                    case dgtl::machine::ComparisonPredicate::Equal: wasm_cmp = wasm_op::F32_EQ; break;
+                                    case dgtl::machine::ComparisonPredicate::NotEqual: wasm_cmp = wasm_op::F32_NE; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessThan: wasm_cmp = wasm_op::F32_LT; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessEqual: wasm_cmp = wasm_op::F32_LE; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterThan: wasm_cmp = wasm_op::F32_GT; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterEqual: wasm_cmp = wasm_op::F32_GE; break;
+                                    default: wasm_cmp = wasm_op::F32_EQ; break;
+                                }
+                            } else if (is_i64) {
+                                switch (pred) {
+                                    case dgtl::machine::ComparisonPredicate::Equal: wasm_cmp = wasm_op::I64_EQ; break;
+                                    case dgtl::machine::ComparisonPredicate::NotEqual: wasm_cmp = wasm_op::I64_NE; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessThan: wasm_cmp = wasm_op::I64_LT_S; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessEqual: wasm_cmp = wasm_op::I64_LE_S; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterThan: wasm_cmp = wasm_op::I64_GT_S; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterEqual: wasm_cmp = wasm_op::I64_GE_S; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedLessThan: wasm_cmp = wasm_op::I64_LT_U; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedLessEqual: wasm_cmp = wasm_op::I64_LE_U; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedGreaterThan: wasm_cmp = wasm_op::I64_GT_U; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedGreaterEqual: wasm_cmp = wasm_op::I64_GE_U; break;
+                                    default: wasm_cmp = wasm_op::I64_EQ; break;
+                                }
+                            } else {
+                                switch (pred) {
+                                    case dgtl::machine::ComparisonPredicate::Equal: wasm_cmp = wasm_op::I32_EQ; break;
+                                    case dgtl::machine::ComparisonPredicate::NotEqual: wasm_cmp = wasm_op::I32_NE; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessThan: wasm_cmp = wasm_op::I32_LT_S; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedLessEqual: wasm_cmp = wasm_op::I32_LE_S; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterThan: wasm_cmp = wasm_op::I32_GT_S; break;
+                                    case dgtl::machine::ComparisonPredicate::SignedGreaterEqual: wasm_cmp = wasm_op::I32_GE_S; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedLessThan: wasm_cmp = wasm_op::I32_LT_U; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedLessEqual: wasm_cmp = wasm_op::I32_LE_U; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedGreaterThan: wasm_cmp = wasm_op::I32_GT_U; break;
+                                    case dgtl::machine::ComparisonPredicate::UnsignedGreaterEqual: wasm_cmp = wasm_op::I32_GE_U; break;
+                                    default: wasm_cmp = wasm_op::I32_EQ; break;
+                                }
+                            }
+                            emit_mir_binop(body, wasm_cmp, inst, max_reg);
                             break;
+                        }
 
                         // Memory Load & Store (General)
                         case dgtl::machine::MachineSemanticKind::VectorGather: {

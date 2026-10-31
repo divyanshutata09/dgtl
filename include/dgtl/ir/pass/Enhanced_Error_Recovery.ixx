@@ -38,9 +38,11 @@ module;
 
 export module dgtl.ir.pass.error_recovery;
 
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir.gen;
+import dgtl.ir_enums;
+import dgtl.ir_node;
 import dgtl.ir.pipeline.pass_manager_config;
-// import dgtl.ir.gen;
 
 export namespace dgtl::ir::pass {
 

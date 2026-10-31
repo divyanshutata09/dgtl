@@ -48,7 +48,8 @@ enum class ArchType : uint8_t {
     WASM_SIMD,
     CUDA_PTX,
     ROCM_AMDGCN,
-    FPGA_VERILOG
+    FPGA_VERILOG,
+    SPIRV_LOGICAL
 };
 
 enum class TargetFamily : uint8_t {
@@ -59,7 +60,15 @@ enum class TargetFamily : uint8_t {
     RISCV64,
     CUDA,
     ROCm,
-    FPGA
+    FPGA,
+    SPIRV,
+    // Industry-standard resilience aliases:
+    Wasm = WASM,
+    RiscV64 = RISCV64,
+    Arm64 = ARM64,
+    Arm32 = ARM32,
+    x64 = X64,
+    SpirV = SPIRV
 };
 
 [[nodiscard]] constexpr std::string_view target_family_name(TargetFamily family) noexcept {
@@ -72,6 +81,7 @@ enum class TargetFamily : uint8_t {
         case TargetFamily::CUDA:   return "cuda";
         case TargetFamily::ROCm:   return "rocm";
         case TargetFamily::FPGA:   return "fpga";
+        case TargetFamily::SPIRV:  return "spirv";
     }
     return "unknown";
 }
@@ -164,7 +174,9 @@ enum class ObjectFormat : uint8_t {
     ELF,
     PE,
     MachO,
-    Wasm
+    Wasm,
+    WASM = Wasm,
+    COFF = PE
 };
 
 /**
@@ -614,6 +626,7 @@ public:
             case ArchType::CUDA_PTX:
             case ArchType::ROCM_AMDGCN:
             case ArchType::FPGA_VERILOG:
+            case ArchType::SPIRV_LOGICAL:
                 return false;
         }
         return false;
@@ -636,6 +649,15 @@ public:
 
     [[nodiscard]] const TargetIdentity& identity() const noexcept { return identity_; }
     [[nodiscard]] TargetFamily family() const noexcept { return identity_.family; }
+    [[nodiscard]] constexpr bool is_x64() const noexcept { return identity_.family == TargetFamily::X64; }
+    [[nodiscard]] constexpr bool is_arm64() const noexcept { return identity_.family == TargetFamily::ARM64; }
+    [[nodiscard]] constexpr bool is_arm32() const noexcept { return identity_.family == TargetFamily::ARM32; }
+    [[nodiscard]] constexpr bool is_riscv64() const noexcept { return identity_.family == TargetFamily::RISCV64; }
+    [[nodiscard]] constexpr bool is_wasm() const noexcept { return identity_.family == TargetFamily::WASM; }
+    [[nodiscard]] constexpr bool is_cuda() const noexcept { return identity_.family == TargetFamily::CUDA; }
+    [[nodiscard]] constexpr bool is_rocm() const noexcept { return identity_.family == TargetFamily::ROCm; }
+    [[nodiscard]] constexpr bool is_fpga() const noexcept { return identity_.family == TargetFamily::FPGA; }
+    [[nodiscard]] constexpr bool is_spirv() const noexcept { return identity_.family == TargetFamily::SPIRV; }
     [[nodiscard]] ObjectFormat object_format() const noexcept { return object_format_; }
     [[nodiscard]] bool emits_macho() const noexcept {
         return object_format_ == ObjectFormat::MachO;
@@ -792,6 +814,13 @@ private:
                 identity.cpu = "verilog";
                 identity.subtarget = "generic";
                 break;
+            case ArchType::SPIRV_LOGICAL:
+                identity.kind = TargetKind::GPU;
+                identity.family = TargetFamily::SPIRV;
+                identity.canonical_name = "spirv";
+                identity.cpu = "spirv";
+                identity.subtarget = "spirv64";
+                break;
         }
         return identity;
     }
@@ -889,6 +918,15 @@ private:
                 break;
 
             case ArchType::FPGA_VERILOG:
+                break;
+
+            case ArchType::SPIRV_LOGICAL:
+                m_caps.vector = true;
+                m_caps.vector_memory = true;
+                m_caps.has_fma = true;
+                m_caps.atomics = true;
+                m_caps.concurrency = true;
+                m_caps.tensor = true;
                 break;
         }
 

@@ -31,7 +31,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr std::string_view kGeneratorVersion = "3.1.0";
+constexpr std::string_view kGeneratorVersion = "3.2.0";
 constexpr std::size_t kOpcodeTableSize = 65536;
 
 struct SourceLocation {
@@ -1678,6 +1678,12 @@ int main(int argc, char** argv) {
                << "}\n\n"
                << "[[nodiscard]] constexpr bool is_barrier_form(MachineForm form) noexcept {\n"
                << "    return form == MachineForm::HardwareFence || form == MachineForm::ConcurrentSync;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_tensor_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::TensorOp;\n"
+               << "}\n\n"
+               << "[[nodiscard]] constexpr bool is_compare_form(MachineForm form) noexcept {\n"
+               << "    return form == MachineForm::Compare32 || form == MachineForm::BranchCompare;\n"
                << "}\n\n"
                << "[[nodiscard]] constexpr bool verify_form_contract(\n"
                << "    ir::OpCode opcode, MachineForm form) noexcept {\n"

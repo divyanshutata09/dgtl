@@ -222,13 +222,17 @@ int sync_sdk_public_headers() {
     const fs::path sdk_src_dir = g_config.include_dir / "dgtl_sdk";
     const fs::path sdk_include_root = g_config.build_dir / "DGTL_SDK" / "include";
     const fs::path sdk_include_ns = sdk_include_root / "dgtl_sdk";
+    const fs::path sdk_direct_ns = g_config.build_dir / "DGTL_SDK" / "dgtl_sdk";
+    const fs::path build_dgtl_sdk = g_config.build_dir / "dgtl_sdk";
 
     const std::vector<std::string> sdk_headers = {
-        "dgtl.h", "types.h", "target.h", "object.h", "linker.h", "jit.h", "module.h", "mir.h"
+        "dgtl.h", "types.h", "target.h", "object.h", "linker.h", "jit.h", "module.h", "mir.h", "math.h"
     };
 
     ensure_directory(sdk_include_root);
     ensure_directory(sdk_include_ns);
+    ensure_directory(sdk_direct_ns);
+    ensure_directory(build_dgtl_sdk);
 
     for (const auto& header : sdk_headers) {
         const fs::path src = sdk_src_dir / header;
@@ -237,12 +241,13 @@ int sync_sdk_public_headers() {
             return 1;
         }
 
-        std::error_code ec_ns;
-        fs::copy_file(src, sdk_include_ns / header, fs::copy_options::overwrite_existing, ec_ns);
-        if (ec_ns) {
-            std::cerr << "[sdk] Failed to copy header to SDK include namespace: "
-                      << (sdk_include_ns / header).string() << " (" << ec_ns.message() << ")" << std::endl;
-            return 1;
+        std::error_code ec;
+        fs::copy_file(src, sdk_include_ns / header, fs::copy_options::overwrite_existing, ec);
+        fs::copy_file(src, sdk_direct_ns / header, fs::copy_options::overwrite_existing, ec);
+        fs::copy_file(src, build_dgtl_sdk / header, fs::copy_options::overwrite_existing, ec);
+        if (header == "dgtl.h") {
+            fs::copy_file(src, sdk_include_root / header, fs::copy_options::overwrite_existing, ec);
+            fs::copy_file(src, g_config.build_dir / "dgtl.h", fs::copy_options::overwrite_existing, ec);
         }
     }
 
@@ -252,7 +257,8 @@ int sync_sdk_public_headers() {
         copy_tree_if_exists(api_src, api_dst);
     }
 
-    std::cout << "[sdk] Synced modular public headers to " << sdk_include_ns.string() << std::endl;
+    std::cout << "[sdk] Synced modular public headers to " << sdk_include_ns.string() 
+              << ", " << sdk_direct_ns.string() << ", and " << build_dgtl_sdk.string() << std::endl;
     return 0;
 }
 
@@ -549,6 +555,19 @@ int compile_module_source_if_needed(const fs::path& src, const fs::path& mod_obj
         return 0;
     }
 
+    // Windows / MinGW GCC safeguard: On Windows NTFS, GCC's atomic rename of .gcm fails
+    // with "error: failed to write compiled module: File exists" if the destination .gcm exists.
+    // Proactively remove the module's .gcm to prevent this error.
+    ModuleUnit u_meta;
+    u_meta.path = src;
+    parse_module_metadata(u_meta);
+    if (!u_meta.module_name.empty()) {
+        std::string key = u_meta.is_partition ? (u_meta.module_name + ":" + u_meta.partition_name) : u_meta.module_name;
+        fs::path gcm_dest = module_cache_path_for_name(key);
+        std::error_code ec_gcm;
+        fs::remove(gcm_dest, ec_gcm);
+    }
+
     std::string rel_path = fs::relative(src, g_config.root).string();
     std::cout << "[build] Compiling module: " << rel_path << "..." << std::endl;
     std::string cmd = g_config.gpp_path;
@@ -630,6 +649,14 @@ int compile_all_modules() {
         "dgtl.object.archive",
         "dgtl.linker.pe.sections",
         "dgtl.linker.pe",
+        "dgtl.linker.elf.sections",
+        "dgtl.linker.elf",
+        "dgtl.linker.macho.sections",
+        "dgtl.linker.macho.relocations",
+        "dgtl.linker.macho",
+        "dgtl.linker.wasm.sections",
+        "dgtl.linker.wasm.relocations",
+        "dgtl.linker.wasm",
         "dgtl.isa.x64.isel_gen",
         "dgtl.isa.x64.isel_rules",
         "dgtl.isa.arm64.isel_gen",
@@ -680,6 +707,12 @@ int compile_all_modules() {
     if (!force_rebuild_all && has_any_module_obj && newest_module_src > oldest_module_obj) {
         force_rebuild_all = true;
         std::cout << "[build] Module interface change detected; rebuilding full module closure" << std::endl;
+    }
+
+    if (force_rebuild_all) {
+        std::error_code ec_gcm;
+        fs::remove_all(module_cache_dir, ec_gcm);
+        fs::create_directories(module_cache_dir, ec_gcm);
     }
 
     for (const auto& module_unit : deployment_pipeline) {
@@ -831,7 +864,8 @@ void append_core_sources_for_test_build(std::string& cmd) {
         fs::absolute(g_config.src_dir / "apps" / "dgtl_engine_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal(),
-        fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal()
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_tools_main.cpp").lexically_normal()
     };
 
     std::error_code ec;
@@ -880,6 +914,7 @@ int build_test_suite_binary(const fs::path& output,
         fs::absolute(g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_tools_main.cpp").lexically_normal(),
         fs::absolute(entry_point).lexically_normal()
     };
 
@@ -1018,6 +1053,7 @@ int build_standalone_test_binary(const fs::path& output, const fs::path& entry_p
         fs::absolute(g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal(),
         fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal(),
+        fs::absolute(g_config.src_dir / "apps" / "dgtl_tools_main.cpp").lexically_normal(),
         fs::absolute(entry_point).lexically_normal()
     };
 
@@ -1192,11 +1228,14 @@ int build_tools_optimized(const fs::path& prod_main,
     const fs::path obj_dir = g_config.build_dir / "obj" / "build-tools";
     ensure_directory(obj_dir);
 
+    const fs::path tools_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_tools_main.cpp").lexically_normal();
     const fs::path link_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_link_main.cpp").lexically_normal();
     const fs::path engine_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_engine_main.cpp").lexically_normal();
     const fs::path ar_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal();
     const fs::path objdump_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal();
     const fs::path as_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal();
+    const fs::path inspect_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal();
+    const fs::path debugger_main = fs::absolute(g_config.tools_dir / "dgtl_debugger_main.cpp").lexically_normal();
 
     std::vector<fs::path> excluded = {
         fs::absolute(prod_main).lexically_normal(),
@@ -1204,12 +1243,13 @@ int build_tools_optimized(const fs::path& prod_main,
         fs::absolute(opt_main).lexically_normal(),
         fs::absolute(llc_main).lexically_normal(),
         fs::absolute(verify_main).lexically_normal(),
-        fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal(),
+        inspect_main,
         link_main,
         engine_main,
         ar_main,
         objdump_main,
-        as_main
+        as_main,
+        tools_main
     };
 
     std::vector<fs::path> common_sources;
@@ -1247,58 +1287,58 @@ int build_tools_optimized(const fs::path& prod_main,
               << " compiled, " << (common_objs.size() - compiled_count)
               << " reused" << std::endl;
 
-    const fs::path tools_dir = g_config.build_dir / "tools";
-    const fs::path sdk_bin_dir = g_config.build_dir / "DGTL_SDK" / "bin";
-    ensure_directory(tools_dir);
-    ensure_directory(sdk_bin_dir);
-
-    auto stage_tool_bin = [&](const fs::path& exe) {
-        if (file_exists(exe)) {
-            copy_file_if_exists(exe, tools_dir / exe.filename());
-            copy_file_if_exists(exe, sdk_bin_dir / exe.filename());
-            copy_file_if_exists(exe, g_config.build_dir / exe.filename());
-        }
+    // Compile tool sources into obj_dir
+    const std::vector<fs::path> tool_sources = {
+        tools_main, opt_main, llc_main, verify_main, inspect_main,
+        link_main, engine_main, ar_main, objdump_main, as_main, debugger_main
     };
 
-    auto link_tool = [&](std::string_view name, const fs::path& entry_main, const fs::path& output) -> int {
-        const fs::path entry_obj = make_obj_path(obj_dir, entry_main);
-        int ec = compile_object_if_needed(entry_main, entry_obj, false);
-        if (ec != 0) {
-            return ec;
+    std::vector<fs::path> tool_objs;
+    for (const auto& t_src : tool_sources) {
+        const fs::path t_obj = make_obj_path(obj_dir, t_src);
+        int ec_tool = compile_object_if_needed(t_src, t_obj, false);
+        if (ec_tool != 0) {
+            std::cerr << "[build-tools] Failed to compile tool object: " << t_src.filename().string() << std::endl;
+            return ec_tool;
         }
+        tool_objs.push_back(t_obj);
+    }
 
-        std::error_code ec_size;
-        bool needs_link = !file_exists(output) || (fs::file_size(output, ec_size) == 0);
-        const auto output_time = get_file_mtime(output);
-        if (!needs_link) {
-            if (get_file_mtime(entry_obj) > output_time) {
+    // Link Unified Multicall Binary: dgtl-tools.exe
+    const fs::path tools_multicall_exe = g_config.build_dir / "dgtl-tools.exe";
+    std::error_code ec_size;
+    bool needs_link = !file_exists(tools_multicall_exe) || (fs::file_size(tools_multicall_exe, ec_size) == 0);
+    const auto tools_exe_time = get_file_mtime(tools_multicall_exe);
+
+    if (!needs_link) {
+        for (const auto& obj : tool_objs) {
+            if (get_file_mtime(obj) > tools_exe_time) {
                 needs_link = true;
-            } else {
-                for (const auto& obj : common_objs) {
-                    if (get_file_mtime(obj) > output_time) {
+                break;
+            }
+        }
+        if (!needs_link) {
+            for (const auto& obj : common_objs) {
+                if (get_file_mtime(obj) > tools_exe_time) {
+                    needs_link = true;
+                    break;
+                }
+            }
+        }
+        if (!needs_link) {
+            std::error_code ec_mod;
+            for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".o") {
+                    if (get_file_mtime(entry.path()) > tools_exe_time) {
                         needs_link = true;
                         break;
                     }
                 }
-                if (!needs_link) {
-                    std::error_code ec_mod;
-                    for (const auto& entry : fs::directory_iterator(g_config.build_dir / "obj" / "modules", ec_mod)) {
-                        if (entry.is_regular_file() && entry.path().extension() == ".o") {
-                            if (get_file_mtime(entry.path()) > output_time) {
-                                needs_link = true;
-                                break;
-                            }
-                        }
-                    }
-                }
             }
         }
+    }
 
-        if (!needs_link) {
-            std::cout << "[build] Reusing up-to-date " << name << std::endl;
-            return 0;
-        }
-
+    if (needs_link) {
         std::string cmd = g_config.gpp_path;
         cmd += " -std=c++26 -fmodules-ts -O3 -pipe";
         for (const auto& obj : common_objs) {
@@ -1310,12 +1350,15 @@ int build_tools_optimized(const fs::path& prod_main,
                 cmd += " " + quote_path(entry.path());
             }
         }
-        cmd += " " + quote_path(entry_obj) + " -o " + quote_path(output);
+        for (const auto& obj : tool_objs) {
+            cmd += " " + quote_path(obj);
+        }
+        cmd += " -o " + quote_path(tools_multicall_exe);
 
         std::string final_cmd = cmd;
 #ifdef _WIN32
         if (cmd.size() > 7000) {
-            const fs::path rsp_path = g_config.build_dir / "obj" / "build-tools" / (std::string(name) + "_link.rsp");
+            const fs::path rsp_path = g_config.build_dir / "obj" / "build-tools" / "dgtl_tools_link.rsp";
             ensure_directory(rsp_path.parent_path());
 
             const std::size_t prefix_len = g_config.gpp_path.size();
@@ -1326,7 +1369,7 @@ int build_tools_optimized(const fs::path& prod_main,
 
             std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
             if (!rsp_out.is_open()) {
-                std::cerr << "[build] Failed to write response file: " << rsp_path.string() << std::endl;
+                std::cerr << "[build-tools] Failed to write response file: " << rsp_path.string() << std::endl;
                 return 1;
             }
             rsp_out << rsp_args;
@@ -1335,75 +1378,77 @@ int build_tools_optimized(const fs::path& prod_main,
             final_cmd = g_config.gpp_path + " @" + quote_path(rsp_path);
         }
 #endif
-
-        std::cout << "[build] Linking " << name << std::endl;
+        std::cout << "[build-tools] Linking unified multicall binary: dgtl-tools.exe" << std::endl;
         ec = run_command(final_cmd);
-        if (ec == 0) {
-            std::cout << "[build] Wrote " << output.string() << std::endl;
+        if (ec != 0) {
+            return ec;
         }
-        return ec;
+        std::cout << "[build-tools] Wrote " << tools_multicall_exe.string() << std::endl;
+    } else {
+        std::cout << "[build-tools] Reusing up-to-date dgtl-tools.exe" << std::endl;
+    }
+
+    // Build Forwarder Launcher Stub
+    const fs::path forwarder_src = g_config.tools_dir / "dgtl_tool_forwarder.cpp";
+    const fs::path forwarder_exe = g_config.build_dir / "obj" / "build-tools" / "dgtl_tool_forwarder.exe";
+    bool forwarder_built = false;
+    if (file_exists(forwarder_src)) {
+        if (!file_exists(forwarder_exe) || get_file_mtime(forwarder_src) > get_file_mtime(forwarder_exe)) {
+            std::string fwd_cmd = g_config.gpp_path + " -std=c++20 -O2 -pipe " + quote_path(forwarder_src) + " -o " + quote_path(forwarder_exe);
+            if (run_command(fwd_cmd) == 0) {
+                forwarder_built = true;
+            }
+        } else {
+            forwarder_built = true;
+        }
+    }
+
+    // Stage Tools via 3-Tier Strategy (Hardlink -> Symlink -> Forwarder/Copy)
+    const fs::path tools_dir = g_config.build_dir / "tools";
+    const fs::path sdk_bin_dir = g_config.build_dir / "DGTL_SDK" / "bin";
+    ensure_directory(tools_dir);
+    ensure_directory(sdk_bin_dir);
+
+    const std::vector<std::string> integrated_tool_names = {
+        "dgtl-ar.exe", "dgtl-as.exe", "dgtl-link.exe", "dgtl-llc.exe", "dgtl-opt.exe",
+        "dgtl-objdump.exe", "dgtl-inspect.exe", "dgtl-debugger.exe", "dgtl-verify.exe",
+        "dgtl-engine.exe", "dgtl-filecheck.exe"
     };
 
-    ec = 0;
-    ec |= link_tool("dgtl-opt", opt_main, opt_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(opt_exe);
-
-    ec |= link_tool("dgtl-llc", llc_main, llc_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(llc_exe);
-
-    ec |= link_tool("dgtl-verify", verify_main, verify_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(verify_exe);
-
-    const fs::path link_exe = g_config.build_dir / "dgtl-link.exe";
-    ec |= link_tool("dgtl-link", link_main, link_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(link_exe);
-
-    const fs::path engine_exe = g_config.build_dir / "dgtl-engine.exe";
-    ec |= link_tool("dgtl-engine", engine_main, engine_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(engine_exe);
-
-    const fs::path ar_exe = g_config.build_dir / "dgtl-ar.exe";
-    ec |= link_tool("dgtl-ar", ar_main, ar_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(ar_exe);
-
-    const fs::path as_exe = g_config.build_dir / "dgtl-as.exe";
-    ec |= link_tool("dgtl-as", as_main, as_exe);
-    if (ec != 0) return ec;
-    stage_tool_bin(as_exe);
-
-    const fs::path objdump_source = g_config.src_dir / "apps" / "dgtl_objdump_main.cpp";
-    const fs::path objdump_exe = g_config.build_dir / "dgtl-objdump.exe";
-    ensure_directory(objdump_exe.parent_path());
-    const std::string objdump_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(objdump_source) + " -o " + quote_path(objdump_exe);
-    if (!file_exists(objdump_exe) || get_file_mtime(objdump_source) > get_file_mtime(objdump_exe)) {
-        std::cout << "[build] Compiling: dgtl_objdump_main.cpp..." << std::endl;
-        if (run_command(objdump_cmd) == 0) {
-            std::cout << "[build] Wrote " << objdump_exe.string() << std::endl;
+    auto stage_multicall_link = [&](const fs::path& dest_path) {
+        std::error_code ec_stage;
+        if (fs::exists(dest_path, ec_stage)) {
+            fs::remove(dest_path, ec_stage);
         }
-    } else {
-        std::cout << "[build] Reusing up-to-date dgtl-objdump" << std::endl;
-    }
-    stage_tool_bin(objdump_exe);
+        ec_stage.clear();
 
-    const fs::path inspect_source = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
-    const fs::path inspect_exe = g_config.build_dir / "dgtl-inspect.exe";
-    ensure_directory(inspect_exe.parent_path());
-    const std::string inspect_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(inspect_source) + " -o " + quote_path(inspect_exe);
-    if (!file_exists(inspect_exe) || get_file_mtime(inspect_source) > get_file_mtime(inspect_exe)) {
-        if (run_command(inspect_cmd) == 0) {
-            std::cout << "[build] Wrote " << inspect_exe.string() << std::endl;
+        // Tier 1: NTFS Hard Link (zero additional bytes, instant)
+        fs::create_hard_link(tools_multicall_exe, dest_path, ec_stage);
+        if (!ec_stage) return;
+
+        // Tier 2: Symbolic Link
+        ec_stage.clear();
+        fs::create_symlink(tools_multicall_exe, dest_path, ec_stage);
+        if (!ec_stage) return;
+
+        // Tier 3: 20 KB Forwarder Stub Fallback or Direct Copy
+        ec_stage.clear();
+        if (forwarder_built && file_exists(forwarder_exe)) {
+            fs::copy_file(forwarder_exe, dest_path, fs::copy_options::overwrite_existing, ec_stage);
+        } else {
+            fs::copy_file(tools_multicall_exe, dest_path, fs::copy_options::overwrite_existing, ec_stage);
         }
-    } else {
-        std::cout << "[build] Reusing up-to-date dgtl-inspect" << std::endl;
-    }
-    stage_tool_bin(inspect_exe);
+    };
 
+    for (const auto& tname : integrated_tool_names) {
+        stage_multicall_link(g_config.build_dir / tname);
+        stage_multicall_link(tools_dir / tname);
+        stage_multicall_link(sdk_bin_dir / tname);
+    }
+    copy_file_if_exists(tools_multicall_exe, tools_dir / "dgtl-tools.exe");
+    copy_file_if_exists(tools_multicall_exe, sdk_bin_dir / "dgtl-tools.exe");
+
+    // Discovery tool: dgtl-config.exe
     const fs::path config_src = g_config.root / "tools" / "cpp" / "dgtl_config_main.cpp";
     const fs::path config_exe = sdk_bin_dir / "dgtl-config.exe";
     if (file_exists(config_src)) {
@@ -1412,29 +1457,28 @@ int build_tools_optimized(const fs::path& prod_main,
             if (run_command(cfg_compile) == 0) {
                 std::cout << "[sdk] Built discovery tool: " << config_exe.string() << std::endl;
                 copy_file_if_exists(config_exe, tools_dir / "dgtl-config.exe");
+                copy_file_if_exists(config_exe, g_config.build_dir / "dgtl-config.exe");
             }
         } else {
             copy_file_if_exists(config_exe, tools_dir / "dgtl-config.exe");
+            copy_file_if_exists(config_exe, g_config.build_dir / "dgtl-config.exe");
         }
     }
 
+    // Helper tool: dgtl-rodata-maker.exe
     const fs::path rodata_source = g_config.tools_dir / "dgtl_rodata_maker_main.cpp";
     const fs::path rodata_exe = g_config.build_dir / "tools" / "dgtl-rodata-maker.exe";
     ensure_directory(rodata_exe.parent_path());
-    const std::string rodata_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(rodata_source) + " -o " + quote_path(rodata_exe);
-    if (run_command(rodata_cmd) == 0) {
-        std::cout << "[build] Wrote " << rodata_exe.string() << std::endl;
+    if (file_exists(rodata_source)) {
+        if (!file_exists(rodata_exe) || get_file_mtime(rodata_source) > get_file_mtime(rodata_exe)) {
+            const std::string rodata_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(rodata_source) + " -o " + quote_path(rodata_exe);
+            if (run_command(rodata_cmd) == 0) {
+                std::cout << "[build] Wrote " << rodata_exe.string() << std::endl;
+            }
+        }
     }
 
-    const fs::path debugger_source = g_config.tools_dir / "dgtl_debugger_main.cpp";
-    const fs::path debugger_exe = g_config.build_dir / "tools" / "dgtl-debugger.exe";
-    ensure_directory(debugger_exe.parent_path());
-    const std::string debugger_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(debugger_source) + " -o " + quote_path(debugger_exe);
-    if (run_command(debugger_cmd) == 0) {
-        std::cout << "[build] Wrote " << debugger_exe.string() << std::endl;
-    }
-
-    return ec;
+    return 0;
 }
 
 int build_sdk_static_library() {
@@ -1465,10 +1509,11 @@ int build_sdk_static_library() {
     const fs::path ar_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal();
     const fs::path objdump_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal();
     const fs::path as_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal();
+    const fs::path tools_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_tools_main.cpp").lexically_normal();
 
     const std::vector<fs::path> excluded = {
         prod_main, smoke_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main,
-        ar_main, objdump_main, as_main
+        ar_main, objdump_main, as_main, tools_main
     };
 
     std::vector<fs::path> sdk_sources;
@@ -1616,7 +1661,7 @@ int build_sdk_static_library() {
             mf << "{\n"
                << "  \"name\": \"DGTL\",\n"
                << "  \"version\": \"2.1.0-SOVEREIGN\",\n"
-               << "  \"components\": [\"core\", \"ir\", \"opt\", \"mir\", \"isa\", \"codegen\", \"object\", \"jit\", \"linker\", \"runtime\", \"sdk\"],\n"
+               << "  \"components\": [\"core\", \"ir\", \"opt\", \"mir\", \"isa\", \"codegen\", \"object\", \"jit\", \"linker\", \"runtime\", \"math\", \"sdk\"],\n"
                << "  \"libraries\": {\n"
                << "    \"unified\": \"dgtl.lib\"\n"
                << "  }\n"
@@ -1650,10 +1695,11 @@ int build_internal_static_library() {
     const fs::path ar_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_ar_main.cpp").lexically_normal();
     const fs::path objdump_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal();
     const fs::path as_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal();
+    const fs::path tools_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_tools_main.cpp").lexically_normal();
 
     const std::vector<fs::path> excluded = {
         prod_main, smoke_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main,
-        ar_main, objdump_main, as_main
+        ar_main, objdump_main, as_main, tools_main
     };
 
     std::vector<fs::path> internal_sources;
@@ -1759,6 +1805,7 @@ USAGE:
   dgtl <command> [args...]
 
 QUICK START:
+  dgtl production         Full sovereign production cycle (clean, gen, validate, all builds, package)
   dgtl build              Build production binary (optimized release)
   dgtl test               Run functional test suite (automatic discovery)
   dgtl lit [options]      Run native .dgtl FileCheck & LIT test suite
@@ -1771,6 +1818,9 @@ QUICK START:
 ================================================================================
 BUILD COMMANDS:
 ================================================================================
+  production, prod        Full production cycle: clean -> gen -> validate ->
+                          compliance gates -> modules -> build-release ->
+                          build-tools -> build-strict -> build-smoke -> package --verify
   build, build-release    Build production binary -> build/dgtl_release.exe
   build-smoke             Build smoke/conformance test binary
   build-strict            Build with strict validation (Wall, Wextra, Werror)
@@ -1843,6 +1893,7 @@ BACKEND & DISTRIBUTION:
 ================================================================================
 COMMAND ALIASES (Backward Aliasing):
 ================================================================================
+  prod                    -> production
   build-release           -> build
   build-smoke             -> smoke-build
   build-strict            -> strict
@@ -1967,9 +2018,10 @@ int handle_build(std::vector<std::string> args = {}) {
     auto ar_main = g_config.src_dir / "apps" / "dgtl_ar_main.cpp";
     auto objdump_main = g_config.src_dir / "apps" / "dgtl_objdump_main.cpp";
     auto as_main = g_config.src_dir / "apps" / "dgtl_as_main.cpp";
+    auto tools_main = g_config.src_dir / "apps" / "dgtl_tools_main.cpp";
     
     auto prod_exe = g_config.build_dir / "dgtl_release.exe";
-    std::vector<fs::path> exclude = {smoke_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main, ar_main, objdump_main, as_main};
+    std::vector<fs::path> exclude = {smoke_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main, ar_main, objdump_main, as_main, tools_main};
     
     int ec = ensure_binary("dgtl_release", prod_exe, prod_main, exclude);
     if (ec != 0) return ec;
@@ -2052,9 +2104,10 @@ int handle_smoke_build() {
     auto ar_main = g_config.src_dir / "apps" / "dgtl_ar_main.cpp";
     auto objdump_main = g_config.src_dir / "apps" / "dgtl_objdump_main.cpp";
     auto as_main = g_config.src_dir / "apps" / "dgtl_as_main.cpp";
+    auto tools_main = g_config.src_dir / "apps" / "dgtl_tools_main.cpp";
     
     auto smoke_exe = g_config.build_dir / "dgtl_main.exe";
-    return ensure_binary("dgtl_main", smoke_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main, ar_main, objdump_main, as_main});
+    return ensure_binary("dgtl_main", smoke_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main, ar_main, objdump_main, as_main, tools_main});
 }
 
 int handle_strict() {
@@ -2069,9 +2122,10 @@ int handle_strict() {
     auto ar_main = g_config.src_dir / "apps" / "dgtl_ar_main.cpp";
     auto objdump_main = g_config.src_dir / "apps" / "dgtl_objdump_main.cpp";
     auto as_main = g_config.src_dir / "apps" / "dgtl_as_main.cpp";
+    auto tools_main = g_config.src_dir / "apps" / "dgtl_tools_main.cpp";
     
     auto strict_exe = g_config.build_dir / "dgtl_main_strict.exe";
-    return ensure_binary("dgtl_main_strict", strict_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main, ar_main, objdump_main, as_main}, true);
+    return ensure_binary("dgtl_main_strict", strict_exe, smoke_main, {prod_main, opt_main, llc_main, verify_main, inspect_main, link_main, engine_main, ar_main, objdump_main, as_main, tools_main}, true);
 }
 
 // -----------------------------------------------------------------------------
@@ -2333,14 +2387,26 @@ int handle_cppcheck(const std::vector<std::string>& args = {}) {
 int handle_clean() {
     std::cout << "[clean] Removing build artifacts" << std::endl;
     std::error_code ec;
-    if (fs::exists(g_config.build_dir, ec)) {
-        fs::remove_all(g_config.build_dir, ec);
-        std::cout << "[clean] Removed build directory: " << g_config.build_dir.string() << std::endl;
-    }
+
     fs::path gcm_cache = g_config.root / "gcm.cache";
     if (fs::exists(gcm_cache, ec)) {
         fs::remove_all(gcm_cache, ec);
         std::cout << "[clean] Removed gcm.cache directory" << std::endl;
+    }
+
+    if (fs::exists(g_config.build_dir, ec)) {
+        for (const auto& entry : fs::directory_iterator(g_config.build_dir, ec)) {
+            if (entry.is_directory(ec) && entry.path().filename() == "tools") {
+                for (const auto& tool_entry : fs::directory_iterator(entry.path(), ec)) {
+                    if (tool_entry.path().filename() != "dgtl.exe") {
+                        fs::remove_all(tool_entry.path(), ec);
+                    }
+                }
+            } else {
+                fs::remove_all(entry.path(), ec);
+            }
+        }
+        std::cout << "[clean] Cleaned build directory: " << g_config.build_dir.string() << std::endl;
     }
     return 0;
 }
@@ -2517,6 +2583,135 @@ int handle_package(bool verify_mode = false) {
     return 0;
 }
 
+int handle_production() {
+    std::cout << "\n================================================================================\n";
+    std::cout << "               DGTL SOVEREIGN UNIFIED PRODUCTION RELEASE PIPELINE               \n";
+    std::cout << "================================================================================\n\n";
+
+    // Step 1: Clean build environment & stale module caches
+    std::cout << "[prod: 1/9] Cleaning stale build artifacts and module caches...\n";
+    int ec = handle_clean();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Clean step failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 2: Regenerate IR and ISel DSL artifacts
+    std::cout << "\n[prod: 2/9] Generating IR opcodes, traits, and Multi-Target ISel definitions...\n";
+    ec = invoke_dgtl_gen();
+    if (ec != 0) {
+        std::cerr << "[prod: error] IR generation failed with exit code: " << ec << "\n";
+        return ec;
+    }
+    ec = invoke_dgtl_isel_gen();
+    if (ec != 0) {
+        std::cerr << "[prod: error] ISel generation failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 3: Validate code generation outputs
+    std::cout << "\n[prod: 3/9] Validating DSL generation outputs...\n";
+    ec = invoke_dgtl_gen_validate();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Code generation validation failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 4: Quality, Header & Policy Compliance Gates
+    std::cout << "\n[prod: 4/9] Running enterprise compliance and policy gates...\n";
+    ec = invoke_header_compliance();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Proprietary header compliance gate failed with exit code: " << ec << "\n";
+        return ec;
+    }
+    ec = invoke_duplication_gate();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Code duplication gate failed with exit code: " << ec << "\n";
+        return ec;
+    }
+    ec = invoke_api_policy();
+    if (ec != 0) {
+        std::cerr << "[prod: error] API policy validation failed with exit code: " << ec << "\n";
+        return ec;
+    }
+    ec = sync_sdk_public_headers();
+    if (ec != 0) {
+        std::cerr << "[prod: error] SDK public header synchronization failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 5: Precompile C++26 modules
+    std::cout << "\n[prod: 5/9] Compiling C++26 modules in topological order...\n";
+    ec = compile_all_modules();
+    if (ec != 0) {
+        std::cerr << "[prod: error] C++26 module compilation failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 6: Build Production Release Binary & SDK Libraries
+    std::cout << "\n[prod: 6/9] Compiling production release binary and archiving static libraries...\n";
+    ec = handle_build();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Production build failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 7: Build Unified Developer Multicall Toolchain
+    std::cout << "\n[prod: 7/9] Compiling unified developer multicall toolchain (dgtl-tools)...\n";
+    ec = handle_build_tools();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Toolchain build failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 8: Build Strict Conformance & Smoke Binaries
+    std::cout << "\n[prod: 8/9] Compiling strict conformance and smoke test binaries...\n";
+    ec = handle_strict();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Strict conformance binary build failed with exit code: " << ec << "\n";
+        return ec;
+    }
+    ec = handle_smoke_build();
+    if (ec != 0) {
+        std::cerr << "[prod: error] Smoke test binary build failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 9: Package and verify distribution SDK archive
+    std::cout << "\n[prod: 9/9] Creating and verifying production distribution package...\n";
+    ec = handle_package(true);
+    if (ec != 0) {
+        std::cerr << "[prod: error] Distribution packaging or verification failed with exit code: " << ec << "\n";
+        return ec;
+    }
+
+    // Step 10: Production Summary Banner
+    const std::string version = detect_sdk_version();
+    const fs::path package_zip = g_config.build_dir / ("DGTL_v" + version + ".zip");
+    std::uintmax_t zip_size = 0;
+    std::error_code size_ec;
+    if (file_exists(package_zip)) {
+        zip_size = fs::file_size(package_zip, size_ec);
+    }
+
+    std::cout << "\n================================================================================\n";
+    std::cout << "                 DGTL PRODUCTION RELEASE BUILD SUCCESSFUL                       \n";
+    std::cout << "================================================================================\n";
+    std::cout << " Version:              DGTL v" << version << "\n";
+    std::cout << " Release Binary:       build/dgtl_release.exe\n";
+    std::cout << " Multicall Tools:      build/dgtl-tools.exe (and 11 staged tool symlinks)\n";
+    std::cout << " Strict Binary:        build/dgtl_main_strict.exe\n";
+    std::cout << " Smoke Binary:         build/dgtl_main.exe\n";
+    std::cout << " SDK Static Library:   build/DGTL_SDK/lib/x64/dgtl.lib (and build/dgtl.lib)\n";
+    std::cout << " Internal Library:     build/DGTL_INTERNAL/lib/x64/dgtl_internal.lib\n";
+    std::cout << " Config & Discovery:   build/DGTL_SDK/bin/dgtl-config.exe\n";
+    std::cout << " Package Archive:      " << package_zip.string() << " (" << (zip_size / 1024) << " KB)\n";
+    std::cout << "================================================================================\n";
+    std::cout << " All necessary production files generated and verified. Ready for deployment.\n\n";
+
+    return 0;
+}
+
 int handle_help() {
     show_usage();
     return 0;
@@ -2584,6 +2779,7 @@ int main(int argc, char** argv) {
             if (ec_mod != 0) return ec_mod;
         }
 
+        if (command == "production" || command == "prod") return handle_production();
         if (command == "build" || command == "build-release") return handle_build(args);
         if (command == "build-tools") return handle_build_tools(args);
         if (command == "smoke-build" || command == "build-smoke") return handle_smoke_build();
@@ -2626,114 +2822,42 @@ int main(int argc, char** argv) {
             }
             return handle_api_status(*parsed_mode);
         }
-        if (command == "inspect" || command == "readobj") {
-            const fs::path inspect_exe = g_config.build_dir / "dgtl-inspect.exe";
-            const fs::path inspect_tools_exe = g_config.build_dir / "tools" / "dgtl-inspect.exe";
+        auto invoke_multicall_tool = [&](std::string_view tool_name) -> int {
+            const fs::path tools_exe = g_config.build_dir / "dgtl-tools.exe";
+            const fs::path tool_staged = g_config.build_dir / "tools" / ("dgtl-" + std::string(tool_name) + ".exe");
+            const fs::path tool_build = g_config.build_dir / ("dgtl-" + std::string(tool_name) + ".exe");
             fs::path target_exe;
-            if (file_exists(inspect_exe)) target_exe = inspect_exe;
-            else if (file_exists(inspect_tools_exe)) target_exe = inspect_tools_exe;
-            else {
-                const fs::path inspect_source = g_config.src_dir / "apps" / "dgtl_inspect_main.cpp";
-                ensure_directory(inspect_exe.parent_path());
-                const std::string compile_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(inspect_source) + " -o " + quote_path(inspect_exe);
-                if (run_command(compile_cmd) != 0) {
-                    std::cerr << "[inspect] Failed to compile dgtl-inspect tool.\n";
-                    return 1;
-                }
-                target_exe = inspect_exe;
+            if (file_exists(tool_staged)) {
+                target_exe = tool_staged;
+            } else if (file_exists(tool_build)) {
+                target_exe = tool_build;
+            } else if (file_exists(tools_exe)) {
+                target_exe = tools_exe;
+            } else {
+                std::cout << "[tools] Building unified toolchain (dgtl-tools)...\n";
+                int ec = handle_build_tools();
+                if (ec != 0) return ec;
+                target_exe = file_exists(tool_staged) ? tool_staged : (file_exists(tool_build) ? tool_build : tools_exe);
             }
             std::string cmd = quote_path(target_exe);
-            for (const auto& a : args) cmd += " " + quote_path(a);
-            return run_command(cmd);
-        }
-        if (command == "objdump" || command == "dgtl-objdump") {
-            const fs::path objdump_exe = g_config.build_dir / "dgtl-objdump.exe";
-            const fs::path objdump_tools_exe = g_config.build_dir / "tools" / "dgtl-objdump.exe";
-            fs::path target_exe;
-            if (file_exists(objdump_exe)) target_exe = objdump_exe;
-            else if (file_exists(objdump_tools_exe)) target_exe = objdump_tools_exe;
-            else {
-                const fs::path objdump_source = g_config.src_dir / "apps" / "dgtl_objdump_main.cpp";
-                ensure_directory(objdump_exe.parent_path());
-                const std::string compile_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(objdump_source) + " -o " + quote_path(objdump_exe);
-                if (run_command(compile_cmd) != 0) {
-                    std::cerr << "[objdump] Failed to compile dgtl-objdump tool.\n";
-                    return 1;
-                }
-                target_exe = objdump_exe;
+            if (target_exe == tools_exe) {
+                cmd += " " + std::string(tool_name);
             }
-            std::string cmd = quote_path(target_exe);
             for (const auto& a : args) cmd += " " + quote_path(a);
             return run_command(cmd);
-        }
-        if (command == "ar" || command == "dgtl-ar") {
-            const fs::path ar_exe = g_config.build_dir / "dgtl-ar.exe";
-            const fs::path ar_tools_exe = g_config.build_dir / "tools" / "dgtl-ar.exe";
-            fs::path target_exe;
-            if (file_exists(ar_exe)) target_exe = ar_exe;
-            else if (file_exists(ar_tools_exe)) target_exe = ar_tools_exe;
-            else {
-                std::cerr << "[ar] dgtl-ar binary not found. Run 'dgtl build-tools' first.\n";
-                return 1;
-            }
-            std::string cmd = quote_path(target_exe);
-            for (const auto& a : args) cmd += " " + quote_path(a);
-            return run_command(cmd);
-        }
-        if (command == "as" || command == "dgtl-as") {
-            const fs::path as_exe = g_config.build_dir / "dgtl-as.exe";
-            const fs::path as_tools_exe = g_config.build_dir / "tools" / "dgtl-as.exe";
-            fs::path target_exe;
-            if (file_exists(as_exe)) target_exe = as_exe;
-            else if (file_exists(as_tools_exe)) target_exe = as_tools_exe;
-            else {
-                std::cerr << "[as] dgtl-as binary not found. Run 'dgtl build-tools' first.\n";
-                return 1;
-            }
-            std::string cmd = quote_path(target_exe);
-            for (const auto& a : args) cmd += " " + quote_path(a);
-            return run_command(cmd);
-        }
-        if (command == "link" || command == "dgtl-link") {
-            const fs::path link_exe = g_config.build_dir / "dgtl-link.exe";
-            const fs::path link_tools_exe = g_config.build_dir / "tools" / "dgtl-link.exe";
-            fs::path target_exe;
-            if (file_exists(link_exe)) target_exe = link_exe;
-            else if (file_exists(link_tools_exe)) target_exe = link_tools_exe;
-            else {
-                const fs::path link_source = g_config.src_dir / "apps" / "dgtl_link_main.cpp";
-                ensure_directory(link_exe.parent_path());
-                const std::string compile_cmd = g_config.gpp_path + " -std=c++26 -fmodules-ts -O3 -pipe -I" + quote_path(g_config.include_dir) + " " + quote_path(link_source) + " -o " + quote_path(link_exe);
-                if (run_command(compile_cmd) != 0) {
-                    std::cerr << "[link] Failed to compile dgtl-link tool.\n";
-                    return 1;
-                }
-                target_exe = link_exe;
-            }
-            std::string cmd = quote_path(target_exe);
-            for (const auto& a : args) cmd += " " + quote_path(a);
-            return run_command(cmd);
-        }
-        if (command == "engine" || command == "dgtl-engine" || command == "jit") {
-            const fs::path engine_exe = g_config.build_dir / "dgtl-engine.exe";
-            const fs::path engine_tools_exe = g_config.build_dir / "tools" / "dgtl-engine.exe";
-            fs::path target_exe;
-            if (file_exists(engine_exe)) target_exe = engine_exe;
-            else if (file_exists(engine_tools_exe)) target_exe = engine_tools_exe;
-            else {
-                const fs::path engine_source = g_config.src_dir / "apps" / "dgtl_engine_main.cpp";
-                ensure_directory(engine_exe.parent_path());
-                const std::string compile_cmd = g_config.gpp_path + " -std=c++26 -fmodules-ts -O3 -pipe -I" + quote_path(g_config.include_dir) + " " + quote_path(engine_source) + " -o " + quote_path(engine_exe);
-                if (run_command(compile_cmd) != 0) {
-                    std::cerr << "[engine] Failed to compile dgtl-engine tool.\n";
-                    return 1;
-                }
-                target_exe = engine_exe;
-            }
-            std::string cmd = quote_path(target_exe);
-            for (const auto& a : args) cmd += " " + quote_path(a);
-            return run_command(cmd);
-        }
+        };
+
+        if (command == "ar" || command == "dgtl-ar") return invoke_multicall_tool("ar");
+        if (command == "as" || command == "dgtl-as") return invoke_multicall_tool("as");
+        if (command == "link" || command == "dgtl-link") return invoke_multicall_tool("link");
+        if (command == "llc" || command == "dgtl-llc") return invoke_multicall_tool("llc");
+        if (command == "opt" || command == "dgtl-opt") return invoke_multicall_tool("opt");
+        if (command == "objdump" || command == "dgtl-objdump") return invoke_multicall_tool("objdump");
+        if (command == "inspect" || command == "readobj" || command == "dgtl-inspect") return invoke_multicall_tool("inspect");
+        if (command == "debugger" || command == "dgtl-debugger") return invoke_multicall_tool("debugger");
+        if (command == "verify" || command == "dgtl-verify") return invoke_multicall_tool("verify");
+        if (command == "engine" || command == "dgtl-engine" || command == "jit") return invoke_multicall_tool("engine");
+        if (command == "filecheck" || command == "dgtl-filecheck") return invoke_multicall_tool("filecheck");
         if (command == "run-backend") {
             return handle_run_backend(args);
         }
@@ -2895,6 +3019,7 @@ int verify_internal_api_artifacts() {
 int verify_public_api_artifacts() {
     const fs::path sdk_include = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "dgtl.h";
     const fs::path sdk_types   = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "types.h";
+    const fs::path sdk_math    = g_config.build_dir / "DGTL_SDK" / "include" / "dgtl_sdk" / "math.h";
     const fs::path sdk_lib     = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl.lib";
     const fs::path sdk_config  = g_config.build_dir / "DGTL_SDK" / "bin" / "dgtl-config.exe";
 
@@ -2904,6 +3029,10 @@ int verify_public_api_artifacts() {
     }
     if (!file_exists(sdk_types)) {
         std::cerr << "[api] Public SDK not ready: missing types header " << sdk_types.string() << std::endl;
+        return 1;
+    }
+    if (!file_exists(sdk_math)) {
+        std::cerr << "[api] Public SDK not ready: missing math header " << sdk_math.string() << std::endl;
         return 1;
     }
     if (!file_exists(sdk_lib)) {

@@ -37,6 +37,18 @@ bool build_fusion_ir(dgtl::ir::IRStream& stream) {
     return stream.size() == 5;
 }
 
+bool build_fusion_f64_ir(dgtl::ir::IRStream& stream) {
+    stream.reset();
+    stream.begin_transaction();
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 30, 0, 2, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 31, 0, 3, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::LOAD_IMM, dgtl::ir::Flags::IS_CONST, 32, 0, 4, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::MUL_F64, dgtl::ir::Flags::NONE, 40, 30, 31, dgtl::ir::INVALID_SLOT, 0);
+    stream.push_node(dgtl::ir::OpCode::ADD_F64, dgtl::ir::Flags::NONE, 41, 40, 32, dgtl::ir::INVALID_SLOT, 0);
+    stream.commit_transaction();
+    return stream.size() == 5;
+}
+
 bool build_simd_ir(dgtl::ir::IRStream& stream) {
     stream.reset();
     stream.begin_transaction();

@@ -133,6 +133,10 @@ import dgtl.isa.arm64.arm64_emitter;
 import dgtl.isa.x64.x64_machine_form_lowering;
 import dgtl.isa.x64.nasm_emitter;
 import dgtl.isa.wasm.encoder;
+import dgtl.isa.riscv64.mc_encoder;
+import dgtl.isa.riscv64.target;
+import dgtl.codegen.target_registry;
+import dgtl.object.file;
 import dgtl.linker.backend;
 import dgtl.object.writers.macho;
 import dgtl.linker.utils;
@@ -431,28 +435,25 @@ dgtl::core::PolyhedralConfig build_polyhedral_config(const AppOptions& opts) {
 dgtl::core::ArchType backend_to_arch_type(BackendKind backend) {
     switch (backend) {
         case BackendKind::x64:
-            return dgtl::core::select_preferred_x86_arch();
-        case BackendKind::arm64:
-            return dgtl::core::ArchType::AARCH64_SVE;
         case BackendKind::nasm:
-            return dgtl::core::select_preferred_x86_arch();  // NASM defaults to host preferred x64 SIMD tier
-        case BackendKind::wasm:
-            return dgtl::core::ArchType::WASM_SIMD;
         case BackendKind::elfobj:
-            return dgtl::core::select_preferred_x86_arch();
         case BackendKind::staticlib:
-            return dgtl::core::select_preferred_x86_arch();
         case BackendKind::coffobj:
-            return dgtl::core::select_preferred_x86_arch();
         case BackendKind::cofflib:
             return dgtl::core::select_preferred_x86_arch();
+        case BackendKind::arm64:
         case BackendKind::macho:
-        case BackendKind::arm32:
             return dgtl::core::ArchType::AARCH64_SVE;
+        case BackendKind::arm32:
+            return dgtl::core::ArchType::ARM32_NEON;
+        case BackendKind::wasm:
+            return dgtl::core::ArchType::WASM_SIMD;
         case BackendKind::riscv64:
+            return dgtl::core::ArchType::RISCV64_RVV;
         case BackendKind::cuda:
+            return dgtl::core::ArchType::CUDA_PTX;
         case BackendKind::rocm:
-            return dgtl::core::select_preferred_x86_arch();
+            return dgtl::core::ArchType::ROCM_AMDGCN;
         default:
             return dgtl::core::select_preferred_x86_arch();
     }
@@ -1247,16 +1248,24 @@ static bool lower_stream_to_mir(const dgtl::ir::IRStream& stream,
                                 dgtl::machine::MachineFunction& out_mf,
                                 const dgtl::core::TargetMachine& target) {
     if (stream.is_null() || stream.size() == 0) return false;
-    const dgtl::isa::x64::X64TargetSubtarget subtarget;
+#if defined(_WIN32) || defined(_WIN64)
+    const bool is_windows = true;
+#else
+    const bool is_windows = false;
+#endif
+    auto backend = dgtl::codegen::TargetRegistry::lookup(target.family(), is_windows);
+    if (!backend) return false;
+    dgtl::mir::pipeline::MachinePipelineOptions options;
     auto res = dgtl::mir::pipeline::MachinePipeline::compile(
         out_mf,
         stream,
         target,
-        subtarget.reg_info,
-        &subtarget.instr_info,
-        &subtarget.frame_info,
-        &subtarget.abi(target.calling_convention() != dgtl::core::CallingConventionKind::SystemV_x64),
-        dgtl::mir::isel::make_builtin_instruction_selector_program());
+        backend->register_info(),
+        &backend->instruction_info(),
+        &backend->frame_info(),
+        &backend->abi(),
+        dgtl::mir::isel::make_builtin_instruction_selector_program(),
+        options);
     return res.success;
 }
 
@@ -1441,7 +1450,21 @@ bool emit_arm32(std::string& out_text) {
     return dgtl::backend::driver::shared::emit_arm32_text(out_text);
 }
 
-bool emit_riscv64(std::string& out_text) {
+bool emit_riscv64(const dgtl::ir::IRStream& stream, std::string& out_text) {
+    out_text.clear();
+    dgtl::core::TargetMachine target(dgtl::core::ArchType::RISCV64_RVV);
+    dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+    if (lower_stream_to_mir(stream, mf, target)) {
+        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::ELF);
+        std::unordered_map<uint32_t, std::string> syms;
+        if (dgtl::isa::riscv64::RiscV64MCEncoder::encode_function(mf, obj, "DGTL_kernel_entry", syms)) {
+            auto* text_sec = obj.find_section(".text");
+            if (text_sec && !text_sec->bytes.empty()) {
+                out_text = dgtl::backend::driver::shared::bytes_to_hex(text_sec->bytes);
+                return true;
+            }
+        }
+    }
     return dgtl::backend::driver::shared::emit_riscv64_text(out_text);
 }
 
@@ -1450,7 +1473,7 @@ bool emit_cuda(const dgtl::ir::IRStream& stream,
                std::string& out_text) {
     (void)schedule;
     out_text.clear();
-    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::core::TargetMachine target(dgtl::core::ArchType::CUDA_PTX);
     dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
     if (!lower_stream_to_mir(stream, mf, target)) {
         return false;
@@ -1463,7 +1486,7 @@ bool emit_rocm(const dgtl::ir::IRStream& stream,
                std::string& out_text) {
     (void)schedule;
     out_text.clear();
-    dgtl::core::TargetMachine target(dgtl::core::select_preferred_x86_arch());
+    dgtl::core::TargetMachine target(dgtl::core::ArchType::ROCM_AMDGCN);
     dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
     if (!lower_stream_to_mir(stream, mf, target)) {
         return false;
@@ -1520,7 +1543,7 @@ bool emit_backend(BackendKind backend,
             result.emitted_binary = false;
             return result.ok;
         case BackendKind::riscv64:
-            result.ok = emit_riscv64(result.emitted_text);
+            result.ok = emit_riscv64(stream, result.emitted_text);
             result.emitted_binary = false;
             return result.ok;
         case BackendKind::cuda:

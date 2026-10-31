@@ -19,12 +19,23 @@ export namespace dgtl::linker::macho {
 
 inline constexpr uint32_t MH_MAGIC_64_VAL                 = 0xFEEDFACF;
 inline constexpr uint32_t MH_OBJECT_TYPE                  = 0x1;
+inline constexpr uint32_t MH_EXECUTE_TYPE                 = 0x2;
 inline constexpr int32_t  CPU_TYPE_ARM64_VAL              = 0x0100000C;
 inline constexpr int32_t  CPU_SUBTYPE_ALL_VAL             = 0x0;
 inline constexpr int32_t  CPU_TYPE_X86_64_VAL             = 0x01000007;
+inline constexpr uint32_t MH_NOUNDEFS_FLAG                = 0x1;
+inline constexpr uint32_t MH_DYLDLINK_FLAG                = 0x4;
+inline constexpr uint32_t MH_TWOLEVEL_FLAG                = 0x80;
 inline constexpr uint32_t MH_SUBSECTIONS_VIA_SYMBOLS_FLAG = 0x2000;
+inline constexpr uint32_t MH_PIE_FLAG                     = 0x200000;
+
 inline constexpr uint32_t LC_SEGMENT_64_CMD               = 0x19;
 inline constexpr uint32_t LC_SYMTAB_CMD                   = 0x02;
+inline constexpr uint32_t LC_DYSYMTAB_CMD                 = 0x0B;
+inline constexpr uint32_t LC_LOAD_DYLIB_CMD               = 0x0C;
+inline constexpr uint32_t LC_LOAD_DYLINKER_CMD            = 0x0E;
+inline constexpr uint32_t LC_CODE_SIGNATURE_CMD           = 0x1D;
+inline constexpr uint32_t LC_MAIN_CMD                     = 0x80000028;
 
 inline constexpr uint8_t  N_EXT_FLAG                      = 0x01;
 inline constexpr uint8_t  N_SECT_TYPE                     = 0x0E;
@@ -91,6 +102,35 @@ struct Nlist64 {
 struct RelocationInfo {
     int32_t  r_address;
     uint32_t r_info;
+};
+
+struct EntrypointCommand {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    uint64_t entryoff;
+    uint64_t stacksize;
+};
+
+struct LinkeditDataCommand {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    uint32_t dataoff;
+    uint32_t datasize;
+};
+
+struct DylinkerCommand {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    uint32_t name_offset;
+};
+
+struct DylibCommand {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    uint32_t name_offset;
+    uint32_t timestamp;
+    uint32_t current_version;
+    uint32_t compatibility_version;
 };
 #pragma pack(pop)
 

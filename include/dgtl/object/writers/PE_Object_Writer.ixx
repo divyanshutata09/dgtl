@@ -151,10 +151,11 @@ public:
             std::strncpy(name_buf, sec->name.c_str(), 8);
             for (int b = 0; b < 8; ++b) out.push_back(static_cast<std::uint8_t>(name_buf[b]));
 
+            const bool is_bss_sec = sec->is_bss();
             emit_u32(out, 0); // VirtualSize
             emit_u32(out, 0); // VirtualAddress
-            emit_u32(out, static_cast<std::uint32_t>(sec->bytes.size())); // SizeOfRawData
-            emit_u32(out, static_cast<std::uint32_t>(section_offsets[i])); // PointerToRawData
+            emit_u32(out, static_cast<std::uint32_t>(is_bss_sec ? sec->bss_size : sec->bytes.size())); // SizeOfRawData
+            emit_u32(out, static_cast<std::uint32_t>(is_bss_sec ? 0 : section_offsets[i])); // PointerToRawData
 
             if (i == text_sec_idx && num_relocs > 0) {
                 emit_u32(out, static_cast<std::uint32_t>(reloc_offset)); // PointerToRelocations
@@ -168,10 +169,12 @@ public:
                 emit_u16(out, 0); // NumberOfLinenumbers
             }
 
-            std::uint32_t flags = 0x00000040 | 0x40000000; // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+            std::uint32_t flags = is_bss_sec
+                ? (0x00000080 | 0x40000000 | 0x80000000) // IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE
+                : (0x00000040 | 0x40000000);             // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
             if (sec->is_code()) {
                 flags = 0x00000020 | 0x20000000 | 0x40000000; // IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ
-            } else if (sec->is_writable()) {
+            } else if (sec->is_writable() && !is_bss_sec) {
                 flags |= 0x80000000; // IMAGE_SCN_MEM_WRITE
             }
             emit_u32(out, flags);
@@ -179,6 +182,7 @@ public:
 
         // 3. Section Data
         for (std::size_t i = 0; i < emit_sections.size(); ++i) {
+            if (emit_sections[i]->is_bss()) continue;
             if (out.size() < section_offsets[i]) out.resize(section_offsets[i], 0);
             out.insert(out.end(), emit_sections[i]->bytes.begin(), emit_sections[i]->bytes.end());
         }

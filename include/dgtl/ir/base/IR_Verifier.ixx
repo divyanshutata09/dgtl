@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -35,8 +35,7 @@
  *
  * BUGS FIXED FROM v1.0
  * --------------------
-import dgtl.ir.io;
- * undefined, causing a compilation failure in any TU that included
+ * BUG-1  undefined, causing a compilation failure in any TU that included
  * this header.
  * BUG-2  NOP hash exemption was wrong: the old guard
  * `if (NOP && hash==0) continue` still checked NOPs whose hash had
@@ -1352,6 +1351,10 @@ public:
             case OpCode::RESUME_CTX:
             case OpCode::FAST_INV_SQRT:
             case OpCode::SOFTMAX_FAST:
+            case OpCode::TENSOR_RELU:
+            case OpCode::GELU_F32:
+            case OpCode::SILU_F32:
+            case OpCode::SIGMOID_F32:
                 if (nd.op_a == INVALID_SLOT) {
                     push(diags, {
                         IRVerifyDiagnostic::Kind::OpcodeConstraint, idx, INVALID_SLOT,
@@ -1360,6 +1363,18 @@ public:
                     });
                 }
                 break;
+
+            case OpCode::SWIGLU_F32:
+            case OpCode::RMS_NORM_F32:
+                if (nd.op_a == INVALID_SLOT || nd.op_b == INVALID_SLOT) {
+                    push(diags, {
+                        IRVerifyDiagnostic::Kind::OpcodeConstraint, idx, INVALID_SLOT,
+                        "Node[" + s(i) + "] opcode=" + std::string(opcode_name(nd.opcode)) +
+                        ": op_a/op_b must not be INVALID_SLOT"
+                    });
+                }
+                break;
+
 
             case OpCode::BRANCH_LIKELY:
             case OpCode::BRANCH_UNLIKELY:
@@ -1418,6 +1433,7 @@ public:
                 break;
 
             case OpCode::FMA_F32:
+            case OpCode::FMA_F64:
             case OpCode::FMA_WIDEN_F16_F32: {
                 std::string_view nm = opcode_name(nd.opcode);
                 if (nd.op_a == INVALID_SLOT) {

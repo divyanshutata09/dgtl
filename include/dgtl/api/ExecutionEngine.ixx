@@ -17,13 +17,15 @@ module;
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 export module dgtl.api.execution_engine;
 
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir.evolution;
 import dgtl.runtime.numa;
 import dgtl.compiler_context;
-import dgtl.mir;
+import dgtl.mir.machine_ir;
 import dgtl.object.file;
 export import dgtl.formal;
 
@@ -85,6 +87,27 @@ public:
      * @brief Emit standalone executable binary to disk.
      */
     [[nodiscard]] virtual bool emit_binary([[maybe_unused]] std::string_view output_path) noexcept {
+        return false;
+    }
+
+    /**
+     * @brief Emit relocatable object file into memory buffer.
+     */
+    [[nodiscard]] virtual bool emit_object_to_memory([[maybe_unused]] std::vector<uint8_t>& out_bytes) noexcept {
+        return false;
+    }
+
+    /**
+     * @brief Emit standalone executable binary into memory buffer.
+     */
+    [[nodiscard]] virtual bool emit_binary_to_memory([[maybe_unused]] std::vector<uint8_t>& out_bytes) noexcept {
+        return false;
+    }
+
+    /**
+     * @brief Emit standalone WebAssembly binary into memory buffer.
+     */
+    [[nodiscard]] virtual bool emit_wasm_binary_to_memory([[maybe_unused]] std::vector<uint8_t>& out_bytes) noexcept {
         return false;
     }
 

@@ -50,33 +50,33 @@ inline const char* resolve_string_arg(uint64_t raw) noexcept {
     return reinterpret_cast<const char*>(raw);
 }
 
-inline std::atomic<uint32_t>& next_dynamic_string_handle() noexcept {
+std::atomic<uint32_t>& next_dynamic_string_handle() noexcept {
     static std::atomic<uint32_t> h{0x80000000u};
     return h;
 }
 
-inline uint64_t register_dynamic_string(const std::string& str) {
+uint64_t register_dynamic_string(const std::string& str) {
     uint32_t handle = next_dynamic_string_handle().fetch_add(1, std::memory_order_relaxed);
     dgtl::runtime::register_dgtl_string(handle, str.data(), static_cast<uint32_t>(str.size()));
     return static_cast<uint64_t>(handle);
 }
 
-inline std::mutex& channel_mutex() {
+std::mutex& channel_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, std::deque<uint64_t>>& channel_queues() {
+std::unordered_map<uint64_t, std::deque<uint64_t>>& channel_queues() {
     static std::unordered_map<uint64_t, std::deque<uint64_t>> q;
     return q;
 }
 
-inline std::condition_variable& channel_cv() {
+std::condition_variable& channel_cv() {
     static std::condition_variable cv;
     return cv;
 }
 
-inline std::array<std::atomic_flag, 256>& lock_table() {
+std::array<std::atomic_flag, 256>& lock_table() {
     static std::array<std::atomic_flag, 256> table{};
     return table;
 }
@@ -105,17 +105,17 @@ struct Tensor {
     return strides;
 }
 
-inline std::mutex& tensor_mutex() {
+std::mutex& tensor_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, Tensor>& tensor_store() {
+std::unordered_map<uint64_t, Tensor>& tensor_store() {
     static std::unordered_map<uint64_t, Tensor> store;
     return store;
 }
 
-inline std::atomic<uint64_t>& next_tensor_handle() {
+std::atomic<uint64_t>& next_tensor_handle() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
@@ -138,17 +138,17 @@ struct Graph {
     std::unordered_map<uint64_t, std::vector<uint64_t>> adj;
 };
 
-inline std::mutex& graph_mutex() {
+std::mutex& graph_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, Graph>& graph_store() {
+std::unordered_map<uint64_t, Graph>& graph_store() {
     static std::unordered_map<uint64_t, Graph> store;
     return store;
 }
 
-inline std::atomic<uint64_t>& next_graph_handle() {
+std::atomic<uint64_t>& next_graph_handle() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
@@ -163,17 +163,17 @@ struct Tree {
     int64_t root = -1;
 };
 
-inline std::mutex& tree_mutex() {
+std::mutex& tree_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, Tree>& tree_store() {
+std::unordered_map<uint64_t, Tree>& tree_store() {
     static std::unordered_map<uint64_t, Tree> store;
     return store;
 }
 
-inline std::atomic<uint64_t>& next_tree_handle() {
+std::atomic<uint64_t>& next_tree_handle() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
@@ -187,82 +187,82 @@ struct Trie {
     std::vector<Node> nodes;
 };
 
-inline std::mutex& trie_mutex() {
+std::mutex& trie_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, Trie>& trie_store() {
+std::unordered_map<uint64_t, Trie>& trie_store() {
     static std::unordered_map<uint64_t, Trie> store;
     return store;
 }
 
-inline std::atomic<uint64_t>& next_trie_handle() {
+std::atomic<uint64_t>& next_trie_handle() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
 
-inline std::mutex& dsa_mutex() {
+std::mutex& dsa_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, std::size_t>& dsa_alloc_align_by_addr() {
+std::unordered_map<uint64_t, std::size_t>& dsa_alloc_align_by_addr() {
     static std::unordered_map<uint64_t, std::size_t> m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, std::array<uint64_t, 3>>& tuple_store() {
+std::unordered_map<uint64_t, std::array<uint64_t, 3>>& tuple_store() {
     static std::unordered_map<uint64_t, std::array<uint64_t, 3>> m;
     return m;
 }
 
-inline std::mutex& tuple_mutex() {
+std::mutex& tuple_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::atomic<uint64_t>& next_tuple_handle() {
+std::atomic<uint64_t>& next_tuple_handle() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
 
-inline std::unordered_map<uint64_t, std::vector<double>>& vector_store() {
+std::unordered_map<uint64_t, std::vector<double>>& vector_store() {
     static std::unordered_map<uint64_t, std::vector<double>> m;
     return m;
 }
 
-inline std::mutex& vector_mutex() {
+std::mutex& vector_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::atomic<uint64_t>& next_vector_handle() {
+std::atomic<uint64_t>& next_vector_handle() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
 
-inline std::mutex& ownership_mutex() {
+std::mutex& ownership_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, uint64_t>& ownership_owner_by_resource() {
+std::unordered_map<uint64_t, uint64_t>& ownership_owner_by_resource() {
     static std::unordered_map<uint64_t, uint64_t> m;
     return m;
 }
 
-inline std::mutex& thread_tokens_mutex() {
+std::mutex& thread_tokens_mutex() {
     static std::mutex m;
     return m;
 }
 
-inline std::unordered_map<uint64_t, std::thread>& thread_tokens() {
+std::unordered_map<uint64_t, std::thread>& thread_tokens() {
     static std::unordered_map<uint64_t, std::thread> m;
     return m;
 }
 
-inline std::atomic<uint64_t>& next_thread_token() {
+std::atomic<uint64_t>& next_thread_token() {
     static std::atomic<uint64_t> h{1};
     return h;
 }
@@ -1432,7 +1432,7 @@ inline uint64_t __dgtl_rt_tuple_free(uint64_t tuple_handle, uint64_t = 0, uint64
     return dgtl::runtime::intrinsics_detail::tuple_store().erase(tuple_handle) > 0 ? 1u : 0u;
 }
 
-inline uint64_t __dgtl_rt_vec_load(uint64_t data_ptr, uint64_t count, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_vec_load(uint64_t data_ptr, uint64_t count, uint64_t = 0) noexcept {
     if (data_ptr == 0u || count == 0u) return 0u;
     const double* p = reinterpret_cast<const double*>(data_ptr);
     try {
@@ -1446,7 +1446,7 @@ inline uint64_t __dgtl_rt_vec_load(uint64_t data_ptr, uint64_t count, uint64_t =
     }
 }
 
-inline uint64_t __dgtl_rt_vec_reduce_add(uint64_t vec_handle, uint64_t op, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_vec_reduce_add(uint64_t vec_handle, uint64_t op, uint64_t = 0) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     const auto& store = dgtl::runtime::intrinsics_detail::vector_store();
     const auto it = store.find(vec_handle);
@@ -1465,7 +1465,7 @@ inline uint64_t __dgtl_rt_vec_reduce_add(uint64_t vec_handle, uint64_t op, uint6
     return out;
 }
 
-inline uint64_t __dgtl_rt_vec_shuffle(uint64_t vec_handle, uint64_t mode, uint64_t param) noexcept {
+uint64_t __dgtl_rt_vec_shuffle(uint64_t vec_handle, uint64_t mode, uint64_t param) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     auto& store = dgtl::runtime::intrinsics_detail::vector_store();
     const auto it = store.find(vec_handle);
@@ -1489,7 +1489,7 @@ inline uint64_t __dgtl_rt_vec_shuffle(uint64_t vec_handle, uint64_t mode, uint64
     return handle;
 }
 
-inline uint64_t __dgtl_rt_vec_store(uint64_t vec_handle, uint64_t out_ptr, uint64_t max_count) noexcept {
+uint64_t __dgtl_rt_vec_store(uint64_t vec_handle, uint64_t out_ptr, uint64_t max_count) noexcept {
     if (out_ptr == 0u || max_count == 0u) return 0u;
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     const auto& store = dgtl::runtime::intrinsics_detail::vector_store();
@@ -1501,7 +1501,7 @@ inline uint64_t __dgtl_rt_vec_store(uint64_t vec_handle, uint64_t out_ptr, uint6
     return static_cast<uint64_t>(n);
 }
 
-inline uint64_t __dgtl_rt_vec_free(uint64_t vec_handle, uint64_t = 0, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_vec_free(uint64_t vec_handle, uint64_t = 0, uint64_t = 0) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     return dgtl::runtime::intrinsics_detail::vector_store().erase(vec_handle) > 0 ? 1u : 0u;
 }
@@ -1586,7 +1586,7 @@ inline uint64_t __dgtl_rt_resume_ctx(uint64_t token, uint64_t = 0, uint64_t = 0)
     return token;
 }
 
-inline uint64_t __dgtl_rt_neon_vadd_q(uint64_t vec_a, uint64_t vec_b, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_neon_vadd_q(uint64_t vec_a, uint64_t vec_b, uint64_t = 0) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     const auto& store = dgtl::runtime::intrinsics_detail::vector_store();
     const auto it_a = store.find(vec_a);
@@ -1669,18 +1669,18 @@ inline uint64_t __dgtl_rt_rope_embed(uint64_t tensor_handle, uint64_t rotate_by,
     }
 }
 
-inline uint64_t __dgtl_rt_fast_inv_sqrt(uint64_t value_bits, uint64_t = 0, uint64_t = 0) noexcept {
+inline uint64_t __dgtl_rt_fast_inv_sqrt_bits(uint64_t value_bits, uint64_t = 0, uint64_t = 0) noexcept {
     float x = 0.0f;
     uint32_t in = static_cast<uint32_t>(value_bits & 0xFFFFFFFFu);
     std::memcpy(&x, &in, sizeof(x));
     if (x <= 0.0f) return 0u;
-    const float y = 1.0f / std::sqrt(x);
+    const float y = __dgtl_rt_fast_inv_sqrt(x);
     uint32_t out = 0u;
     std::memcpy(&out, &y, sizeof(out));
     return static_cast<uint64_t>(out);
 }
 
-inline uint64_t __dgtl_rt_vec3_cross(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_vec3_cross(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     auto& store = dgtl::runtime::intrinsics_detail::vector_store();
     const auto it_a = store.find(a_handle);
@@ -1700,7 +1700,7 @@ inline uint64_t __dgtl_rt_vec3_cross(uint64_t a_handle, uint64_t b_handle, uint6
     }
 }
 
-inline uint64_t __dgtl_rt_vec4_dot(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_vec4_dot(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     const auto& store = dgtl::runtime::intrinsics_detail::vector_store();
     const auto it_a = store.find(a_handle);
@@ -1714,7 +1714,7 @@ inline uint64_t __dgtl_rt_vec4_dot(uint64_t a_handle, uint64_t b_handle, uint64_
     return out;
 }
 
-inline uint64_t __dgtl_rt_mat4_mul(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
+uint64_t __dgtl_rt_mat4_mul(uint64_t a_handle, uint64_t b_handle, uint64_t = 0) noexcept {
     std::lock_guard<std::mutex> lock(dgtl::runtime::intrinsics_detail::vector_mutex());
     auto& store = dgtl::runtime::intrinsics_detail::vector_store();
     const auto it_a = store.find(a_handle);
@@ -1738,7 +1738,7 @@ inline uint64_t __dgtl_rt_mat4_mul(uint64_t a_handle, uint64_t b_handle, uint64_
     }
 }
 
-inline uint64_t __dgtl_rt_quat_slerp(uint64_t a_handle, uint64_t b_handle, uint64_t t_bits) noexcept {
+uint64_t __dgtl_rt_quat_slerp(uint64_t a_handle, uint64_t b_handle, uint64_t t_bits) noexcept {
     double t = 0.0;
     std::memcpy(&t, &t_bits, std::min(sizeof(t), sizeof(t_bits)));
     t = std::clamp(t, 0.0, 1.0);

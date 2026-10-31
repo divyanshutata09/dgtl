@@ -57,6 +57,9 @@ import dgtl.object.writers.pe;
 import dgtl.object.writers.elf;
 import dgtl.object.writers.macho;
 import dgtl.object.writers.wasm;
+import dgtl.linker.elf;
+import dgtl.linker.macho;
+import dgtl.linker.wasm;
 import dgtl.linker.driver_api;
 import dgtl.mir.machine_ir;
 
@@ -164,6 +167,10 @@ public:
             last_report_.target_format = "PE_EXE";
             dgtl::object::writers::PEObjectWriter writer;
             success = writer.write_standalone_executable(fn, bytes, entry_symbol) && write_file(output_path, bytes);
+        } else if (ext == ".elf") {
+            last_report_.target_format = "ELF_EXE";
+            dgtl::linker::elf::ELFLinker linker;
+            success = linker.link_executable(fn, bytes, entry_symbol) && write_file(output_path, bytes);
         } else if (ext == ".o") {
             last_report_.target_format = "ELF_OBJ";
             dgtl::object::writers::ELFObjectWriter writer;
@@ -209,7 +216,8 @@ public:
         bool success = false;
 
         switch (obj.format()) {
-            case dgtl::object::ObjectFormat::COFF: {
+            case dgtl::object::ObjectFormat::COFF:
+            case dgtl::object::ObjectFormat::PE: {
                 dgtl::object::writers::PEObjectWriter writer;
                 success = writer.write(obj, bytes);
                 break;
@@ -319,6 +327,28 @@ public:
             success = linker_.build_static_archive_binary(stream, bytes, "module.o");
             if (success) success = write_file(output_path, bytes);
         }
+        else if (ext == ".wasm") {
+            last_report_.target_format = "WASM_BINARY";
+            dgtl::linker::wasm::WASMBinaryLink wasm_linker;
+            std::vector<uint8_t> bytes;
+            success = wasm_linker.link(stream, bytes);
+            if (success) success = write_file(output_path, bytes);
+        }
+        else if (ext == ".macho" || ext == ".dylib") {
+            last_report_.target_format = "MACHO_BINARY";
+            dgtl::object::writers::MachOObjectWriter writer;
+            std::vector<uint8_t> obj_bytes;
+            if (writer.write_machine_function(stream, obj_bytes, entry_symbol)) {
+                dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
+                auto& text_sec = obj.get_text_section();
+                text_sec.bytes = std::move(obj_bytes);
+                obj.add_function_symbol(std::string(entry_symbol), 0, text_sec.bytes.size(), true);
+                dgtl::linker::macho::SovereignMachOLinker macho_linker;
+                std::vector<uint8_t> bytes;
+                success = macho_linker.link_executable(obj, bytes);
+                if (success) success = write_file(output_path, bytes);
+            }
+        }
         else {
             // Default to COFF relocatable object
             last_report_.target_format = "COFF_OBJ_DEFAULT";
@@ -398,6 +428,25 @@ public:
         } else {
             ok = linker_.build_coff_archive_binary(stream, bytes, member_name, entry_symbol);
         }
+        if (!ok) return false;
+        return write_file(output_path, bytes);
+    }
+
+    /**
+     * @brief Compile and emit a multi-function module into a static library archive (.lib).
+     */
+    bool compile_module_to_archive(
+        std::string_view output_path,
+        const std::vector<const machine::MachineFunction*>& module_streams,
+        std::string_view member_name = "module.obj",
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee = {})
+    {
+        if (output_path.empty() || module_streams.empty()) return false;
+        std::vector<uint8_t> bytes;
+        const std::vector<uint8_t> rdata_payload = dgtl::runtime::build_registered_strings_rdata();
+        const auto effective_callees = merge_default_callees(slot_to_callee);
+        const bool ok = linker_.build_coff_archive_binary(
+            module_streams, bytes, member_name, effective_callees, rdata_payload);
         if (!ok) return false;
         return write_file(output_path, bytes);
     }

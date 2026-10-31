@@ -27,8 +27,18 @@ module;
 
 export module dgtl.api.ir_builder;
 
-// Import native compiler base interfaces and consolidated parent modules
-import dgtl.ir;
+// Import native compiler base interfaces and granular IR partitions
+import dgtl.ir_enums;
+import dgtl.ir_schema;
+import dgtl.ir_node;
+import dgtl.ir.stream;
+import dgtl.ir_storage;
+import dgtl.ir_traits;
+import dgtl.ir.gen;
+import dgtl.ir.gen_wrappers;
+import dgtl.ir.verifier;
+import dgtl.ir.io;
+import dgtl.ir.debug;
 import dgtl.op_traits;
 import dgtl.compiler_context;
 import dgtl.runtime.numa;
@@ -134,6 +144,11 @@ public:
         LayerNorm,
         RopeEmbed,
         FastInvSqrt,
+        GeluF32,
+        SiluF32,
+        SigmoidF32,
+        SwigluF32,
+        RmsNormF32,
         VecAddF32512,
         VecMulF32512,
         StoreV512
@@ -557,6 +572,39 @@ public:
     [[nodiscard]] uint32_t create_fma(ir::IRStream& stream, uint32_t result_id,
                                       uint32_t a_id, uint32_t b_id, uint32_t c_id) noexcept {
         (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::FMA_F32, result_id, a_id, b_id, c_id));
+        try_annotate_debug_and_type_(stream, stream.size() - 1);
+        return result_id;
+    }
+
+    [[nodiscard]] uint32_t create_fma_f32(ir::IRStream& stream, uint32_t result_id,
+                                          uint32_t a_id, uint32_t b_id, uint32_t c_id) noexcept {
+        return create_fma(stream, result_id, a_id, b_id, c_id);
+    }
+
+    [[nodiscard]] uint32_t create_fma_f64(ir::IRStream& stream, uint32_t result_id,
+                                          uint32_t a_id, uint32_t b_id, uint32_t c_id) noexcept {
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::FMA_F64, result_id, a_id, b_id, c_id));
+        try_annotate_debug_and_type_(stream, stream.size() - 1);
+        return result_id;
+    }
+
+    [[nodiscard]] uint32_t create_relu(ir::IRStream& stream, uint32_t result_id,
+                                       uint32_t x_id) noexcept {
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::TENSOR_RELU, result_id, x_id));
+        try_annotate_debug_and_type_(stream, stream.size() - 1);
+        return result_id;
+    }
+
+    [[nodiscard]] uint32_t create_fast_add(ir::IRStream& stream, uint32_t result_id,
+                                           uint32_t lhs_id, uint32_t rhs_id) noexcept {
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::DGTL_FAST_ADD, result_id, lhs_id, rhs_id));
+        try_annotate_debug_and_type_(stream, stream.size() - 1);
+        return result_id;
+    }
+
+    [[nodiscard]] uint32_t create_fast_fma(ir::IRStream& stream, uint32_t result_id,
+                                           uint32_t a_id, uint32_t b_id, uint32_t c_id) noexcept {
+        (void)append_node_(stream, ir::gen::make_generated_node(ir::OpCode::DGTL_FAST_FMA, result_id, a_id, b_id, c_id));
         try_annotate_debug_and_type_(stream, stream.size() - 1);
         return result_id;
     }
@@ -1207,6 +1255,12 @@ public:
                                         uint32_t result_id = ir::INVALID_SLOT) noexcept {
         return emit_ternary_op_(ir::OpCode::FMA_F32, a, b, c, result_id);
     }
+    [[nodiscard]] uint32_t emit_fma_f64(uint32_t a,
+                                        uint32_t b,
+                                        uint32_t c,
+                                        uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::FMA_F64, a, b, c, result_id);
+    }
 
     [[nodiscard]] uint32_t emit_vec_add_f32_512(uint32_t lhs, uint32_t rhs,
                                                 uint32_t result_id = ir::INVALID_SLOT) noexcept {
@@ -1744,6 +1798,150 @@ public:
         return emit_unary_op_(ir::OpCode::FAST_INV_SQRT, input, result_id);
     }
 
+    [[nodiscard]] uint32_t emit_sqrt_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SQRT_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_sqrt_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SQRT_F64, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_sin_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SIN_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_cos_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::COS_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_tan_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::TAN_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_sin_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SIN_F64, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_cos_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::COS_F64, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_tan_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::TAN_F64, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_exp_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::EXP_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_log_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::LOG_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_pow_f32(uint32_t x, uint32_t y, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::POW_F32, x, y, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_exp_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::EXP_F64, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_log_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::LOG_F64, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_pow_f64(uint32_t x, uint32_t y, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::POW_F64, x, y, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_relu(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::TENSOR_RELU, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_relu_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::TENSOR_RELU, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_relu_f64(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::TENSOR_RELU, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_tensor_relu(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::TENSOR_RELU, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_tensor_batchnorm(uint32_t x, uint32_t mean, uint32_t var, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::TENSOR_BATCHNORM, x, mean, var, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_tensor_gather(uint32_t base, uint32_t indices, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::TENSOR_GATHER, base, indices, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_tensor_scatter_d(uint32_t base, uint32_t indices, uint32_t updates, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::TENSOR_SCATTER_D, base, indices, updates, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_gpu_annotate_device(uint32_t target_slot, uint32_t device_id, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::GPU_ANNOTATE_DEVICE, target_slot, device_id, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_dgtl_fast_add(uint32_t lhs, uint32_t rhs, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::DGTL_FAST_ADD, lhs, rhs, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_dgtl_fast_fma(uint32_t a, uint32_t b, uint32_t c, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_ternary_op_(ir::OpCode::DGTL_FAST_FMA, a, b, c, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_cpp_template_spec(uint32_t template_slot, uint32_t type_param_slot, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::CPP_TEMPLATE_SPEC, template_slot, type_param_slot, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_rust_borrow_mut(uint32_t ref_slot, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::RUST_BORROW_MUT, ref_slot, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_wasm_invoke(uint32_t func_idx, uint32_t arg_table_slot, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::WASM_INVOKE, func_idx, arg_table_slot, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_fiber_yield_loop(uint32_t loop_count_slot, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::FIBER_YIELD_LOOP, loop_count_slot, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_suspend_ctx(uint32_t ctx_slot, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SUSPEND_CTX, ctx_slot, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_resume_ctx(uint32_t ctx_slot, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::RESUME_CTX, ctx_slot, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_neon_vadd_q(uint32_t lhs, uint32_t rhs, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i64_(ir::OpCode::NEON_VADD_Q, lhs, rhs, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_gelu_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::GELU_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_silu_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SILU_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_sigmoid_f32(uint32_t x, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_unary_op_(ir::OpCode::SIGMOID_F32, x, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_swiglu_f32(uint32_t gate, uint32_t up, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::SWIGLU_F32, gate, up, result_id);
+    }
+
+    [[nodiscard]] uint32_t emit_rms_norm_f32(uint32_t input, uint32_t gamma, uint32_t result_id = ir::INVALID_SLOT) noexcept {
+        return emit_binary_op_i32_(ir::OpCode::RMS_NORM_F32, input, gamma, result_id);
+    }
+
     [[nodiscard]] uint32_t emit_vec3_cross(uint32_t a, uint32_t b, uint32_t result_id = ir::INVALID_SLOT) noexcept {
         return emit_binary_op_i32_(ir::OpCode::VEC3_CROSS, a, b, result_id);
     }
@@ -2228,6 +2426,11 @@ private:
             case RuntimeIntrinsic::SoftmaxFast: return ir::OpCode::SOFTMAX_FAST;
             case RuntimeIntrinsic::LayerNorm: return ir::OpCode::LAYER_NORM;
             case RuntimeIntrinsic::RopeEmbed: return ir::OpCode::ROPE_EMBED;
+            case RuntimeIntrinsic::GeluF32: return ir::OpCode::GELU_F32;
+            case RuntimeIntrinsic::SiluF32: return ir::OpCode::SILU_F32;
+            case RuntimeIntrinsic::SigmoidF32: return ir::OpCode::SIGMOID_F32;
+            case RuntimeIntrinsic::SwigluF32: return ir::OpCode::SWIGLU_F32;
+            case RuntimeIntrinsic::RmsNormF32: return ir::OpCode::RMS_NORM_F32;
             case RuntimeIntrinsic::FastInvSqrt: return ir::OpCode::FAST_INV_SQRT;
             case RuntimeIntrinsic::VecAddF32512: return ir::OpCode::VEC_ADD_F32_512;
             case RuntimeIntrinsic::VecMulF32512: return ir::OpCode::VEC_MUL_F32_512;

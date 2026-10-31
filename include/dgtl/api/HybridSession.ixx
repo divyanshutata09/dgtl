@@ -25,12 +25,12 @@ module;
 
 export module dgtl.api.hybrid_session;
 
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir.evolution;
 import dgtl.runtime.numa;
 import dgtl.compiler_context;
 import dgtl.runtime.bulletins;
 import dgtl.runtime.tls;
-import dgtl.mir;
 import dgtl.mir.machine_ir;
 import dgtl.mir.pipeline;
 import dgtl.object.file;
@@ -42,6 +42,7 @@ import dgtl.jit.object_loader;
 import dgtl.linker.driver;
 import dgtl.linker.driver_api;
 
+import dgtl.api.config;
 import dgtl.api.execution_engine;
 import dgtl.formal;
 
@@ -62,6 +63,20 @@ public:
         : context_(context),
           target_machine_(),
           pipeline_options_() {
+        switch (context.get_config().target_arch) {
+            case TargetArch::X86_64:  target_machine_ = core::TargetMachine(core::ArchType::X86_64_AVX2); break;
+            case TargetArch::ARM64:   target_machine_ = core::TargetMachine(core::ArchType::AARCH64_SVE); break;
+            case TargetArch::ARM32:   target_machine_ = core::TargetMachine(core::ArchType::ARM32_NEON); break;
+            case TargetArch::RISCV64: target_machine_ = core::TargetMachine(core::ArchType::RISCV64_RVV); break;
+            case TargetArch::WASM:    target_machine_ = core::TargetMachine(core::ArchType::WASM_SIMD); break;
+            case TargetArch::CUDA:
+            case TargetArch::PTX:     target_machine_ = core::TargetMachine(core::ArchType::CUDA_PTX); break;
+            case TargetArch::ROCm:
+            case TargetArch::AMDGPU:  target_machine_ = core::TargetMachine(core::ArchType::ROCM_AMDGCN); break;
+            case TargetArch::SPIRV:   target_machine_ = core::TargetMachine(core::ArchType::SPIRV_LOGICAL); break;
+            case TargetArch::Host:
+            default: break;
+        }
     }
 
     ~HybridSession() override = default;
@@ -182,11 +197,10 @@ public:
         return true;
     }
 
-    [[nodiscard]] bool emit_object(std::string_view output_path) noexcept override {
+    [[nodiscard]] bool emit_object_to_memory(std::vector<uint8_t>& out_bytes) noexcept override {
         std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
         if (!cached_object_file_) return false;
 
-        std::vector<uint8_t> bytes;
         dgtl::linker::LinkerDriver driver;
         dgtl::linker::OutputFormat fmt = dgtl::linker::OutputFormat::COFFObject;
         if (cached_object_file_->format() == dgtl::object::ObjectFormat::ELF) {
@@ -195,6 +209,9 @@ public:
             fmt = dgtl::linker::OutputFormat::MachOObject;
         } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::WASM) {
             fmt = dgtl::linker::OutputFormat::WASMBinary;
+        } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::COFF ||
+                   cached_object_file_->format() == dgtl::object::ObjectFormat::PE) {
+            fmt = dgtl::linker::OutputFormat::COFFObject;
         } else {
 #if defined(_WIN32) || defined(_WIN64)
             fmt = dgtl::linker::OutputFormat::COFFObject;
@@ -203,9 +220,56 @@ public:
 #endif
         }
 
-        if (!driver.emit(fmt, *cached_object_file_, bytes) || bytes.empty()) {
+        return driver.emit(fmt, *cached_object_file_, out_bytes) && !out_bytes.empty();
+    }
+
+    [[nodiscard]] bool emit_binary_to_memory(std::vector<uint8_t>& out_bytes) noexcept override {
+        std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+        if (!cached_object_file_) return false;
+
+        dgtl::linker::LinkerDriver driver;
+        dgtl::linker::OutputFormat fmt = dgtl::linker::OutputFormat::PEExecutable;
+        if (target_machine_.get_arch() == core::ArchType::WASM_SIMD ||
+            cached_object_file_->format() == dgtl::object::ObjectFormat::WASM) {
+            fmt = dgtl::linker::OutputFormat::WASMBinary;
+        } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::MachO) {
+            fmt = dgtl::linker::OutputFormat::MachOExecutable;
+        } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::ELF) {
+            fmt = dgtl::linker::OutputFormat::ELFExecutable;
+        } else if (cached_object_file_->format() == dgtl::object::ObjectFormat::COFF ||
+                   cached_object_file_->format() == dgtl::object::ObjectFormat::PE) {
+            fmt = dgtl::linker::OutputFormat::PEExecutable;
+        } else {
+#if defined(_WIN32) || defined(_WIN64)
+            fmt = dgtl::linker::OutputFormat::PEExecutable;
+#elif defined(__APPLE__)
+            fmt = dgtl::linker::OutputFormat::MachOExecutable;
+#else
+            fmt = dgtl::linker::OutputFormat::ELFExecutable;
+#endif
+        }
+
+        if (!driver.emit(fmt, *cached_object_file_, out_bytes) || out_bytes.empty()) {
+            if (fmt == dgtl::linker::OutputFormat::PEExecutable) {
+                dgtl::backend::aot::DGTLAOTLinker linker;
+                return linker.build_pe_executable_from_object(*cached_object_file_, out_bytes) && !out_bytes.empty();
+            }
             return false;
         }
+        return true;
+    }
+
+    [[nodiscard]] bool emit_wasm_binary_to_memory(std::vector<uint8_t>& out_bytes) noexcept override {
+        std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
+        if (!cached_object_file_) return false;
+
+        dgtl::linker::LinkerDriver driver;
+        return driver.emit(dgtl::linker::OutputFormat::WASMBinary, *cached_object_file_, out_bytes) && !out_bytes.empty();
+    }
+
+    [[nodiscard]] bool emit_object(std::string_view output_path) noexcept override {
+        std::vector<uint8_t> bytes;
+        if (!emit_object_to_memory(bytes)) return false;
 
         std::ofstream out(std::string(output_path), std::ios::binary);
         if (!out.is_open()) return false;
@@ -214,29 +278,8 @@ public:
     }
 
     [[nodiscard]] bool emit_binary(std::string_view output_path) noexcept override {
-        std::shared_lock<std::shared_mutex> lock(symbol_mutex_);
-        if (!cached_object_file_) return false;
-
-        dgtl::linker::LinkerDriver driver;
         std::vector<uint8_t> binary_image;
-        dgtl::linker::OutputFormat fmt = dgtl::linker::OutputFormat::PEExecutable;
-        if (target_machine_.get_arch() == core::ArchType::WASM_SIMD ||
-            cached_object_file_->format() == dgtl::object::ObjectFormat::WASM) {
-            fmt = dgtl::linker::OutputFormat::WASMBinary;
-        } else {
-#if defined(_WIN32) || defined(_WIN64)
-            fmt = dgtl::linker::OutputFormat::PEExecutable;
-#else
-            fmt = dgtl::linker::OutputFormat::ELFExecutable;
-#endif
-        }
-
-        if (!driver.emit(fmt, *cached_object_file_, binary_image) || binary_image.empty()) {
-            dgtl::backend::aot::DGTLAOTLinker linker;
-            if (!linker.build_pe_executable_from_object(*cached_object_file_, binary_image) || binary_image.empty()) {
-                return false;
-            }
-        }
+        if (!emit_binary_to_memory(binary_image)) return false;
 
         std::ofstream out(std::string(output_path), std::ios::binary);
         if (!out.is_open()) return false;
@@ -306,6 +349,11 @@ public:
     [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline() const noexcept { return pipeline_options_; }
     [[nodiscard]] dgtl::mir::MachinePipelineOptions& get_pipeline_options() noexcept { return pipeline_options_; }
     [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline_options() const noexcept { return pipeline_options_; }
+
+    [[nodiscard]] core::TargetMachine& get_target_machine() noexcept { return target_machine_; }
+    [[nodiscard]] const core::TargetMachine& get_target_machine() const noexcept { return target_machine_; }
+    void set_target_machine(const core::TargetMachine& tm) noexcept { target_machine_ = tm; }
+    void set_target_arch(core::ArchType arch) noexcept { target_machine_ = core::TargetMachine(arch); }
 
 private:
     Context& context_;

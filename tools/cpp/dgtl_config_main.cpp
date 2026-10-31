@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -35,7 +35,7 @@ constexpr std::string_view DGTL_VERSION_STR     = "2.1.0-SOVEREIGN";
 constexpr std::string_view DGTL_ABI_VERSION_STR = "4";
 constexpr std::string_view DGTL_HOST_TRIPLE     = "x86_64-pc-windows-msvc";
 constexpr std::string_view DGTL_TARGETS_BUILT   = "x86_64 arm64 riscv64 wasm cuda rocm";
-constexpr std::string_view DGTL_COMPONENTS_LIST = "core ir opt mir isa codegen object jit linker runtime sdk all";
+constexpr std::string_view DGTL_COMPONENTS_LIST = "core ir opt mir isa codegen object jit linker runtime math sdk all";
 
 struct PathContext {
     fs::path sdk_root;

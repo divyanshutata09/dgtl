@@ -38,6 +38,7 @@ import dgtl.object.file;
 import dgtl.object.section;
 import dgtl.object.symbol;
 import dgtl.object.relocation;
+import dgtl.linker.symbols;
 
 export namespace dgtl::jit {
 
@@ -186,6 +187,16 @@ public:
                 auto it3 = host_symbols.find(imp);
                 if (it3 != host_symbols.end()) {
                     addr = it3->second;
+                }
+            }
+            if (addr == 0) {
+                uint64_t builtin_addr = 0;
+                std::string_view lookup_name = sym_name;
+                if (lookup_name.starts_with("__imp_")) {
+                    lookup_name.remove_prefix(6);
+                }
+                if (dgtl::linker::SymbolResolver::resolve_builtin_runtime_symbol(lookup_name, builtin_addr)) {
+                    addr = static_cast<std::uintptr_t>(builtin_addr);
                 }
             }
             if (addr == 0) {

@@ -32,7 +32,12 @@ module;
 
 export module dgtl.ir.pass.tuning_optimize;
 
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir_node;
+import dgtl.ir_enums;
+import dgtl.ir.gen;
+import dgtl.ir.analysis.cost_model;
+import dgtl.math;
 
 // import dgtl.ir.gen;
 
@@ -169,7 +174,15 @@ private:
 
     static uint64_t estimate_cycles_fallback(const ir::IRStream& stream, uint32_t factor) noexcept {
         const uint64_t t0 = read_hardware_counter_start();
-        const uint64_t node_cost = static_cast<uint64_t>(stream.size()) * 64ULL;
+        static const ir::analysis::AICostModel ai_cost_model{};
+        float total_cost = 0.0f;
+        if (!stream.is_null()) {
+            const size_t sz = stream.size();
+            for (size_t i = 0; i < sz; ++i) {
+                total_cost += ai_cost_model.predict_node_cost(stream.get_node_readonly(i));
+            }
+        }
+        const uint64_t node_cost = static_cast<uint64_t>(total_cost * 8.0f);
         const uint64_t unroll_penalty = static_cast<uint64_t>(factor) * 8ULL;
         const uint64_t logic_mix = stream.generate_logic_hash() & 0x3FFULL;
         const uint64_t t1 = read_hardware_counter_end();

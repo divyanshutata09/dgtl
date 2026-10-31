@@ -1282,6 +1282,15 @@ private:
             case MachineForm::FloatBinary32:
             case MachineForm::FloatBinary64: {
                 const bool is32 = (instruction.form == MachineForm::FloatBinary32);
+                if (semantic_kind == MachineSemanticKind::FloatSqrt || opcode == GM_FSQRT32 || opcode == GM_FSQRT64) {
+                    const auto* def = mir_def(instruction);
+                    const auto uses = mir_uses(instruction);
+                    if (def && !uses.empty()) {
+                        out << "    fsqrt " << mir_reg(def->reg, is32 ? 32u : 64u) << ", "
+                            << mir_operand(function, *uses[0], is32 ? 32u : 64u) << "\n";
+                        return true;
+                    }
+                }
                 const char* mnemonic = "fadd";
                 if (semantic_kind == MachineSemanticKind::FloatSub || opcode == GM_FSUB32 || opcode == GM_FSUB64) mnemonic = "fsub";
                 else if (semantic_kind == MachineSemanticKind::FloatMul || opcode == GM_FMUL32 || opcode == GM_FMUL64) mnemonic = "fmul";
@@ -1295,7 +1304,11 @@ private:
             }
 
             case MachineForm::FloatTernaryFma32: {
-                emit_fma(out, function, instruction);
+                if (opcode == GM_FFMA64) {
+                    emit_fast_fma_f64(out, function, instruction);
+                } else {
+                    emit_fma(out, function, instruction);
+                }
                 return true;
             }
 

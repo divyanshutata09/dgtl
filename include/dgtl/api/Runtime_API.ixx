@@ -18,8 +18,7 @@ module;
 
 export module dgtl.api.runtime;
 
-// Import core types and hardware description layers natively
-import dgtl.ir;
+// Import runtime scheduler and NUMA subsystems
 import dgtl.runtime.task_scheduler;
 import dgtl.runtime.numa;
 

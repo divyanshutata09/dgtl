@@ -103,6 +103,18 @@ alignas(64) inline constexpr auto kRuntimeSymbolTable = []() constexpr {
     table[static_cast<size_t>(GM_FFMA32)]             = "__dgtl_rt_fma_f32";
     table[static_cast<size_t>(GM_FFMA64)]             = "__dgtl_rt_fma_f64";
     table[static_cast<size_t>(GM_FAST_INV_SQRT)]      = "__dgtl_rt_fast_inv_sqrt";
+    table[static_cast<size_t>(GM_FSIN32)]             = "__dgtl_rt_sinf";
+    table[static_cast<size_t>(GM_FCOS32)]             = "__dgtl_rt_cosf";
+    table[static_cast<size_t>(GM_FTAN32)]             = "__dgtl_rt_tanf";
+    table[static_cast<size_t>(GM_FEXP32)]             = "__dgtl_rt_expf";
+    table[static_cast<size_t>(GM_FLOG32)]             = "__dgtl_rt_logf";
+    table[static_cast<size_t>(GM_FPOW32)]             = "__dgtl_rt_powf";
+    table[static_cast<size_t>(GM_FSIN64)]             = "__dgtl_rt_sin";
+    table[static_cast<size_t>(GM_FCOS64)]             = "__dgtl_rt_cos";
+    table[static_cast<size_t>(GM_FTAN64)]             = "__dgtl_rt_tan";
+    table[static_cast<size_t>(GM_FEXP64)]             = "__dgtl_rt_exp";
+    table[static_cast<size_t>(GM_FLOG64)]             = "__dgtl_rt_log";
+    table[static_cast<size_t>(GM_FPOW64)]             = "__dgtl_rt_pow";
     table[static_cast<size_t>(GM_VEC_GATHER)]         = "__dgtl_rt_gather_f32_512";
 
     // Memory Helpers & Cache Intrinsics
@@ -125,6 +137,8 @@ alignas(64) inline constexpr auto kRuntimeSymbolTable = []() constexpr {
     table[static_cast<size_t>(GM_TENSOR_GATHER)]      = "__dgtl_rt_tensor_gather";
     table[static_cast<size_t>(GM_TENSOR_POOL)]        = "__dgtl_rt_tensor_pool";
     table[static_cast<size_t>(GM_TENSOR_REDUCE)]      = "__dgtl_rt_tensor_reduce";
+    table[static_cast<size_t>(GM_TENSOR_RELU)]        = "__dgtl_rt_reluf";
+    table[static_cast<size_t>(GM_TENSOR_RELU64)]      = "__dgtl_rt_relu";
     table[static_cast<size_t>(GM_TENSOR_RESHAPE)]     = "__dgtl_rt_tensor_reshape";
     table[static_cast<size_t>(GM_TENSOR_SCATTER_D)]   = "__dgtl_rt_tensor_scatter_d";
     table[static_cast<size_t>(GM_TENSOR_SLICE)]       = "__dgtl_rt_tensor_slice";
@@ -136,6 +150,11 @@ alignas(64) inline constexpr auto kRuntimeSymbolTable = []() constexpr {
     table[static_cast<size_t>(GM_SOFTMAX_FAST)]       = "__dgtl_rt_softmax_fast";
     table[static_cast<size_t>(GM_LAYER_NORM)]         = "__dgtl_rt_layer_norm";
     table[static_cast<size_t>(GM_ROPE_EMBED)]         = "__dgtl_rt_rope_embed";
+    table[static_cast<size_t>(GM_GELU_F32)]           = "__dgtl_rt_geluf";
+    table[static_cast<size_t>(GM_SILU_F32)]           = "__dgtl_rt_silu";
+    table[static_cast<size_t>(GM_SIGMOID_F32)]        = "__dgtl_rt_sigmoid";
+    table[static_cast<size_t>(GM_SWIGLU_F32)]         = "__dgtl_rt_swiglu";
+    table[static_cast<size_t>(GM_RMS_NORM_F32)]       = "__dgtl_rt_rms_norm";
     table[static_cast<size_t>(GM_MAT4_MUL)]           = "__dgtl_rt_mat4_mul";
     table[static_cast<size_t>(GM_QUAT_SLERP)]         = "__dgtl_rt_quat_slerp";
     table[static_cast<size_t>(GM_VEC3_CROSS)]         = "__dgtl_rt_vec3_cross";
@@ -196,8 +215,27 @@ alignas(64) inline constexpr auto kRuntimeSymbolTable = []() constexpr {
         case K::FloatExp10:    return "__dgtl_rt_exp10";
         case K::FloatExpm1:    return "__dgtl_rt_expm1";
         case K::FloatPow:      return "__dgtl_rt_pow";
+        case K::FloatSqrt:     return "__dgtl_rt_sqrt";
+        case K::FloatRsqrt:    return "__dgtl_rt_fast_inv_sqrt";
         case K::FloatCbrt:     return "__dgtl_rt_cbrt";
         case K::FloatHypot:    return "__dgtl_rt_hypot";
+
+        // GenAI Activations & Normalization
+        case K::FloatGelu:     return "__dgtl_rt_gelu";
+        case K::FloatSilu:     return "__dgtl_rt_silu";
+        case K::FloatSigmoid:  return "__dgtl_rt_sigmoid";
+        case K::FloatSwiglu:   return "__dgtl_rt_swiglu";
+        case K::FloatRmsNorm:  return "__dgtl_rt_rms_norm";
+
+        // Special Functions
+        case K::FloatErf:      return "__dgtl_rt_erf";
+        case K::FloatErfc:     return "__dgtl_rt_erfc";
+        case K::FloatGamma:    return "__dgtl_rt_gamma";
+        case K::FloatLgamma:   return "__dgtl_rt_lgamma";
+        case K::FloatBesselJ0: return "__dgtl_rt_bessel_j0";
+        case K::FloatBesselJ1: return "__dgtl_rt_bessel_j1";
+        case K::FloatBesselY0: return "__dgtl_rt_bessel_y0";
+        case K::FloatBesselY1: return "__dgtl_rt_bessel_y1";
 
         // String Operations
         case K::StringLength:    return "__dgtl_rt_string_length";
@@ -236,7 +274,17 @@ alignas(64) inline constexpr auto kRuntimeSymbolTable = []() constexpr {
         case K::FloatFma:
             return target.supports_fma() ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
+
+        case K::FloatSqrt:
+            return target.family() == core::TargetFamily::X64 ||
+                   target.family() == core::TargetFamily::ARM64 ||
+                   target.family() == core::TargetFamily::RISCV64 ||
+                   target.family() == core::TargetFamily::CUDA ||
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV ||
+                   target.family() == core::TargetFamily::WASM;
 
         case K::VectorAdd:
         case K::VectorMul:
@@ -244,45 +292,52 @@ alignas(64) inline constexpr auto kRuntimeSymbolTable = []() constexpr {
                    target.description().supports_vector_width(256) ||
                    target.has_feature(core::TargetFeature::NEON) ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         case K::VectorGather:
         case K::VectorStore:
             return target.description().supports_vector_width(512) ||
                    (target.has_feature(core::TargetFeature::AVX2) && target.supports_vector_memory()) ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         case K::FloatRsqrt:
             return target.family() == core::TargetFamily::X64 ||
                    target.family() == core::TargetFamily::ARM64 ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         case K::IntegerPopcount:
             return target.has_feature(core::TargetFeature::BMI2) ||
                    target.has_feature(core::TargetFeature::NEON) ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         case K::IntegerClz:
         case K::IntegerCtz:
             return target.has_feature(core::TargetFeature::BMI2) ||
                    target.family() == core::TargetFamily::ARM64 ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         case K::TensorOp:
             return target.has_feature(core::TargetFeature::Tensor) ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         case K::HardwareFence:
         case K::AtomicOp:
         case K::ConcurrentSync:
             return target.has_feature(core::TargetFeature::Atomics) ||
                    target.family() == core::TargetFamily::CUDA ||
-                   target.family() == core::TargetFamily::ROCm;
+                   target.family() == core::TargetFamily::ROCm ||
+                   target.family() == core::TargetFamily::SPIRV;
 
         default:
             return false;

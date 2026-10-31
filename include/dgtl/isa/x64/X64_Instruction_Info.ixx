@@ -33,9 +33,9 @@ enum class X64MachineOpcode : dgtl::machine::MachineOpcode {
     Store,
     IAdd32, ISub32, IMul32, IDiv32, IRem32, IAnd32, IOr32, IXor32, IShl32, IShr32,
     IAdd64, ISub64, IMul64, IDiv64, IRem64, IAnd64, IOr64, IXor64, IShl64, IShr64,
-    FAdd32, FSub32, FMul32, FDiv32,
-    FAdd64, FSub64, FMul64, FDiv64,
-    Fma32,
+    FAdd32, FSub32, FMul32, FDiv32, FSqrt32,
+    FAdd64, FSub64, FMul64, FDiv64, FSqrt64,
+    Fma32, Fma64,
     Compare32,
     Jump, BranchCond, BranchCompare, Call, Return, Syscall,
     VectorGather512, VectorStore512,
@@ -62,9 +62,9 @@ form_for_generic_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
         case GM_IADD64: case GM_ISUB64: case GM_IMUL64: case GM_IDIV64: case GM_IREM64:
         case GM_IAND64: case GM_IOR64: case GM_IXOR64: case GM_ISHL64: case GM_ISHR64:
             return MachineForm::IntegerBinary64;
-        case GM_FADD32: case GM_FSUB32: case GM_FMUL32: case GM_FDIV32:
+        case GM_FADD32: case GM_FSUB32: case GM_FMUL32: case GM_FDIV32: case GM_FSQRT32:
             return MachineForm::FloatBinary32;
-        case GM_FADD64: case GM_FSUB64: case GM_FMUL64: case GM_FDIV64:
+        case GM_FADD64: case GM_FSUB64: case GM_FMUL64: case GM_FDIV64: case GM_FSQRT64:
             return MachineForm::FloatBinary64;
         case GM_FFMA32: case GM_FFMA64: return MachineForm::FloatTernaryFma32;
         case GM_ICMP32: case GM_ICMP64: case GM_FCMP32: case GM_FCMP64:
@@ -72,11 +72,18 @@ form_for_generic_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
         case GM_GOTO: return MachineForm::Goto;
         case GM_BR_COND: return MachineForm::BranchCond;
         case GM_BR_COMPARE: return MachineForm::BranchCompare;
-        case GM_CALL: case GM_CALL_VARIADIC: return MachineForm::Call;
+        case GM_CALL: case GM_CALL_VARIADIC:
+        case GM_FSIN32: case GM_FCOS32: case GM_FTAN32: case GM_FEXP32: case GM_FLOG32: case GM_FPOW32:
+        case GM_FSIN64: case GM_FCOS64: case GM_FTAN64: case GM_FEXP64: case GM_FLOG64: case GM_FPOW64:
+            return MachineForm::Call;
         case GM_RETURN: return MachineForm::Return;
         case GM_SYSCALL: return MachineForm::Syscall;
-        case GM_LOAD: return MachineForm::LoadStack;
-        case GM_STORE: return MachineForm::StoreStack;
+        case GM_LOAD:
+        case GM_ILOAD32: case GM_ILOAD64: case GM_FLOAD32: case GM_FLOAD64:
+            return MachineForm::LoadStack;
+        case GM_STORE:
+        case GM_ISTORE32: case GM_ISTORE64: case GM_FSTORE32: case GM_FSTORE64:
+            return MachineForm::StoreStack;
         case GM_VEC_LOAD: case GM_VEC_GATHER: return MachineForm::VectorGather512;
         case GM_VEC_STORE: case GM_VEC_SCATTER: return MachineForm::VectorStore512;
         case GM_FENCE: case GM_ACQUIRE_FENCE: case GM_RELEASE_FENCE: case GM_ATOMIC_FENCE:
@@ -84,7 +91,9 @@ form_for_generic_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
         case GM_ATOMIC_LOAD: case GM_ATOMIC_STORE: case GM_ATOMIC_SNAPSHOT:
             return MachineForm::AtomicOp;
         case GM_BARRIER_SYNC: case GM_SYNC_BARRIER: return MachineForm::ConcurrentSync;
-        case GM_TENSOR_OP: case GM_TENSOR_GEMM: case GM_TENSOR_CONV:
+        case GM_TENSOR_OP: case GM_TENSOR_GEMM: case GM_TENSOR_CONV: case GM_TENSOR_RELU: case GM_TENSOR_RELU64:
+        case GM_TENSOR_BROADCAST: case GM_TENSOR_CONCAT: case GM_TENSOR_POOL: case GM_TENSOR_REDUCE:
+        case GM_TENSOR_RESHAPE: case GM_TENSOR_SLICE: case GM_TENSOR_SOFTMAX: case GM_TENSOR_TRANSPOSE:
             return MachineForm::TensorOp;
         default: return MachineForm::Unhandled;
     }
@@ -106,11 +115,11 @@ form_for_x64_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
         case X::IAdd64: case X::ISub64: case X::IMul64: case X::IDiv64: case X::IRem64:
         case X::IAnd64: case X::IOr64: case X::IXor64: case X::IShl64: case X::IShr64:
             return MachineForm::IntegerBinary64;
-        case X::FAdd32: case X::FSub32: case X::FMul32: case X::FDiv32:
+        case X::FAdd32: case X::FSub32: case X::FMul32: case X::FDiv32: case X::FSqrt32:
             return MachineForm::FloatBinary32;
-        case X::FAdd64: case X::FSub64: case X::FMul64: case X::FDiv64:
+        case X::FAdd64: case X::FSub64: case X::FMul64: case X::FDiv64: case X::FSqrt64:
             return MachineForm::FloatBinary64;
-        case X::Fma32: return MachineForm::FloatTernaryFma32;
+        case X::Fma32: case X::Fma64: return MachineForm::FloatTernaryFma32;
         case X::Compare32: return MachineForm::Compare32;
         case X::Jump: return MachineForm::Goto;
         case X::BranchCond: return MachineForm::BranchCond;
@@ -184,6 +193,7 @@ public:
                     case MachineSemanticKind::FloatSub: return op(X::FSub32);
                     case MachineSemanticKind::FloatMul: return op(X::FMul32);
                     case MachineSemanticKind::FloatDiv: return op(X::FDiv32);
+                    case MachineSemanticKind::FloatSqrt: return op(X::FSqrt32);
                     default: return INVALID_MACHINE_OPCODE;
                 }
             case MachineForm::FloatBinary64:
@@ -192,11 +202,12 @@ public:
                     case MachineSemanticKind::FloatSub: return op(X::FSub64);
                     case MachineSemanticKind::FloatMul: return op(X::FMul64);
                     case MachineSemanticKind::FloatDiv: return op(X::FDiv64);
+                    case MachineSemanticKind::FloatSqrt: return op(X::FSqrt64);
                     default: return INVALID_MACHINE_OPCODE;
                 }
             case MachineForm::FloatTernaryFma32: return op(X::Fma32);
             case MachineForm::Compare32:
-                return semantic_kind == MachineSemanticKind::Compare ? op(X::Compare32) : INVALID_MACHINE_OPCODE;
+                return (semantic_kind == MachineSemanticKind::Compare || semantic_kind == MachineSemanticKind::FloatCmp) ? op(X::Compare32) : INVALID_MACHINE_OPCODE;
             case MachineForm::Goto: return op(X::Jump);
             case MachineForm::BranchCond: return op(X::BranchCond);
             case MachineForm::BranchCompare: return op(X::BranchCompare);

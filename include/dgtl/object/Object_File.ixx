@@ -127,6 +127,11 @@ public:
         return symbols_.back();
     }
 
+    Symbol& add_symbol(Symbol symbol) {
+        symbols_.push_back(std::move(symbol));
+        return symbols_.back();
+    }
+
     Symbol& add_function_symbol(std::string name, std::uint64_t offset, std::uint64_t size, bool is_global = true) {
         symbols_.push_back(Symbol::make_function(std::move(name), offset, size, is_global));
         return symbols_.back();

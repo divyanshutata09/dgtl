@@ -151,13 +151,28 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
     bind(OpCode::MUL_F32, GM_FMUL32);
     bind(OpCode::DIV_F32, GM_FDIV32);
     bind(OpCode::FMA_F32, GM_FFMA32);
+    bind(OpCode::SQRT_F32, GM_FSQRT32);
     bind(OpCode::FAST_INV_SQRT, GM_FAST_INV_SQRT);
+    bind(OpCode::SIN_F32, GM_FSIN32);
+    bind(OpCode::COS_F32, GM_FCOS32);
+    bind(OpCode::TAN_F32, GM_FTAN32);
+    bind(OpCode::EXP_F32, GM_FEXP32);
+    bind(OpCode::LOG_F32, GM_FLOG32);
+    bind(OpCode::POW_F32, GM_FPOW32);
 
     // 64-bit Floating Point
     bind(OpCode::ADD_F64, GM_FADD64);
     bind(OpCode::SUB_F64, GM_FSUB64);
     bind(OpCode::MUL_F64, GM_FMUL64);
     bind(OpCode::DIV_F64, GM_FDIV64);
+    bind(OpCode::FMA_F64, GM_FFMA64);
+    bind(OpCode::SQRT_F64, GM_FSQRT64);
+    bind(OpCode::SIN_F64, GM_FSIN64);
+    bind(OpCode::COS_F64, GM_FCOS64);
+    bind(OpCode::TAN_F64, GM_FTAN64);
+    bind(OpCode::EXP_F64, GM_FEXP64);
+    bind(OpCode::LOG_F64, GM_FLOG64);
+    bind(OpCode::POW_F64, GM_FPOW64);
 
     // Comparison & Selection
     bind(OpCode::CMP_EQ_I32, GM_ICMP32);
@@ -265,6 +280,11 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
     bind(OpCode::SOFTMAX_FAST, GM_SOFTMAX_FAST);
     bind(OpCode::LAYER_NORM, GM_LAYER_NORM);
     bind(OpCode::ROPE_EMBED, GM_ROPE_EMBED);
+    bind(OpCode::GELU_F32, GM_GELU_F32);
+    bind(OpCode::SILU_F32, GM_SILU_F32);
+    bind(OpCode::SIGMOID_F32, GM_SIGMOID_F32);
+    bind(OpCode::SWIGLU_F32, GM_SWIGLU_F32);
+    bind(OpCode::RMS_NORM_F32, GM_RMS_NORM_F32);
     bind(OpCode::MAT4_MUL, GM_MAT4_MUL);
     bind(OpCode::QUAT_SLERP, GM_QUAT_SLERP);
     bind(OpCode::VEC3_CROSS, GM_VEC3_CROSS);
@@ -281,7 +301,7 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
 [[nodiscard]] constexpr machine::GenericMachineOpcode map_to_generic_opcode(
     ir::OpCode op,
     MachineForm form,
-    machine::MachineSemanticKind /*sem*/) noexcept {
+    machine::MachineSemanticKind sem) noexcept {
     using namespace machine;
 
     const auto idx = static_cast<std::size_t>(op);
@@ -290,6 +310,10 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
         if (direct != GM_NOOP || op == ir::OpCode::NOP) {
             return direct;
         }
+    }
+
+    if (op == ir::OpCode::TENSOR_RELU) {
+        return GM_TENSOR_RELU;
     }
 
     // Fallback based on MachineForm
@@ -301,9 +325,9 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
         case MachineForm::StoreStack:       return GM_STORE_STACK;
         case MachineForm::IntegerBinary32:  return GM_IADD32;
         case MachineForm::IntegerBinary64:  return GM_IADD64;
-        case MachineForm::FloatBinary32:    return GM_FADD32;
-        case MachineForm::FloatBinary64:    return GM_FADD64;
-        case MachineForm::FloatTernaryFma32:return GM_FFMA32;
+        case MachineForm::FloatBinary32:    return (sem == machine::MachineSemanticKind::FloatSqrt) ? GM_FSQRT32 : GM_FADD32;
+        case MachineForm::FloatBinary64:    return (sem == machine::MachineSemanticKind::FloatSqrt) ? GM_FSQRT64 : GM_FADD64;
+        case MachineForm::FloatTernaryFma32:return (op == ir::OpCode::FMA_F64) ? GM_FFMA64 : GM_FFMA32;
         case MachineForm::Compare32:        return GM_ICMP32;
         case MachineForm::Goto:             return GM_GOTO;
         case MachineForm::BranchCond:       return GM_BR_COND;
@@ -376,9 +400,19 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
             return (idx < selected.call_arg_classes.size()) ? selected.call_arg_classes[idx] : machine::RegisterClassKind::General;
         };
 
-        if (selected.node.op_a != ir::INVALID_SLOT) {
-            selection.operands.push_back(
-                machine::MachineSelectionOperand::symbol_ref(selected.node.op_a, machine::OperandRole::Use));
+        const bool is_user_call = (selected.semantic_opcode == ir::OpCode::CALL ||
+                                   selected.semantic_opcode == ir::OpCode::CALL_VARIADIC);
+        if (is_user_call) {
+            if (selected.node.op_a != ir::INVALID_SLOT) {
+                selection.operands.push_back(
+                    machine::MachineSelectionOperand::symbol_ref(selected.node.op_a, machine::OperandRole::Use));
+            }
+        } else {
+            if (selected.node.op_a != ir::INVALID_SLOT) {
+                auto op = machine::MachineSelectionOperand::value_ref(selected.node.op_a, machine::OperandRole::Use);
+                op.reg_class = get_arg_class(arg_idx++);
+                selection.operands.push_back(op);
+            }
         }
         if (selected.node.op_b != ir::INVALID_SLOT) {
             auto op = machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use);
@@ -520,6 +554,11 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
             break;
         default:
             break;
+    }
+
+    if (ir::IRTraits::is_commutative(selected.semantic_opcode) ||
+        (static_cast<uint64_t>(selection.traits) & static_cast<uint64_t>(machine::MachineTrait::Commutative)) != 0ULL) {
+        selection.flags = selection.flags | machine::MachineInstrFlag::Commutable;
     }
 
     return selection;
@@ -1269,6 +1308,11 @@ public:
                 return machine::RegisterClassKind::General;
             };
 
+            const bool is_user_call = (selected.semantic_opcode == ir::OpCode::CALL ||
+                                       selected.semantic_opcode == ir::OpCode::CALL_VARIADIC);
+            if (!is_user_call && selected.node.op_a != ir::INVALID_SLOT) {
+                selected.call_arg_classes.push_back(classify_arg(selected.node.op_a));
+            }
             if (selected.node.op_b != ir::INVALID_SLOT) {
                 selected.call_arg_classes.push_back(classify_arg(selected.node.op_b));
             }

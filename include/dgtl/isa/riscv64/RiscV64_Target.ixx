@@ -26,6 +26,8 @@ export import dgtl.isa.riscv64.riscv64_abi;
 export import dgtl.isa.riscv64.frame_lowering;
 export import dgtl.isa.riscv64.riscv64_machine_form_lowering;
 export import dgtl.isa.riscv64.riscv64_emitter;
+export import dgtl.isa.riscv64.mc_encoder;
+export import dgtl.isa.riscv64.riscv64_graphcoloring_regalloc;
 
 export namespace dgtl::isa::riscv64 {
 

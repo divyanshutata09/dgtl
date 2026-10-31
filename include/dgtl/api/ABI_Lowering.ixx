@@ -11,6 +11,6 @@
 
 export module dgtl.api.abi_lowering;
 
-// Re-export the ABI lowering abstractions straight from the consolidated passes layer
-export import dgtl.ir;
+// Re-export the ABI lowering abstractions
+export import dgtl.ir_core.abi;
 export import dgtl.mir.abi_lowering;

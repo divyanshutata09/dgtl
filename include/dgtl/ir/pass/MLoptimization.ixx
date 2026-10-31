@@ -31,8 +31,9 @@ import dgtl.ir.pipeline.pass_manager_config;
 // Import standalone external primitive modules safely
 import dgtl.ir_node;
 import dgtl.ir_enums;
-import dgtl.ir;
+import dgtl.ir.stream;
 import dgtl.ir.analysis.cost_model;
+import dgtl.math;
 
 export namespace dgtl::ir::pass::ml {
 

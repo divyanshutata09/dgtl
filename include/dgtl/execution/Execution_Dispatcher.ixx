@@ -42,7 +42,8 @@ enum class DispatchTarget : uint8_t {
     RiscV64_Native = 8,
     CUDA_Kernel = 9,
     ROCm_Kernel = 10,
-    Count = 11
+    SPIRV_Kernel = 11,
+    Count = 12
 };
 
 enum class DispatchError : int64_t {

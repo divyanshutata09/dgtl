@@ -51,7 +51,7 @@ bool emit_backend(BackendKind backend,
             result.emitted_binary = false;
             return result.ok;
         case BackendKind::riscv64:
-            result.ok = emit_riscv64(result.emitted_text);
+            result.ok = emit_riscv64(stream, result.emitted_text);
             result.emitted_binary = false;
             return result.ok;
         case BackendKind::cuda:
@@ -90,16 +90,20 @@ bool emit_backend(BackendKind backend,
 inline dgtl::core::TargetMachine target_machine_for_backend(BackendKind backend) {
     switch (backend) {
         case BackendKind::arm64:
-        case BackendKind::arm32:
         case BackendKind::macho:
             return dgtl::core::TargetMachine(dgtl::core::ArchType::AARCH64_SVE);
+        case BackendKind::arm32:
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::ARM32_NEON);
         case BackendKind::wasm:
             return dgtl::core::TargetMachine(dgtl::core::ArchType::WASM_SIMD);
+        case BackendKind::riscv64:
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::RISCV64_RVV);
+        case BackendKind::cuda:
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::CUDA_PTX);
+        case BackendKind::rocm:
+            return dgtl::core::TargetMachine(dgtl::core::ArchType::ROCM_AMDGCN);
         case BackendKind::x64:
         case BackendKind::nasm:
-        case BackendKind::riscv64:
-        case BackendKind::cuda:
-        case BackendKind::rocm:
         case BackendKind::elfobj:
         case BackendKind::staticlib:
         case BackendKind::coffobj:

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
  * Project:     DGTL (Deep General-purpose Transformation Layer)
@@ -49,10 +49,14 @@ typedef enum dgtl_target_arch {
     DGTL_ARCH_RISCV64= 4,
     DGTL_ARCH_CUDA   = 5,
     DGTL_ARCH_ROCM   = 6,
-    DGTL_ARCH_FPGA   = 7
+    DGTL_ARCH_FPGA   = 7,
+    DGTL_ARCH_SPIRV  = 8,
+    DGTL_ARCH_PTX    = 9,
+    DGTL_ARCH_AMDGPU = 10
 } dgtl_target_arch_t;
 
-#ifndef DGTL_SDK_H
+#ifndef DGTL_OPT_LEVEL_DEFINED
+#define DGTL_OPT_LEVEL_DEFINED
 typedef enum dgtl_opt_level {
     DGTL_OPT_O0      = 0,
     DGTL_OPT_O1      = 1,

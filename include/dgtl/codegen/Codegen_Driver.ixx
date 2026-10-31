@@ -95,7 +95,13 @@ public:
 
         // 3. Target MC Encoding into ObjectFile
         dgtl::object::ObjectFile& obj = result.object;
-        obj.set_format(is_windows ? dgtl::object::ObjectFormat::COFF : dgtl::object::ObjectFormat::ELF);
+        if (target.family() == dgtl::core::TargetFamily::RISCV64) {
+            obj.set_format(dgtl::object::ObjectFormat::ELF);
+        } else if (target.family() == dgtl::core::TargetFamily::WASM) {
+            obj.set_format(dgtl::object::ObjectFormat::WASM);
+        } else {
+            obj.set_format(is_windows ? dgtl::object::ObjectFormat::COFF : dgtl::object::ObjectFormat::ELF);
+        }
 
         std::string diag;
         const bool enc_ok = backend->encode_function(fn, obj, entry_name, symbol_names, &diag);
@@ -134,7 +140,13 @@ public:
         }
 
         dgtl::object::ObjectFile& obj = result.object;
-        obj.set_format(is_windows ? dgtl::object::ObjectFormat::COFF : dgtl::object::ObjectFormat::ELF);
+        if (target.family() == dgtl::core::TargetFamily::RISCV64) {
+            obj.set_format(dgtl::object::ObjectFormat::ELF);
+        } else if (target.family() == dgtl::core::TargetFamily::WASM) {
+            obj.set_format(dgtl::object::ObjectFormat::WASM);
+        } else {
+            obj.set_format(is_windows ? dgtl::object::ObjectFormat::COFF : dgtl::object::ObjectFormat::ELF);
+        }
 
         std::string diag;
         const bool enc_ok = backend->encode_function(function, obj, entry_name, symbol_names, &diag);

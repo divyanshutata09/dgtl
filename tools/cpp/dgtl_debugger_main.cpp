@@ -30,6 +30,12 @@
 #include <utility>
 #include <vector>
 
+#include <cstdlib>
+#include <chrono>
+#include <span>
+
+import dgtl.tools.common;
+
 #if defined(_WIN32) || defined(_WIN64)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -40,7 +46,65 @@
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <io.h>
+#define DGTL_ISATTY() (_isatty(_fileno(stdout)) != 0)
+#else
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
+#define DGTL_ISATTY() (isatty(fileno(stdout)) != 0)
 #endif
+
+// ============================================================================
+// ANSI TERMINAL FORMATTER & VT PROCESSING
+// ============================================================================
+struct Terminal {
+    static inline bool enabled = true;
+
+    static void init(bool enable_color) {
+        if (!enable_color || std::getenv("NO_COLOR") != nullptr) {
+            enabled = false;
+            return;
+        }
+        enabled = DGTL_ISATTY();
+#if defined(_WIN32) || defined(_WIN64)
+        if (enabled) {
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != INVALID_HANDLE_VALUE) {
+                DWORD mode = 0;
+                if (GetConsoleMode(hOut, &mode)) {
+                    mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                    SetConsoleMode(hOut, mode);
+                }
+            }
+        }
+#endif
+    }
+
+    static const char* reset()      { return enabled ? "\033[0m" : ""; }
+    static const char* bold()       { return enabled ? "\033[1m" : ""; }
+    static const char* dim()        { return enabled ? "\033[2m" : ""; }
+    static const char* red()        { return enabled ? "\033[1;31m" : ""; }
+    static const char* green()      { return enabled ? "\033[1;32m" : ""; }
+    static const char* yellow()     { return enabled ? "\033[1;33m" : ""; }
+    static const char* blue()       { return enabled ? "\033[1;34m" : ""; }
+    static const char* magenta()    { return enabled ? "\033[1;35m" : ""; }
+    static const char* cyan()       { return enabled ? "\033[1;36m" : ""; }
+    static const char* white()      { return enabled ? "\033[1;37m" : ""; }
+    static const char* bg_red()     { return enabled ? "\033[41;1;37m" : ""; }
+    static const char* bg_green()   { return enabled ? "\033[42;1;30m" : ""; }
+    static const char* bg_blue()    { return enabled ? "\033[44;1;37m" : ""; }
+    static const char* bg_dark()    { return enabled ? "\033[48;5;236m" : ""; }
+};
+
+struct DiagnosticTaxonomy {
+    std::string code;
+    std::string category;
+    std::string title;
+    std::string explanation;
+    std::vector<std::string> suggested_fixes;
+};
 
 namespace fs = std::filesystem;
 
@@ -58,6 +122,7 @@ struct Options {
     bool deep_symbols{true};
     bool all_logs{false};
     bool write_baseline{false};
+    bool color{true};
     std::size_t top{8};
 };
 
@@ -70,10 +135,15 @@ struct ModuleUnit {
 struct ErrorRecord {
     fs::path file;
     int line{0};
-    std::string kind;
+    int column{0};
+    std::string kind{"error"};
     std::string message;
     std::string raw;
     std::string command_context;
+    std::string error_code;
+    std::string category;
+    std::string title;
+    std::vector<std::string> remediation_steps;
 };
 
 struct ErrorCluster {
@@ -83,6 +153,11 @@ struct ErrorCluster {
     std::map<std::string, std::size_t> command_hits;
     std::string likely_command;
     std::size_t likely_command_hits{0};
+    std::string error_code;
+    std::string category;
+    std::string title;
+    std::string explanation;
+    std::vector<std::string> remediation_steps;
 };
 
 struct SymbolSite {
@@ -333,6 +408,10 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
             opts.relative_paths = true;
         } else if (arg == "--json") {
             opts.json = true;
+        } else if (arg == "--no-color") {
+            opts.color = false;
+        } else if (arg == "--color") {
+            opts.color = true;
         } else if (arg == "--no-deep-symbols") {
             opts.deep_symbols = false;
         } else if (arg == "--all-logs") {
@@ -344,12 +423,29 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
                 << "================================================================================\n"
                 << "                  DGTL ENTERPRISE NATIVE & FORENSIC DEBUGGER                    \n"
                 << "================================================================================\n\n"
-                << "NATIVE EXECUTION & CRASH INTERCEPTION:\n"
+                << "NATIVE EXECUTION & FULL CRASH TELEMETRY:\n"
                 << "  dgtl-debugger run <executable.exe> [args...]\n"
-                << "      Launch target under Win32 native debug interceptor.\n"
+                << "      Launch target under Win32 native debug interceptor with comprehensive telemetry.\n"
                 << "      Captures hardware exceptions (0xC0000005, 0xC000001D, 0xC0000094, etc.),\n"
-                << "      performs unmapped memory page diagnosis (VirtualQueryEx), dumps 64-bit\n"
-                << "      register context, disassembles faulting RIP, and unwinds stack backtrace.\n\n"
+                << "      performs unmapped memory page diagnosis (VirtualQueryEx), dumps 64-bit GPRs,\n"
+                << "      segment registers (CS/DS/ES/FS/GS/SS), full EFLAGS & MXCSR flag decomposition,\n"
+                << "      128-bit SIMD registers (XMM0-XMM15 with float/double interpretation),\n"
+                << "      faulting RIP disassembly, 32-frame stack backtrace, and auto-exports\n"
+                << "      structured telemetry JSON (crash_telemetry_<pid>_<timestamp>.json).\n\n"
+                << "UNIVERSAL FILE & COMPILER ARTIFACT INSPECTOR:\n"
+                << "  dgtl-debugger inspect <file>   (aliases: open, view)\n"
+                << "      Deep forensic decoding and structured visualization of any compiler artifact:\n"
+                << "      - Static Archives: .a, .lib (archive member catalog, sizes, offsets)\n"
+                << "      - Relocatable Objects: .obj, .o (COFF/ELF/Mach-O sections, symbols, relocs)\n"
+                << "      - Dynamic Libraries: .so, .dll (exports, imports, section headers)\n"
+                << "      - Raw Section Blobs: .text (disassembly), .data/.rdata (hex+ASCII dump),\n"
+                << "                           .pdata (RUNTIME_FUNCTION unwind array),\n"
+                << "                           .xdata (UNWIND_INFO opcode stream), .bss\n"
+                << "      - Assembly Files: .s, .asm (syntax analysis, instruction listings)\n"
+                << "      - DGTL IR & Polyhedral: .dgtl (polyhedral iteration domains, schedules, tiles)\n"
+                << "      - Myzon Package Slabs: .mzp (precompiled binary slab, hash, string table, symbols)\n"
+                << "      - Myzon Modules & Sources: .myz, .mzi, .mzm, .my, .myzt, .myzb, .myzs, .mzc, .myd\n"
+                << "      - Project Manifests: myzon.toml, myzon.lock, dgtl.toml, dgtl.lock\n\n"
                 << "PE STRUCTURAL AUDIT & SECTION FORENSICS:\n"
                 << "  dgtl-debugger inspect-exe <executable.exe>\n"
                 << "      Deep structural validation of PE32+ binaries: header checks, section\n"
@@ -359,8 +455,15 @@ void emit_text(const Analysis& analysis, const fs::path& root, const Options& op
                 << "  dgtl-debugger [--root <path>] [--log <path>]... [--export <path>] [--focus <text>]\n"
                 << "      Scans C++20 module graphs, detects circular dependencies, tracks symbol\n"
                 << "      collisions, clusters build errors, and exports JSON / Markdown diagnostics.\n\n"
+                << "DIAGNOSTIC DISPLAY OPTIONS:\n"
+                << "  --color / --no-color       Enable or disable ANSI color styling in console diagnostics.\n"
+                << "  --json                     Output structured JSON diagnostics for IDE integration.\n"
+                << "  --summary-only             Emit condensed diagnostic summary without full snippets.\n"
+                << "  --top <N>                  Limit error clusters and collision reports to top N entries.\n\n"
                 << "DIRECT SHORTCUTS:\n"
-                << "  dgtl-debugger <executable.exe>  ->  Shorthand for 'dgtl-debugger run <executable.exe>'\n"
+                << "  dgtl-debugger <file>       -> Auto-detects file type: executes .exe/.elf with native\n"
+                << "                                debugger; opens any other file format (.a, .obj, .dgtl,\n"
+                << "                                .s, .pdata, .myz, .mzp, etc.) in FileInspector.\n"
                 << "================================================================================\n";
             return ParseStatus::Help;
         } else {
@@ -484,6 +587,439 @@ void append_utf8_codepoint(std::string& out, char32_t cp) {
 
 [[nodiscard]] std::string read_text_file(const fs::path& path) {
     return trim(decode_text_bytes(read_file_bytes(path)));
+}
+
+// ============================================================================
+// DIAGNOSTIC TAXONOMY & REMEDIATION ENGINE
+// ============================================================================
+[[nodiscard]] DiagnosticTaxonomy classify_diagnostic(std::string_view message_text, std::string_view raw_text) {
+    std::string combined = to_lower(std::string(message_text) + " " + std::string(raw_text));
+
+    if (combined.find("cycle") != std::string::npos || combined.find("scc") != std::string::npos || combined.find("circular") != std::string::npos) {
+        return {
+            "MOD-001",
+            "Module Graph Topology",
+            "Cyclic Module Import Dependency",
+            "Translation units form a strongly connected component (SCC) cycle. C++20 modules strictly prohibit circular interface imports.",
+            {
+                "Extract common interface types and declarations into a shared base partition or header.",
+                "Replace direct type imports with forward-declared pointers, references, or opaque scalar handles.",
+                "Ensure interface units (.ixx) only import necessary dependencies, moving implementation imports to .cpp units."
+            }
+        };
+    }
+
+    if (combined.find("cannot import module in its own purview") != std::string::npos || combined.find("purview") != std::string::npos) {
+        return {
+            "MOD-002",
+            "C++20 Module Purview",
+            "Self-Import in Module Purview",
+            "A module implementation unit attempted to import its owning module interface, which is redundant and disallowed by the C++20 standard.",
+            {
+                "Remove 'import <module_name>;' from the module implementation file.",
+                "Purview units automatically inherit all declarations exported by their owning module's interface."
+            }
+        };
+    }
+
+    if (combined.find("crc mismatch") != std::string::npos || combined.find("out of date") != std::string::npos || combined.find("gcm.cache") != std::string::npos) {
+        return {
+            "CACHE-001",
+            "Module Cache Synchronization",
+            "Stale Binary Module Interface (BMI) Cache",
+            "Precompiled module interface file CRC does not match compiler signature or dependent header timestamp.",
+            {
+                "Delete stale module cache directory (e.g. 'build/gcm.cache' or '.dot_dgtl/cache').",
+                "Perform a clean build of all module interfaces in topological order using 'dgtl-engine --rebuild-cache'."
+            }
+        };
+    }
+
+    if (combined.find("failed to find module") != std::string::npos || combined.find("module file not found") != std::string::npos || combined.find("could not open module") != std::string::npos) {
+        return {
+            "MOD-003",
+            "Module Resolution",
+            "Unresolved Module Interface",
+            "The compiler was unable to locate the compiled BMI (.gcm / .ifc) for the imported module.",
+            {
+                "Verify the module name spelling matches the 'export module <name>;' declaration.",
+                "Ensure the module interface source file is listed in the compilation build sequence prior to consumer units.",
+                "Check module search path flags (-fmodule-file or -fprebuilt-module-path)."
+            }
+        };
+    }
+
+    if (combined.find("ambiguous") != std::string::npos || combined.find("candidate") != std::string::npos) {
+        return {
+            "SYM-001",
+            "Symbol Resolution",
+            "Ambiguous Symbol or Overload Resolution",
+            "Multiple candidate declarations or definitions match the referenced identifier across imported modules.",
+            {
+                "Fully qualify the symbol name with its explicit enclosing namespace (e.g. 'dgtl::ir::...').",
+                "Eliminate duplicate declarations across headers and module interface partitions.",
+                "Consult the Ownership Arbitration section of this report to identify the authoritative candidate."
+            }
+        };
+    }
+
+    if (combined.find("was not declared") != std::string::npos || combined.find("undeclared") != std::string::npos || combined.find("undefined symbol") != std::string::npos || combined.find("not found") != std::string::npos) {
+        return {
+            "SYM-002",
+            "Semantic Analysis",
+            "Undeclared Identifier or Symbol",
+            "The compiler encountered an identifier that has not been declared in current lexical or module scope.",
+            {
+                "Ensure the required header or module exporting this symbol is imported at the top of the file.",
+                "Verify that the symbol is exported with 'export' keyword in the providing module interface unit.",
+                "If the symbol is generated by a tooling pass (e.g. 'dgtl-gen'), verify that generation ran successfully."
+            }
+        };
+    }
+
+    if (combined.find("redefinition") != std::string::npos || combined.find("conflicting declaration") != std::string::npos || combined.find("multiple definition") != std::string::npos) {
+        return {
+            "SYM-003",
+            "One Definition Rule (ODR)",
+            "Symbol Redefinition Conflict",
+            "The identifier has multiple non-inline definitions across different compilation units or headers.",
+            {
+                "Mark free functions or variable definitions in headers as 'inline' or 'constexpr'.",
+                "Move non-inline function definitions to a single .cpp implementation unit."
+            }
+        };
+    }
+
+    if (combined.find("w^x") != std::string::npos || combined.find("writable & executable") != std::string::npos) {
+        return {
+            "SEC-001",
+            "Binary Hardening & Security",
+            "W^X Memory Layout Violation",
+            "Section is marked both Writable and Executable, violating memory protection security policies.",
+            {
+                "Separate mutable static state into '.data' or '.bss' and executable machine instructions into '.text'.",
+                "Ensure linker section flags do not combine IMAGE_SCN_MEM_WRITE (0x80000000) and IMAGE_SCN_MEM_EXECUTE (0x00000020)."
+            }
+        };
+    }
+
+    if (combined.find("executable stack") != std::string::npos || combined.find("pt_gnu_stack") != std::string::npos) {
+        return {
+            "SEC-002",
+            "ELF Security Hardening",
+            "Executable Stack Flag Violation",
+            "The ELF PT_GNU_STACK segment is marked executable, which exposes the runtime to buffer execution exploits.",
+            {
+                "Ensure all object files specify non-executable stack flags (flags = 0x6 RW-).",
+                "Pass '-z noexecstack' to the linker or configure SovereignELFLinker stack header."
+            }
+        };
+    }
+
+    if (combined.find("entry point") != std::string::npos || combined.find("zero virtualsize") != std::string::npos || combined.find("out-of-bounds") != std::string::npos) {
+        return {
+            "LNK-001",
+            "Executable Container Geometry",
+            "Invalid Section Table or Entry Point RVA",
+            "The executable container has malformed header offsets, section overlaps, or an entry point outside image bounds.",
+            {
+                "Verify AddressOfEntryPoint points within the VirtualAddress range of a valid executable section.",
+                "Ensure section VirtualSize is positive and aligned to SectionAlignment."
+            }
+        };
+    }
+
+    if (combined.find("code signature") != std::string::npos || combined.find("lc_code_signature") != std::string::npos) {
+        return {
+            "MAC-001",
+            "Mach-O Platform Hardening",
+            "Missing Apple Silicon Ad-hoc Code Signature",
+            "macOS on ARM64 requires an ad-hoc code signature in Mach-O executables via LC_CODE_SIGNATURE.",
+            {
+                "Link with 'dgtl-link --format=macho --arch=arm64', which synthesizes SHA-256 Code Directory structures."
+            }
+        };
+    }
+
+    if (combined.find("0xc0000005") != std::string::npos || combined.find("sigsegv") != std::string::npos || combined.find("access violation") != std::string::npos) {
+        return {
+            "RUN-001",
+            "Virtual Memory Execution",
+            "Hardware Memory Access Violation (Segmentation Fault)",
+            "The process attempted an unauthorized read/write/execution access to virtual memory (frequently NULL address < 0x1000).",
+            {
+                "Inspect faulting RIP disassembly and CPU register state at crash point.",
+                "Verify pointers and vtables are non-null before invoking member functions.",
+                "Check that dynamic library imports are resolved in the Import Address Table (IAT)."
+            }
+        };
+    }
+
+    if (combined.find("0xc000001d") != std::string::npos || combined.find("sigill") != std::string::npos || combined.find("illegal instruction") != std::string::npos) {
+        return {
+            "CPU-001",
+            "Instruction Architecture",
+            "Illegal Host CPU Opcode",
+            "The processor attempted to execute an opcode byte sequence not supported by host hardware.",
+            {
+                "Verify host architecture matches binary architecture (e.g. attempting to run ARM64 binary on x86_64 CPU).",
+                "Check compiler SIMD code emission flags (e.g. AVX-512 vs AVX2)."
+            }
+        };
+    }
+
+    if (combined.find("0xc0000139") != std::string::npos) {
+        return {
+            "DLL-001",
+            "Dynamic Loader",
+            "Missing Dynamic Link Library Entrypoint",
+            "The operating system loader located the required DLL, but the specified exported function symbol was missing.",
+            {
+                "Run 'dgtl-debugger inspect-exe' to audit the Import Directory Table and verify required function names.",
+                "Ensure runtime DLL versions in PATH or application directory export the expected API."
+            }
+        };
+    }
+
+    if (combined.find("__dgtl_rt_") != std::string::npos || combined.find("special_functions") != std::string::npos ||
+        combined.find("dgtl.math") != std::string::npos || combined.find("runtime_maths") != std::string::npos ||
+        combined.find("math intrinsic") != std::string::npos || combined.find("ieee-754") != std::string::npos) {
+        return {
+            "MATH-001",
+            "Sovereign Mathematics Runtime",
+            "Unresolved Math Intrinsic or Runtime Symbol",
+            "The compiler or linker encountered an unresolved sovereign math runtime symbol (__dgtl_rt_*), GenAI activation, or special function intrinsic.",
+            {
+                "Ensure 'dgtl.runtime.maths' and 'dgtl.utils.math.special_functions' are linked in the artifact or JIT resolver fallback table.",
+                "Verify that BackendRuntimeContract maps the intrinsic to an inline expansion or canonical __dgtl_rt_* symbol.",
+                "If using Public SDK, verify that <dgtl_sdk/math.h> is included and linked against dgtl.lib."
+            }
+        };
+    }
+
+    return {
+        "DIAG-000",
+        "Compiler Diagnostic",
+        "Build Diagnostic",
+        "A compiler or linker diagnostic was encountered during compilation.",
+        {
+            "Review the source line and diagnostic message for syntax or semantic issues."
+        }
+    };
+}
+
+// ============================================================================
+// INDUSTRY-GRADE DIAGNOSTIC LINE PARSER
+// ============================================================================
+struct ParsedDiagnostic {
+    fs::path file;
+    int line{0};
+    int column{0};
+    std::string severity{"error"};
+    std::string code;
+    std::string message;
+};
+
+[[nodiscard]] std::optional<ParsedDiagnostic> parse_diagnostic_line(std::string_view raw) {
+    if (raw.empty()) return std::nullopt;
+
+    std::string line(raw);
+    std::string lower = to_lower(line);
+
+    static const std::vector<std::pair<std::string, std::string>> markers = {
+        {"fatal error:", "fatal error"},
+        {"error:", "error"},
+        {"warning:", "warning"},
+        {"note:", "note"},
+        {"failed to compile", "error"}
+    };
+
+    size_t marker_pos = std::string::npos;
+    std::string severity = "error";
+    size_t marker_len = 0;
+
+    for (const auto& [mk, sev] : markers) {
+        size_t p = lower.find(mk);
+        if (p != std::string::npos) {
+            if (marker_pos == std::string::npos || p < marker_pos) {
+                marker_pos = p;
+                severity = sev;
+                marker_len = mk.length();
+            }
+        }
+    }
+
+    if (marker_pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    ParsedDiagnostic diag;
+    diag.severity = severity;
+
+    std::string after_marker = trim(line.substr(marker_pos + marker_len));
+
+    if (after_marker.size() > 2 && after_marker.front() == '[') {
+        size_t rb = after_marker.find(']');
+        if (rb != std::string::npos) {
+            diag.code = after_marker.substr(1, rb - 1);
+            after_marker = trim(after_marker.substr(rb + 1));
+        }
+    } else if (after_marker.size() > 5 && after_marker[0] == 'C' && std::isdigit((unsigned char)after_marker[1])) {
+        size_t col = after_marker.find(':');
+        if (col != std::string::npos && col <= 6) {
+            diag.code = after_marker.substr(0, col);
+            after_marker = trim(after_marker.substr(col + 1));
+        }
+    }
+    diag.message = after_marker;
+
+    std::string prefix = trim(line.substr(0, marker_pos));
+    while (!prefix.empty() && (prefix.back() == ':' || std::isspace((unsigned char)prefix.back()))) {
+        prefix.pop_back();
+    }
+
+    if (prefix.empty()) {
+        return diag;
+    }
+
+    // MSVC style: file(line,col) or file(line)
+    if (prefix.back() == ')') {
+        size_t lp = prefix.rfind('(');
+        if (lp != std::string::npos) {
+            diag.file = trim(prefix.substr(0, lp));
+            std::string nums = prefix.substr(lp + 1, prefix.length() - lp - 2);
+            size_t comma = nums.find(',');
+            if (comma != std::string::npos) {
+                std::string lstr = trim(nums.substr(0, comma));
+                std::string cstr = trim(nums.substr(comma + 1));
+                if (!lstr.empty() && std::all_of(lstr.begin(), lstr.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                    diag.line = std::stoi(lstr);
+                }
+                if (!cstr.empty() && std::all_of(cstr.begin(), cstr.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                    diag.column = std::stoi(cstr);
+                }
+            } else {
+                if (!nums.empty() && std::all_of(nums.begin(), nums.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                    diag.line = std::stoi(nums);
+                }
+            }
+            return diag;
+        }
+    }
+
+    // GCC / Clang style: file:line:col or file:line (mindful of Windows drive letter C:\)
+    size_t search_start = 0;
+    if (prefix.size() >= 3 && std::isalpha((unsigned char)prefix[0]) && prefix[1] == ':' && (prefix[2] == '\\' || prefix[2] == '/')) {
+        search_start = 2;
+    }
+
+    size_t last_colon = prefix.rfind(':');
+    if (last_colon != std::string::npos && last_colon > search_start) {
+        std::string token1 = prefix.substr(last_colon + 1);
+        if (!token1.empty() && std::all_of(token1.begin(), token1.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            size_t prev_colon = prefix.rfind(':', last_colon - 1);
+            if (prev_colon != std::string::npos && prev_colon > search_start) {
+                std::string token2 = prefix.substr(prev_colon + 1, last_colon - prev_colon - 1);
+                if (!token2.empty() && std::all_of(token2.begin(), token2.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                    diag.file = prefix.substr(0, prev_colon);
+                    diag.line = std::stoi(token2);
+                    diag.column = std::stoi(token1);
+                    return diag;
+                }
+            }
+            diag.file = prefix.substr(0, last_colon);
+            diag.line = std::stoi(token1);
+            return diag;
+        }
+    }
+
+    diag.file = prefix;
+    return diag;
+}
+
+// ============================================================================
+// RUST/CLANG-GRADE SOURCE CONTEXT SNIPPET RENDERER
+// ============================================================================
+void render_source_snippet(
+    std::ostream& out,
+    const fs::path& file,
+    int error_line,
+    int error_col = 0,
+    std::string_view highlight_token = ""
+) {
+    if (file.empty() || error_line <= 0) return;
+    std::error_code ec;
+    if (!fs::exists(file, ec) || !fs::is_regular_file(file, ec)) return;
+
+    const auto lines = read_lines(file);
+    if (lines.empty() || error_line > static_cast<int>(lines.size())) return;
+
+    int start_line = std::max(1, error_line - 2);
+    int end_line = std::min(static_cast<int>(lines.size()), error_line + 2);
+    int line_num_width = std::max<int>(3, static_cast<int>(std::to_string(end_line).length()));
+
+    out << "  │     " << Terminal::cyan() << "--> " << Terminal::reset()
+        << file.generic_string() << ":" << error_line;
+    if (error_col > 0) out << ":" << error_col;
+    out << "\n";
+
+    out << "  │     " << std::string(line_num_width, ' ') << " " << Terminal::cyan() << "│" << Terminal::reset() << "\n";
+
+    for (int l = start_line; l <= end_line; ++l) {
+        const std::string& line_text = lines[l - 1];
+        bool is_target = (l == error_line);
+
+        out << "  │     ";
+        if (is_target) {
+            out << Terminal::red() << Terminal::bold()
+                << std::right << std::setw(line_num_width) << l << " │ "
+                << Terminal::reset() << line_text << "\n";
+
+            out << "  │     " << std::string(line_num_width, ' ') << " "
+                << Terminal::cyan() << "│ " << Terminal::reset();
+
+            size_t caret_pos = 0;
+            size_t caret_len = 1;
+
+            if (error_col > 0 && error_col <= static_cast<int>(line_text.length()) + 1) {
+                caret_pos = error_col - 1;
+                size_t p = caret_pos;
+                while (p < line_text.length() && (std::isalnum(static_cast<unsigned char>(line_text[p])) || line_text[p] == '_' || line_text[p] == ':')) {
+                    ++p;
+                }
+                if (p > caret_pos) caret_len = p - caret_pos;
+            } else if (!highlight_token.empty()) {
+                size_t f = line_text.find(highlight_token);
+                if (f != std::string::npos) {
+                    caret_pos = f;
+                    caret_len = highlight_token.length();
+                } else {
+                    size_t f2 = line_text.find_first_not_of(" \t");
+                    caret_pos = (f2 != std::string::npos) ? f2 : 0;
+                    caret_len = std::max<size_t>(1, line_text.length() > caret_pos ? line_text.length() - caret_pos : 1);
+                }
+            } else {
+                size_t f2 = line_text.find_first_not_of(" \t");
+                caret_pos = (f2 != std::string::npos) ? f2 : 0;
+                caret_len = std::max<size_t>(1, line_text.length() > caret_pos ? line_text.length() - caret_pos : 1);
+            }
+
+            for (size_t c = 0; c < caret_pos && c < line_text.length(); ++c) {
+                if (line_text[c] == '\t') out << "    ";
+                else out << " ";
+            }
+
+            out << Terminal::red() << Terminal::bold();
+            for (size_t k = 0; k < caret_len; ++k) out << "^";
+            out << Terminal::reset() << "\n";
+        } else {
+            out << Terminal::dim()
+                << std::right << std::setw(line_num_width) << l << " │ "
+                << Terminal::reset() << line_text << "\n";
+        }
+    }
+
+    out << "  │     " << std::string(line_num_width, ' ') << " " << Terminal::cyan() << "│" << Terminal::reset() << "\n";
 }
 
 [[nodiscard]] std::string strip_compiler_record_prefix(std::string line) {
@@ -987,31 +1523,30 @@ void analyze_log_file(const fs::path& log_path, Analysis& analysis) {
             continue;
         }
 
+        auto parsed = parse_diagnostic_line(line);
         ErrorRecord record;
         record.raw = line;
-        record.kind = is_error ? "error" : "warning";
         record.command_context = last_compiler_command;
 
-        const std::size_t colon1 = line.find(':');
-        const std::size_t colon2 = colon1 == std::string::npos ? std::string::npos : line.find(':', colon1 + 1);
-        const std::size_t colon3 = colon2 == std::string::npos ? std::string::npos : line.find(':', colon2 + 1);
-
-        if (colon1 != std::string::npos && colon2 != std::string::npos) {
-            record.file = trim(line.substr(0, colon1));
-            const std::string line_token = trim(line.substr(colon1 + 1, colon2 - colon1 - 1));
-            if (!line_token.empty() && std::all_of(line_token.begin(), line_token.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
-                record.line = std::stoi(line_token);
-            }
-            if (colon3 != std::string::npos) {
-                record.message = trim(line.substr(colon3 + 1));
-            } else {
-                record.message = trim(line.substr(colon2 + 1));
-            }
-        }
-
-        if (record.message.empty()) {
+        if (parsed) {
+            record.file = parsed->file;
+            record.line = parsed->line;
+            record.column = parsed->column;
+            record.kind = parsed->severity;
+            record.message = parsed->message;
+            record.error_code = parsed->code;
+        } else {
+            record.kind = is_error ? "error" : "warning";
             record.message = trim(line);
         }
+
+        auto tax = classify_diagnostic(record.message, record.raw);
+        if (record.error_code.empty()) {
+            record.error_code = tax.code;
+        }
+        record.category = tax.category;
+        record.title = tax.title;
+        record.remediation_steps = tax.suggested_fixes;
 
         extract_symbols_from_text(record.message, log_symbols);
         extract_symbols_from_text(record.raw, log_symbols);
@@ -1020,7 +1555,15 @@ void analyze_log_file(const fs::path& log_path, Analysis& analysis) {
         auto found = cluster_map.find(signature);
         std::size_t cluster_index = 0;
         if (found == cluster_map.end()) {
-            analysis.clusters.push_back(ErrorCluster{signature, 0, {}});
+            ErrorCluster cl;
+            cl.signature = signature;
+            cl.count = 0;
+            cl.error_code = record.error_code;
+            cl.category = record.category;
+            cl.title = record.title;
+            cl.explanation = tax.explanation;
+            cl.remediation_steps = tax.suggested_fixes;
+            analysis.clusters.push_back(std::move(cl));
             cluster_index = analysis.clusters.size() - 1;
             cluster_map[signature] = cluster_index;
         } else {
@@ -1484,8 +2027,41 @@ void emit_json(const Analysis& analysis, const fs::path& root) {
     for (std::size_t i = 0; i < analysis.clusters.size(); ++i) {
         const auto& cluster = analysis.clusters[i];
         std::cout << "    {\"signature\": \"" << json_escape(cluster.signature) << "\", \"count\": " << cluster.count;
+        if (!cluster.error_code.empty()) {
+            std::cout << ", \"error_code\": \"" << json_escape(cluster.error_code) << "\"";
+        }
+        if (!cluster.category.empty()) {
+            std::cout << ", \"category\": \"" << json_escape(cluster.category) << "\"";
+        }
+        if (!cluster.title.empty()) {
+            std::cout << ", \"title\": \"" << json_escape(cluster.title) << "\"";
+        }
+        if (!cluster.explanation.empty()) {
+            std::cout << ", \"explanation\": \"" << json_escape(cluster.explanation) << "\"";
+        }
+        if (!cluster.remediation_steps.empty()) {
+            std::cout << ", \"remediation\": [";
+            for (std::size_t r = 0; r < cluster.remediation_steps.size(); ++r) {
+                if (r != 0) std::cout << ", ";
+                std::cout << "\"" << json_escape(cluster.remediation_steps[r]) << "\"";
+            }
+            std::cout << "]";
+        }
         if (!cluster.likely_command.empty()) {
             std::cout << ", \"likely_command\": \"" << json_escape(cluster.likely_command) << "\", \"likely_command_hits\": " << cluster.likely_command_hits;
+        }
+        if (!cluster.samples.empty()) {
+            std::cout << ", \"samples\": [";
+            for (std::size_t s = 0; s < cluster.samples.size(); ++s) {
+                if (s != 0) std::cout << ", ";
+                const auto& sample = cluster.samples[s];
+                std::cout << "{\"file\": \"" << json_escape(sample.file.generic_string()) << "\""
+                          << ", \"line\": " << sample.line
+                          << ", \"column\": " << sample.column
+                          << ", \"kind\": \"" << json_escape(sample.kind) << "\""
+                          << ", \"message\": \"" << json_escape(sample.message) << "\"}";
+            }
+            std::cout << "]";
         }
         std::cout << "}";
         if (i + 1 != analysis.clusters.size()) std::cout << ",";
@@ -1532,82 +2108,129 @@ void emit_json(const Analysis& analysis, const fs::path& root) {
 
 std::string build_markdown_report(const Analysis& analysis, const fs::path& root, const Options& opts) {
     std::ostringstream out;
-    if (analysis.clusters.empty() && analysis.last_exit_code == "0") {
-        out << "# DGTL Build Diagnostic Report\n\n";
-        out << "- Status: **SUCCESS** (0 errors detected)\n";
+    if (analysis.clusters.empty() && (analysis.last_exit_code.empty() || analysis.last_exit_code == "0")) {
+        out << "# DGTL Forensic Diagnostic Report\n\n";
+        out << "> [!NOTE]\n";
+        out << "> **Status: PASS** — Zero errors or structural defects detected across " << analysis.modules.size() << " module units.\n\n";
     } else {
         out << "# DGTL Incident Report\n\n";
+        out << "> [!CAUTION]\n";
+        out << "> **Build/Execution Incident Detected**: Target completed with exit code `"
+            << (analysis.last_exit_code.empty() ? "non-zero" : analysis.last_exit_code) << "`.\n";
+        if (!analysis.clusters.empty()) {
+            out << "> Primary root cause signature: `" << analysis.clusters.front().signature << "`\n";
+        }
+        out << "\n";
     }
-    out << "- Root: " << root.string() << "\n";
+
+    out << "## Executive Summary\n\n";
+    out << "| Metric | Value |\n";
+    out << "|:---|:---|\n";
+    out << "| **Workspace Root** | `" << root.generic_string() << "` |\n";
     if (!analysis.last_command.empty()) {
-        out << "- Last command: `" << analysis.last_command << "`\n";
+        out << "| **Last Command** | `" << analysis.last_command << "` |\n";
     }
     if (!analysis.last_exit_code.empty()) {
-        out << "- Last exit code: `" << analysis.last_exit_code << "`\n";
+        out << "| **Exit Code** | `" << analysis.last_exit_code << "` |\n";
     }
     if (!analysis.compiler_fingerprint.empty()) {
-        out << "- Compiler fingerprint: `" << analysis.compiler_fingerprint << "`\n";
+        out << "| **Compiler Hash** | `" << analysis.compiler_fingerprint << "` |\n";
     }
-    if (!analysis.command_fingerprint.empty()) {
-        out << "- Command fingerprint: `" << analysis.command_fingerprint << "`\n";
+    out << "| **Modules Discovered** | " << analysis.modules.size() << " |\n";
+    out << "| **Circular SCC Cycles** | " << analysis.cycles.size() << " |\n";
+    out << "| **Error Clusters** | " << analysis.clusters.size() << " |\n";
+    out << "| **Symbol Collisions** | " << analysis.collisions.size() << " |\n";
+    out << "| **Declaration Cache** | " << analysis.declaration_cache_hits << " hits, " << analysis.declaration_cache_misses << " misses |\n\n";
+
+    if (!analysis.cycles.empty()) {
+        out << "## Module Topology Cycles\n\n";
+        out << "> [!WARNING]\n";
+        out << "> C++20 module interface cycles violate the standard and halt compilation ordering.\n\n";
+        out << "```mermaid\ngraph LR\n";
+        for (std::size_t i = 0; i < std::min(opts.top, analysis.cycles.size()); ++i) {
+            const auto& cycle = analysis.cycles[i];
+            for (std::size_t j = 0; j < cycle.size(); ++j) {
+                const auto* curr = cycle[j];
+                const auto* next = cycle[(j + 1) % cycle.size()];
+                out << "  " << curr->module_name << " --> " << next->module_name << "\n";
+            }
+        }
+        out << "```\n\n";
     }
-    out << "- Logs scanned: " << analysis.logs_scanned.size() << "\n";
-    out << "- Declaration cache: " << analysis.declaration_cache_hits << " hits, "
-        << analysis.declaration_cache_misses << " misses, "
-        << analysis.declaration_files_scanned << " rescanned files\n";
-    if (!analysis.likely_failing_command.empty()) {
-        out << "- Likely failing command: `" << analysis.likely_failing_command << "`\n";
-    }
-    out << "\n## Error Clusters\n";
+
+    out << "## Error Clusters & Diagnostics\n\n";
     if (analysis.clusters.empty()) {
-        out << "- No errors detected.\n";
+        out << "- No errors detected.\n\n";
     } else {
+        out << "| Code | Category | Count | Primary Signature | Remediation Focus |\n";
+        out << "|:---|:---|---:|:---|:---|\n";
         for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
-            out << "- (x" << analysis.clusters[i].count << ") " << analysis.clusters[i].signature << "\n";
-            if (!analysis.clusters[i].likely_command.empty()) {
-                out << "  Command: `" << analysis.clusters[i].likely_command << "` (" << analysis.clusters[i].likely_command_hits << " hits)\n";
+            const auto& c = analysis.clusters[i];
+            std::string code = !c.error_code.empty() ? c.error_code : ("ERR-" + std::to_string(i + 1));
+            std::string rem = !c.remediation_steps.empty() ? c.remediation_steps.front() : "Review compiler output";
+            out << "| `" << code << "` | " << c.category << " | " << c.count << " | `" << c.signature << "` | " << rem << " |\n";
+        }
+        out << "\n";
+
+        for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
+            const auto& c = analysis.clusters[i];
+            out << "### `" << (!c.error_code.empty() ? c.error_code : "ERR") << "`: " << c.signature << "\n\n";
+            if (!c.explanation.empty()) {
+                out << "**Diagnosis**: " << c.explanation << "\n\n";
             }
+            if (!c.likely_command.empty()) {
+                out << "- **Failing Command**: `" << c.likely_command << "` (" << c.likely_command_hits << " hits)\n";
+            }
+            if (!c.samples.empty()) {
+                out << "- **Sample Sites**:\n";
+                for (const auto& sample : c.samples) {
+                    out << "  - `" << display_path(root, sample.file, opts.relative_paths);
+                    if (sample.line > 0) out << ":" << sample.line;
+                    if (sample.column > 0) out << ":" << sample.column;
+                    out << "` — *" << sample.message << "*\n";
+                }
+            }
+            if (!c.remediation_steps.empty()) {
+                out << "\n> [!TIP]\n";
+                out << "> **Actionable Remediation**:\n";
+                for (const auto& step : c.remediation_steps) {
+                    out << "> - " << step << "\n";
+                }
+            }
+            out << "\n";
         }
     }
-    if (!analysis.clusters.empty()) {
-        out << "\n## Failing Command Context\n";
-        for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
-            const auto& cluster = analysis.clusters[i];
-            if (cluster.likely_command.empty()) {
-                continue;
-            }
-            out << "- `" << cluster.signature << "`\n";
-            out << "  Compile step: `" << cluster.likely_command << "`\n";
-            out << "  Evidence hits: " << cluster.likely_command_hits << "\n";
-        }
-    }
-    out << "\n## Ownership Recommendations\n";
+
+    out << "## Ownership Arbitration\n\n";
     if (analysis.ownership_recommendations.empty()) {
-        out << "- No ambiguous ownership recommendations generated.\n";
+        out << "- No ambiguous ownership conflicts identified.\n\n";
     } else {
         for (std::size_t i = 0; i < std::min(opts.top, analysis.ownership_recommendations.size()); ++i) {
             const auto& rec = analysis.ownership_recommendations[i];
-            out << "- Symbol `" << rec.symbol << "`\n";
+            out << "#### Symbol `" << rec.symbol << "`\n\n";
             if (!rec.candidates.empty()) {
                 const auto& winner = rec.candidates.front();
-                out << "  Winner: " << display_path(root, winner.file, opts.relative_paths) << ":" << winner.line
-                    << " (score " << winner.score << ")\n";
+                out << "- **Authoritative Owner**: `" << display_path(root, winner.file, opts.relative_paths) << ":" << winner.line
+                    << "` (Confidence Score: " << winner.score << ")\n";
                 if (!winner.snippet_lines.empty()) {
-                    out << "  Evidence:\n\n```cpp\n";
+                    out << "\n```cpp\n";
                     for (std::size_t idx = 0; idx < winner.snippet_lines.size(); ++idx) {
                         out << (winner.snippet_start_line + static_cast<int>(idx)) << ": " << winner.snippet_lines[idx] << "\n";
                     }
-                    out << "```\n";
+                    out << "```\n\n";
                 }
             }
         }
     }
+
     if (!analysis.regression_notes.empty()) {
-        out << "\n## Regression Notes\n";
+        out << "## Regression Tracking\n\n";
         for (const auto& note : analysis.regression_notes) {
             out << "- " << note << "\n";
         }
+        out << "\n";
     }
+
     return out.str();
 }
 
@@ -1651,155 +2274,197 @@ void write_export_report(const Analysis& analysis, const fs::path& root, const O
 }
 
 void emit_text(const Analysis& analysis, const fs::path& root, const Options& opts) {
-    std::cout << "DGTL Forensic Debugger\n";
-    std::cout << "Root: " << root.string() << "\n\n";
+    Terminal::init(opts.color);
+
+    std::cout << Terminal::bold() << Terminal::cyan()
+              << "╔══════════════════════════════════════════════════════════════════════════════════╗\n"
+              << "║              DGTL SOVEREIGN FORENSIC DEBUGGER & DIAGNOSTIC SUITE                 ║\n"
+              << "╚══════════════════════════════════════════════════════════════════════════════════╝\n"
+              << Terminal::reset() << "\n";
+
+    std::cout << Terminal::bold() << "  Workspace Root   : " << Terminal::reset() << root.string() << "\n";
     if (!analysis.last_command.empty()) {
-        std::cout << "Last command: " << analysis.last_command << "\n";
+        std::cout << Terminal::bold() << "  Last Invocation  : " << Terminal::reset() << analysis.last_command << "\n";
     }
     if (!analysis.last_exit_code.empty()) {
-        std::cout << "Last exit code: " << analysis.last_exit_code << "\n";
+        bool is_success = (analysis.last_exit_code == "0");
+        std::cout << Terminal::bold() << "  Execution Status : " << Terminal::reset()
+                  << (is_success ? (std::string(Terminal::green()) + Terminal::bold() + "[PASS: Exit Code 0]")
+                                 : (std::string(Terminal::red()) + Terminal::bold() + "[FAIL: Exit Code " + analysis.last_exit_code + "]"))
+                  << Terminal::reset() << "\n";
     }
     if (!analysis.compiler_fingerprint.empty()) {
-        std::cout << "Compiler fingerprint: " << analysis.compiler_fingerprint << "\n";
-    }
-    if (!analysis.command_fingerprint.empty()) {
-        std::cout << "Command fingerprint: " << analysis.command_fingerprint << "\n";
-    }
-    std::cout << "Declaration cache: " << analysis.declaration_cache_hits << " hits, "
-              << analysis.declaration_cache_misses << " misses, "
-              << analysis.declaration_files_scanned << " rescanned files\n";
-    if (!analysis.likely_failing_command.empty()) {
-        std::cout << "Likely failing command: " << analysis.likely_failing_command << "\n";
+        std::cout << Terminal::bold() << "  Toolchain Hash   : " << Terminal::reset() << analysis.compiler_fingerprint << "\n";
     }
     if (analysis.last_session_log) {
-        std::cout << "Last session log: " << display_path(root, *analysis.last_session_log, opts.relative_paths) << "\n";
-    }
-    if (!analysis.last_command.empty() || !analysis.last_exit_code.empty() || analysis.last_session_log) {
-        std::cout << "\n";
+        std::cout << Terminal::bold() << "  Active Log       : " << Terminal::reset() << display_path(root, *analysis.last_session_log, opts.relative_paths) << "\n";
     }
 
-    std::cout << "[1] Module Graph\n";
-    std::cout << "  Modules discovered: " << analysis.modules.size() << "\n";
-    std::cout << "  Cycles detected:    " << analysis.cycles.size() << "\n";
-    if (!opts.summary_only) {
+    // High-impact status metrics dashboard pill
+    std::cout << "\n  " << Terminal::dim() << "┌─ METRICS DASHBOARD ──────────────────────────────────────────────────────────────┐\n"
+              << "  │ " << Terminal::reset()
+              << "Modules: " << Terminal::bold() << analysis.modules.size() << Terminal::reset() << "  │  "
+              << "Cycles: " << (analysis.cycles.empty() ? (std::string(Terminal::green()) + "0") : (std::string(Terminal::red()) + Terminal::bold() + std::to_string(analysis.cycles.size()))) << Terminal::reset() << "  │  "
+              << "Error Clusters: " << (analysis.clusters.empty() ? (std::string(Terminal::green()) + "0") : (std::string(Terminal::red()) + Terminal::bold() + std::to_string(analysis.clusters.size()))) << Terminal::reset() << "  │  "
+              << "Collisions: " << (analysis.collisions.empty() ? (std::string(Terminal::green()) + "0") : (std::string(Terminal::yellow()) + Terminal::bold() + std::to_string(analysis.collisions.size()))) << Terminal::reset() << "  │  "
+              << "Cache: " << Terminal::bold() << analysis.declaration_cache_hits << " hits" << Terminal::reset()
+              << Terminal::dim() << "\n  └──────────────────────────────────────────────────────────────────────────────────┘\n"
+              << Terminal::reset() << "\n";
+
+    // [1] Module Graph & Structural Topology
+    std::cout << Terminal::bold() << "[1] Module Graph & Topology Audit\n" << Terminal::reset();
+    std::cout << "    Discovered modules : " << analysis.modules.size() << "\n";
+    if (analysis.cycles.empty()) {
+        std::cout << "    Topology status    : " << Terminal::green() << Terminal::bold() << "[PASS] Module dependency graph is strictly acyclic (DAG validated)" << Terminal::reset() << "\n";
+    } else {
+        std::cout << "    Topology status    : " << Terminal::red() << Terminal::bold() << "[FAIL] " << analysis.cycles.size() << " circular dependency cycle(s) detected!" << Terminal::reset() << "\n";
         for (std::size_t i = 0; i < std::min(opts.top, analysis.cycles.size()); ++i) {
             const auto& cycle = analysis.cycles[i];
-            std::cout << "  Cycle " << (i + 1) << ":\n";
-            for (const ModuleUnit* unit : cycle) {
-                std::cout << "    - " << unit->module_name << " @ "
-                          << display_path(root, unit->path, opts.relative_paths) << "\n";
+            std::cout << "\n    " << Terminal::red() << Terminal::bold() << "Cycle #" << (i + 1) << " (" << cycle.size() << " units in SCC):" << Terminal::reset() << "\n";
+            for (std::size_t j = 0; j < cycle.size(); ++j) {
+                const ModuleUnit* unit = cycle[j];
+                const ModuleUnit* next = cycle[(j + 1) % cycle.size()];
+                std::cout << "      " << (j == 0 ? "┌─ " : "├─ ") << Terminal::bold() << unit->module_name << Terminal::reset()
+                          << "  " << Terminal::dim() << "(" << display_path(root, unit->path, opts.relative_paths) << ")" << Terminal::reset() << "\n";
+                std::cout << "      │   imports " << Terminal::yellow() << next->module_name << Terminal::reset() << "\n";
             }
+            std::cout << "      └─ " << Terminal::red() << "[CYCLE CLOSES HERE]" << Terminal::reset() << "\n";
         }
     }
     std::cout << "\n";
 
-    std::cout << "[2] Error Clusters\n";
-    std::cout << "  Logs scanned: " << analysis.logs_scanned.size() << "\n";
-    std::cout << "  Clusters: " << analysis.clusters.size() << "\n";
-    for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
-        const auto& cluster = analysis.clusters[i];
-        std::cout << "  - (x" << cluster.count << ") " << cluster.signature << "\n";
-        if (!cluster.likely_command.empty()) {
-            std::cout << "      command: " << cluster.likely_command << " (" << cluster.likely_command_hits << " hits)\n";
-        }
-        if (!opts.summary_only) {
-            for (const auto& sample : cluster.samples) {
-                std::cout << "      " << display_path(root, sample.file, opts.relative_paths);
-                if (sample.line > 0) {
-                    std::cout << ":" << sample.line;
-                }
-                std::cout << " :: " << sample.message << "\n";
-            }
-        }
-    }
-    std::cout << "\n";
+    // [2] Error Clusters with Rust/Clang style cards
+    std::cout << Terminal::bold() << "[2] Diagnostic Incidents & Error Clusters\n" << Terminal::reset();
+    std::cout << "    Logs scanned     : " << analysis.logs_scanned.size() << "\n";
+    std::cout << "    Clusters total   : " << analysis.clusters.size() << "\n";
 
-    std::cout << "[2a] Failing Command Context\n";
     if (analysis.clusters.empty()) {
-        std::cout << "  No error clusters available for command attribution.\n";
+        std::cout << "    " << Terminal::green() << Terminal::bold() << "[PASS] No compiler or linker errors detected." << Terminal::reset() << "\n\n";
     } else {
+        std::cout << "\n";
         for (std::size_t i = 0; i < std::min(opts.top, analysis.clusters.size()); ++i) {
             const auto& cluster = analysis.clusters[i];
-            if (cluster.likely_command.empty()) {
-                continue;
+            std::string code = !cluster.error_code.empty() ? cluster.error_code : ("ERR-00" + std::to_string(i + 1));
+            std::string kind_badge = !cluster.samples.empty() ? cluster.samples.front().kind : "error";
+
+            std::cout << "  " << Terminal::red() << Terminal::bold()
+                      << "╭── " << kind_badge << "[" << code << "]: "
+                      << cluster.signature
+                      << " ── (" << cluster.count << " occurrence" << (cluster.count > 1 ? "s" : "") << ") ─╮\n"
+                      << Terminal::reset();
+
+            if (!cluster.likely_command.empty()) {
+                std::cout << "  │  " << Terminal::dim() << "compiler step: " << Terminal::reset()
+                          << cluster.likely_command << " "
+                          << Terminal::dim() << "(" << cluster.likely_command_hits << " hits)" << Terminal::reset() << "\n";
             }
-            std::cout << "  - " << cluster.signature << "\n";
-            std::cout << "      compile step: " << cluster.likely_command << "\n";
-            std::cout << "      evidence hits: " << cluster.likely_command_hits << "\n";
+
+            if (!opts.summary_only) {
+                for (std::size_t s = 0; s < std::min<std::size_t>(2, cluster.samples.size()); ++s) {
+                    const auto& sample = cluster.samples[s];
+                    std::cout << "  │\n";
+                    render_source_snippet(std::cout, sample.file, sample.line, sample.column, sample.message);
+                    std::cout << "  │     " << Terminal::bold() << sample.message << Terminal::reset() << "\n";
+                }
+            }
+
+            std::cout << "  │\n";
+            if (!cluster.category.empty()) {
+                std::cout << "  │  " << Terminal::bold() << Terminal::cyan() << "= category: " << Terminal::reset() << cluster.category << "\n";
+            }
+            if (!cluster.explanation.empty()) {
+                std::cout << "  │  " << Terminal::bold() << Terminal::yellow() << "= diagnosis: " << Terminal::reset() << cluster.explanation << "\n";
+            }
+            if (!cluster.remediation_steps.empty()) {
+                std::cout << "  │  " << Terminal::bold() << Terminal::green() << "= actionable remediation:" << Terminal::reset() << "\n";
+                for (std::size_t r = 0; r < cluster.remediation_steps.size(); ++r) {
+                    std::cout << "  │     " << (r + 1) << ". " << cluster.remediation_steps[r] << "\n";
+                }
+            }
+
+            std::cout << "  " << Terminal::red() << Terminal::bold()
+                      << "╰──────────────────────────────────────────────────────────────────────────────────╯\n"
+                      << Terminal::reset() << "\n";
         }
     }
-    std::cout << "\n";
 
-    std::cout << "[3] Cache & Cycle Hints\n";
+    // [3] Cache & Infrastructure Health
+    std::cout << Terminal::bold() << "[3] Cache & Infrastructure Health\n" << Terminal::reset();
     if (analysis.cache_hints.empty()) {
-        std::cout << "  No cache-specific hints emitted.\n";
+        std::cout << "    " << Terminal::green() << "[PASS] No BMI desynchronization or cache corruption detected." << Terminal::reset() << "\n";
     } else {
         std::set<std::string> deduped(analysis.cache_hints.begin(), analysis.cache_hints.end());
         for (const auto& hint : deduped) {
-            std::cout << "  - " << hint << "\n";
+            std::cout << "    " << Terminal::yellow() << Terminal::bold() << "[WARN] " << Terminal::reset() << hint << "\n";
         }
     }
     std::cout << "\n";
 
-    std::cout << "[4] Symbol Collision Radar\n";
-    std::cout << "  Dynamic suspect symbols: " << analysis.suspect_symbols.size() << "\n";
-    std::cout << "  Suspect symbols: " << analysis.collisions.size() << "\n";
-    if (!opts.summary_only) {
+    // [4] Symbol Collision Radar
+    std::cout << Terminal::bold() << "[4] Symbol Collision & Multi-Site Radar\n" << Terminal::reset();
+    std::cout << "    Suspect symbols monitored : " << analysis.suspect_symbols.size() << "\n";
+    std::cout << "    Active collision sites    : " << analysis.collisions.size() << "\n";
+    if (!opts.summary_only && !analysis.collisions.empty()) {
         for (std::size_t i = 0; i < std::min(opts.top, analysis.collisions.size()); ++i) {
             const auto& collision = analysis.collisions[i];
-            std::cout << "  - " << collision.symbol << " appears at " << collision.sites.size() << " sites\n";
+            std::cout << "    " << Terminal::yellow() << "• " << Terminal::bold() << collision.symbol << Terminal::reset()
+                      << " (" << collision.sites.size() << " declaration sites):\n";
             for (std::size_t j = 0; j < std::min<std::size_t>(3, collision.sites.size()); ++j) {
                 const auto& site = collision.sites[j];
-                std::cout << "      " << display_path(root, site.file, opts.relative_paths)
-                          << ":" << site.line << " :: " << site.text << "\n";
+                std::cout << "        - " << display_path(root, site.file, opts.relative_paths)
+                          << ":" << site.line << "  " << Terminal::dim() << site.text << Terminal::reset() << "\n";
             }
         }
     }
     std::cout << "\n";
 
-    std::cout << "[5] Ownership Arbitration\n";
-    std::cout << "  Recommendations: " << analysis.ownership_recommendations.size() << "\n";
+    // [5] Ownership Arbitration
+    std::cout << Terminal::bold() << "[5] Ownership Arbitration (ODR Resolver)\n" << Terminal::reset();
+    std::cout << "    Recommendations : " << analysis.ownership_recommendations.size() << "\n";
     for (std::size_t i = 0; i < std::min(opts.top, analysis.ownership_recommendations.size()); ++i) {
         const auto& rec = analysis.ownership_recommendations[i];
-        if (rec.candidates.empty()) {
-            continue;
-        }
+        if (rec.candidates.empty()) continue;
         const auto& winner = rec.candidates.front();
-        std::cout << "  - " << rec.symbol << " -> " << display_path(root, winner.file, opts.relative_paths)
-                  << ":" << winner.line << " (score " << winner.score << ")\n";
+        std::cout << "    " << Terminal::green() << "✓ " << Terminal::bold() << rec.symbol << Terminal::reset()
+                  << "  ──>  " << Terminal::cyan() << display_path(root, winner.file, opts.relative_paths) << ":" << winner.line << Terminal::reset()
+                  << " " << Terminal::dim() << "(score: " << winner.score << ")" << Terminal::reset() << "\n";
         if (!opts.summary_only) {
-            std::cout << "      why: ";
+            std::cout << "        scoring evidence: ";
             for (std::size_t j = 0; j < winner.reasons.size(); ++j) {
-                if (j != 0) {
-                    std::cout << ", ";
-                }
+                if (j != 0) std::cout << ", ";
                 std::cout << winner.reasons[j];
             }
             std::cout << "\n";
             if (!winner.snippet_lines.empty()) {
                 for (std::size_t idx = 0; idx < winner.snippet_lines.size(); ++idx) {
-                    std::cout << "      " << (winner.snippet_start_line + static_cast<int>(idx)) << ": " << winner.snippet_lines[idx] << "\n";
+                    std::cout << "        " << Terminal::dim() << (winner.snippet_start_line + static_cast<int>(idx)) << " | " << Terminal::reset()
+                              << winner.snippet_lines[idx] << "\n";
                 }
             }
         }
     }
     std::cout << "\n";
 
-    std::cout << "[6] Staff-Level Triage\n";
+    // [6] Staff-Level Executive Triage & Remediation Plan
+    std::cout << Terminal::bold() << "[6] Executive Triage & Remediation Action Plan\n" << Terminal::reset();
     if (!analysis.cycles.empty()) {
-        std::cout << "  Primary structural risk: module SCCs are present. Remove type-sharing dependencies from interface units and keep feedback data crossing boundaries as scalars or opaque handles.\n";
-    } else {
-        std::cout << "  Primary structural risk: no import SCCs detected in scanned units.\n";
+        std::cout << "    1. " << Terminal::red() << Terminal::bold() << "[HIGH PRIORITY] Break Module Cycles:" << Terminal::reset()
+                  << " SCC cycles halt topological build scheduling. Move interface types to leaf partitions.\n";
     }
     if (!analysis.clusters.empty()) {
-        std::cout << "  Primary execution risk: fix the highest-frequency error cluster first because downstream diagnostics are likely derivative noise.\n";
+        std::cout << "    2. " << Terminal::yellow() << Terminal::bold() << "[PRIMARY ROOT CAUSE] Address Top Error Cluster First:" << Terminal::reset()
+                  << " Resolving '" << analysis.clusters.front().signature << "' will eliminate cascading derivative errors.\n";
+    }
+    if (analysis.clusters.empty() && analysis.cycles.empty()) {
+        std::cout << "    " << Terminal::green() << Terminal::bold() << "[ALL CLEAR] System is in healthy state with zero structural or compilation defects." << Terminal::reset() << "\n";
     }
     for (const auto& note : analysis.regression_notes) {
-        std::cout << "  Regression: " << note << "\n";
+        std::cout << "    • " << Terminal::cyan() << "Regression Note: " << Terminal::reset() << note << "\n";
     }
     if (!opts.focus.empty()) {
-        std::cout << "  Focus hint: searched with focus token '" << opts.focus << "'.\n";
+        std::cout << "    • " << Terminal::cyan() << "Focus token: " << Terminal::reset() << opts.focus << "\n";
     }
+    std::cout << "\n";
 }
 
 [[nodiscard]] Analysis run_analysis(const fs::path& root, const Options& opts) {
@@ -2308,6 +2973,228 @@ private:
 // ============================================================================
 class PeInspector {
 public:
+    static bool audit_elf(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        size_t file_size = buffer.size();
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "              DGTL SOVEREIGN ELF64 BINARY STRUCTURAL AUDITOR                    \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Target Binary: " << path.string() << " (" << file_size << " bytes / " << (file_size / 1024.0) << " KB)\n\n";
+
+        if (file_size < 64) {
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " File too small to contain valid ELF64 header (" << file_size << " bytes)\n";
+            return false;
+        }
+
+        const uint8_t* raw = buffer.data();
+        out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " ELF Magic: 0x7F 'E' 'L' 'F'\n";
+        uint8_t elf_class = raw[4];
+        if (elf_class != 2 /* 64-bit */) {
+            out << "  " << Terminal::yellow() << Terminal::bold() << "[ WARN ]" << Terminal::reset() << " Non-64-bit ELF class: " << (int)elf_class << "\n";
+        } else {
+            out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " ELF Class: 64-bit\n";
+        }
+
+        uint16_t e_machine = *reinterpret_cast<const uint16_t*>(raw + 18);
+        std::string arch_str = (e_machine == 0x3E) ? "x86_64 (AMD64)" : ((e_machine == 0xB7) ? "AArch64 (ARM64)" : ((e_machine == 0xF3) ? "RISC-V 64" : ("Unknown machine 0x" + std::to_string(e_machine))));
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Architecture : " << Terminal::bold() << arch_str << Terminal::reset() << "\n";
+
+        uint64_t entry_point = *reinterpret_cast<const uint64_t*>(raw + 24);
+        uint64_t phoff = *reinterpret_cast<const uint64_t*>(raw + 32);
+        uint64_t shoff = *reinterpret_cast<const uint64_t*>(raw + 40);
+        uint16_t phentsize = *reinterpret_cast<const uint16_t*>(raw + 54);
+        uint16_t phnum = *reinterpret_cast<const uint16_t*>(raw + 56);
+        uint16_t shentsize = *reinterpret_cast<const uint16_t*>(raw + 58);
+        uint16_t shnum = *reinterpret_cast<const uint16_t*>(raw + 60);
+
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Entry Point  : 0x" << std::hex << entry_point << std::dec << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Segments     : " << phnum << " program headers (at offset 0x" << std::hex << phoff << std::dec << ")\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Sections     : " << shnum << " section headers (at offset 0x" << std::hex << shoff << std::dec << ")\n";
+
+        bool has_critical_error = false;
+
+        // Audit program headers (PT_LOAD segments and BSS memory expansion)
+        if (phoff + static_cast<size_t>(phnum) * phentsize <= file_size && phnum > 0) {
+            out << "--------------------------------------------------------------------------------\n";
+            out << "PROGRAM HEADER / LOAD SEGMENT AUDIT (" << phnum << " segments):\n";
+            out << "Idx Type         Offset    VirtAddr          FileSz    MemSz     Flags  Status\n";
+            for (uint16_t i = 0; i < phnum; ++i) {
+                const uint8_t* ph = raw + phoff + (i * phentsize);
+                uint32_t p_type = *reinterpret_cast<const uint32_t*>(ph);
+                uint32_t p_flags = *reinterpret_cast<const uint32_t*>(ph + 4);
+                uint64_t p_offset = *reinterpret_cast<const uint64_t*>(ph + 8);
+                uint64_t p_vaddr = *reinterpret_cast<const uint64_t*>(ph + 16);
+                uint64_t p_filesz = *reinterpret_cast<const uint64_t*>(ph + 32);
+                uint64_t p_memsz = *reinterpret_cast<const uint64_t*>(ph + 40);
+
+                std::string type_str = (p_type == 1) ? "PT_LOAD" : ((p_type == 3) ? "PT_INTERP" : ((p_type == 6) ? "PT_PHDR" : ((p_type == 7) ? "PT_TLS" : ((p_type == 0x6474E551) ? "PT_GNU_STACK" : ("0x" + std::to_string(p_type))))));
+                std::string status = "OK";
+                if (p_type == 1 /* PT_LOAD */) {
+                    if (p_memsz > p_filesz) {
+                        status = "OK (Zero-Fill BSS: +" + std::to_string(p_memsz - p_filesz) + " bytes)";
+                    }
+                    if ((p_flags & 1) && (p_flags & 2)) {
+                        status = "[CRITICAL] W^X violation (Writable & Executable)!";
+                        has_critical_error = true;
+                    }
+                } else if (p_type == 3 /* PT_INTERP */) {
+                    status = "[WARN] Dynamic interpreter present (ld-linux)";
+                } else if (p_type == 0x6474E551 /* PT_GNU_STACK */) {
+                    status = ((p_flags & 1) == 0) ? "OK (Non-executable stack)" : "[WARN] Executable stack";
+                }
+
+                out << std::right << std::setw(3) << i << " "
+                    << std::left << std::setw(10) << type_str << " "
+                    << std::right << std::hex << std::setw(8) << std::setfill('0') << p_offset << "  "
+                    << std::setw(16) << std::setfill('0') << p_vaddr << "  "
+                    << std::setw(8) << std::setfill('0') << p_filesz << "  "
+                    << std::setw(8) << std::setfill('0') << p_memsz << "  "
+                    << "0x" << std::setw(4) << std::setfill('0') << p_flags << "  ";
+
+                if (status.find("[CRITICAL]") != std::string::npos) {
+                    out << Terminal::bg_red() << Terminal::bold() << status << Terminal::reset();
+                } else if (status.find("[WARN]") != std::string::npos) {
+                    out << Terminal::yellow() << Terminal::bold() << status << Terminal::reset();
+                } else {
+                    out << Terminal::green() << status << Terminal::reset();
+                }
+                out << "\n" << std::dec;
+            }
+        }
+
+        if (has_critical_error) {
+            out << "\n" << Terminal::yellow() << Terminal::bold() << "  [!] ARCHITECTURAL DEFECT & REMEDIATION ADVICE:\n" << Terminal::reset()
+                << "      The binary violates W^X memory protection. Segments must not be simultaneously writable and executable.\n"
+                << "      Recommendation: Rebuild with SovereignELFLinker ensuring code (.text) and data (.data/.bss) reside in disjoint PT_LOAD segments.\n";
+        }
+
+        out << "================================================================================\n";
+        out << "AUDIT RESULT: " << (has_critical_error ? (std::string(Terminal::red()) + Terminal::bold() + "[FAIL] ELF binary has critical layout defects!")
+                                                     : (std::string(Terminal::green()) + Terminal::bold() + "[PASS] ELF binary structure is valid."))
+            << Terminal::reset() << "\n";
+        out << "================================================================================\n\n";
+        return !has_critical_error;
+    }
+
+    static bool audit_macho(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        size_t file_size = buffer.size();
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "              DGTL SOVEREIGN MACH-O 64 BINARY STRUCTURAL AUDITOR                \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Target Binary: " << path.string() << " (" << file_size << " bytes / " << (file_size / 1024.0) << " KB)\n\n";
+
+        if (file_size < 32) {
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset() << " File too small to contain valid Mach-O 64 header\n";
+            return false;
+        }
+
+        const uint8_t* raw = buffer.data();
+        int32_t cputype = *reinterpret_cast<const int32_t*>(raw + 4);
+        std::string arch_str = (cputype == 0x0100000C) ? "ARM64 (Apple Silicon)" : ((cputype == 0x01000007) ? "x86_64 (Intel Mac)" : ("Unknown 0x" + std::to_string(cputype)));
+        out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " Mach-O 64 Magic (0xFEEDFACF)\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Architecture : " << Terminal::bold() << arch_str << Terminal::reset() << "\n";
+        uint32_t ncmds = *reinterpret_cast<const uint32_t*>(raw + 16);
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Load Commands: " << ncmds << "\n";
+
+        bool has_code_signature = false;
+        size_t cursor = 32;
+        for (uint32_t c = 0; c < ncmds && cursor + 8 <= file_size; ++c) {
+            uint32_t cmd = *reinterpret_cast<const uint32_t*>(raw + cursor);
+            uint32_t cmdsize = *reinterpret_cast<const uint32_t*>(raw + cursor + 4);
+            if (cmd == 0x1D /* LC_CODE_SIGNATURE */) {
+                has_code_signature = true;
+            }
+            cursor += cmdsize;
+        }
+        if (has_code_signature) {
+            out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " Code Signature : LC_CODE_SIGNATURE present (Apple Silicon valid)\n";
+        } else if (cputype == 0x0100000C) {
+            out << "  " << Terminal::yellow() << Terminal::bold() << "[ WARN ]" << Terminal::reset() << " Missing LC_CODE_SIGNATURE on ARM64 Mach-O. Apple Silicon kernel requires signature.\n";
+        }
+
+        out << "================================================================================\n";
+        out << "AUDIT RESULT: " << Terminal::green() << Terminal::bold() << "[PASS] Mach-O 64 binary structure is valid." << Terminal::reset() << "\n";
+        out << "================================================================================\n\n";
+        return true;
+    }
+
+    static bool audit_wasm(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        size_t file_size = buffer.size();
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "             DGTL SOVEREIGN WEBASSEMBLY MODULE STRUCTURAL AUDITOR               \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Target Binary: " << path.string() << " (" << file_size << " bytes / " << (file_size / 1024.0) << " KB)\n\n";
+
+        if (file_size < 8) {
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset() << " File too small to contain valid WASM header\n";
+            return false;
+        }
+
+        out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " WebAssembly Magic: '\\0asm' (0x6D736100)\n";
+        uint32_t version = *reinterpret_cast<const uint32_t*>(buffer.data() + 4);
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " WASM Version   : " << version << "\n";
+
+        // Section scanner
+        size_t offset = 8;
+        uint32_t import_count = 0;
+        uint32_t export_count = 0;
+        uint32_t func_count = 0;
+        bool has_memory = false;
+
+        auto read_leb_u32 = [&](size_t& off) -> uint32_t {
+            uint32_t result = 0;
+            uint32_t shift = 0;
+            while (off < file_size) {
+                uint8_t byte = buffer[off++];
+                result |= (byte & 0x7F) << shift;
+                if ((byte & 0x80) == 0) break;
+                shift += 7;
+            }
+            return result;
+        };
+
+        while (offset < file_size) {
+            uint8_t sec_id = buffer[offset++];
+            size_t sec_len = read_leb_u32(offset);
+            size_t sec_end = offset + sec_len;
+
+            if (sec_id == 2 /* Import */) {
+                size_t p = offset;
+                import_count = read_leb_u32(p);
+            } else if (sec_id == 3 /* Function */) {
+                size_t p = offset;
+                func_count = read_leb_u32(p);
+            } else if (sec_id == 5 /* Memory */) {
+                has_memory = true;
+            } else if (sec_id == 7 /* Export */) {
+                size_t p = offset;
+                export_count = read_leb_u32(p);
+            }
+            offset = sec_end;
+        }
+
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Defined Functions: " << func_count << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Exported Entities: " << export_count << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Linear Memory    : " << (has_memory ? "Yes (1 memory segment)" : "No") << "\n";
+
+        if (import_count == 0) {
+            out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " Pure Sovereign WASM Module: 0 external imports (100% self-contained standalone)\n";
+        } else {
+            out << "  " << Terminal::yellow() << Terminal::bold() << "[ WARN ]" << Terminal::reset() << " Module has " << import_count << " external imports from host environment\n";
+        }
+
+        out << "================================================================================\n";
+        out << "AUDIT RESULT: " << Terminal::green() << Terminal::bold() << "[PASS] WebAssembly binary module structure is valid." << Terminal::reset() << "\n";
+        out << "================================================================================\n\n";
+        return true;
+    }
+
     static bool audit(const fs::path& path, std::ostream& out = std::cout) {
         std::ifstream file(path, std::ios::binary);
         if (!file.is_open()) {
@@ -2322,39 +3209,57 @@ public:
         std::vector<uint8_t> buffer(file_size);
         file.read(reinterpret_cast<char*>(buffer.data()), file_size);
 
+        // ─── Multi-Format Dispatch ──────────────────────────────────────────
+        if (file_size >= 4 && buffer[0] == 0x7F && buffer[1] == 'E' && buffer[2] == 'L' && buffer[3] == 'F') {
+            return audit_elf(path, buffer, out);
+        }
+        if (file_size >= 4 && (*reinterpret_cast<const uint32_t*>(buffer.data()) == 0xFEEDFACF || *reinterpret_cast<const uint32_t*>(buffer.data()) == 0xCFFAEDFE)) {
+            return audit_macho(path, buffer, out);
+        }
+        if (file_size >= 8 && buffer[0] == 0x00 && buffer[1] == 'a' && buffer[2] == 's' && buffer[3] == 'm') {
+            return audit_wasm(path, buffer, out);
+        }
+
         if (file_size < 0x40) {
-            out << "[dgtl-pe] Error: File too small to contain DOS header (" << file_size << " bytes)\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " File too small to contain DOS header (" << file_size << " bytes)\n";
             return false;
         }
 
-        out << "================================================================================\n";
-        out << "            DGTL SOVEREIGN PE/COFF EXECUTABLE STRUCTURAL AUDITOR                \n";
-        out << "================================================================================\n";
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "            DGTL SOVEREIGN PE/COFF EXECUTABLE STRUCTURAL AUDITOR                \n"
+            << "================================================================================\n"
+            << Terminal::reset();
         out << "Target Binary: " << path.string() << " (" << file_size << " bytes / " << (file_size / 1024.0) << " KB)\n\n";
 
         // DOS Header
         uint16_t dos_magic = 0;
         std::memcpy(&dos_magic, buffer.data(), 2);
         if (dos_magic != 0x5A4D) {
-            out << "[dgtl-pe] [FAIL] Invalid DOS Header magic (expected 0x5A4D 'MZ', got 0x" << std::hex << dos_magic << std::dec << ")\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " Invalid DOS Header magic (expected 0x5A4D 'MZ', got 0x" << std::hex << dos_magic << std::dec << ")\n";
             return false;
         }
-        out << "[dgtl-pe] [PASS] DOS Signature: 'MZ' (0x5A4D)\n";
+        out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " DOS Signature: 'MZ' (0x5A4D)\n";
 
         uint32_t pe_offset = 0;
         std::memcpy(&pe_offset, buffer.data() + 0x3C, 4);
         if (pe_offset + 24 > file_size) {
-            out << "[dgtl-pe] [FAIL] Invalid e_lfanew offset (0x" << std::hex << pe_offset << std::dec << ")\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " Invalid e_lfanew offset (0x" << std::hex << pe_offset << std::dec << ")\n";
             return false;
         }
 
         uint32_t pe_sig = 0;
         std::memcpy(&pe_sig, buffer.data() + pe_offset, 4);
         if (pe_sig != 0x00004550) {
-            out << "[dgtl-pe] [FAIL] Invalid PE Signature (expected 'PE\\0\\0', got 0x" << std::hex << pe_sig << std::dec << ")\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " Invalid PE Signature (expected 'PE\\0\\0', got 0x" << std::hex << pe_sig << std::dec << ")\n";
             return false;
         }
-        out << "[dgtl-pe] [PASS] PE Signature: 'PE\\0\\0' at offset 0x" << std::hex << pe_offset << std::dec << "\n";
+        out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset()
+            << " PE Signature: 'PE\\0\\0' at offset 0x" << std::hex << pe_offset << std::dec << "\n";
 
         // COFF File Header
         const uint8_t* coff_hdr = buffer.data() + pe_offset + 4;
@@ -2366,15 +3271,17 @@ public:
         std::memcpy(&opt_hdr_size, coff_hdr + 16, 2);
         std::memcpy(&characteristics, coff_hdr + 18, 2);
 
-        out << "[dgtl-pe] Architecture: " << (machine == 0x8664 ? "x86_64 (AMD64)" : (machine == 0x14C ? "x86 (i386)" : "Unknown 0x" + std::to_string(machine)))
+        std::string pe_arch_str = (machine == 0x8664) ? "x86_64 (AMD64)" : ((machine == 0xAA64) ? "AArch64 (ARM64)" : ((machine == 0x5064) ? "RISC-V 64" : ((machine == 0x14C) ? "x86 (i386)" : "Unknown 0x" + std::to_string(machine))));
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Architecture: " << Terminal::bold() << pe_arch_str << Terminal::reset()
             << " | Sections: " << num_sections << " | OptHdrSize: " << opt_hdr_size << " bytes\n";
 
-        if (machine != 0x8664) {
-            out << "[dgtl-pe] [WARN] Expected x86_64 machine type\n";
+        if (machine != 0x8664 && machine != 0xAA64 && machine != 0x5064) {
+            out << "  " << Terminal::yellow() << Terminal::bold() << "[ WARN ]" << Terminal::reset() << " Non-standard machine type (" << pe_arch_str << ")\n";
         }
 
         if (opt_hdr_size < 112) {
-            out << "[dgtl-pe] [FAIL] Optional Header size too small for PE32+ (" << opt_hdr_size << " bytes)\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " Optional Header size too small for PE32+ (" << opt_hdr_size << " bytes)\n";
             return false;
         }
 
@@ -2383,7 +3290,8 @@ public:
         uint16_t opt_magic = 0;
         std::memcpy(&opt_magic, opt_hdr, 2);
         if (opt_magic != 0x20B) {
-            out << "[dgtl-pe] [FAIL] Not PE32+ 64-bit binary (magic=0x" << std::hex << opt_magic << std::dec << ")\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " Not PE32+ 64-bit binary (magic=0x" << std::hex << opt_magic << std::dec << ")\n";
             return false;
         }
 
@@ -2399,6 +3307,14 @@ public:
         std::memcpy(&headers_size, opt_hdr + 60, 4);
         std::memcpy(&subsystem, opt_hdr + 68, 2);
 
+        uint64_t stack_reserve = 0, stack_commit = 0, heap_reserve = 0, heap_commit = 0;
+        if (opt_hdr_size >= 112) {
+            std::memcpy(&stack_reserve, opt_hdr + 72, 8);
+            std::memcpy(&stack_commit, opt_hdr + 80, 8);
+            std::memcpy(&heap_reserve, opt_hdr + 88, 8);
+            std::memcpy(&heap_commit, opt_hdr + 96, 8);
+        }
+
         out << "--------------------------------------------------------------------------------\n";
         out << "OPTIONAL HEADER (PE32+):\n";
         out << "  ImageBase          : 0x" << std::hex << image_base << "\n";
@@ -2408,6 +3324,16 @@ public:
         out << "  SectionAlignment   : 0x" << section_align << "\n";
         out << "  FileAlignment      : 0x" << file_align << "\n";
         out << "  Subsystem          : " << (subsystem == 3 ? "IMAGE_SUBSYSTEM_WINDOWS_CUI (Console)" : (subsystem == 2 ? "IMAGE_SUBSYSTEM_WINDOWS_GUI" : std::to_string(subsystem))) << std::dec << "\n";
+        out << "  SizeOfStackReserve : 0x" << std::hex << stack_reserve << " (" << std::dec << (stack_reserve / 1024) << " KB)\n";
+        out << "  SizeOfStackCommit  : 0x" << std::hex << stack_commit << " (" << std::dec << (stack_commit / 1024) << " KB)";
+        if (stack_commit <= 0x10000) {
+            out << " " << Terminal::green() << Terminal::bold() << "[LEAN - Probed on demand via __chkstk]" << Terminal::reset();
+        } else if (stack_commit >= 0x800000) {
+            out << " " << Terminal::yellow() << Terminal::bold() << "[WARN: HIGH COMMIT - Stack pre-committed]" << Terminal::reset();
+        }
+        out << "\n";
+        out << "  SizeOfHeapReserve  : 0x" << std::hex << heap_reserve << " (" << std::dec << (heap_reserve / 1024) << " KB)\n";
+        out << "  SizeOfHeapCommit   : 0x" << std::hex << heap_commit << " (" << std::dec << (heap_commit / 1024) << " KB)\n";
 
         // Section Headers
         const uint8_t* sec_hdr_start = opt_hdr + opt_hdr_size;
@@ -2474,12 +3400,19 @@ public:
                 << std::setw(8) << std::setfill('0') << va << "  "
                 << std::setw(8) << std::setfill('0') << rsz << "  "
                 << std::setw(8) << std::setfill('0') << roff << "  "
-                << "0x" << std::setw(8) << std::setfill('0') << flags << "  "
-                << status << "\n" << std::dec;
+                << "0x" << std::setw(8) << std::setfill('0') << flags << "  ";
+
+            if (status.find("[CRITICAL]") != std::string::npos) {
+                out << Terminal::bg_red() << Terminal::bold() << status << Terminal::reset();
+            } else {
+                out << Terminal::green() << status << Terminal::reset();
+            }
+            out << "\n" << std::dec;
         }
 
         if (!entry_point_found) {
-            out << "[dgtl-pe] [CRITICAL ERROR] Entry point RVA 0x" << std::hex << entry_rva << std::dec << " does NOT fall into any section!\n";
+            out << "  " << Terminal::bg_red() << Terminal::bold() << "[CRITICAL ERROR]" << Terminal::reset()
+                << " Entry point RVA 0x" << std::hex << entry_rva << std::dec << " does NOT fall into any section!\n";
             has_critical_error = true;
         }
 
@@ -2521,7 +3454,8 @@ public:
                         dll_name = reinterpret_cast<const char*>(buffer.data() + name_off);
                     }
 
-                    out << "  [DLL " << ++dll_count << "] " << dll_name << " (IAT RVA: 0x" << std::hex << iat_rva << ", ILT RVA: 0x" << ilt_rva << ")\n" << std::dec;
+                    out << "  [DLL " << ++dll_count << "] " << Terminal::bold() << dll_name << Terminal::reset()
+                        << " (IAT RVA: 0x" << std::hex << iat_rva << ", ILT RVA: 0x" << ilt_rva << ")\n" << std::dec;
 
                     uint32_t thunk_rva = (ilt_rva != 0) ? ilt_rva : iat_rva;
                     size_t thunk_off = rva_to_offset(thunk_rva);
@@ -2553,14 +3487,25 @@ public:
                 }
             }
         } else {
-            out << "  [WARN] No Import Directory Table found.\n";
+            out << "  " << Terminal::yellow() << Terminal::bold() << "[ WARN ]" << Terminal::reset() << " No Import Directory Table found.\n";
         }
 
         // Disassemble entry point
         out << "--------------------------------------------------------------------------------\n";
-        out << "ENTRY POINT DISASSEMBLY (Starting at 0x" << std::hex << (image_base + entry_rva) << "):\n" << std::dec;
+        out << "ENTRY POINT AUDIT & DISASSEMBLY (Starting at 0x" << std::hex << (image_base + entry_rva) << "):\n" << std::dec;
         size_t ep_off = rva_to_offset(entry_rva);
         if (ep_off != 0 && ep_off < file_size) {
+            if (ep_off + 4 <= file_size) {
+                const uint8_t* ep_bytes = buffer.data() + ep_off;
+                if (ep_bytes[0] == 0x48 && ep_bytes[1] == 0x83 && ep_bytes[2] == 0xEC && ep_bytes[3] == 0x28) {
+                    out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset()
+                        << " Win64 Entry Trampoline: sub rsp, 0x28 (16-byte stack aligned per Win64 ABI)\n";
+                } else if (ep_bytes[0] == 0x48 && ep_bytes[1] == 0x83 && ep_bytes[2] == 0xEC && ep_bytes[3] == 0x20) {
+                    out << "  " << Terminal::red() << Terminal::bold() << "[CRITICAL ABI DEFECT]" << Terminal::reset()
+                        << " Win64 Entry Trampoline: sub rsp, 0x20 violates 16-byte stack alignment (causes STATUS_ACCESS_VIOLATION)!\n";
+                    has_critical_error = true;
+                }
+            }
             uint64_t cur_rip = image_base + entry_rva;
             size_t cur_off = ep_off;
             for (int i = 0; i < 20 && cur_off < file_size; ++i) {
@@ -2580,14 +3525,555 @@ public:
                 if (instr.text == "ret") break;
             }
         } else {
-            out << "  [FAIL] Cannot map entry point RVA to file offset!\n";
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset()
+                << " Cannot map entry point RVA to file offset!\n";
+        }
+
+        if (has_critical_error) {
+            out << "\n" << Terminal::yellow() << Terminal::bold() << "  [!] ARCHITECTURAL DEFECT & REMEDIATION ADVICE:\n" << Terminal::reset()
+                << "      The PE32+ executable contains fatal section layout defects. At runtime, the Windows\n"
+                << "      OS loader will immediately fail to map this binary or trigger STATUS_ACCESS_VIOLATION.\n"
+                << "      Recommendation: Verify PE section alignment in SovereignPELinker and ensure AddressOfEntryPoint\n"
+                << "      points to a valid executable .text section.\n";
         }
 
         out << "================================================================================\n";
-        out << "AUDIT RESULT: " << (has_critical_error ? "[FAIL] Binary has critical layout defects!" : "[PASS] Binary structure is valid.") << "\n";
+        out << "AUDIT RESULT: " << (has_critical_error ? (std::string(Terminal::red()) + Terminal::bold() + "[FAIL] Binary has critical layout defects!")
+                                                     : (std::string(Terminal::green()) + Terminal::bold() + "[PASS] Binary structure is valid."))
+            << Terminal::reset() << "\n";
         out << "================================================================================\n\n";
 
         return !has_critical_error;
+    }
+};
+
+// ============================================================================
+// UNIVERSAL FILE & SECTION INSPECTOR
+// Supports: .a, .lib, .s, .asm, .so, .dll, .dylib, .obj, .o, .dgtl, .mzc,
+//           .text, .data, .pdata, .xdata, .bss, .rdata, .rodata,
+//           .myz, .mzi, .mzm, .my, .myzt, .myzb, .myzs, .mzp, .myd,
+//           myzon.toml, myzon.lock, dgtl.toml, dgtl.lock
+// ============================================================================
+class FileInspector {
+public:
+    static void hex_ascii_dump(const uint8_t* data, size_t size, uint64_t base_addr, std::ostream& out, size_t max_bytes = 256) {
+        size_t print_len = std::min(size, max_bytes);
+        for (size_t row = 0; row < print_len; row += 16) {
+            out << "  0x" << std::hex << std::setw(8) << std::setfill('0') << (base_addr + row) << ":  ";
+            for (size_t col = 0; col < 16; ++col) {
+                if (row + col < print_len) {
+                    out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[row + col]) << " ";
+                } else {
+                    out << "   ";
+                }
+                if (col == 7) out << " ";
+            }
+            out << " |";
+            for (size_t col = 0; col < 16 && (row + col) < print_len; ++col) {
+                uint8_t ch = data[row + col];
+                out << (std::isprint(ch) ? static_cast<char>(ch) : '.');
+            }
+            out << "|\n";
+        }
+        if (size > max_bytes) {
+            out << "  ... (" << (size - max_bytes) << " bytes truncated)\n";
+        }
+        out << std::dec;
+    }
+
+    static bool audit_archive(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "             DGTL SOVEREIGN STATIC ARCHIVE INSPECTOR (.a / .lib)                \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Archive Path: " << path.string() << " (" << buffer.size() << " bytes)\n\n";
+
+        if (buffer.size() < 8 || std::memcmp(buffer.data(), "!<arch>\n", 8) != 0) {
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset() << " Invalid archive header magic.\n";
+            return false;
+        }
+
+        out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " Valid static archive header (!<arch>\\n)\n\n";
+
+        size_t off = 8;
+        uint32_t member_idx = 0;
+        out << "--------------------------------------------------------------------------------\n";
+        out << "ARCHIVE MEMBERS CATALOG:\n";
+        out << "Idx  Member Name                     Size (bytes)   File Offset\n";
+        out << "--------------------------------------------------------------------------------\n";
+
+        while (off + 60 <= buffer.size()) {
+            char name_buf[17] = {0};
+            std::memcpy(name_buf, buffer.data() + off, 16);
+            std::string name = trim(name_buf);
+
+            char size_buf[11] = {0};
+            std::memcpy(size_buf, buffer.data() + off + 48, 10);
+            size_t member_size = std::strtoull(size_buf, nullptr, 10);
+
+            out << std::right << std::setw(3) << member_idx++ << "  "
+                << std::left << std::setw(30) << name << "  "
+                << std::right << std::setw(12) << member_size << "   0x"
+                << std::hex << std::setw(8) << std::setfill('0') << (off + 60) << std::dec << "\n";
+
+            off += 60 + ((member_size + 1) & ~1ULL);
+        }
+        out << "--------------------------------------------------------------------------------\n";
+        out << "Total Archive Members Discovered: " << member_idx << "\n\n";
+        return true;
+    }
+
+    static bool inspect_object(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        if (buffer.size() >= 4 && buffer[0] == 0x7F && buffer[1] == 'E' && buffer[2] == 'L' && buffer[3] == 'F') {
+            return PeInspector::audit_elf(path, buffer, out);
+        }
+        if (buffer.size() >= 4 && (*reinterpret_cast<const uint32_t*>(buffer.data()) == 0xFEEDFACF || *reinterpret_cast<const uint32_t*>(buffer.data()) == 0xCFFAEDFE)) {
+            return PeInspector::audit_macho(path, buffer, out);
+        }
+
+        // COFF Relocatable Object File
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "             DGTL SOVEREIGN COFF RELOCATABLE OBJECT INSPECTOR (.obj)            \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Object File: " << path.string() << " (" << buffer.size() << " bytes)\n\n";
+
+        if (buffer.size() < 20) {
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset() << " File too small for COFF header.\n";
+            return false;
+        }
+
+        uint16_t machine = *reinterpret_cast<const uint16_t*>(buffer.data());
+        uint16_t num_sections = *reinterpret_cast<const uint16_t*>(buffer.data() + 2);
+        uint32_t sym_ptr = *reinterpret_cast<const uint32_t*>(buffer.data() + 8);
+        uint32_t num_symbols = *reinterpret_cast<const uint32_t*>(buffer.data() + 12);
+        uint16_t opt_hdr_sz = *reinterpret_cast<const uint16_t*>(buffer.data() + 16);
+
+        std::string arch_name = (machine == 0x8664) ? "x86_64 (AMD64)" : ((machine == 0xAA64) ? "AArch64 (ARM64)" : ((machine == 0x5064) ? "RISC-V 64" : ("Machine 0x" + std::to_string(machine))));
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Architecture : " << Terminal::bold() << arch_name << Terminal::reset() << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Section Count: " << num_sections << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Symbol Count : " << num_symbols << " (at file offset 0x" << std::hex << sym_ptr << std::dec << ")\n\n";
+
+        size_t sec_offset = 20 + opt_hdr_sz;
+        out << "--------------------------------------------------------------------------------\n";
+        out << "COFF SECTION TABLE:\n";
+        out << "Idx  Name       RawSize    RawOffset  RelocPtr   RelocCnt   Flags\n";
+        out << "--------------------------------------------------------------------------------\n";
+        for (uint16_t i = 0; i < num_sections && (sec_offset + 40 <= buffer.size()); ++i) {
+            char name_buf[9] = {0};
+            std::memcpy(name_buf, buffer.data() + sec_offset, 8);
+            uint32_t raw_sz = *reinterpret_cast<const uint32_t*>(buffer.data() + sec_offset + 16);
+            uint32_t raw_off = *reinterpret_cast<const uint32_t*>(buffer.data() + sec_offset + 20);
+            uint32_t reloc_ptr = *reinterpret_cast<const uint32_t*>(buffer.data() + sec_offset + 24);
+            uint16_t reloc_cnt = *reinterpret_cast<const uint16_t*>(buffer.data() + sec_offset + 32);
+            uint32_t sec_flags = *reinterpret_cast<const uint32_t*>(buffer.data() + sec_offset + 36);
+
+            out << std::right << std::setw(3) << i << "  "
+                << std::left << std::setw(10) << name_buf << " "
+                << std::right << "0x" << std::hex << std::setw(8) << std::setfill('0') << raw_sz << " "
+                << "0x" << std::setw(8) << std::setfill('0') << raw_off << " "
+                << "0x" << std::setw(8) << std::setfill('0') << reloc_ptr << " "
+                << std::dec << std::setw(8) << std::setfill(' ') << reloc_cnt << "   "
+                << "0x" << std::hex << std::setw(8) << std::setfill('0') << sec_flags << std::dec << "\n";
+            sec_offset += 40;
+        }
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
+    static bool inspect_raw_section(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        std::string ext = to_lower(path.extension().string());
+        std::string fname = to_lower(path.filename().string());
+
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "          DGTL SOVEREIGN SECTION BINARY INSPECTOR & FORENSICS                   \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Section Target: " << path.string() << " (" << buffer.size() << " bytes)\n\n";
+
+        if (ext == ".text" || fname.find(".text") != std::string::npos) {
+            out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Section Type: " << Terminal::bold() << "Executable Code (.text)" << Terminal::reset() << "\n";
+            out << "--------------------------------------------------------------------------------\n";
+            out << "DISASSEMBLY OF INSTRUCTION STREAM:\n";
+            uint64_t cur_rip = 0;
+            size_t off = 0;
+            size_t max_inst = 50;
+            while (off < buffer.size() && max_inst-- > 0) {
+                auto instr = X64Disassembler::decode(buffer.data() + off, buffer.size() - off, cur_rip);
+                out << "  0x" << std::hex << std::setw(8) << std::setfill('0') << cur_rip << ": ";
+                for (size_t b = 0; b < 6; ++b) {
+                    if (b < instr.length) {
+                        out << std::setw(2) << std::setfill('0') << (int)buffer[off + b] << " ";
+                    } else {
+                        out << "   ";
+                    }
+                }
+                out << "  " << instr.text << "\n" << std::dec;
+                off += instr.length;
+                cur_rip += instr.length;
+            }
+            if (off < buffer.size()) {
+                out << "  ... (" << (buffer.size() - off) << " more bytes of code)\n";
+            }
+            out << "--------------------------------------------------------------------------------\n\n";
+            return true;
+        }
+
+        if (ext == ".pdata" || fname.find(".pdata") != std::string::npos) {
+            out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Section Type: " << Terminal::bold() << "Windows x64 Exception Directory (.pdata)" << Terminal::reset() << "\n";
+            out << "--------------------------------------------------------------------------------\n";
+            out << "RUNTIME_FUNCTION TABLE (12 bytes per function entry):\n";
+            out << "Idx   Begin RVA    End RVA      Length (B)   UnwindInfo RVA\n";
+            out << "--------------------------------------------------------------------------------\n";
+            size_t count = buffer.size() / 12;
+            for (size_t i = 0; i < count && i < 30; ++i) {
+                const uint8_t* p = buffer.data() + (i * 12);
+                uint32_t begin_rva = *reinterpret_cast<const uint32_t*>(p);
+                uint32_t end_rva = *reinterpret_cast<const uint32_t*>(p + 4);
+                uint32_t unwind_rva = *reinterpret_cast<const uint32_t*>(p + 8);
+                uint32_t len = (end_rva >= begin_rva) ? (end_rva - begin_rva) : 0;
+
+                out << std::right << std::setw(4) << i << "  "
+                    << "0x" << std::hex << std::setw(8) << std::setfill('0') << begin_rva << "   "
+                    << "0x" << std::setw(8) << std::setfill('0') << end_rva << "   "
+                    << std::dec << std::setw(10) << std::setfill(' ') << len << "   "
+                    << "0x" << std::hex << std::setw(8) << std::setfill('0') << unwind_rva << std::dec << "\n";
+            }
+            out << "--------------------------------------------------------------------------------\n";
+            out << "Total Functions Indexed in .pdata: " << count << "\n\n";
+            return true;
+        }
+
+        if (ext == ".xdata" || fname.find(".xdata") != std::string::npos) {
+            out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Section Type: " << Terminal::bold() << "Windows x64 Exception Unwind Data (.xdata / UNWIND_INFO)" << Terminal::reset() << "\n";
+            if (buffer.size() >= 4) {
+                uint8_t ver_flags = buffer[0];
+                uint8_t version = ver_flags & 0x7;
+                uint8_t flags = (ver_flags >> 3) & 0x1F;
+                uint8_t prolog_size = buffer[1];
+                uint8_t code_count = buffer[2];
+                uint8_t frame_reg = buffer[3] & 0xF;
+                uint8_t frame_off = (buffer[3] >> 4) & 0xF;
+
+                out << "  Version        : " << (int)version << "\n"
+                    << "  Flags          : 0x" << std::hex << (int)flags << std::dec
+                    << " (" << ((flags & 1) ? "EHANDLER " : "") << ((flags & 2) ? "UHANDLER " : "") << ((flags & 4) ? "CHAININFO" : "") << ")\n"
+                    << "  Prolog Size    : " << (int)prolog_size << " bytes\n"
+                    << "  Unwind Codes   : " << (int)code_count << "\n"
+                    << "  Frame Register : " << (int)frame_reg << " (offset * 16 = " << (frame_off * 16) << ")\n";
+            }
+            out << "--------------------------------------------------------------------------------\n";
+            out << "RAW HEX & ASCII DUMP:\n";
+            hex_ascii_dump(buffer.data(), buffer.size(), 0, out);
+            out << "--------------------------------------------------------------------------------\n\n";
+            return true;
+        }
+
+        if (ext == ".bss" || fname.find(".bss") != std::string::npos) {
+            out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Section Type: " << Terminal::bold() << "Uninitialized Block Started by Symbol (.bss)" << Terminal::reset() << "\n";
+            out << "  Capacity: " << buffer.size() << " bytes (Zero-filled virtual memory)\n\n";
+            return true;
+        }
+
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Section Type: " << Terminal::bold() << "Raw Data Section (" << ext << ")" << Terminal::reset() << "\n";
+        out << "--------------------------------------------------------------------------------\n";
+        hex_ascii_dump(buffer.data(), buffer.size(), 0, out);
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
+    static bool inspect_assembly(const fs::path& path, const std::string& content, std::ostream& out) {
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "             DGTL SOVEREIGN ASSEMBLY SOURCE INSPECTOR (.s / .asm)               \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Source File: " << path.string() << " (" << content.size() << " bytes)\n\n";
+
+        std::istringstream stream(content);
+        std::string line;
+        std::vector<std::string> symbols;
+        size_t directives = 0, instructions = 0;
+
+        while (std::getline(stream, line)) {
+            std::string t = trim(line);
+            if (t.starts_with(".globl") || t.starts_with(".global") || t.starts_with("global")) {
+                symbols.push_back(t);
+                ++directives;
+            } else if (t.starts_with(".")) {
+                ++directives;
+            } else if (t.ends_with(":")) {
+                symbols.push_back(t);
+            } else if (!t.empty() && !t.starts_with("#") && !t.starts_with("//") && !t.starts_with(";")) {
+                ++instructions;
+            }
+        }
+
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Directives  : " << directives << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Instructions: " << instructions << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Exported/Local Labels: " << symbols.size() << "\n\n";
+
+        out << "--------------------------------------------------------------------------------\n";
+        out << "SOURCE PREVIEW (with line numbers):\n";
+        out << "--------------------------------------------------------------------------------\n";
+        std::istringstream preview_stream(content);
+        size_t line_no = 1;
+        while (std::getline(preview_stream, line) && line_no <= 40) {
+            out << std::right << std::setw(4) << line_no++ << " | " << line << "\n";
+        }
+        if (line_no > 40) {
+            out << "  ... (more lines in file)\n";
+        }
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
+    static bool inspect_dgtl_ir(const fs::path& path, const std::string& content, std::ostream& out) {
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "           DGTL SOVEREIGN POLYHEDRAL IR & COMPUTE GRAPH INSPECTOR (.dgtl / .mzc)\n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Target File: " << path.string() << " (" << content.size() << " bytes)\n\n";
+
+        std::istringstream stream(content);
+        std::string line;
+        while (std::getline(stream, line)) {
+            if (line.find("POLYHEDRAL_DOMAIN") != std::string::npos ||
+                line.find("SCHEDULE") != std::string::npos ||
+                line.find("SIMD_VECTOR_WIDTH") != std::string::npos ||
+                line.find("L1_CACHE_TILE_BYTES") != std::string::npos ||
+                line.find("ENTRY") != std::string::npos ||
+                line.find("FMA_F32") != std::string::npos ||
+                line.find("FMA_F64") != std::string::npos ||
+                line.find("GELU_F32") != std::string::npos ||
+                line.find("SILU_F32") != std::string::npos ||
+                line.find("RMS_NORM_F32") != std::string::npos ||
+                line.find("FLASH_ATTN_F32") != std::string::npos ||
+                line.find("FAST_INV_SQRT") != std::string::npos) {
+                out << "  " << Terminal::green() << Terminal::bold() << "• " << line << Terminal::reset() << "\n";
+            }
+        }
+
+        out << "\n--------------------------------------------------------------------------------\n";
+        out << "IR CONTENT DUMP:\n";
+        out << "--------------------------------------------------------------------------------\n";
+        std::istringstream dump_stream(content);
+        size_t line_no = 1;
+        while (std::getline(dump_stream, line) && line_no <= 50) {
+            out << std::right << std::setw(4) << line_no++ << " | " << line << "\n";
+        }
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
+    static bool inspect_myzon_slab(const fs::path& path, const std::vector<uint8_t>& buffer, std::ostream& out) {
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "       MYZON ZERO-COPY PRECOMPILED BINARY PACKAGE SLAB INSPECTOR (.mzp)         \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Binary Slab: " << path.string() << " (" << buffer.size() << " bytes)\n\n";
+
+        if (buffer.size() < 64) {
+            out << "  " << Terminal::red() << Terminal::bold() << "[ FAIL ]" << Terminal::reset() << " Slab too small for 64-byte aligned header.\n";
+            return false;
+        }
+
+        if (std::memcmp(buffer.data(), "MYZON_P\0", 8) != 0) {
+            out << "  " << Terminal::yellow() << Terminal::bold() << "[ WARN ]" << Terminal::reset() << " Magic header differs from canonical MYZON_P.\n";
+        } else {
+            out << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset() << " Canonical Slab Magic Verified: 'MYZON_P\\0'\n";
+        }
+
+        uint32_t str_off = *reinterpret_cast<const uint32_t*>(buffer.data() + 40);
+        uint32_t str_sz  = *reinterpret_cast<const uint32_t*>(buffer.data() + 44);
+        uint32_t sym_off = *reinterpret_cast<const uint32_t*>(buffer.data() + 48);
+        uint32_t sym_cnt = *reinterpret_cast<const uint32_t*>(buffer.data() + 52);
+
+        out << "  String Table : Offset=0x" << std::hex << str_off << ", Size=" << std::dec << str_sz << " bytes\n";
+        out << "  Symbol Table : Offset=0x" << std::hex << sym_off << ", Count=" << std::dec << sym_cnt << " symbols\n\n";
+
+        out << "--------------------------------------------------------------------------------\n";
+        hex_ascii_dump(buffer.data(), buffer.size(), 0, out, 256);
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
+    static bool inspect_myzon_source(const fs::path& path, const std::string& content, std::ostream& out) {
+        std::string ext = to_lower(path.extension().string());
+        std::string role = "Myzon Source";
+        std::string desc = "Modern canonical source file";
+
+        if (ext == ".mzi") { role = "Public Interface"; desc = "Module interface stub / public API contract (no function bodies)"; }
+        else if (ext == ".mzm") { role = "Modular Unit"; desc = "Internal submodule partition / engine partition"; }
+        else if (ext == ".my") { role = "Legacy Source"; desc = "Legacy v1.0 source file (backward compatibility mode)"; }
+        else if (ext == ".myzt") { role = "Dedicated Unit Test"; desc = "Test harness target (stripped from production builds)"; }
+        else if (ext == ".myzb") { role = "Performance Benchmark"; desc = "Micro-benchmark measuring throughput and CPU latency"; }
+        else if (ext == ".myzs") { role = "Zero-Overhead Script"; desc = "DevOps automation executed standalone via Strike JIT (<1ms)"; }
+        else if (ext == ".myd") { role = "Dynamic Native Module"; desc = "Dynamically loadable native module / shared plugin"; }
+
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "               MYZON LANGUAGE SOURCE & MODULE INSPECTOR (" << ext << ")                 \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "File Target: " << path.string() << " (" << content.size() << " bytes)\n";
+        out << "Role       : " << Terminal::bold() << role << Terminal::reset() << " (" << desc << ")\n\n";
+
+        std::istringstream stream(content);
+        std::string line;
+        std::vector<std::string> structs, traits, funcs, imports;
+
+        while (std::getline(stream, line)) {
+            std::string t = trim(line);
+            if (t.starts_with("import ")) imports.push_back(t);
+            else if (t.find("struct ") != std::string::npos) structs.push_back(t);
+            else if (t.find("trait ") != std::string::npos) traits.push_back(t);
+            else if (t.find("fn ") != std::string::npos) funcs.push_back(t);
+        }
+
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Package Imports : " << imports.size() << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Struct Entities : " << structs.size() << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Trait Contracts : " << traits.size() << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Routines/Funcs  : " << funcs.size() << "\n\n";
+
+        out << "--------------------------------------------------------------------------------\n";
+        out << "SOURCE PREVIEW (with line numbers):\n";
+        out << "--------------------------------------------------------------------------------\n";
+        std::istringstream preview_stream(content);
+        size_t line_no = 1;
+        while (std::getline(preview_stream, line) && line_no <= 50) {
+            out << std::right << std::setw(4) << line_no++ << " | " << line << "\n";
+        }
+        if (line_no > 50) {
+            out << "  ... (more lines in file)\n";
+        }
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
+    static bool inspect_manifest(const fs::path& path, const std::string& content, std::ostream& out) {
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "             PACKAGE MANIFEST & REPRODUCIBLE LOCKFILE INSPECTOR                 \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "Manifest File: " << path.string() << " (" << content.size() << " bytes)\n\n";
+
+        std::istringstream stream(content);
+        std::string line;
+        size_t line_no = 1;
+        while (std::getline(stream, line) && line_no <= 50) {
+            if (line.starts_with("[")) {
+                out << Terminal::bold() << Terminal::yellow() << line << Terminal::reset() << "\n";
+            } else {
+                out << std::right << std::setw(4) << line_no << " | " << line << "\n";
+            }
+            ++line_no;
+        }
+        out << "\n";
+        return true;
+    }
+
+    static bool open_and_inspect(const fs::path& path, std::ostream& out = std::cout) {
+        if (!fs::exists(path)) {
+            out << Terminal::red() << "[!] Error: File does not exist: " << path.string() << Terminal::reset() << "\n";
+            return false;
+        }
+
+        std::string ext = to_lower(path.extension().string());
+        std::string fname = to_lower(path.filename().string());
+
+        // Read binary buffer
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            out << Terminal::red() << "[!] Error: Cannot open file: " << path.string() << Terminal::reset() << "\n";
+            return false;
+        }
+
+        std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        file.close();
+
+        // 1. Static archives (.a, .lib, or !<arch>)
+        if (ext == ".a" || ext == ".lib" || (buffer.size() >= 8 && std::memcmp(buffer.data(), "!<arch>\n", 8) == 0)) {
+            return audit_archive(path, buffer, out);
+        }
+
+        // 2. Relocatable object files (.obj, .o)
+        if (ext == ".obj" || ext == ".o") {
+            return inspect_object(path, buffer, out);
+        }
+
+        // 3. Executables / Shared Libraries (.exe, .so, .dll, .dylib, .elf, .wasm)
+        if (ext == ".exe" || ext == ".so" || ext == ".dll" || ext == ".dylib" || ext == ".elf" || ext == ".wasm" ||
+            (buffer.size() >= 4 && buffer[0] == 0x7F && buffer[1] == 'E' && buffer[2] == 'L' && buffer[3] == 'F') ||
+            (buffer.size() >= 2 && buffer[0] == 'M' && buffer[1] == 'Z')) {
+            return PeInspector::audit(path, out);
+        }
+
+        // 4. Raw Section Dumps (.text, .data, .pdata, .xdata, .bss, .rdata, .rodata)
+        if (ext == ".text" || ext == ".data" || ext == ".pdata" || ext == ".xdata" || ext == ".bss" || ext == ".rdata" || ext == ".rodata") {
+            return inspect_raw_section(path, buffer, out);
+        }
+
+        // 5. Myzon Precompiled Slabs (.mzp)
+        if (ext == ".mzp" || (buffer.size() >= 8 && std::memcmp(buffer.data(), "MYZON_P\0", 8) == 0)) {
+            return inspect_myzon_slab(path, buffer, out);
+        }
+
+        std::string content(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+
+        // 6. Assembly source (.s, .asm)
+        if (ext == ".s" || ext == ".asm") {
+            return inspect_assembly(path, content, out);
+        }
+
+        // 7. DGTL IR & Compute Graph (.dgtl, .mzc)
+        if (ext == ".dgtl" || ext == ".mzc") {
+            return inspect_dgtl_ir(path, content, out);
+        }
+
+        // 8. Myzon source files (.myz, .mzi, .mzm, .my, .myzt, .myzb, .myzs, .myd)
+        if (ext == ".myz" || ext == ".mzi" || ext == ".mzm" || ext == ".my" || ext == ".myzt" || ext == ".myzb" || ext == ".myzs" || ext == ".myd") {
+            return inspect_myzon_source(path, content, out);
+        }
+
+        // 9. Project manifests & lockfiles
+        if (fname == "myzon.toml" || fname == "myzon.lock" || fname == "dgtl.toml" || fname == "dgtl.lock" || ext == ".toml" || ext == ".lock") {
+            return inspect_manifest(path, content, out);
+        }
+
+        // 10. Fallback: If printable text, inspect as source/text; otherwise hex dump
+        bool is_text = true;
+        for (size_t i = 0; i < std::min<size_t>(buffer.size(), 1024); ++i) {
+            uint8_t c = buffer[i];
+            if (c != '\n' && c != '\r' && c != '\t' && (c < 0x20 || c > 0x7E)) {
+                is_text = false;
+                break;
+            }
+        }
+
+        if (is_text) {
+            out << Terminal::bold() << Terminal::cyan()
+                << "================================================================================\n"
+                << "                  DGTL SOVEREIGN SOURCE / TEXT VIEWER                           \n"
+                << "================================================================================\n"
+                << Terminal::reset();
+            out << "File: " << path.string() << " (" << buffer.size() << " bytes)\n\n";
+            std::istringstream stream(content);
+            std::string line;
+            size_t line_no = 1;
+            while (std::getline(stream, line) && line_no <= 80) {
+                out << std::right << std::setw(4) << line_no++ << " | " << line << "\n";
+            }
+            return true;
+        }
+
+        return inspect_raw_section(path, buffer, out);
     }
 };
 
@@ -2644,6 +4130,9 @@ public:
             return 1;
         }
 
+        auto exec_start_time = std::chrono::steady_clock::now();
+        auto sys_start_time = std::chrono::system_clock::now();
+
         DEBUG_EVENT dbg{};
         bool running = true;
         DWORD exit_code = 0;
@@ -2664,8 +4153,11 @@ public:
             case CREATE_PROCESS_DEBUG_EVENT: {
                 image_base = reinterpret_cast<uint64_t>(dbg.u.CreateProcessInfo.lpBaseOfImage);
                 entry_point = reinterpret_cast<uint64_t>(dbg.u.CreateProcessInfo.lpStartAddress);
-                std::cout << "[dgtl-debugger] [EVENT] Process Created. ImageBase=0x" << std::hex << image_base
-                          << ", EntryPoint=0x" << entry_point << std::dec << "\n";
+                std::cout << Terminal::dim() << "[dgtl-debugger]" << Terminal::reset()
+                          << " " << Terminal::green() << "[SPAWN]" << Terminal::reset()
+                          << " Process created successfully (PID=" << dbg.dwProcessId << ")\n"
+                          << "                 ImageBase   : 0x" << std::hex << image_base << "\n"
+                          << "                 EntryPoint  : 0x" << entry_point << std::dec << "\n";
                 if (dbg.u.CreateProcessInfo.hFile) CloseHandle(dbg.u.CreateProcessInfo.hFile);
                 break;
             }
@@ -2678,7 +4170,10 @@ public:
                 }
                 std::string dname = dll_name_buf[0] ? fs::path(dll_name_buf).filename().string() : ("dll_at_0x" + std::to_string(dll_base));
                 loaded_dlls.push_back({dname, dll_base});
-                std::cout << "[dgtl-debugger] [EVENT] Loaded DLL: " << dname << " at 0x" << std::hex << dll_base << std::dec << "\n";
+                std::cout << Terminal::dim() << "[dgtl-debugger]" << Terminal::reset()
+                          << " " << Terminal::dim() << "[MODULE]" << Terminal::reset()
+                          << " Loaded: " << std::left << std::setw(28) << dname << std::right
+                          << " at 0x" << std::hex << dll_base << std::dec << "\n";
                 break;
             }
             case EXCEPTION_DEBUG_EVENT: {
@@ -2690,118 +4185,516 @@ public:
                     break;
                 }
 
-                std::cout << "\n================================================================================\n";
-                std::cout << "          DGTL NATIVE CRASH INTERCEPTOR: HARDWARE EXCEPTION TRAPPED             \n";
-                std::cout << "================================================================================\n";
+                auto exec_fault_time = std::chrono::steady_clock::now();
+                int64_t elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(exec_fault_time - exec_start_time).count();
+                double elapsed_ms = elapsed_us / 1000.0;
+
+                auto resolve_addr_owner = [&](uint64_t addr) -> std::string {
+                    if (addr >= image_base && addr < image_base + 0x10000000) {
+                        std::stringstream ss;
+                        ss << std::hex << (addr - image_base);
+                        return exe_path.filename().string() + "+0x" + ss.str();
+                    }
+                    for (const auto& dll : loaded_dlls) {
+                        if (addr >= dll.base && addr < dll.base + 0x10000000) {
+                            std::stringstream ss;
+                            ss << std::hex << (addr - dll.base);
+                            return dll.name + "+0x" + ss.str();
+                        }
+                    }
+                    return "unmapped / dynamic code";
+                };
 
                 std::string exc_name = "UNKNOWN_EXCEPTION";
-                if (code == 0xC0000005) exc_name = "STATUS_ACCESS_VIOLATION (0xC0000005)";
-                else if (code == 0xC0000139) exc_name = "STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139 - missing imported DLL symbol)";
-                else if (code == 0xC000001D) exc_name = "STATUS_ILLEGAL_INSTRUCTION (0xC000001D)";
-                else if (code == 0xC0000094) exc_name = "STATUS_INTEGER_DIVIDE_BY_ZERO (0xC0000094)";
-                else if (code == 0xC00000FD) exc_name = "STATUS_STACK_OVERFLOW (0xC00000FD)";
+                std::string tax_code = "RUN-000";
+                std::string root_cause;
+                std::vector<std::string> checklist;
+
+                if (code == 0xC0000005) {
+                    exc_name = "STATUS_ACCESS_VIOLATION";
+                    tax_code = "RUN-001";
+                    root_cause = "Invalid memory read, write, or DEP/NX execution attempt.";
+                    checklist.push_back("Verify null-pointer safeguards before dereferencing object handles or pointers.");
+                    checklist.push_back("Ensure executable memory regions have PAGE_EXECUTE_READWRITE permissions if running JIT code.");
+                    checklist.push_back("Check dynamic relocation entries and import table resolution in the linker.");
+                } else if (code == 0xC0000139) {
+                    exc_name = "STATUS_ENTRYPOINT_NOT_FOUND";
+                    tax_code = "DLL-001";
+                    root_cause = "A required dynamic symbol or DLL entrypoint could not be located in imported libraries.";
+                    checklist.push_back("Inspect missing DLL dependencies using 'dgtl-debugger inspect-exe <target.exe>'.");
+                    checklist.push_back("Confirm that the target DLL exists in the executable's directory or the system PATH.");
+                    checklist.push_back("Check for mangled C++ name mismatches between export and import tables.");
+                } else if (code == 0xC000001D) {
+                    exc_name = "STATUS_ILLEGAL_INSTRUCTION";
+                    tax_code = "CPU-001";
+                    root_cause = "CPU attempted to execute an invalid, unsupported, or misaligned instruction opcode.";
+                    checklist.push_back("Verify compiler target ISA architecture matches host CPU capabilities (e.g. AVX2, AVX-512, BMI2).");
+                    checklist.push_back("Check machine code emitter encoding offsets and instruction length calculations.");
+                    checklist.push_back("Confirm code section is not executing non-code data or unpadded jump tables.");
+                } else if (code == 0xC0000094) {
+                    exc_name = "STATUS_INTEGER_DIVIDE_BY_ZERO";
+                    tax_code = "RUN-002";
+                    root_cause = "Hardware division instruction encountered a divisor operand of zero.";
+                    checklist.push_back("Add defensive zero checks prior to division (IDIV/DIV) operations.");
+                    checklist.push_back("Inspect registers RAX, RDX, and divisor register at faulting RIP.");
+                } else if (code == 0xC00000FD) {
+                    exc_name = "STATUS_STACK_OVERFLOW";
+                    tax_code = "RUN-003";
+                    root_cause = "Thread consumed all allocated stack space; stack guard page exhausted.";
+                    checklist.push_back("Check for unbounded or circular recursion in call graphs.");
+                    checklist.push_back("Increase reserved stack size via linker flag /STACK or investigate oversized local stack buffers.");
+                } else if (code == 0x80000003) {
+                    exc_name = "STATUS_BREAKPOINT";
+                    tax_code = "TRAP-001";
+                    root_cause = "A software breakpoint instruction (INT3) was executed.";
+                } else if (code == 0x80000004) {
+                    exc_name = "STATUS_SINGLE_STEP";
+                    tax_code = "TRAP-002";
+                    root_cause = "Processor single-step trap flag encountered.";
+                } else if (code == 0xC000008E) {
+                    exc_name = "STATUS_FLOAT_DIVIDE_BY_ZERO";
+                    tax_code = "FPU-001";
+                    root_cause = "Floating-point division by zero occurred in FPU or SSE/AVX vector unit.";
+                } else if (code == 0xC0000090) {
+                    exc_name = "STATUS_FLOAT_INVALID_OPERATION";
+                    tax_code = "FPU-002";
+                    root_cause = "Floating-point invalid operation exception (e.g., NaN generation without mask).";
+                } else if (code == 0xC0000096) {
+                    exc_name = "STATUS_PRIVILEGED_INSTRUCTION";
+                    tax_code = "CPU-002";
+                    root_cause = "Target application attempted to execute a ring-0 privileged CPU instruction.";
+                } else if (code == 0xC0000025) {
+                    exc_name = "STATUS_NONCONTINUABLE_EXCEPTION";
+                    tax_code = "RUN-004";
+                    root_cause = "Exception handler returned exception continue execution on a non-continuable exception.";
+                }
 
                 uint64_t fault_rip = reinterpret_cast<uint64_t>(rec.ExceptionAddress);
-                std::cout << "[!] EXCEPTION CATEGORY : " << exc_name << " (0x" << std::hex << code << ")\n";
-                std::cout << "[!] FAULTING RIP       : 0x" << fault_rip << "\n";
+                uint64_t fault_addr = 0;
+                uint64_t access_type = 0;
+                bool has_fault_addr = false;
 
                 if (code == 0xC0000005 && rec.NumberParameters >= 2) {
-                    uint64_t access_type = rec.ExceptionInformation[0];
-                    uint64_t fault_addr = rec.ExceptionInformation[1];
-                    std::cout << "[!] ACCESS VIOLATION   : " << (access_type == 0 ? "READ" : (access_type == 1 ? "WRITE" : "EXECUTE (DEP)"))
-                              << " of memory address 0x" << fault_addr << "\n";
+                    has_fault_addr = true;
+                    access_type = rec.ExceptionInformation[0];
+                    fault_addr = rec.ExceptionInformation[1];
+                }
 
-                    MEMORY_BASIC_INFORMATION mbi{};
-                    if (VirtualQueryEx(pi.hProcess, reinterpret_cast<LPCVOID>(fault_addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
-                        const char* state_str = (mbi.State == MEM_COMMIT) ? "MEM_COMMIT" : ((mbi.State == MEM_RESERVE) ? "MEM_RESERVE" : "MEM_FREE (UNMAPPED!)");
-                        std::cout << "[!] MEMORY PAGE STATUS : " << state_str << " | RegionSize=0x" << mbi.RegionSize << " | Protect=0x" << mbi.Protect << "\n";
-                        if (fault_addr == 0 || fault_addr < 0x1000) {
-                            std::cout << "\n[!] ROOT CAUSE DIAGNOSIS:\n";
-                            std::cout << "    NULL Pointer Dereference / Unresolved Call (faulting address = 0x" << std::hex << fault_addr << std::dec << ")!\n";
-                            std::cout << "    An unlinked function pointer or null relocation thunk was executed or dereferenced.\n";
-                        } else if (mbi.State != MEM_COMMIT) {
-                            std::cout << "\n[!] ROOT CAUSE DIAGNOSIS:\n";
-                            std::cout << "    The process crashed because it attempted to access UNCOMMITTED/UNMAPPED virtual memory.\n";
-                            std::cout << "    Target address 0x" << fault_addr << " is outside the valid allocated memory space of the executable!\n";
-                        }
+                // Collect System Telemetry
+                SYSTEM_INFO sys_info{};
+                GetSystemInfo(&sys_info);
+
+                // Collect Process Memory Telemetry
+                PROCESS_MEMORY_COUNTERS_EX pmc{};
+                pmc.cb = sizeof(pmc);
+                BOOL has_pmc = GetProcessMemoryInfo(pi.hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc));
+
+                // Open Thread & Collect CPU Registers
+                CONTEXT ctx{};
+                ctx.ContextFlags = CONTEXT_ALL;
+                HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, dbg.dwThreadId);
+                BOOL has_ctx = (hThread && GetThreadContext(hThread, &ctx));
+
+                // Virtual memory query at fault address
+                MEMORY_BASIC_INFORMATION mbi{};
+                bool has_mbi = false;
+                if (has_fault_addr && VirtualQueryEx(pi.hProcess, reinterpret_cast<LPCVOID>(fault_addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+                    has_mbi = true;
+                    if (fault_addr == 0 || fault_addr < 0x1000) {
+                        root_cause = "NULL pointer dereference (address = 0x" + ([&]{
+                            std::stringstream ss; ss << std::hex << fault_addr; return ss.str();
+                        })() + "). Attempted to access unallocated zero-page memory.";
+                    } else if (mbi.State != MEM_COMMIT) {
+                        root_cause = "Access to uncommitted virtual memory (address = 0x" + ([&]{
+                            std::stringstream ss; ss << std::hex << fault_addr; return ss.str();
+                        })() + ") outside process allocation bounds.";
+                    } else if (access_type == 8) {
+                        root_cause = "Data Execution Prevention (DEP / W^X) violation. Attempted to execute code in a non-executable page.";
                     }
                 }
 
-                HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, dbg.dwThreadId);
-                if (hThread) {
-                    CONTEXT ctx{};
-                    ctx.ContextFlags = CONTEXT_ALL;
-                    if (GetThreadContext(hThread, &ctx)) {
-                        std::cout << "--------------------------------------------------------------------------------\n";
-                        std::cout << "CPU REGISTERS (x86_64):\n";
-                        std::cout << "  RAX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rax
-                                  << "   RBX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rbx
-                                  << "   RCX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rcx << "\n";
-                        std::cout << "  RDX = 0x" << std::setw(16) << std::setfill('0') << ctx.Rdx
-                                  << "   RSI = 0x" << std::setw(16) << std::setfill('0') << ctx.Rsi
-                                  << "   RDI = 0x" << std::setw(16) << std::setfill('0') << ctx.Rdi << "\n";
-                        std::cout << "  RBP = 0x" << std::setw(16) << std::setfill('0') << ctx.Rbp
-                                  << "   RSP = 0x" << std::setw(16) << std::setfill('0') << ctx.Rsp
-                                  << "   RIP = 0x" << std::setw(16) << std::setfill('0') << ctx.Rip << "\n";
-                        std::cout << "  R8  = 0x" << std::setw(16) << std::setfill('0') << ctx.R8
-                                  << "   R9  = 0x" << std::setw(16) << std::setfill('0') << ctx.R9
-                                  << "   R10 = 0x" << std::setw(16) << std::setfill('0') << ctx.R10 << "\n";
-                        std::cout << "  R11 = 0x" << std::setw(16) << std::setfill('0') << ctx.R11
-                                  << "   R12 = 0x" << std::setw(16) << std::setfill('0') << ctx.R12
-                                  << "   R13 = 0x" << std::setw(16) << std::setfill('0') << ctx.R13 << "\n";
-                        std::cout << "  R14 = 0x" << std::setw(16) << std::setfill('0') << ctx.R14
-                                  << "   R15 = 0x" << std::setw(16) << std::setfill('0') << ctx.R15
-                                  << "   EFL = 0x" << std::setw(8) << std::setfill('0') << ctx.EFlags << "\n" << std::dec;
+                // ============================================================
+                // 1. BANNER & PRIMARY FAULT METRICS
+                // ============================================================
+                std::cout << "\n"
+                          << Terminal::bg_red() << Terminal::bold()
+                          << " ============================================================================== " << Terminal::reset() << "\n"
+                          << Terminal::bg_red() << Terminal::bold()
+                          << "   CRITICAL HARDWARE EXCEPTION TRAPPED  [" << std::left << std::setw(10) << tax_code << "]                     " << Terminal::reset() << "\n"
+                          << Terminal::bg_red() << Terminal::bold()
+                          << " ============================================================================== " << Terminal::reset() << "\n\n";
 
-                        std::cout << "--------------------------------------------------------------------------------\n";
-                        std::cout << "DISASSEMBLY AT FAULTING INSTRUCTION:\n";
-                        uint8_t code_buf[64] = {0};
-                        SIZE_T read_bytes = 0;
-                        if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(ctx.Rip), code_buf, sizeof(code_buf), &read_bytes) && read_bytes > 0) {
-                            uint64_t cur_rip = ctx.Rip;
-                            size_t cur_off = 0;
-                            for (int i = 0; i < 5 && cur_off < read_bytes; ++i) {
-                                auto instr = X64Disassembler::decode(code_buf + cur_off, read_bytes - cur_off, cur_rip);
-                                std::cout << (i == 0 ? "  --> 0x" : "      0x") << std::hex << std::setw(16) << std::setfill('0') << cur_rip << ": ";
-                                for (size_t b = 0; b < 6; ++b) {
-                                    if (b < instr.length) {
-                                        std::cout << std::setw(2) << std::setfill('0') << (int)code_buf[cur_off + b] << " ";
+                std::cout << "  " << Terminal::bold() << "Exception Type     : " << Terminal::reset()
+                          << Terminal::red() << Terminal::bold() << exc_name << " (0x" << std::hex << code << std::dec << ")" << Terminal::reset() << "\n";
+                std::cout << "  " << Terminal::bold() << "Faulting Instruction: " << Terminal::reset()
+                          << "0x" << std::hex << fault_rip << std::dec
+                          << " (" << Terminal::cyan() << resolve_addr_owner(fault_rip) << Terminal::reset() << ")\n";
+
+                if (has_fault_addr) {
+                    const char* acc_str = (access_type == 0 ? "READ" : (access_type == 1 ? "WRITE" : "EXECUTE (DEP Violation)"));
+                    std::cout << "  " << Terminal::bold() << "Memory Operation   : " << Terminal::reset()
+                              << Terminal::yellow() << acc_str << Terminal::reset()
+                              << " at address 0x" << std::hex << fault_addr << std::dec << "\n";
+                }
+
+                std::cout << "  " << Terminal::bold() << "Root Cause Analysis: " << Terminal::reset()
+                          << root_cause << "\n\n";
+
+                // ============================================================
+                // 2. PROCESS & SYSTEM TELEMETRY CARD
+                // ============================================================
+                std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: PROCESS EXECUTION & SYSTEM PROFILE ]" << Terminal::reset() << "\n";
+                std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n";
+                std::cout << "    Process PID      : " << std::left << std::setw(16) << dbg.dwProcessId
+                          << "Thread ID        : " << dbg.dwThreadId << "\n";
+                std::cout << "    Execution Uptime : " << std::left << std::setw(16) << (std::to_string(elapsed_ms) + " ms")
+                          << "Total Microsecs  : " << elapsed_us << " us\n";
+                std::cout << "    Host Architecture: " << std::left << std::setw(16) << (sys_info.wProcessorArchitecture == 9 ? "AMD64 (x86_64)" : (sys_info.wProcessorArchitecture == 12 ? "ARM64" : "x86"))
+                          << "Processor Count  : " << sys_info.dwNumberOfProcessors << " logical cores\n";
+                std::cout << "    System Page Size : " << std::left << std::setw(16) << (std::to_string(sys_info.dwPageSize) + " bytes")
+                          << "App Address Min  : 0x" << std::hex << reinterpret_cast<uint64_t>(sys_info.lpMinimumApplicationAddress) << std::dec << "\n";
+                std::cout << "    App Address Max  : 0x" << std::hex << reinterpret_cast<uint64_t>(sys_info.lpMaximumApplicationAddress) << std::dec << "\n";
+                std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n\n";
+
+                // ============================================================
+                // 3. PROCESS MEMORY METRICS & QUOTAS
+                // ============================================================
+                if (has_pmc) {
+                    std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: MEMORY CONSUMPTION & PAGE FAULTS ]" << Terminal::reset() << "\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n";
+                    double ws_mb = pmc.WorkingSetSize / (1024.0 * 1024.0);
+                    double peak_ws_mb = pmc.PeakWorkingSetSize / (1024.0 * 1024.0);
+                    double pf_mb = pmc.PagefileUsage / (1024.0 * 1024.0);
+                    double peak_pf_mb = pmc.PeakPagefileUsage / (1024.0 * 1024.0);
+                    std::cout << "    Working Set (RAM): " << std::fixed << std::setprecision(2) << std::left << std::setw(10) << ws_mb << " MB  "
+                              << "Peak Working Set : " << std::left << std::setw(10) << peak_ws_mb << " MB\n";
+                    std::cout << "    Commit (Pagefile): " << std::left << std::setw(10) << pf_mb << " MB  "
+                              << "Peak Commit      : " << std::left << std::setw(10) << peak_pf_mb << " MB\n";
+                    std::cout << "    Page Fault Count : " << std::left << std::setw(10) << pmc.PageFaultCount
+                              << "Paged Pool Quota : " << (pmc.QuotaPagedPoolUsage / 1024) << " KB (Peak: " << (pmc.QuotaPeakPagedPoolUsage / 1024) << " KB)\n";
+                    std::cout << "    NonPaged Pool    : " << (pmc.QuotaNonPagedPoolUsage / 1024) << " KB (Peak: " << (pmc.QuotaPeakNonPagedPoolUsage / 1024) << " KB)\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n\n";
+                }
+
+                // ============================================================
+                // 4. FAULT ADDRESS MEMORY PAGE FORENSICS
+                // ============================================================
+                if (has_fault_addr && has_mbi) {
+                    std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: FAULT ADDRESS VIRTUAL PAGE FORENSICS ]" << Terminal::reset() << "\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n";
+                    const char* state_str = (mbi.State == MEM_COMMIT) ? "COMMITTED" : ((mbi.State == MEM_RESERVE) ? "RESERVED" : "FREE (UNMAPPED)");
+                    const char* type_str = (mbi.Type == MEM_IMAGE) ? "IMAGE (PE Section)" : ((mbi.Type == MEM_MAPPED) ? "MAPPED VIEW" : ((mbi.Type == MEM_PRIVATE) ? "PRIVATE HEAP/STACK" : "NONE"));
+
+                    auto decode_protect = [](DWORD p) -> std::string {
+                        std::string res;
+                        if (p & PAGE_NOACCESS) res += "PAGE_NOACCESS ";
+                        if (p & PAGE_READONLY) res += "PAGE_READONLY ";
+                        if (p & PAGE_READWRITE) res += "PAGE_READWRITE ";
+                        if (p & PAGE_WRITECOPY) res += "PAGE_WRITECOPY ";
+                        if (p & PAGE_EXECUTE) res += "PAGE_EXECUTE ";
+                        if (p & PAGE_EXECUTE_READ) res += "PAGE_EXECUTE_READ ";
+                        if (p & PAGE_EXECUTE_READWRITE) res += "PAGE_EXECUTE_READWRITE ";
+                        if (p & PAGE_GUARD) res += "[GUARD_PAGE] ";
+                        if (p & PAGE_NOCACHE) res += "[NOCACHE] ";
+                        return res.empty() ? ("0x" + ([&]{ std::stringstream ss; ss << std::hex << p; return ss.str(); })()) : res;
+                    };
+
+                    std::cout << "    Target Address   : 0x" << std::hex << fault_addr << std::dec << "\n";
+                    std::cout << "    Region Base      : 0x" << std::hex << reinterpret_cast<uint64_t>(mbi.BaseAddress)
+                              << " | AllocationBase=0x" << reinterpret_cast<uint64_t>(mbi.AllocationBase) << std::dec << "\n";
+                    std::cout << "    Region Size      : 0x" << std::hex << mbi.RegionSize << std::dec << " (" << (mbi.RegionSize / 1024) << " KB)\n";
+                    std::cout << "    Allocation State : " << state_str << " | Region Type: " << type_str << "\n";
+                    std::cout << "    Page Protection  : " << decode_protect(mbi.Protect) << " (AllocProtect: " << decode_protect(mbi.AllocationProtect) << ")\n";
+
+                    // Memory Hex + ASCII Dump around fault address (if committed)
+                    if (mbi.State == MEM_COMMIT && fault_addr > 0x1000) {
+                        uint64_t dump_start = (fault_addr >= 32) ? (fault_addr - 32) : 0;
+                        dump_start &= ~0xFULL; // 16-byte align
+                        uint8_t mem_buf[64] = {0};
+                        SIZE_T bytes_read = 0;
+                        if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(dump_start), mem_buf, sizeof(mem_buf), &bytes_read) && bytes_read > 0) {
+                            std::cout << "    Hex Memory Dump around Fault Address:\n";
+                            for (size_t r = 0; r < bytes_read; r += 16) {
+                                uint64_t line_addr = dump_start + r;
+                                std::cout << "      0x" << std::hex << std::setw(16) << std::setfill('0') << line_addr << ": ";
+                                for (size_t c = 0; c < 16; ++c) {
+                                    if (r + c < bytes_read) {
+                                        if (line_addr + c == fault_addr) {
+                                            std::cout << Terminal::red() << Terminal::bold() << std::hex << std::setw(2) << std::setfill('0') << (int)mem_buf[r + c] << Terminal::reset() << " ";
+                                        } else {
+                                            std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)mem_buf[r + c] << " ";
+                                        }
                                     } else {
                                         std::cout << "   ";
                                     }
                                 }
-                                std::cout << "  " << instr.text << "\n" << std::dec;
-                                cur_off += instr.length;
-                                cur_rip += instr.length;
-                            }
-                        }
-
-                        std::cout << "--------------------------------------------------------------------------------\n";
-                        std::cout << "CALL STACK DUMP (RSP = 0x" << std::hex << ctx.Rsp << "):\n" << std::dec;
-                        uint64_t stack_slots[16] = {0};
-                        if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(ctx.Rsp), stack_slots, sizeof(stack_slots), &read_bytes)) {
-                            size_t count = read_bytes / 8;
-                            for (size_t i = 0; i < count; ++i) {
-                                uint64_t val = stack_slots[i];
-                                std::string owner = "unknown";
-                                for (const auto& dll : loaded_dlls) {
-                                    if (val >= dll.base && val < dll.base + 0x10000000) {
-                                        owner = dll.name + "+0x" + std::to_string(val - dll.base);
-                                        break;
-                                    }
+                                std::cout << " | ";
+                                for (size_t c = 0; c < 16 && (r + c) < bytes_read; ++c) {
+                                    uint8_t b = mem_buf[r + c];
+                                    std::cout << ((b >= 32 && b <= 126) ? (char)b : '.');
                                 }
-                                if (val >= image_base && val < image_base + 0x1000000) {
-                                    owner = exe_path.filename().string() + "+0x" + std::to_string(val - image_base);
-                                }
-                                std::cout << "  [RSP+" << std::setw(2) << (i * 8) << "] 0x" << std::hex << std::setw(16) << std::setfill('0') << val
-                                          << "  (" << owner << ")\n" << std::dec;
+                                std::cout << "\n" << std::dec;
                             }
                         }
                     }
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n\n";
+                }
+
+                // ============================================================
+                // 5. FULL 64-BIT GPR REGISTER TELEMETRY
+                // ============================================================
+                if (has_ctx) {
+                    std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: CPU GENERAL-PURPOSE REGISTERS (GPR) ]" << Terminal::reset() << "\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n";
+
+                    auto fmt_reg = [](const char* name, uint64_t val) {
+                        std::stringstream ss;
+                        ss << "  " << Terminal::bold() << std::left << std::setw(4) << name << Terminal::reset()
+                           << " = 0x" << std::hex << std::setw(16) << std::setfill('0') << val << std::dec;
+                        return ss.str();
+                    };
+
+                    std::cout << fmt_reg("RAX", ctx.Rax) << "  " << fmt_reg("RBX", ctx.Rbx) << "  " << fmt_reg("RCX", ctx.Rcx) << "\n";
+                    std::cout << fmt_reg("RDX", ctx.Rdx) << "  " << fmt_reg("RSI", ctx.Rsi) << "  " << fmt_reg("RDI", ctx.Rdi) << "\n";
+                    std::cout << fmt_reg("RBP", ctx.Rbp) << "  " << fmt_reg("RSP", ctx.Rsp) << "  " << fmt_reg("RIP", ctx.Rip) << "\n";
+                    std::cout << fmt_reg("R8 ", ctx.R8)  << "  " << fmt_reg("R9 ", ctx.R9)  << "  " << fmt_reg("R10", ctx.R10) << "\n";
+                    std::cout << fmt_reg("R11", ctx.R11) << "  " << fmt_reg("R12", ctx.R12) << "  " << fmt_reg("R13", ctx.R13) << "\n";
+                    std::cout << fmt_reg("R14", ctx.R14) << "  " << fmt_reg("R15", ctx.R15) << "  "
+                              << "  " << Terminal::bold() << std::left << std::setw(4) << "EFL" << Terminal::reset()
+                              << " = 0x" << std::hex << std::setw(8) << std::setfill('0') << ctx.EFlags << std::dec << "          \n";
+
+                    bool rsp_aligned = ((ctx.Rsp & 0xF) == 8 || (ctx.Rsp & 0xF) == 0);
+                    if (!rsp_aligned) {
+                        std::cout << "  " << Terminal::dim() << "|" << Terminal::reset()
+                                  << "  " << Terminal::yellow() << "[!] WARNING: RSP (0x" << std::hex << ctx.Rsp << std::dec
+                                  << ") is not 16-byte aligned (RSP % 16 = " << (ctx.Rsp & 0xF) << "), violating Windows x64 ABI!"
+                                  << Terminal::reset() << "\n";
+                    }
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n\n";
+
+                    // ============================================================
+                    // 6. SEGMENT REGISTERS & PROCESSOR FLAGS DECOMPOSITION
+                    // ============================================================
+                    std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: SEGMENT REGISTERS & PROCESSOR FLAGS (EFLAGS / MXCSR) ]" << Terminal::reset() << "\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n";
+                    std::cout << "    Segments : "
+                              << "CS=0x" << std::hex << std::setw(4) << std::setfill('0') << ctx.SegCs << "  "
+                              << "DS=0x" << std::setw(4) << std::setfill('0') << ctx.SegDs << "  "
+                              << "ES=0x" << std::setw(4) << std::setfill('0') << ctx.SegEs << "  "
+                              << "FS=0x" << std::setw(4) << std::setfill('0') << ctx.SegFs << "  "
+                              << "GS=0x" << std::setw(4) << std::setfill('0') << ctx.SegGs << "  "
+                              << "SS=0x" << std::setw(4) << std::setfill('0') << ctx.SegSs << std::dec << "\n";
+
+                    // EFLAGS breakdown
+                    uint32_t ef = ctx.EFlags;
+                    std::cout << "    EFLAGS   : 0x" << std::hex << ef << std::dec << " [ "
+                              << "CF=" << ((ef >> 0) & 1) << " "
+                              << "PF=" << ((ef >> 2) & 1) << " "
+                              << "AF=" << ((ef >> 4) & 1) << " "
+                              << "ZF=" << ((ef >> 6) & 1) << " "
+                              << "SF=" << ((ef >> 7) & 1) << " "
+                              << "TF=" << ((ef >> 8) & 1) << " "
+                              << "IF=" << ((ef >> 9) & 1) << " "
+                              << "DF=" << ((ef >> 10) & 1) << " "
+                              << "OF=" << ((ef >> 11) & 1) << " "
+                              << "IOPL=" << ((ef >> 12) & 3) << " "
+                              << "NT=" << ((ef >> 14) & 1) << " "
+                              << "RF=" << ((ef >> 16) & 1) << " "
+                              << "ID=" << ((ef >> 21) & 1) << " ]\n";
+
+                    // MXCSR breakdown
+                    uint32_t mx = ctx.MxCsr;
+                    const char* round_modes[] = {"Nearest(00)", "Down(01)", "Up(10)", "Truncate(11)"};
+                    int round_idx = (mx >> 13) & 3;
+                    std::cout << "    MXCSR    : 0x" << std::hex << mx << std::dec << " [ "
+                              << "Flags: IE=" << ((mx >> 0) & 1) << " DE=" << ((mx >> 1) & 1) << " ZE=" << ((mx >> 2) & 1)
+                              << " OE=" << ((mx >> 3) & 1) << " UE=" << ((mx >> 4) & 1) << " PE=" << ((mx >> 5) & 1) << " DAZ=" << ((mx >> 6) & 1) << " | "
+                              << "Masks: IM=" << ((mx >> 7) & 1) << " DM=" << ((mx >> 8) & 1) << " ZM=" << ((mx >> 9) & 1)
+                              << " OM=" << ((mx >> 10) & 1) << " UM=" << ((mx >> 11) & 1) << " PM=" << ((mx >> 12) & 1) << " | "
+                              << "Round=" << round_modes[round_idx] << " FTZ=" << ((mx >> 15) & 1) << " ]\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n\n";
+
+                    // ============================================================
+                    // 7. SIMD / VECTOR REGISTERS (XMM0 - XMM15)
+                    // ============================================================
+                    std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: 128-BIT SIMD / VECTOR REGISTERS (XMM0 - XMM15) ]" << Terminal::reset() << "\n";
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n";
+                    for (int i = 0; i < 16; i += 2) {
+                        for (int col = 0; col < 2; ++col) {
+                            int reg_idx = i + col;
+                            const auto& xmm = ctx.FltSave.XmmRegisters[reg_idx];
+                            uint64_t low = xmm.Low;
+                            uint64_t high = static_cast<uint64_t>(xmm.High);
+                            const float* fvals = reinterpret_cast<const float*>(&xmm);
+                            std::cout << "    " << Terminal::bold() << "XMM" << std::setw(2) << std::setfill('0') << reg_idx << Terminal::reset()
+                                      << "=[0x" << std::hex << std::setw(16) << std::setfill('0') << high
+                                      << ":" << std::setw(16) << std::setfill('0') << low << std::dec << "] "
+                                      << "{" << std::setprecision(1) << fvals[0] << "," << fvals[1] << "," << fvals[2] << "," << fvals[3] << "}  ";
+                        }
+                        std::cout << "\n";
+                    }
+                    std::cout << "  " << Terminal::dim() << "+-----------------------------------------------------------------------------------------+" << Terminal::reset() << "\n\n";
+
+                    // ============================================================
+                    // 8. DISASSEMBLY AT FAULTING RIP
+                    // ============================================================
+                    std::cout << "  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: CODE DISASSEMBLY AT FAULTING RIP ]" << Terminal::reset() << "\n";
+                    uint8_t code_buf[64] = {0};
+                    SIZE_T read_bytes = 0;
+                    if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(ctx.Rip), code_buf, sizeof(code_buf), &read_bytes) && read_bytes > 0) {
+                        uint64_t cur_rip = ctx.Rip;
+                        size_t cur_off = 0;
+                        for (int i = 0; i < 6 && cur_off < read_bytes; ++i) {
+                            auto instr = X64Disassembler::decode(code_buf + cur_off, read_bytes - cur_off, cur_rip);
+                            if (i == 0) {
+                                std::cout << "  " << Terminal::bold() << Terminal::red() << "  ---> 0x" << std::hex << std::setw(16) << std::setfill('0') << cur_rip << ": " << Terminal::reset();
+                            } else {
+                                std::cout << "       0x" << std::hex << std::setw(16) << std::setfill('0') << cur_rip << ": ";
+                            }
+
+                            std::stringstream bstream;
+                            for (size_t b = 0; b < 6; ++b) {
+                                if (b < instr.length) {
+                                    bstream << std::hex << std::setw(2) << std::setfill('0') << (int)code_buf[cur_off + b] << " ";
+                                } else {
+                                    bstream << "   ";
+                                }
+                            }
+                            std::cout << Terminal::dim() << bstream.str() << Terminal::reset() << "  ";
+                            if (i == 0) {
+                                std::cout << Terminal::bold() << Terminal::red() << instr.text
+                                          << "  <-- [FAULT]" << Terminal::reset() << "\n" << std::dec;
+                            } else {
+                                std::cout << instr.text << "\n" << std::dec;
+                            }
+                            cur_off += instr.length;
+                            cur_rip += instr.length;
+                        }
+                    } else {
+                        std::cout << "    " << Terminal::dim() << "(Unable to read process memory at RIP - page uncommitted or unreadable)" << Terminal::reset() << "\n";
+                    }
+
+                    // ============================================================
+                    // 9. CALL STACK TRACE & FRAME UNWINDING (TOP 24 FRAMES)
+                    // ============================================================
+                    std::cout << "\n  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: CALL STACK UNWIND & MEMORY BACKTRACE ]" << Terminal::reset() << "\n";
+                    uint64_t stack_slots[32] = {0};
+                    if (ReadProcessMemory(pi.hProcess, reinterpret_cast<LPCVOID>(ctx.Rsp), stack_slots, sizeof(stack_slots), &read_bytes)) {
+                        size_t count = std::min<size_t>(read_bytes / 8, 24);
+                        for (size_t i = 0; i < count; ++i) {
+                            uint64_t val = stack_slots[i];
+                            std::string owner = resolve_addr_owner(val);
+                            // Preview printable ASCII
+                            std::string ascii_prev;
+                            const uint8_t* pval = reinterpret_cast<const uint8_t*>(&val);
+                            for (size_t b = 0; b < 8; ++b) {
+                                ascii_prev += (pval[b] >= 32 && pval[b] <= 126) ? (char)pval[b] : '.';
+                            }
+
+                            std::cout << "    #" << std::setw(2) << i << "  [RSP+" << std::setw(3) << (i * 8) << "]  0x"
+                                      << std::hex << std::setw(16) << std::setfill('0') << val << std::dec
+                                      << " [" << ascii_prev << "] "
+                                      << Terminal::dim() << "in" << Terminal::reset() << " " << Terminal::cyan() << owner << Terminal::reset() << "\n";
+                        }
+                    }
+
                     CloseHandle(hThread);
                 }
 
-                std::cout << "================================================================================\n\n";
+                // ============================================================
+                // 10. LOADED MODULE INVENTORY
+                // ============================================================
+                std::cout << "\n  " << Terminal::bold() << Terminal::cyan() << "[ TELEMETRY: LOADED MODULES & DEPENDENCY INVENTORY ]" << Terminal::reset() << "\n";
+                for (const auto& dll : loaded_dlls) {
+                    std::cout << "    0x" << std::hex << std::setw(16) << std::setfill('0') << dll.base << std::dec
+                              << " | " << dll.name << "\n";
+                }
+
+                // ============================================================
+                // 11. ACTIONABLE REMEDIATION CHECKLIST
+                // ============================================================
+                if (!checklist.empty()) {
+                    std::cout << "\n  " << Terminal::bold() << Terminal::green() << "[ ACTIONABLE REMEDIATION CHECKLIST ]" << Terminal::reset() << "\n";
+                    for (const auto& item : checklist) {
+                        std::cout << "    " << Terminal::cyan() << "[ ]" << Terminal::reset() << " " << item << "\n";
+                    }
+                }
+
+                // ============================================================
+                // 12. AUTOMATIC STRUCTURED JSON TELEMETRY EXPORT
+                // ============================================================
+                auto epoch_now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                std::string json_filename = "crash_telemetry_pid" + std::to_string(dbg.dwProcessId) + "_" + std::to_string(epoch_now) + ".json";
+                std::ofstream json_out(json_filename);
+                if (json_out.is_open()) {
+                    json_out << "{\n"
+                             << "  \"telemetry_version\": \"2.0-enterprise\",\n"
+                             << "  \"process\": {\n"
+                             << "    \"pid\": " << dbg.dwProcessId << ",\n"
+                             << "    \"tid\": " << dbg.dwThreadId << ",\n"
+                             << "    \"executable\": \"" << exe_path.string() << "\",\n"
+                             << "    \"uptime_ms\": " << elapsed_ms << ",\n"
+                             << "    \"uptime_us\": " << elapsed_us << "\n"
+                             << "  },\n"
+                             << "  \"exception\": {\n"
+                             << "    \"code\": " << code << ",\n"
+                             << "    \"code_hex\": \"0x" << std::hex << code << std::dec << "\",\n"
+                             << "    \"name\": \"" << exc_name << "\",\n"
+                             << "    \"taxonomy\": \"" << tax_code << "\",\n"
+                             << "    \"fault_rip\": \"0x" << std::hex << fault_rip << std::dec << "\",\n"
+                             << "    \"fault_owner\": \"" << resolve_addr_owner(fault_rip) << "\",\n"
+                             << "    \"has_memory_fault\": " << (has_fault_addr ? "true" : "false") << ",\n"
+                             << "    \"memory_access_type\": " << access_type << ",\n"
+                             << "    \"fault_address\": \"0x" << std::hex << fault_addr << std::dec << "\",\n"
+                             << "    \"root_cause\": \"" << root_cause << "\"\n"
+                             << "  },\n";
+
+                    if (has_pmc) {
+                        json_out << "  \"memory_counters\": {\n"
+                                 << "    \"working_set_bytes\": " << pmc.WorkingSetSize << ",\n"
+                                 << "    \"peak_working_set_bytes\": " << pmc.PeakWorkingSetSize << ",\n"
+                                 << "    \"pagefile_bytes\": " << pmc.PagefileUsage << ",\n"
+                                 << "    \"peak_pagefile_bytes\": " << pmc.PeakPagefileUsage << ",\n"
+                                 << "    \"page_faults\": " << pmc.PageFaultCount << "\n"
+                                 << "  },\n";
+                    }
+
+                    if (has_ctx) {
+                        json_out << "  \"registers\": {\n"
+                                 << "    \"rax\": \"0x" << std::hex << ctx.Rax << "\",\n"
+                                 << "    \"rbx\": \"0x" << ctx.Rbx << "\",\n"
+                                 << "    \"rcx\": \"0x" << ctx.Rcx << "\",\n"
+                                 << "    \"rdx\": \"0x" << ctx.Rdx << "\",\n"
+                                 << "    \"rsi\": \"0x" << ctx.Rsi << "\",\n"
+                                 << "    \"rdi\": \"0x" << ctx.Rdi << "\",\n"
+                                 << "    \"rbp\": \"0x" << ctx.Rbp << "\",\n"
+                                 << "    \"rsp\": \"0x" << ctx.Rsp << "\",\n"
+                                 << "    \"rip\": \"0x" << ctx.Rip << "\",\n"
+                                 << "    \"r8\": \"0x"  << ctx.R8  << "\",\n"
+                                 << "    \"r9\": \"0x"  << ctx.R9  << "\",\n"
+                                 << "    \"r10\": \"0x\"" << ctx.R10 << "\",\n"
+                                 << "    \"r11\": \"0x\"" << ctx.R11 << "\",\n"
+                                 << "    \"r12\": \"0x\"" << ctx.R12 << "\",\n"
+                                 << "    \"r13\": \"0x\"" << ctx.R13 << "\",\n"
+                                 << "    \"r14\": \"0x\"" << ctx.R14 << "\",\n"
+                                 << "    \"r15\": \"0x\"" << ctx.R15 << "\",\n"
+                                 << "    \"eflags\": \"0x\"" << ctx.EFlags << "\",\n"
+                                 << "    \"mxcsr\": \"0x\"" << ctx.MxCsr << std::dec << "\"\n"
+                                 << "  },\n";
+                    }
+
+                    json_out << "  \"loaded_modules_count\": " << loaded_dlls.size() << "\n"
+                             << "}\n";
+                    json_out.close();
+
+                    std::cout << "\n  " << Terminal::green() << Terminal::bold() << "[ TELEMETRY EXPORT ]" << Terminal::reset()
+                              << " Structured telemetry persisted to: " << Terminal::bold() << json_filename << Terminal::reset() << "\n";
+                }
+
+                std::cout << "\n"
+                          << Terminal::bg_red() << Terminal::bold()
+                          << " ============================================================================== " << Terminal::reset() << "\n\n";
+
                 TerminateProcess(pi.hProcess, code);
                 running = false;
                 exit_code = code;
@@ -2810,10 +4703,18 @@ public:
             case EXIT_PROCESS_DEBUG_EVENT: {
                 exit_code = dbg.u.ExitProcess.dwExitCode;
                 running = false;
-                std::cout << "\n[dgtl-debugger] Process Exited with Code: " << exit_code
-                          << " (0x" << std::hex << exit_code << std::dec << ")\n";
+                auto exec_end = std::chrono::steady_clock::now();
+                int64_t total_us = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start_time).count();
+                double total_ms = total_us / 1000.0;
+                std::cout << "\n" << Terminal::dim() << "[dgtl-debugger]" << Terminal::reset()
+                          << " Process execution finished in " << std::fixed << std::setprecision(2) << total_ms << " ms.\n";
                 if (exit_code == 0) {
-                    std::cout << "[dgtl-debugger] SUCCESS: Executable completed with exit code 0.\n";
+                    std::cout << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset()
+                              << " Target application terminated normally with exit code 0.\n\n";
+                } else {
+                    std::cout << "  " << Terminal::yellow() << Terminal::bold() << "[ EXIT ]" << Terminal::reset()
+                              << " Target application terminated with non-zero exit code: " << exit_code
+                              << " (0x" << std::hex << exit_code << std::dec << ")\n\n";
                 }
                 break;
             }
@@ -2828,7 +4729,110 @@ public:
         CloseHandle(pi.hProcess);
         return static_cast<int>(exit_code);
 #else
-        std::cerr << "[dgtl-debugger] Native execution debugger currently supports Windows host.\n";
+        std::cout << "\n"
+                  << Terminal::bg_blue() << Terminal::bold()
+                  << " ============================================================================== " << Terminal::reset() << "\n"
+                  << Terminal::bg_blue() << Terminal::bold()
+                  << "   DGTL POSIX EXECUTION & SIGNAL TRAP MONITOR                                   " << Terminal::reset() << "\n"
+                  << Terminal::bg_blue() << Terminal::bold()
+                  << " ============================================================================== " << Terminal::reset() << "\n\n";
+        std::cout << "  " << Terminal::bold() << "Target Executable : " << Terminal::reset() << exe_path.string() << "\n\n";
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            std::cerr << Terminal::red() << "[dgtl-debugger] Failed to fork child process: " << strerror(errno) << Terminal::reset() << "\n";
+            return 1;
+        }
+
+        if (pid == 0) {
+            std::vector<char*> child_argv;
+            for (int i = 1; i < argc; ++i) {
+                child_argv.push_back(argv[i]);
+            }
+            child_argv.push_back(nullptr);
+            execv(exe_path.c_str(), child_argv.data());
+            std::cerr << "[dgtl-debugger] Failed to execv target: " << strerror(errno) << "\n";
+            _exit(127);
+        }
+
+        int status = 0;
+        waitpid(pid, &status, 0);
+
+        if (WIFEXITED(status)) {
+            int exit_code = WEXITSTATUS(status);
+            if (exit_code == 0) {
+                std::cout << "  " << Terminal::green() << Terminal::bold() << "[ PASS ]" << Terminal::reset()
+                          << " Target process exited normally with return code 0.\n\n";
+            } else {
+                std::cout << "  " << Terminal::yellow() << Terminal::bold() << "[ EXIT ]" << Terminal::reset()
+                          << " Target process exited with non-zero code: " << exit_code << "\n\n";
+            }
+            return exit_code;
+        } else if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            std::string sig_name = "Signal " + std::to_string(sig);
+            std::string tax_code = "SIG-000";
+            std::string diagnosis = "Process terminated abruptly by unhandled POSIX signal.";
+            std::vector<std::string> checklist;
+
+            if (sig == SIGSEGV) {
+                sig_name = "SIGSEGV (Segmentation Fault)";
+                tax_code = "RUN-001";
+                diagnosis = "Process accessed unmapped virtual memory or dereferenced a null/wild pointer.";
+                checklist.push_back("Check for NULL pointer dereference or uninitialized memory pointers.");
+                checklist.push_back("Ensure memory segments have PROT_READ / PROT_WRITE / PROT_EXEC appropriately.");
+                checklist.push_back("Verify stack bounds and buffer allocations.");
+            } else if (sig == SIGFPE) {
+                sig_name = "SIGFPE (Floating Point / Arithmetic Exception)";
+                tax_code = "RUN-002";
+                diagnosis = "Hardware arithmetic exception, typically division by zero or integer overflow.";
+                checklist.push_back("Add guards before integer division operations to prevent divisor == 0.");
+                checklist.push_back("Check floating point control word and division operands.");
+            } else if (sig == SIGILL) {
+                sig_name = "SIGILL (Illegal Instruction)";
+                tax_code = "CPU-001";
+                diagnosis = "CPU attempted to execute an illegal, malformed, or unpermitted instruction opcode.";
+                checklist.push_back("Verify target ISA architecture and CPU flag flags match the host processor.");
+                checklist.push_back("Ensure instruction encoding logic in the machine code emitter is accurate.");
+            } else if (sig == SIGBUS) {
+                sig_name = "SIGBUS (Bus Error / Unaligned Access)";
+                tax_code = "RUN-004";
+                diagnosis = "Process attempted an unaligned memory access on an architecture requiring strict alignment, or physical memory fault.";
+                checklist.push_back("Enforce natural alignment on multi-byte loads and stores.");
+                checklist.push_back("Verify memory-mapped file bounds and underlying file descriptor validities.");
+            } else if (sig == SIGABRT) {
+                sig_name = "SIGABRT (Abnormal Process Abort)";
+                tax_code = "RUN-005";
+                diagnosis = "Process called abort(), or an unhandled C++ exception / assertion triggered termination.";
+                checklist.push_back("Check application assertion statements and diagnostic output preceding the crash.");
+                checklist.push_back("Inspect C++ exception handling and ensure all thrown exceptions are caught.");
+            }
+
+            std::cout << "\n"
+                      << Terminal::bg_red() << Terminal::bold()
+                      << " ============================================================================== " << Terminal::reset() << "\n"
+                      << Terminal::bg_red() << Terminal::bold()
+                      << "   FATAL POSIX SIGNAL INTERCEPTED  [" << tax_code << "]                                    " << Terminal::reset() << "\n"
+                      << Terminal::bg_red() << Terminal::bold()
+                      << " ============================================================================== " << Terminal::reset() << "\n\n";
+
+            std::cout << "  " << Terminal::bold() << "Trapped Signal   : " << Terminal::reset()
+                      << Terminal::red() << Terminal::bold() << sig_name << " (Signal " << sig << ")" << Terminal::reset() << "\n";
+            std::cout << "  " << Terminal::bold() << "Diagnosis        : " << Terminal::reset() << diagnosis << "\n\n";
+
+            if (!checklist.empty()) {
+                std::cout << "  " << Terminal::bold() << Terminal::green() << "Actionable Remediation Checklist:" << Terminal::reset() << "\n";
+                for (const auto& item : checklist) {
+                    std::cout << "    " << Terminal::cyan() << "[ ]" << Terminal::reset() << " " << item << "\n";
+                }
+                std::cout << "\n";
+            }
+
+            std::cout << Terminal::bg_red() << Terminal::bold()
+                      << " ============================================================================== " << Terminal::reset() << "\n\n";
+            return 128 + sig;
+        }
+
         return 1;
 #endif
     }
@@ -2836,21 +4840,49 @@ public:
 
 } // namespace dgtl::debug
 
-int main(int argc, char** argv) {
+int dgtl_debugger_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    Terminal::init(true);
+
+    std::vector<std::string> expanded = dgtl::tools::ArgExpander::expand(raw_args);
+    if (expanded.empty()) {
+        expanded.push_back(std::string(invoked_as));
+    } else {
+        expanded.insert(expanded.begin(), std::string(invoked_as));
+    }
+
+    int argc = static_cast<int>(expanded.size());
+    std::vector<char*> c_argv;
+    c_argv.reserve(expanded.size());
+    for (auto& s : expanded) {
+        c_argv.push_back(s.data());
+    }
+    char** argv = c_argv.data();
+
     if (argc >= 2) {
         std::string_view subcmd = argv[1];
         if (subcmd == "run" || subcmd == "exec") {
             return dgtl::debug::NativeDebugger::run(argc - 1, argv + 1);
         }
-        if (subcmd == "inspect-exe" || subcmd == "check-exe" || subcmd == "inspect") {
+        if (subcmd == "inspect-exe" || subcmd == "check-exe" || subcmd == "audit-bin" || subcmd == "inspect-bin") {
             if (argc < 3) {
-                std::cerr << "Usage: dgtl-debugger inspect-exe <path_to_exe>\n";
+                std::cerr << "Usage: dgtl-debugger inspect-exe <path_to_binary>\n";
                 return 1;
             }
             return dgtl::debug::PeInspector::audit(argv[2]) ? 0 : 1;
         }
-        if (subcmd.ends_with(".exe") && fs::exists(subcmd)) {
-            return dgtl::debug::NativeDebugger::run(argc, argv);
+        if (subcmd == "inspect" || subcmd == "open" || subcmd == "view") {
+            if (argc < 3) {
+                std::cerr << "Usage: dgtl-debugger " << subcmd << " <file_path>\n";
+                return 1;
+            }
+            return dgtl::debug::FileInspector::open_and_inspect(argv[2]) ? 0 : 1;
+        }
+        if (!subcmd.starts_with("-") && fs::exists(subcmd) && fs::is_regular_file(subcmd)) {
+            if (subcmd.ends_with(".exe") || subcmd.ends_with(".elf") || subcmd.ends_with(".macho")) {
+                return dgtl::debug::NativeDebugger::run(argc, argv);
+            } else {
+                return dgtl::debug::FileInspector::open_and_inspect(subcmd) ? 0 : 1;
+            }
         }
     }
 
@@ -2862,6 +4894,8 @@ int main(int argc, char** argv) {
     if (parse_status == ParseStatus::Error) {
         return 1;
     }
+
+    Terminal::init(opts.color);
 
     std::error_code ec;
     const fs::path root = fs::weakly_canonical(opts.root, ec);

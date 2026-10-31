@@ -112,9 +112,18 @@ inline constexpr uint32_t EV_CURRENT   = 1;
 
 inline constexpr uint16_t ET_REL       = 1;
 inline constexpr uint16_t ET_EXEC      = 2;
+inline constexpr uint16_t ET_DYN       = 3;
+
 inline constexpr uint16_t EM_X86_64    = 62;
+inline constexpr uint16_t EM_AARCH64   = 183;
+inline constexpr uint16_t EM_RISCV     = 243;
+
 inline constexpr uint32_t PT_LOAD      = 1;
+inline constexpr uint32_t PT_GNU_STACK = 0x6474E551;
+inline constexpr uint32_t PT_GNU_RELRO = 0x6474E552;
+
 inline constexpr uint32_t PF_X         = 1;
+inline constexpr uint32_t PF_W         = 2;
 inline constexpr uint32_t PF_R         = 4;
 
 [[nodiscard]] inline constexpr uint8_t elf64_st_info(uint8_t bind, uint8_t type) noexcept {

@@ -18,7 +18,10 @@ module;
 
 export module dgtl.ir.pass.transform_control_predication;
 
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir.gen;
+import dgtl.ir_enums;
+import dgtl.ir_node;
 import dgtl.ir.pipeline.pass_manager_config;
 
 // import dgtl.ir.gen;

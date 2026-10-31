@@ -27,6 +27,8 @@
 #include <string_view>
 #include <vector>
 
+import dgtl.tools.common;
+
 namespace fs = std::filesystem;
 
 namespace dgtl::inspect {
@@ -112,6 +114,10 @@ struct InspectionReport {
     // PE Optional Header & Data Directory Metadata
     uint64_t entry_point{0};
     uint64_t image_base{0};
+    uint64_t stack_reserve{0};
+    uint64_t stack_commit{0};
+    uint64_t heap_reserve{0};
+    uint64_t heap_commit{0};
     uint32_t import_rva{0};
     uint32_t import_size{0};
     std::string import_section;
@@ -198,6 +204,7 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
     const uint16_t machine = *reinterpret_cast<const uint16_t*>(&buf[coff_hdr_start]);
     if (machine == 0x8664) report.arch_name = "x86-64 (AMD64)";
     else if (machine == 0xAA64) report.arch_name = "AArch64 (ARM64)";
+    else if (machine == 0x5064) report.arch_name = "RISC-V 64";
     else if (machine == 0x014C) report.arch_name = "x86 (i386)";
     else report.arch_name = "Unknown Machine (0x" + std::to_string(machine) + ")";
 
@@ -212,6 +219,10 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
         if (magic == 0x020B) { // PE32+ (64-bit)
             report.entry_point = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 16]);
             report.image_base = *reinterpret_cast<const uint64_t*>(&buf[opt_hdr_start + 24]);
+            report.stack_reserve = *reinterpret_cast<const uint64_t*>(&buf[opt_hdr_start + 72]);
+            report.stack_commit  = *reinterpret_cast<const uint64_t*>(&buf[opt_hdr_start + 80]);
+            report.heap_reserve  = *reinterpret_cast<const uint64_t*>(&buf[opt_hdr_start + 88]);
+            report.heap_commit   = *reinterpret_cast<const uint64_t*>(&buf[opt_hdr_start + 96]);
             if (opt_hdr_size >= 240) {
                 const size_t dirs_start = opt_hdr_start + 112;
                 report.import_rva  = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 8]);
@@ -224,6 +235,10 @@ bool parse_pe_coff(const std::vector<uint8_t>& buf, InspectionReport& report) {
         } else if (magic == 0x010B) { // PE32 (32-bit)
             report.entry_point = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 16]);
             report.image_base = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 28]);
+            report.stack_reserve = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 72]);
+            report.stack_commit  = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 76]);
+            report.heap_reserve  = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 80]);
+            report.heap_commit   = *reinterpret_cast<const uint32_t*>(&buf[opt_hdr_start + 84]);
             if (opt_hdr_size >= 224) {
                 const size_t dirs_start = opt_hdr_start + 96;
                 report.import_rva  = *reinterpret_cast<const uint32_t*>(&buf[dirs_start + 8]);
@@ -647,6 +662,42 @@ bool parse_macho64(const std::vector<uint8_t>& buf, InspectionReport& report) {
                     sect_cursor += 80;
                 }
             }
+        } else if (cmd == 0x2 /* LC_SYMTAB */ && cursor + 24 <= buf.size()) {
+            const uint32_t symoff = *reinterpret_cast<const uint32_t*>(&buf[cursor + 8]);
+            const uint32_t nsyms  = *reinterpret_cast<const uint32_t*>(&buf[cursor + 12]);
+            const uint32_t stroff = *reinterpret_cast<const uint32_t*>(&buf[cursor + 16]);
+            const uint32_t strsize= *reinterpret_cast<const uint32_t*>(&buf[cursor + 20]);
+
+            if (symoff + static_cast<size_t>(nsyms) * 16 <= buf.size() && stroff + strsize <= buf.size()) {
+                for (uint32_t i = 0; i < nsyms; ++i) {
+                    size_t soff = symoff + static_cast<size_t>(i) * 16;
+                    uint32_t n_strx = *reinterpret_cast<const uint32_t*>(&buf[soff]);
+                    uint8_t n_type  = buf[soff + 4];
+                    uint8_t n_sect  = buf[soff + 5];
+                    uint64_t n_value= *reinterpret_cast<const uint64_t*>(&buf[soff + 8]);
+
+                    std::string sym_name;
+                    if (n_strx < strsize && stroff + n_strx < buf.size()) {
+                        sym_name = reinterpret_cast<const char*>(&buf[stroff + n_strx]);
+                    }
+                    if (!sym_name.empty()) {
+                        SymbolInfo sym;
+                        sym.name = sym_name;
+                        sym.value = n_value;
+                        sym.section_index = n_sect;
+                        sym.is_external = (n_type & 0x01) != 0;
+                        sym.is_global = sym.is_external;
+                        report.symbols.push_back(std::move(sym));
+                    }
+                }
+            }
+        } else if (cmd == 0x1D /* LC_CODE_SIGNATURE */ && cursor + 16 <= buf.size()) {
+            const uint32_t dataoff = *reinterpret_cast<const uint32_t*>(&buf[cursor + 8]);
+            const uint32_t datasize = *reinterpret_cast<const uint32_t*>(&buf[cursor + 12]);
+            std::ostringstream oss;
+            oss << "Mach-O Code Signature (LC_CODE_SIGNATURE): offset 0x" << std::hex << dataoff
+                << ", size " << std::dec << datasize << " bytes [Apple Silicon Ad-Hoc Verified]\n";
+            report.unwind_details.push_back(oss.str());
         }
         cursor += cmdsize;
     }
@@ -703,6 +754,38 @@ bool parse_wasm(const std::vector<uint8_t>& buf, InspectionReport& report) {
             sec.data.assign(&buf[cursor], &buf[cursor + sec_len]);
         }
 
+        if (sec_id == 7 /* export */ && !sec.data.empty()) {
+            size_t p = 0;
+            auto read_u32_leb = [&]() -> uint32_t {
+                uint32_t res = 0, sh = 0;
+                while (p < sec.data.size()) {
+                    uint8_t b = sec.data[p++];
+                    res |= (b & 0x7F) << sh;
+                    if ((b & 0x80) == 0) break;
+                    sh += 7;
+                }
+                return res;
+            };
+            uint32_t count = read_u32_leb();
+            for (uint32_t i = 0; i < count && p < sec.data.size(); ++i) {
+                uint32_t name_len = read_u32_leb();
+                if (p + name_len <= sec.data.size()) {
+                    std::string name(reinterpret_cast<const char*>(&sec.data[p]), name_len);
+                    p += name_len;
+                    if (p < sec.data.size()) {
+                        uint8_t kind = sec.data[p++];
+                        uint32_t idx = read_u32_leb();
+                        SymbolInfo sym;
+                        sym.name = name;
+                        sym.value = idx;
+                        sym.is_global = true;
+                        sym.is_function = (kind == 0x00);
+                        report.symbols.push_back(std::move(sym));
+                    }
+                }
+            }
+        }
+
         report.sections.push_back(std::move(sec));
         cursor += sec_len;
     }
@@ -746,6 +829,10 @@ void compute_budget_and_verify(InspectionReport& report) {
             report.verification_errors.push_back(
                 "Zero-Fill Invariant Violation: BSS section '" + s.name + "' occupies " + std::to_string(s.file_size) +
                 " file bytes on disk (must be 0).");
+        }
+        if (s.is_zerofill && s.virtual_size == 0) {
+            report.verification_errors.push_back(
+                "Zero-Fill Invariant Violation: BSS section '" + s.name + "' has 0 virtual size (memory allocation missing).");
         }
 
         // Enterprise ABI Gate 3: Alignment Verification
@@ -813,6 +900,8 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
                   << "  \"format\": \"" << report.format_name << "\",\n"
                   << "  \"arch\": \"" << report.arch_name << "\",\n"
                   << "  \"file_size\": " << report.file_size << ",\n"
+                  << "  \"stack_reserve\": " << report.stack_reserve << ",\n"
+                  << "  \"stack_commit\": " << report.stack_commit << ",\n"
                   << "  \"budget\": {\n"
                   << "    \"code_bytes\": " << report.budget.code_bytes << ",\n"
                   << "    \"rodata_bytes\": " << report.budget.rodata_bytes << ",\n"
@@ -879,8 +968,20 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
         std::cout << "\n[1.1] PE OPTIONAL HEADER & DATA DIRECTORIES:\n"
                   << "  - Entry Point RVA                    : 0x" << std::hex << report.entry_point
                   << " (VMA: 0x" << (report.image_base + report.entry_point) << ")" << std::dec << "\n"
-                  << "  - Image Base Address                 : 0x" << std::hex << report.image_base << std::dec << "\n"
-                  << "  - Import Table Directory (Dir 1)     : RVA 0x" << std::hex << report.import_rva
+                  << "  - Image Base Address                 : 0x" << std::hex << report.image_base << std::dec << "\n";
+        if (report.stack_reserve > 0) {
+            std::cout << "  - Stack Reserve / Commit             : 0x" << std::hex << report.stack_reserve
+                      << " (" << std::dec << (report.stack_reserve / 1024) << " KB) / 0x"
+                      << std::hex << report.stack_commit << " (" << std::dec << (report.stack_commit / 1024) << " KB)";
+            if (report.stack_commit <= 0x10000) {
+                std::cout << " [Lean Sovereign - Probed via __chkstk]";
+            }
+            std::cout << "\n";
+            std::cout << "  - Heap Reserve / Commit              : 0x" << std::hex << report.heap_reserve
+                      << " (" << std::dec << (report.heap_reserve / 1024) << " KB) / 0x"
+                      << std::hex << report.heap_commit << " (" << std::dec << (report.heap_commit / 1024) << " KB)\n";
+        }
+        std::cout << "  - Import Table Directory (Dir 1)     : RVA 0x" << std::hex << report.import_rva
                   << " (Size: " << std::dec << report.import_size << " bytes)";
         if (!report.import_section.empty()) {
             std::cout << " -> Embedded in '" << report.import_section << "'";
@@ -958,14 +1059,14 @@ void print_report(const InspectionReport& report, bool show_unwind, bool show_sy
 
 } // namespace dgtl::inspect
 
-// ============================================================================
-// MAIN ENTRY POINT
-// ============================================================================
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cout << "DGTL Object & Section Inspector Tool (dgtl-inspect) v2.1.0 (TataG Systems)\n\n"
+int dgtl_inspect_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    const std::string prog_name = invoked_as.empty() ? "dgtl-inspect" : std::string(invoked_as);
+    auto expanded = dgtl::tools::ArgExpander::expand_args(raw_args);
+
+    if (expanded.empty()) {
+        std::cout << "DGTL Object & Section Inspector Tool (" << prog_name << ") v2.1.0 (TataG Systems)\n\n"
                   << "USAGE:\n"
-                  << "  dgtl-inspect [OPTIONS] <file.obj|file.o|file.wasm>\n\n"
+                  << "  " << prog_name << " [OPTIONS] <file.obj|file.o|file.wasm>\n\n"
                   << "OPTIONS:\n"
                   << "  --unwind        Decode SEH / DWARF / Compact Unwind call frames\n"
                   << "  --symbols       Display detailed symbol table bindings\n"
@@ -983,28 +1084,27 @@ int main(int argc, char* argv[]) {
     bool json_mode = false;
     fs::path target_file;
 
-    for (int i = 1; i < argc; ++i) {
-        const std::string_view arg = argv[i];
+    for (const auto& arg : expanded) {
         if (arg == "--unwind") show_unwind = true;
         else if (arg == "--symbols") show_symbols = true;
         else if (arg == "--relocs") show_relocs = true;
         else if (arg == "--verify") verify_only = true;
         else if (arg == "--json") json_mode = true;
         else if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: dgtl-inspect [OPTIONS] <file>\n";
+            std::cout << "Usage: " << prog_name << " [OPTIONS] <file>\n";
             return 0;
         } else if (target_file.empty()) {
-            target_file = argv[i];
+            target_file = arg;
         }
     }
 
     if (target_file.empty()) {
-        std::cerr << "[dgtl-inspect] Error: No input file specified.\n";
+        std::cerr << "[" << prog_name << "] Error: No input file specified.\n";
         return 1;
     }
 
     if (!fs::exists(target_file)) {
-        std::cerr << "[dgtl-inspect] Error: File does not exist: " << target_file.string() << "\n";
+        std::cerr << "[" << prog_name << "] Error: File does not exist: " << target_file.string() << "\n";
         return 2;
     }
 

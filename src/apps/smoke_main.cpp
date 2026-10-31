@@ -22,6 +22,7 @@
 #include <string_view>
 #include <cstdlib>
 #include <vector>
+#include <unordered_map>
 #include <thread>
 
 import dgtl.arena;
@@ -52,6 +53,8 @@ import dgtl.jit.executor;
 import dgtl.jit.hardware_scheduler;
 import dgtl.runtime.task_scheduler;
 import dgtl.isa.arm64.arm64_machine_form_lowering;
+import dgtl.isa.arm64.arm64_emitter;
+import dgtl.isa.arm64.mc_encoder;
 import dgtl.isa.x64.nasm_emitter;
 import dgtl.isa.x64.x64_machine_form_lowering;
 import dgtl.isa.x64.x64_reg_map;
@@ -59,6 +62,11 @@ import dgtl.isa.x64.x64_graphcoloring_regalloc;
 import dgtl.isa.x64.target;
 import dgtl.mir.regalloc.universal;
 import dgtl.isa.wasm.encoder;
+import dgtl.isa.riscv64.mc_encoder;
+import dgtl.isa.riscv64.target;
+import dgtl.codegen.target_registry;
+import dgtl.object.file;
+import dgtl.object.writers.macho;
 import dgtl.linker.backend;
 import dgtl.linker.driver.api;
 import dgtl.linker.driver;

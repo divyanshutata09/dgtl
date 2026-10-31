@@ -17,6 +17,7 @@
 module;
 
 #include <cstdlib>
+#include <cmath>
 
 #include <array>
 #include <bitset>
@@ -32,6 +33,7 @@ import dgtl.ir_enums;
 
 import dgtl.ir.stream;
 import dgtl.hir.semantic;
+import dgtl.math;
 
 
 
@@ -153,6 +155,382 @@ public:
                 std::memcpy(&out, &res, 4);
                 return ConstantResult{ out, 0 };
             }
+
+            case OpCode::SUB_F32: {
+                float fa, fb;
+                std::memcpy(&fa, &node.op_a, 4);
+                std::memcpy(&fb, &node.op_b, 4);
+                float res = fa - fb;
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::MUL_F32: {
+                float fa, fb;
+                std::memcpy(&fa, &node.op_a, 4);
+                std::memcpy(&fb, &node.op_b, 4);
+                float res = fa * fb;
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::DIV_F32: {
+                float fa, fb;
+                std::memcpy(&fa, &node.op_a, 4);
+                std::memcpy(&fb, &node.op_b, 4);
+                if (fb == 0.0f) return std::nullopt;
+                float res = fa / fb;
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::FMA_F32: {
+                float fa, fb, fc;
+                std::memcpy(&fa, &node.op_a, 4);
+                std::memcpy(&fb, &node.op_b, 4);
+                std::memcpy(&fc, &node.op_c, 4);
+                float res = std::fma(fa, fb, fc);
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::ADD_F64: {
+                if (node.op_b != 0u && node.op_c != 0u) {
+                    uint64_t in_bits_a = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0;
+                    std::memcpy(&da, &in_bits_a, sizeof(da));
+                    float fb = 0.0f;
+                    std::memcpy(&fb, &node.op_c, sizeof(fb));
+                    const double res = da + static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f, fb = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    std::memcpy(&fb, &node.op_b, sizeof(fb));
+                    const double res = static_cast<double>(fa) + static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                }
+            }
+
+            case OpCode::SUB_F64: {
+                if (node.op_b != 0u && node.op_c != 0u) {
+                    uint64_t in_bits_a = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0;
+                    std::memcpy(&da, &in_bits_a, sizeof(da));
+                    float fb = 0.0f;
+                    std::memcpy(&fb, &node.op_c, sizeof(fb));
+                    const double res = da - static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f, fb = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    std::memcpy(&fb, &node.op_b, sizeof(fb));
+                    const double res = static_cast<double>(fa) - static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                }
+            }
+
+            case OpCode::MUL_F64: {
+                if (node.op_b != 0u && node.op_c != 0u) {
+                    uint64_t in_bits_a = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0;
+                    std::memcpy(&da, &in_bits_a, sizeof(da));
+                    float fb = 0.0f;
+                    std::memcpy(&fb, &node.op_c, sizeof(fb));
+                    const double res = da * static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f, fb = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    std::memcpy(&fb, &node.op_b, sizeof(fb));
+                    const double res = static_cast<double>(fa) * static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                }
+            }
+
+            case OpCode::DIV_F64: {
+                if (node.op_b != 0u && node.op_c != 0u) {
+                    uint64_t in_bits_a = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0;
+                    std::memcpy(&da, &in_bits_a, sizeof(da));
+                    float fb = 0.0f;
+                    std::memcpy(&fb, &node.op_c, sizeof(fb));
+                    if (fb == 0.0f) return std::nullopt;
+                    const double res = da / static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f, fb = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    std::memcpy(&fb, &node.op_b, sizeof(fb));
+                    if (fb == 0.0f) return std::nullopt;
+                    const double res = static_cast<double>(fa) / static_cast<double>(fb);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                }
+            }
+
+            case OpCode::FMA_F64: {
+                float fa = 0.0f, fb = 0.0f, fc = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                std::memcpy(&fb, &node.op_b, sizeof(fb));
+                std::memcpy(&fc, &node.op_c, sizeof(fc));
+                const double res = std::fma(static_cast<double>(fa), static_cast<double>(fb), static_cast<double>(fc));
+                uint64_t out_bits = 0;
+                std::memcpy(&out_bits, &res, sizeof(out_bits));
+                return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+            }
+
+
+            case OpCode::SQRT_F32: {
+                float fa;
+                std::memcpy(&fa, &node.op_a, 4);
+                if (fa < 0.0f) return std::nullopt;
+                float res = std::sqrt(fa);
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::FAST_INV_SQRT: {
+                float fa;
+                std::memcpy(&fa, &node.op_a, 4);
+                if (fa <= 0.0f) return std::nullopt;
+                float res = dgtl::utils::math::fast_inv_sqrt(fa);
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::SQRT_F64: {
+                if (node.op_b != 0u) {
+                    uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0;
+                    std::memcpy(&da, &in_bits, sizeof(da));
+                    if (da < 0.0) return std::nullopt;
+                    const double res = std::sqrt(da);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    if (fa < 0.0f) return std::nullopt;
+                    const float res = std::sqrt(fa);
+                    uint32_t out = 0u;
+                    std::memcpy(&out, &res, sizeof(out));
+                    return ConstantResult{ out, 0u };
+                }
+            }
+
+            case OpCode::SIN_F32: {
+                float fa = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                const float res = static_cast<float>(dgtl::utils::math::sin(static_cast<double>(fa)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::COS_F32: {
+                float fa = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                const float res = static_cast<float>(dgtl::utils::math::cos(static_cast<double>(fa)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::TAN_F32: {
+                float fa = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                const float res = static_cast<float>(dgtl::utils::math::tan(static_cast<double>(fa)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::EXP_F32: {
+                float fa = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                const float res = static_cast<float>(dgtl::utils::math::exp(static_cast<double>(fa)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::LOG_F32: {
+                float fa = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                if (fa <= 0.0f) return std::nullopt;
+                const float res = static_cast<float>(dgtl::utils::math::log(static_cast<double>(fa)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::POW_F32: {
+                float fa = 0.0f, fb = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                std::memcpy(&fb, &node.op_b, sizeof(fb));
+                if (fa < 0.0f && std::floor(fb) != fb) return std::nullopt;
+                if (fa == 0.0f && fb <= 0.0f) return std::nullopt;
+                const float res = static_cast<float>(dgtl::utils::math::pow(static_cast<double>(fa), static_cast<double>(fb)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::SIN_F64: {
+                uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                double da = 0.0;
+                std::memcpy(&da, &in_bits, sizeof(da));
+                const double res = dgtl::utils::math::sin(da);
+                uint64_t out_bits = 0;
+                std::memcpy(&out_bits, &res, sizeof(out_bits));
+                return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+            }
+
+            case OpCode::COS_F64: {
+                uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                double da = 0.0;
+                std::memcpy(&da, &in_bits, sizeof(da));
+                const double res = dgtl::utils::math::cos(da);
+                uint64_t out_bits = 0;
+                std::memcpy(&out_bits, &res, sizeof(out_bits));
+                return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+            }
+
+            case OpCode::TAN_F64: {
+                uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                double da = 0.0;
+                std::memcpy(&da, &in_bits, sizeof(da));
+                const double res = dgtl::utils::math::tan(da);
+                uint64_t out_bits = 0;
+                std::memcpy(&out_bits, &res, sizeof(out_bits));
+                return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+            }
+
+            case OpCode::EXP_F64: {
+                uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                double da = 0.0;
+                std::memcpy(&da, &in_bits, sizeof(da));
+                const double res = dgtl::utils::math::exp(da);
+                uint64_t out_bits = 0;
+                std::memcpy(&out_bits, &res, sizeof(out_bits));
+                return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+            }
+
+            case OpCode::LOG_F64: {
+                uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                double da = 0.0;
+                std::memcpy(&da, &in_bits, sizeof(da));
+                if (da <= 0.0) return std::nullopt;
+                const double res = dgtl::utils::math::log(da);
+                uint64_t out_bits = 0;
+                std::memcpy(&out_bits, &res, sizeof(out_bits));
+                return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+            }
+
+            case OpCode::POW_F64: {
+                if (node.op_b != 0u) {
+                    uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0, db = 0.0;
+                    std::memcpy(&da, &in_bits, sizeof(da));
+                    std::memcpy(&db, &node.op_c, sizeof(uint32_t));
+                    if (da < 0.0 && std::floor(db) != db) return std::nullopt;
+                    if (da == 0.0 && db <= 0.0) return std::nullopt;
+                    const double res = dgtl::utils::math::pow(da, db);
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f, fb = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    std::memcpy(&fb, &node.op_c, sizeof(fb));
+                    if (fa < 0.0f && std::floor(fb) != fb) return std::nullopt;
+                    if (fa == 0.0f && fb <= 0.0f) return std::nullopt;
+                    const float res = static_cast<float>(dgtl::utils::math::pow(static_cast<double>(fa), static_cast<double>(fb)));
+                    uint32_t out = 0u;
+                    std::memcpy(&out, &res, sizeof(out));
+                    return ConstantResult{ out, 0u };
+                }
+            }
+
+            case OpCode::GELU_F32: {
+                float fa = 0.0f;
+                std::memcpy(&fa, &node.op_a, sizeof(fa));
+                const float res = static_cast<float>(dgtl::math::genai::fast_gelu(static_cast<double>(fa)));
+                uint32_t out = 0u;
+                std::memcpy(&out, &res, sizeof(out));
+                return ConstantResult{ out, 0u };
+            }
+
+            case OpCode::SILU_F32: {
+                float fa;
+                std::memcpy(&fa, &node.op_a, 4);
+                float res = static_cast<float>(dgtl::math::genai::silu(fa));
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::SIGMOID_F32: {
+                float fa;
+                std::memcpy(&fa, &node.op_a, 4);
+                float res = static_cast<float>(dgtl::math::genai::sigmoid(fa));
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::SWIGLU_F32: {
+                float fa, fb;
+                std::memcpy(&fa, &node.op_a, 4);
+                std::memcpy(&fb, &node.op_b, 4);
+                float res = static_cast<float>(dgtl::math::genai::swiglu(fa, fb));
+                uint32_t out;
+                std::memcpy(&out, &res, 4);
+                return ConstantResult{ out, 0 };
+            }
+
+            case OpCode::TENSOR_RELU: {
+                if (node.op_b != 0u) {
+                    uint64_t in_bits = (static_cast<uint64_t>(node.op_b) << 32) | node.op_a;
+                    double da = 0.0;
+                    std::memcpy(&da, &in_bits, sizeof(da));
+                    const double res = (da > 0.0) ? da : 0.0;
+                    uint64_t out_bits = 0;
+                    std::memcpy(&out_bits, &res, sizeof(out_bits));
+                    return ConstantResult{ static_cast<uint32_t>(out_bits & 0xFFFFFFFFu), static_cast<uint32_t>(out_bits >> 32) };
+                } else {
+                    float fa = 0.0f;
+                    std::memcpy(&fa, &node.op_a, sizeof(fa));
+                    const float res = (fa > 0.0f) ? fa : 0.0f;
+                    uint32_t out = 0u;
+                    std::memcpy(&out, &res, sizeof(out));
+                    return ConstantResult{ out, 0u };
+                }
+            }
+
 
             default:
                 return std::nullopt;

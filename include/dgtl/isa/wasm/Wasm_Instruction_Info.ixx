@@ -37,9 +37,9 @@ form_for_generic_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
         case GM_IADD64: case GM_ISUB64: case GM_IMUL64: case GM_IDIV64: case GM_IREM64:
         case GM_IAND64: case GM_IOR64: case GM_IXOR64: case GM_ISHL64: case GM_ISHR64:
             return MachineForm::IntegerBinary64;
-        case GM_FADD32: case GM_FSUB32: case GM_FMUL32: case GM_FDIV32:
+        case GM_FADD32: case GM_FSUB32: case GM_FMUL32: case GM_FDIV32: case GM_FSQRT32:
             return MachineForm::FloatBinary32;
-        case GM_FADD64: case GM_FSUB64: case GM_FMUL64: case GM_FDIV64:
+        case GM_FADD64: case GM_FSUB64: case GM_FMUL64: case GM_FDIV64: case GM_FSQRT64:
             return MachineForm::FloatBinary64;
         case GM_FFMA32: case GM_FFMA64:
             return MachineForm::FloatTernaryFma32;
@@ -48,11 +48,18 @@ form_for_generic_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
         case GM_GOTO: return MachineForm::Goto;
         case GM_BR_COND: return MachineForm::BranchCond;
         case GM_BR_COMPARE: return MachineForm::BranchCompare;
-        case GM_CALL: case GM_CALL_VARIADIC: return MachineForm::Call;
+        case GM_CALL: case GM_CALL_VARIADIC:
+        case GM_FSIN32: case GM_FCOS32: case GM_FTAN32: case GM_FEXP32: case GM_FLOG32: case GM_FPOW32:
+        case GM_FSIN64: case GM_FCOS64: case GM_FTAN64: case GM_FEXP64: case GM_FLOG64: case GM_FPOW64:
+            return MachineForm::Call;
         case GM_RETURN: return MachineForm::Return;
         case GM_SYSCALL: return MachineForm::Syscall;
-        case GM_LOAD: return MachineForm::LoadStack;
-        case GM_STORE: return MachineForm::StoreStack;
+        case GM_LOAD:
+        case GM_ILOAD32: case GM_ILOAD64: case GM_FLOAD32: case GM_FLOAD64:
+            return MachineForm::LoadStack;
+        case GM_STORE:
+        case GM_ISTORE32: case GM_ISTORE64: case GM_FSTORE32: case GM_FSTORE64:
+            return MachineForm::StoreStack;
         case GM_VEC_LOAD: case GM_VEC_GATHER: return MachineForm::VectorGather512;
         case GM_VEC_STORE: case GM_VEC_SCATTER: return MachineForm::VectorStore512;
         case GM_FENCE: case GM_ACQUIRE_FENCE: case GM_RELEASE_FENCE: case GM_ATOMIC_FENCE:
@@ -61,7 +68,9 @@ form_for_generic_opcode(dgtl::machine::MachineOpcode opcode) noexcept {
             return MachineForm::AtomicOp;
         case GM_BARRIER_SYNC: case GM_SYNC_BARRIER:
             return MachineForm::ConcurrentSync;
-        case GM_TENSOR_OP: case GM_TENSOR_GEMM: case GM_TENSOR_CONV:
+        case GM_TENSOR_OP: case GM_TENSOR_GEMM: case GM_TENSOR_CONV: case GM_TENSOR_RELU: case GM_TENSOR_RELU64:
+        case GM_TENSOR_BROADCAST: case GM_TENSOR_CONCAT: case GM_TENSOR_POOL: case GM_TENSOR_REDUCE:
+        case GM_TENSOR_RESHAPE: case GM_TENSOR_SLICE: case GM_TENSOR_SOFTMAX: case GM_TENSOR_TRANSPOSE:
             return MachineForm::TensorOp;
         default:
             return MachineForm::Unhandled;
@@ -79,8 +88,10 @@ public:
             case MachineForm::NoOp: return GM_NOOP;
             case MachineForm::Move: return GM_COPY;
             case MachineForm::LoadImmediate: return GM_IMMEDIATE;
-            case MachineForm::LoadStack: return GM_LOAD_STACK;
-            case MachineForm::StoreStack: return GM_STORE_STACK;
+            case MachineForm::LoadStack:
+                return (semantic_kind == MachineSemanticKind::FloatLoad) ? GM_FLOAD64 : GM_LOAD_STACK;
+            case MachineForm::StoreStack:
+                return (semantic_kind == MachineSemanticKind::FloatStore) ? GM_FSTORE64 : GM_STORE_STACK;
             case MachineForm::IntegerBinary32:
                 switch (semantic_kind) {
                     case MachineSemanticKind::IntegerAdd: return GM_IADD32;
@@ -115,6 +126,7 @@ public:
                     case MachineSemanticKind::FloatSub: return GM_FSUB32;
                     case MachineSemanticKind::FloatMul: return GM_FMUL32;
                     case MachineSemanticKind::FloatDiv: return GM_FDIV32;
+                    case MachineSemanticKind::FloatSqrt: return GM_FSQRT32;
                     default: return GM_FADD32;
                 }
             case MachineForm::FloatBinary64:
@@ -123,14 +135,25 @@ public:
                     case MachineSemanticKind::FloatSub: return GM_FSUB64;
                     case MachineSemanticKind::FloatMul: return GM_FMUL64;
                     case MachineSemanticKind::FloatDiv: return GM_FDIV64;
+                    case MachineSemanticKind::FloatSqrt: return GM_FSQRT64;
                     default: return GM_FADD64;
                 }
             case MachineForm::FloatTernaryFma32: return GM_FFMA32;
-            case MachineForm::Compare32: return GM_ICMP32;
+            case MachineForm::Compare32:
+                return (semantic_kind == MachineSemanticKind::FloatCmp) ? GM_FCMP32 : GM_ICMP32;
             case MachineForm::Goto: return GM_GOTO;
             case MachineForm::BranchCond: return GM_BR_COND;
             case MachineForm::BranchCompare: return GM_BR_COMPARE;
-            case MachineForm::Call: return GM_CALL;
+            case MachineForm::Call:
+                switch (semantic_kind) {
+                    case MachineSemanticKind::FloatSin: return GM_FSIN32;
+                    case MachineSemanticKind::FloatCos: return GM_FCOS32;
+                    case MachineSemanticKind::FloatTan: return GM_FTAN32;
+                    case MachineSemanticKind::FloatExp: return GM_FEXP32;
+                    case MachineSemanticKind::FloatLog: return GM_FLOG32;
+                    case MachineSemanticKind::FloatPow: return GM_FPOW32;
+                    default: return GM_CALL;
+                }
             case MachineForm::Return: return GM_RETURN;
             case MachineForm::Syscall: return GM_SYSCALL;
             case MachineForm::VectorGather512: return GM_VEC_GATHER;
@@ -138,7 +161,7 @@ public:
             case MachineForm::HardwareFence: return GM_FENCE;
             case MachineForm::AtomicOp: return GM_ATOMIC_LOAD;
             case MachineForm::ConcurrentSync: return GM_BARRIER_SYNC;
-            case MachineForm::TensorOp: return GM_TENSOR_OP;
+            case MachineForm::TensorOp: return (semantic_kind == MachineSemanticKind::TensorOp) ? GM_TENSOR_RELU : GM_TENSOR_OP;
             default: return INVALID_MACHINE_OPCODE;
         }
     }

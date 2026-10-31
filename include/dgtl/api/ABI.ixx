@@ -11,5 +11,5 @@
 
 export module dgtl.api.abi;
 
-// 🚀 FIXED: Re-export the ABI specification parameters straight from the unified consolidated pass layers
-export import dgtl.ir;
+// Re-export core ABI models directly
+export import dgtl.ir_core.abi;

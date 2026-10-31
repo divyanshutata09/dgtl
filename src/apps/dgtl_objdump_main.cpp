@@ -27,6 +27,10 @@
 #include <string_view>
 #include <vector>
 
+import dgtl.tools.common;
+
+extern int dgtl_inspect_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as);
+
 namespace fs = std::filesystem;
 
 namespace dgtl::objdump {
@@ -84,6 +88,10 @@ struct DumpReport {
     std::string arch{"x86_64"};
     uint64_t entry_point{0};
     uint64_t image_base{0};
+    uint64_t stack_reserve{0};
+    uint64_t stack_commit{0};
+    uint64_t heap_reserve{0};
+    uint64_t heap_commit{0};
     uint32_t import_rva{0};
     uint32_t import_size{0};
     uint32_t reloc_rva{0};
@@ -165,10 +173,14 @@ DumpReport inspect_object(const fs::path& file_path) {
         return report;
     }
 
-    // ─── 2. ELF Detection ──────────────────────────────────────────────────
     if (file_size >= 4 && raw[0] == 0x7F && raw[1] == 'E' && raw[2] == 'L' && raw[3] == 'F') {
         report.format = BinaryFormat::ELF64;
         if (file_size >= 64) {
+            const uint16_t e_machine = read16_le(raw + 18);
+            if (e_machine == 0x3E) report.arch = "x86_64";
+            else if (e_machine == 0xB7) report.arch = "aarch64";
+            else if (e_machine == 0xF3) report.arch = "riscv64";
+            else report.arch = "elf-" + std::to_string(e_machine);
             report.entry_point = read64_le(raw + 24);
             const uint64_t shoff = read64_le(raw + 40);
             const uint16_t shentsize = read16_le(raw + 58);
@@ -199,7 +211,8 @@ DumpReport inspect_object(const fs::path& file_path) {
                     s.virtual_address = sh_addr;
                     s.virtual_size = sh_size;
                     s.file_offset = sh_offset;
-                    s.file_size = (sh_type == 8 /* SHT_NOBITS */) ? 0 : sh_size;
+                    s.is_zerofill = (sh_type == 8 /* SHT_NOBITS */);
+                    s.file_size = s.is_zerofill ? 0 : sh_size;
                     s.is_code = (sh_flags & 0x4 /* SHF_EXECINSTR */) != 0;
                     s.is_writable = (sh_flags & 0x1 /* SHF_WRITE */) != 0;
                     s.is_readable = (sh_flags & 0x2 /* SHF_ALLOC */) != 0;
@@ -263,7 +276,7 @@ DumpReport inspect_object(const fs::path& file_path) {
             const uint16_t num_sections = read16_le(raw + coff_off + 2);
             const uint16_t opt_hdr_size = read16_le(raw + coff_off + 16);
 
-            report.arch = (machine == 0x8664) ? "x86_64" : ((machine == 0xAA64) ? "arm64" : "x86");
+            report.arch = (machine == 0x8664) ? "x86_64" : ((machine == 0xAA64) ? "arm64" : ((machine == 0x5064) ? "riscv64" : "x86"));
 
             if (opt_hdr_size >= 24) {
                 const uint32_t opt_off = coff_off + 20;
@@ -271,6 +284,10 @@ DumpReport inspect_object(const fs::path& file_path) {
                 report.entry_point = read32_le(raw + opt_off + 16);
                 if (magic == 0x020B && opt_hdr_size >= 120) { // PE32+
                     report.image_base = read64_le(raw + opt_off + 24);
+                    report.stack_reserve = read64_le(raw + opt_off + 72);
+                    report.stack_commit  = read64_le(raw + opt_off + 80);
+                    report.heap_reserve  = read64_le(raw + opt_off + 88);
+                    report.heap_commit   = read64_le(raw + opt_off + 96);
                     if (opt_hdr_size >= 240) {
                         const uint32_t dirs = opt_off + 112;
                         report.import_rva  = read32_le(raw + dirs + 8);
@@ -282,6 +299,10 @@ DumpReport inspect_object(const fs::path& file_path) {
                     }
                 } else if (magic == 0x010B && opt_hdr_size >= 104) { // PE32
                     report.image_base = read32_le(raw + opt_off + 28);
+                    report.stack_reserve = read32_le(raw + opt_off + 72);
+                    report.stack_commit  = read32_le(raw + opt_off + 76);
+                    report.heap_reserve  = read32_le(raw + opt_off + 80);
+                    report.heap_commit   = read32_le(raw + opt_off + 84);
                     if (opt_hdr_size >= 224) {
                         const uint32_t dirs = opt_off + 96;
                         report.import_rva  = read32_le(raw + dirs + 8);
@@ -335,6 +356,10 @@ DumpReport inspect_object(const fs::path& file_path) {
                 s.is_code = (s.flags & 0x00000020) != 0;
                 s.is_readable = (s.flags & 0x40000000) != 0;
                 s.is_writable = (s.flags & 0x80000000) != 0;
+                s.is_zerofill = (s.flags & 0x00000080) != 0 || s.name == ".bss";
+                if (s.is_zerofill) {
+                    s.file_size = 0;
+                }
 
                 if (s.file_offset + s.file_size <= file_size && s.file_size > 0) {
                     s.data.assign(raw + s.file_offset, raw + s.file_offset + s.file_size);
@@ -468,6 +493,182 @@ DumpReport inspect_object(const fs::path& file_path) {
         return report;
     }
 
+    // ─── 4. Mach-O 64 Detection ────────────────────────────────────────────
+    if (file_size >= 32 && (read32_le(raw) == 0xFEEDFACF || read32_le(raw) == 0xCFFAEDFE)) {
+        report.format = BinaryFormat::MachO64;
+        const int32_t cputype = static_cast<int32_t>(read32_le(raw + 4));
+        report.arch = (cputype == 0x0100000C) ? "arm64" : ((cputype == 0x01000007) ? "x86_64" : "macho64");
+
+        const uint32_t ncmds = read32_le(raw + 16);
+        size_t cursor = 32;
+
+        for (uint32_t c = 0; c < ncmds && cursor + 8 <= file_size; ++c) {
+            const uint32_t cmd = read32_le(raw + cursor);
+            const uint32_t cmdsize = read32_le(raw + cursor + 4);
+
+            if (cmd == 0x19 /* LC_SEGMENT_64 */) {
+                if (cursor + 72 <= file_size) {
+                    const uint32_t nsects = read32_le(raw + cursor + 64);
+                    size_t sect_cursor = cursor + 72;
+
+                    for (uint32_t s = 0; s < nsects && sect_cursor + 80 <= file_size; ++s) {
+                        char sectname[17] = {0};
+                        char segname[17] = {0};
+                        std::memcpy(sectname, raw + sect_cursor, 16);
+                        std::memcpy(segname,  raw + sect_cursor + 16, 16);
+
+                        SectionInfo sec;
+                        sec.name = sectname;
+                        sec.segment = segname;
+                        sec.virtual_address = read64_le(raw + sect_cursor + 32);
+                        sec.virtual_size    = read64_le(raw + sect_cursor + 40);
+                        sec.file_offset     = read32_le(raw + sect_cursor + 48);
+                        const uint32_t align_p2 = read32_le(raw + sect_cursor + 52);
+                        sec.alignment       = 1u << align_p2;
+                        sec.reloc_offset    = read32_le(raw + sect_cursor + 56);
+                        sec.reloc_count     = read32_le(raw + sect_cursor + 60);
+                        sec.flags           = read32_le(raw + sect_cursor + 64);
+
+                        const uint32_t type = sec.flags & 0xFF;
+                        sec.is_zerofill = (type == 0x1 || type == 0x12);
+                        sec.file_size = sec.is_zerofill ? 0 : sec.virtual_size;
+                        sec.is_code = (sec.flags & 0x80000000) != 0 || sec.name == "__text";
+                        sec.is_readable = true;
+                        sec.is_writable = (sec.segment == "__DATA");
+
+                        if (sec.file_offset != 0 && sec.file_offset + sec.file_size <= file_size && sec.file_size > 0) {
+                            sec.data.assign(raw + sec.file_offset, raw + sec.file_offset + sec.file_size);
+                        }
+
+                        report.sections.push_back(std::move(sec));
+                        sect_cursor += 80;
+                    }
+                }
+            } else if (cmd == 0x2 /* LC_SYMTAB */ && cursor + 24 <= file_size) {
+                const uint32_t symoff = read32_le(raw + cursor + 8);
+                const uint32_t nsyms  = read32_le(raw + cursor + 12);
+                const uint32_t stroff = read32_le(raw + cursor + 16);
+                const uint32_t strsize= read32_le(raw + cursor + 20);
+
+                if (symoff + static_cast<size_t>(nsyms) * 16 <= file_size && stroff + strsize <= file_size) {
+                    for (uint32_t i = 0; i < nsyms; ++i) {
+                        size_t soff = symoff + static_cast<size_t>(i) * 16;
+                        uint32_t n_strx = read32_le(raw + soff);
+                        uint8_t n_type  = raw[soff + 4];
+                        uint8_t n_sect  = raw[soff + 5];
+                        uint64_t n_value= read64_le(raw + soff + 8);
+
+                        std::string sym_name;
+                        if (n_strx < strsize && stroff + n_strx < file_size) {
+                            sym_name = reinterpret_cast<const char*>(raw + stroff + n_strx);
+                        }
+                        if (!sym_name.empty()) {
+                            SymbolInfo sym;
+                            sym.name = sym_name;
+                            sym.value = n_value;
+                            sym.section_index = n_sect;
+                            if (n_sect > 0 && static_cast<size_t>(n_sect - 1) < report.sections.size()) {
+                                sym.section_name = report.sections[static_cast<size_t>(n_sect - 1)].name;
+                            }
+                            sym.is_external = (n_type & 0x01) != 0;
+                            sym.is_global = sym.is_external;
+                            report.symbols.push_back(std::move(sym));
+                        }
+                    }
+                }
+            }
+            cursor += cmdsize;
+        }
+        return report;
+    }
+
+    // ─── 5. WASM Detection ─────────────────────────────────────────────────
+    if (file_size >= 8 && raw[0] == 0x00 && raw[1] == 'a' && raw[2] == 's' && raw[3] == 'm') {
+        report.format = BinaryFormat::WASM;
+        report.arch = "wasm32";
+
+        size_t cursor = 8;
+        uint32_t sec_index = 0;
+        while (cursor < file_size) {
+            const uint8_t sec_id = raw[cursor++];
+            uint32_t sec_len = 0;
+            uint32_t shift = 0;
+            while (cursor < file_size) {
+                uint8_t b = raw[cursor++];
+                sec_len |= (b & 0x7F) << shift;
+                if ((b & 0x80) == 0) break;
+                shift += 7;
+            }
+
+            SectionInfo sec;
+            switch (sec_id) {
+                case 0:  sec.name = "custom"; break;
+                case 1:  sec.name = "type"; break;
+                case 2:  sec.name = "import"; break;
+                case 3:  sec.name = "function"; break;
+                case 4:  sec.name = "table"; break;
+                case 5:  sec.name = "memory"; break;
+                case 6:  sec.name = "global"; break;
+                case 7:  sec.name = "export"; break;
+                case 8:  sec.name = "start"; break;
+                case 9:  sec.name = "element"; break;
+                case 10: sec.name = "code"; sec.is_code = true; break;
+                case 11: sec.name = "data"; sec.is_writable = true; break;
+                case 12: sec.name = "datacount"; break;
+                default: sec.name = "sec_" + std::to_string(sec_id); break;
+            }
+
+            sec.file_offset = cursor;
+            sec.file_size = sec_len;
+            sec.virtual_size = sec_len;
+            sec.virtual_address = sec_index * 0x1000;
+            sec.is_readable = true;
+
+            if (cursor + sec_len <= file_size) {
+                sec.data.assign(raw + cursor, raw + cursor + sec_len);
+            }
+
+            // Export symbols
+            if (sec_id == 7 && !sec.data.empty()) {
+                size_t p = 0;
+                auto read_u32_leb = [&]() -> uint32_t {
+                    uint32_t res = 0, sh = 0;
+                    while (p < sec.data.size()) {
+                        uint8_t b = sec.data[p++];
+                        res |= (b & 0x7F) << sh;
+                        if ((b & 0x80) == 0) break;
+                        sh += 7;
+                    }
+                    return res;
+                };
+                uint32_t count = read_u32_leb();
+                for (uint32_t i = 0; i < count && p < sec.data.size(); ++i) {
+                    uint32_t name_len = read_u32_leb();
+                    if (p + name_len <= sec.data.size()) {
+                        std::string name(reinterpret_cast<const char*>(&sec.data[p]), name_len);
+                        p += name_len;
+                        if (p < sec.data.size()) {
+                            uint8_t kind = sec.data[p++];
+                            uint32_t idx = read_u32_leb();
+                            SymbolInfo sym;
+                            sym.name = name;
+                            sym.value = idx;
+                            sym.is_global = true;
+                            sym.is_function = (kind == 0x00);
+                            sym.section_name = "export";
+                            report.symbols.push_back(std::move(sym));
+                        }
+                    }
+                }
+            }
+
+            report.sections.push_back(std::move(sec));
+            cursor += sec_len;
+            sec_index++;
+        }
+        return report;
+    }
+
     report.format = BinaryFormat::Unknown;
     return report;
 }
@@ -498,6 +699,8 @@ void print_hex_dump(const uint8_t* data, size_t size, uint64_t base_addr) {
 
 } // namespace dgtl::objdump
 
+namespace {
+
 void print_version() {
     std::cout << "dgtl-objdump: DGTL Sovereign Object & Binary Inspector v2.1.0 (TataG Systems)\n"
               << "Standards: Multi-Format Binary Forensics, Symbol & Relocation Inspection Engine\n";
@@ -524,12 +727,24 @@ void print_usage(std::string_view prog) {
               << "  " << prog << " -d dgtl_release.exe\n";
 }
 
+} // namespace
+
 using namespace dgtl::objdump;
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        print_usage(argv[0]);
+int dgtl_objdump_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    const std::string prog_name = invoked_as.empty() ? "dgtl-objdump" : std::string(invoked_as);
+    auto expanded = dgtl::tools::ArgExpander::expand_args(raw_args);
+
+    if (expanded.empty()) {
+        print_usage(prog_name);
         return 1;
+    }
+
+    // If inspect mode requested, forward directly to dgtl_inspect_tool_main
+    for (const auto& a : expanded) {
+        if (a == "--inspect" || a == "inspect") {
+            return dgtl_inspect_tool_main(raw_args, invoked_as);
+        }
     }
 
     bool show_headers = false;
@@ -542,8 +757,8 @@ int main(int argc, char* argv[]) {
     bool json_mode = false;
     fs::path input_file;
 
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
+    for (size_t i = 0; i < expanded.size(); ++i) {
+        std::string_view arg = expanded[i];
         if (arg == "-h" || arg == "--section-headers" || arg == "--headers") {
             show_headers = true;
         } else if (arg == "-t" || arg == "--syms" || arg == "--symbols") {
@@ -568,10 +783,10 @@ int main(int argc, char* argv[]) {
             print_version();
             return 0;
         } else if (arg == "-H" || arg == "--help") {
-            print_usage(argv[0]);
+            print_usage(prog_name);
             return 0;
         } else if (input_file.empty()) {
-            input_file = argv[i];
+            input_file = expanded[i];
         }
     }
 
@@ -596,11 +811,26 @@ int main(int argc, char* argv[]) {
         return 3;
     }
 
+    if (json_mode) {
+        std::cout << "{\n"
+                  << "  \"file\": \"" << input_file.string() << "\",\n"
+                  << "  \"arch\": \"" << report.arch << "\",\n"
+                  << "  \"entry_point\": " << report.entry_point << ",\n"
+                  << "  \"image_base\": " << report.image_base << ",\n"
+                  << "  \"stack_reserve\": " << report.stack_reserve << ",\n"
+                  << "  \"stack_commit\": " << report.stack_commit << ",\n"
+                  << "  \"sections_count\": " << report.sections.size() << ",\n"
+                  << "  \"symbols_count\": " << report.symbols.size() << "\n"
+                  << "}\n";
+        return 0;
+    }
+
     std::cout << "\n" << input_file.string() << ":     file format ";
     switch (report.format) {
-        case dgtl::objdump::BinaryFormat::PE_COFF: std::cout << "pe-x86-64"; break;
-        case dgtl::objdump::BinaryFormat::ELF64:   std::cout << "elf64-x86-64"; break;
-        case dgtl::objdump::BinaryFormat::MachO64: std::cout << "mach-o-x86-64"; break;
+        case dgtl::objdump::BinaryFormat::PE_COFF: std::cout << "pe-" << report.arch; break;
+        case dgtl::objdump::BinaryFormat::ELF64:   std::cout << "elf64-" << report.arch; break;
+        case dgtl::objdump::BinaryFormat::MachO64: std::cout << "mach-o-" << report.arch; break;
+        case dgtl::objdump::BinaryFormat::WASM:    std::cout << "wasm-binary"; break;
         case dgtl::objdump::BinaryFormat::Archive: std::cout << "archive"; break;
         default: std::cout << "unknown"; break;
     }
@@ -611,6 +841,16 @@ int main(int argc, char* argv[]) {
         std::cout << "PE/COFF Header & Data Directories:\n";
         std::cout << "  Image Base:         0x" << std::hex << report.image_base << std::dec << "\n";
         std::cout << "  Entry Point (RVA):  0x" << std::hex << report.entry_point << std::dec << "\n";
+        if (report.stack_reserve > 0) {
+            std::cout << "  Stack Reserve:      0x" << std::hex << report.stack_reserve << " (" << std::dec << (report.stack_reserve / 1024) << " KB)\n";
+            std::cout << "  Stack Commit:       0x" << std::hex << report.stack_commit << " (" << std::dec << (report.stack_commit / 1024) << " KB)";
+            if (report.stack_commit <= 0x10000) {
+                std::cout << " [Lean Sovereign - Probed via __chkstk]";
+            }
+            std::cout << "\n";
+            std::cout << "  Heap Reserve:       0x" << std::hex << report.heap_reserve << " (" << std::dec << (report.heap_reserve / 1024) << " KB)\n";
+            std::cout << "  Heap Commit:        0x" << std::hex << report.heap_commit << " (" << std::dec << (report.heap_commit / 1024) << " KB)\n";
+        }
         std::cout << "  Import Table:       RVA 0x" << std::hex << report.import_rva << " (0x" << report.import_size << " bytes)" << std::dec;
         for (const auto& s : report.sections) {
             if (report.import_rva != 0 && s.virtual_address <= report.import_rva &&
@@ -646,9 +886,13 @@ int main(int argc, char* argv[]) {
                       << std::setw(16) << std::setfill('0') << s.virtual_address << "  "
                       << std::setw(8) << std::setfill('0') << s.file_offset << "  "
                       << "2**" << std::dec << 4 << "\n";
-            std::cout << "                  CONTENTS, " 
-                      << (s.is_code ? "ALLOC, LOAD, CODE" : (s.is_writable ? "ALLOC, LOAD, DATA" : "ALLOC, LOAD, READONLY, DATA"))
-                      << "\n";
+            if (s.is_zerofill) {
+                std::cout << "                  ALLOC, ZEROFILL\n";
+            } else {
+                std::cout << "                  CONTENTS, " 
+                          << (s.is_code ? "ALLOC, LOAD, CODE" : (s.is_writable ? "ALLOC, LOAD, DATA" : "ALLOC, LOAD, READONLY, DATA"))
+                          << "\n";
+            }
         }
         std::cout << "\n";
     }

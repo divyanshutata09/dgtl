@@ -136,7 +136,7 @@ public:
             }
         }
 
-        if (node.opcode == ir::OpCode::FMA_F32) {
+        if (node.opcode == ir::OpCode::FMA_F32 || node.opcode == ir::OpCode::FMA_F64) {
             const bool supports_fma = target.supports_fma() ||
                                       target.family() == core::TargetFamily::CUDA ||
                                       target.family() == core::TargetFamily::ROCm;
@@ -150,7 +150,7 @@ public:
 
     [[nodiscard]] static bool requires_runtime_fallback(const ir::IRNode& node,
                                                         const core::TargetMachine& target) noexcept {
-        if (node.opcode == ir::OpCode::FMA_F32) {
+        if (node.opcode == ir::OpCode::FMA_F32 || node.opcode == ir::OpCode::FMA_F64) {
             const bool supports_fma = target.supports_fma() ||
                                       target.family() == core::TargetFamily::CUDA ||
                                       target.family() == core::TargetFamily::ROCm;

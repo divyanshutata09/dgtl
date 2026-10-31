@@ -245,7 +245,7 @@ public:
             std::uint64_t flags = 0x2; // SHF_ALLOC
             if (sec->is_code()) flags |= 0x4; // SHF_EXECINSTR
             if (sec->is_writable()) flags |= 0x1; // SHF_WRITE
-            emit_shdr(shstrtab_offsets[i], type, flags, 0, section_offsets[i], sec->bytes.size(), 0, 0, sec->alignment, 0);
+            emit_shdr(shstrtab_offsets[i], type, flags, 0, section_offsets[i], sec->size(), 0, 0, sec->alignment, 0);
         }
 
         // .symtab

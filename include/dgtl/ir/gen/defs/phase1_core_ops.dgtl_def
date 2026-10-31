@@ -192,18 +192,33 @@ op AddI256: opcode=ADD_I256, value=0x83, operands=2, result=I256, traits=Commuta
 # ---- Floating Point 32-bit ----
 op AddF8: opcode=ADD_F8, value=0x84, operands=2, result=F8, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="FP8 addition (AI)"
 op AddBF16: opcode=ADD_BF16, value=0x85, operands=2, result=BF16, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="BFloat16 addition (AI)"
-op AddF32: opcode=ADD_F32, value=0x1E, operands=2, result=F32, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="32-bit float addition"
-op SubF32: opcode=SUB_F32, value=0x1F, operands=2, result=F32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit float subtraction"
-op MulF32: opcode=MUL_F32, value=0x20, operands=2, result=F32, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="32-bit float multiplication"
-op DivF32: opcode=DIV_F32, value=0x21, operands=2, result=F32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit float division"
-op FmaF32: opcode=FMA_F32, value=0x23, operands=3, result=F32, traits=HasNoSideEffects, interfaces=Arithmetic, description="32-bit fused multiply-add"
+op AddF32: opcode=ADD_F32, value=0x1E, operands=2, result=F32, traits=Commutative|HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit float addition"
+op SubF32: opcode=SUB_F32, value=0x1F, operands=2, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit float subtraction"
+op MulF32: opcode=MUL_F32, value=0x20, operands=2, result=F32, traits=Commutative|HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit float multiplication"
+op DivF32: opcode=DIV_F32, value=0x21, operands=2, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit float division"
+op FmaF32: opcode=FMA_F32, value=0x23, operands=3, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit fused multiply-add"
 op FmaWidenF16F32: opcode=FMA_WIDEN_F16_F32, value=0x24, operands=2, result=F32, traits=HasNoSideEffects, interfaces=SIMD, description="Fused multiply-add with F16 to F32 widening"
+op SinF32: opcode=SIN_F32, value=0x86, operands=1, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit sine"
+op CosF32: opcode=COS_F32, value=0x87, operands=1, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit cosine"
+op TanF32: opcode=TAN_F32, value=0x88, operands=1, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit tangent"
+op ExpF32: opcode=EXP_F32, value=0x89, operands=1, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit exponential"
+op LogF32: opcode=LOG_F32, value=0x8A, operands=1, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit natural logarithm"
+op PowF32: opcode=POW_F32, value=0x8B, operands=2, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit power"
 
 # ---- Floating Point 64-bit ----
-op AddF64: opcode=ADD_F64, value=0x46, operands=2, result=F64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="64-bit float addition"
-op SubF64: opcode=SUB_F64, value=0x47, operands=2, result=F64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit float subtraction"
-op MulF64: opcode=MUL_F64, value=0x48, operands=2, result=F64, traits=Commutative|HasNoSideEffects, interfaces=Arithmetic, description="64-bit float multiplication"
-op DivF64: opcode=DIV_F64, value=0x49, operands=2, result=F64, traits=HasNoSideEffects, interfaces=Arithmetic, description="64-bit float division"
+op AddF64: opcode=ADD_F64, value=0x46, operands=2, result=F64, traits=Commutative|HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit float addition"
+op SubF64: opcode=SUB_F64, value=0x47, operands=2, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit float subtraction"
+op MulF64: opcode=MUL_F64, value=0x48, operands=2, result=F64, traits=Commutative|HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit float multiplication"
+op DivF64: opcode=DIV_F64, value=0x49, operands=2, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit float division"
+op FmaF64: opcode=FMA_F64, value=0x4A, operands=3, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit fused multiply-add"
+op SqrtF32: opcode=SQRT_F32, value=0x4B, operands=1, result=F32, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="32-bit square root"
+op SqrtF64: opcode=SQRT_F64, value=0x4C, operands=1, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit square root"
+op SinF64: opcode=SIN_F64, value=0x4D, operands=1, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit sine"
+op CosF64: opcode=COS_F64, value=0x4E, operands=1, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit cosine"
+op TanF64: opcode=TAN_F64, value=0x4F, operands=1, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit tangent"
+op ExpF64: opcode=EXP_F64, value=0x5D, operands=1, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit exponential"
+op LogF64: opcode=LOG_F64, value=0x5E, operands=1, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit natural logarithm"
+op PowF64: opcode=POW_F64, value=0x5F, operands=2, result=F64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Arithmetic, description="64-bit power"
 
 # ---- Comparison (32-bit) ----
 op CmpEqI32: opcode=CMP_EQ_I32, value=0x28, operands=2, result=I32, traits=Commutative|HasNoSideEffects, interfaces=Comparison, description="32-bit integer equality comparison"
@@ -345,7 +360,7 @@ op TensorPool: opcode=TENSOR_POOL, value=0x1D4, operands=2, result=TensorI64, tr
 op TensorSoftmax: opcode=TENSOR_SOFTMAX, value=0x1D5, operands=1, result=TensorI64, traits=, interfaces=Tensor|Arithmetic, description="Softmax normalization"
 
 # ML-specific
-op TensorRelu: opcode=TENSOR_RELU, value=0x8030, operands=1, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor|Arithmetic, description="ReLU activation"
+op TensorRelu: opcode=TENSOR_RELU, value=0x8030, operands=1, result=TensorI64, traits=HasNoSideEffects|ConstantFoldable, interfaces=Tensor|Arithmetic, description="ReLU activation"
 op TensorBatchnorm: opcode=TENSOR_BATCHNORM, value=0x8031, operands=3, result=TensorI64, traits=HasNoSideEffects, interfaces=Tensor|Arithmetic, description="Batch normalization"
 op TensorGather: opcode=TENSOR_GATHER, value=0x8032, operands=2, result=TensorI64, traits=IsMemoryRead, interfaces=Tensor|Memory, description="Tensor gather"
 op TensorScatterD: opcode=TENSOR_SCATTER_D, value=0x8033, operands=3, result=void, traits=IsMemoryWrite, interfaces=Tensor|Memory, description="Tensor scatter"
@@ -416,6 +431,11 @@ op ScaledDotProductAttn: opcode=SDPA_F16, value=0x482, operands=4, result=Tensor
 op SoftmaxFast: opcode=SOFTMAX_FAST, value=0x483, operands=1, result=TensorBF16, traits=HasNoSideEffects, interfaces=NeuralNet|Tensor, description="Hardware-accelerated Softmax"
 op LayerNorm: opcode=LAYER_NORM, value=0x484, operands=3, result=TensorBF16, traits=HasNoSideEffects, interfaces=NeuralNet|Tensor, description="Layer Normalization"
 op RoPE: opcode=ROPE_EMBED, value=0x485, operands=2, result=TensorBF16, traits=HasNoSideEffects, interfaces=NeuralNet|Tensor, description="Rotary Positional Embedding"
+op GeluF32: opcode=GELU_F32, value=0x486, operands=1, result=F32, traits=HasNoSideEffects, interfaces=NeuralNet, description="GELU activation function"
+op SiluF32: opcode=SILU_F32, value=0x487, operands=1, result=F32, traits=HasNoSideEffects, interfaces=NeuralNet, description="SiLU / Swish activation function"
+op SigmoidF32: opcode=SIGMOID_F32, value=0x488, operands=1, result=F32, traits=HasNoSideEffects, interfaces=NeuralNet, description="Sigmoid activation function"
+op SwigluF32: opcode=SWIGLU_F32, value=0x489, operands=2, result=F32, traits=HasNoSideEffects, interfaces=NeuralNet, description="SwiGLU gated activation"
+op RmsNormF32: opcode=RMS_NORM_F32, value=0x48A, operands=2, result=F32, traits=HasNoSideEffects, interfaces=NeuralNet, description="RMS Normalization kernel"
 
 # ============================================================================
 # SECTION 14: GAME ENGINE & SPATIAL MATH OPERATIONS
@@ -453,6 +473,7 @@ alias OP_ADD = ADD_I32
 alias RETURN = RET
 alias ASYNC_LAUNCH = ASYNC_SPAWN
 alias SYNC_BARRIER = BARRIER_SYNC
+
 
 
 

@@ -125,13 +125,48 @@ T* safe_allocate(dgtl::core::DGTL_Arena& arena, size_t count) noexcept {
 // ---------------------------------------------------------------------------
 // Commutativity predicate for GVN canonicalization.
 // Ensures (a + b) and (b + a) produce identical semantic hashes.
+// Synchronized with DGTL_Gen_Ops.ixx GenTrait::Commutative specification.
 // ---------------------------------------------------------------------------
 [[maybe_unused]] constexpr bool is_commutative_opcode(const OpCode op) noexcept {
-    return op == OpCode::ADD_I32 || op == OpCode::MUL_I32 ||
-           op == OpCode::AND_I32 || op == OpCode::OR_I32  ||
-           op == OpCode::XOR_I32 ||
-           op == OpCode::ADD_F32 || op == OpCode::MUL_F32;
+    switch (op) {
+        // Integer arithmetic & bitwise (8, 32, 64, 128, 256-bit)
+        case OpCode::ADD_I8:
+        case OpCode::ADD_I32:
+        case OpCode::MUL_I32:
+        case OpCode::AND_I32:
+        case OpCode::OR_I32:
+        case OpCode::XOR_I32:
+        case OpCode::ADD_I64:
+        case OpCode::MUL_I64:
+        case OpCode::AND_I64:
+        case OpCode::OR_I64:
+        case OpCode::XOR_I64:
+        case OpCode::ADD_I128:
+        case OpCode::ADD_I256:
+
+        // Floating-point arithmetic (FP8, BF16, F32, F64)
+        case OpCode::ADD_F8:
+        case OpCode::ADD_BF16:
+        case OpCode::ADD_F32:
+        case OpCode::MUL_F32:
+        case OpCode::ADD_F64:
+        case OpCode::MUL_F64:
+
+        // Symmetric comparisons
+        case OpCode::CMP_EQ_I32:
+        case OpCode::CMP_NE_I32:
+
+        // SIMD vector and domain-specific extensions
+        case OpCode::VEC_ADD_F32_512:
+        case OpCode::VEC_MUL_F32_512:
+        case OpCode::DGTL_FAST_ADD:
+            return true;
+
+        default:
+            return false;
+    }
 }
+
 
 [[maybe_unused]] constexpr bool is_cfg_terminator(const OpCode op) noexcept {
     if (op == OpCode::BRANCH || op == OpCode::BRANCH_COND ||

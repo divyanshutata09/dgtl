@@ -55,6 +55,7 @@ import dgtl.mir.machine_ir;
 import dgtl.linker.elf.sections;
 import dgtl.linker.pe.sections;
 import dgtl.linker.pe;
+import dgtl.mir.runtime_contract;
 
 // The canonical MachineForm/MachineSemanticKind live in common MIR (dgtl::machine).
 using dgtl::machine::MachineForm;
@@ -170,6 +171,7 @@ enum class InternalOpcode : std::uint16_t {
 
 struct DecodedNode {
     InternalOpcode opcode = InternalOpcode::NOP;
+    machine::MachineOpcode mir_opcode = machine::INVALID_MACHINE_OPCODE;
     machine::MachineForm form = machine::MachineForm::Unhandled;
     machine::MachineSemanticKind semantic_kind = machine::MachineSemanticKind::None;
 
@@ -196,11 +198,11 @@ struct DecodedNode {
     }
 
     [[nodiscard]] bool has_runtime_symbol() const noexcept {
-        return false;
+        return dgtl::mir::runtime_contract::has_runtime_symbol_for_semantic(semantic_kind);
     }
 
     [[nodiscard]] const char* runtime_symbol() const noexcept {
-        return nullptr;
+        return dgtl::mir::runtime_contract::runtime_symbol_for_semantic_kind(semantic_kind);
     }
 };
 
@@ -257,6 +259,7 @@ inline DecodedNode decode_instruction(const machine::MachineInstruction& inst) {
     DecodedNode node;
     node.form = inst.form;
     node.semantic_kind = inst.semantic_kind;
+    node.mir_opcode = inst.opcode;
     node.opcode = classify_instruction(inst);
     node.intent_hash = inst.intent_hash;
     node.semantic_provenance = inst.semantic_provenance;
@@ -329,7 +332,13 @@ protected:
 
     [[nodiscard]] static bool write_binary_file(std::string_view path, const std::vector<uint8_t>& bytes) {
         if (path.empty()) [[unlikely]] return false;
-        std::ofstream out(path.data(), std::ios::out | std::ios::binary | std::ios::trunc);
+        std::string safe_path(path);
+#if defined(_WIN32) || defined(_WIN64)
+        for (char& c : safe_path) {
+            if (c == '/') c = '\\';
+        }
+#endif
+        std::ofstream out(safe_path, std::ios::out | std::ios::binary | std::ios::trunc);
         if (!out) [[unlikely]] return false;
         if (!bytes.empty()) {
             out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -408,6 +417,10 @@ public:
             case MachineForm::BranchCompare:    return 20;
             case MachineForm::Return:           return 12;
             case MachineForm::Syscall:          return 28;
+            case MachineForm::TensorOp:         return 32;
+            case MachineForm::HardwareFence:    return 3;
+            case MachineForm::ConcurrentSync:   return 3;
+            case MachineForm::AtomicOp:         return 20;
             default:                            return 8;
         }
     }
@@ -869,31 +882,54 @@ public:
                 case MachineForm::FloatBinary32:
                 case MachineForm::FloatBinary64: {
                     const bool is64 = (form == MachineForm::FloatBinary64);
+                    const auto kind = node.semantic_kind;
+                    using K = dgtl::mir::MachineSemanticKind;
+
+                    if (kind == K::FloatSqrt) {
+                        const uint32_t src_slot = (node.op_a != INVALID_SLOT) ? node.op_a : node.op_b;
+                        write_u8(is64 ? 0xF2 : 0xF3);
+                        write_u8(0x0F); write_u8(0x51); write_u8(0x85);
+                        write_i32(slot_disp(src_slot));
+
+                        write_u8(is64 ? 0xF2 : 0xF3);
+                        write_u8(0x0F); write_u8(0x11); write_u8(0x85);
+                        write_i32(slot_disp(node.result_id));
+                    } else {
+                        write_u8(is64 ? 0xF2 : 0xF3);
+                        write_u8(0x0F); write_u8(0x10); write_u8(0x85);
+                        write_i32(slot_disp(node.op_a));
+
+                        write_u8(is64 ? 0xF2 : 0xF3);
+                        write_u8(0x0F);
+                        if (kind == K::FloatAdd) write_u8(0x58);
+                        else if (kind == K::FloatSub) write_u8(0x5C);
+                        else if (kind == K::FloatMul) write_u8(0x59);
+                        else if (kind == K::FloatDiv) write_u8(0x5E);
+                        else write_u8(0x58);
+
+                        write_u8(0x85);
+                        write_i32(slot_disp(node.op_b));
+
+                        write_u8(is64 ? 0xF2 : 0xF3);
+                        write_u8(0x0F); write_u8(0x11); write_u8(0x85);
+                        write_i32(slot_disp(node.result_id));
+                    }
+                    break;
+                }
+
+                case MachineForm::FloatTernaryFma32: {
+                    const bool is64 = (node.mir_opcode == machine::GM_FFMA64);
                     write_u8(is64 ? 0xF2 : 0xF3);
                     write_u8(0x0F); write_u8(0x10); write_u8(0x85);
                     write_i32(slot_disp(node.op_a));
 
                     write_u8(is64 ? 0xF2 : 0xF3);
-                    write_u8(0x0F);
-                    if (is64) {
-                        const auto kind = node.semantic_kind;
-                        using K = dgtl::mir::MachineSemanticKind;
-                        if (kind == K::FloatAdd) write_u8(0x58);
-                        else if (kind == K::FloatSub) write_u8(0x5C);
-                        else if (kind == K::FloatMul) write_u8(0x59);
-                        else if (kind == K::FloatDiv) write_u8(0x5E);
-                        else write_u8(0x58);
-                    } else {
-                        const auto kind = node.semantic_kind;
-                        using K = dgtl::mir::MachineSemanticKind;
-                        if (kind == K::FloatAdd) write_u8(0x58);
-                        else if (kind == K::FloatSub) write_u8(0x5C);
-                        else if (kind == K::FloatMul) write_u8(0x59);
-                        else if (kind == K::FloatDiv) write_u8(0x5E);
-                        else write_u8(0x58);
-                    }
-                    write_u8(0x85);
+                    write_u8(0x0F); write_u8(0x59); write_u8(0x85);
                     write_i32(slot_disp(node.op_b));
+
+                    write_u8(is64 ? 0xF2 : 0xF3);
+                    write_u8(0x0F); write_u8(0x58); write_u8(0x85);
+                    write_i32(slot_disp(node.op_c));
 
                     write_u8(is64 ? 0xF2 : 0xF3);
                     write_u8(0x0F); write_u8(0x11); write_u8(0x85);
@@ -1134,6 +1170,57 @@ public:
                     }
                     write_u8(0x0F); write_u8(0x05); // syscall
                     if (node.result_id != INVALID_SLOT) {
+                        emit_store_rax_to_slot(node.result_id);
+                    }
+                    break;
+                }
+
+                case MachineForm::TensorOp: {
+                    // Tensor ReLU / activation lowering:
+                    // Load input, compare with zero, compute max(input, 0)
+                    const bool is64 = (node.mir_opcode == machine::GM_TENSOR_RELU64);
+                    const uint32_t src_slot = (node.op_a != INVALID_SLOT) ? node.op_a : node.op_b;
+
+                    // movss/sd xmm0, [rbp + slot(src_slot)]
+                    write_u8(is64 ? 0xF2 : 0xF3);
+                    write_u8(0x0F); write_u8(0x10); write_u8(0x85);
+                    write_i32(slot_disp(src_slot));
+
+                    // xorpd/xorps xmm1, xmm1
+                    if (is64) {
+                        write_u8(0x66); write_u8(0x0F); write_u8(0x57); write_u8(0xC9);
+                    } else {
+                        write_u8(0x0F); write_u8(0x57); write_u8(0xC9);
+                    }
+
+                    // maxsd/maxss xmm0, xmm1
+                    write_u8(is64 ? 0xF2 : 0xF3);
+                    write_u8(0x0F); write_u8(0x5F); write_u8(0xC1);
+
+                    // movss/sd [rbp + slot(result_id)], xmm0
+                    write_u8(is64 ? 0xF2 : 0xF3);
+                    write_u8(0x0F); write_u8(0x11); write_u8(0x85);
+                    write_i32(slot_disp(node.result_id));
+                    break;
+                }
+
+                case MachineForm::HardwareFence: {
+                    // x86_64 mfence: 0x0F 0xAE 0xF0
+                    write_u8(0x0F); write_u8(0xAE); write_u8(0xF0);
+                    break;
+                }
+
+                case MachineForm::ConcurrentSync: {
+                    // x86_64 mfence: full hardware barrier for fiber / concurrency synchronization
+                    write_u8(0x0F); write_u8(0xAE); write_u8(0xF0);
+                    break;
+                }
+
+                case MachineForm::AtomicOp: {
+                    // x86_64 full barrier + atomic slot transfer if defined
+                    write_u8(0x0F); write_u8(0xAE); write_u8(0xF0);
+                    if (node.op_a != INVALID_SLOT && node.result_id != INVALID_SLOT) {
+                        emit_mov_rax_from_slot(node.op_a);
                         emit_store_rax_to_slot(node.result_id);
                     }
                     break;
@@ -1500,6 +1587,104 @@ public:
         return true;
     }
 
+    bool build_coff_archive_binary(
+        const std::vector<std::pair<std::string, const machine::MachineFunction*>>& module_streams,
+        std::vector<uint8_t>& out,
+        std::string_view member_name = "module.obj",
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee = {},
+        std::span<const uint8_t> rdata_payload = {})
+    {
+        out.clear();
+        std::vector<uint8_t> object_bytes;
+        if (!build_module_coff_with_relocs(module_streams, object_bytes, slot_to_callee, rdata_payload)) {
+            return false;
+        }
+
+        std::vector<std::string> symbols;
+        for (const auto& [name, fn_ptr] : module_streams) {
+            if (fn_ptr && !name.empty()) {
+                symbols.push_back(name);
+            }
+        }
+        if (symbols.empty()) symbols.push_back("DGTL_kernel_entry");
+
+        std::vector<uint8_t> sym_str_data;
+        for (const auto& s : symbols) {
+            sym_str_data.insert(sym_str_data.end(), s.begin(), s.end());
+            sym_str_data.push_back('\0');
+        }
+
+        const uint32_t num_symbols = static_cast<uint32_t>(symbols.size());
+        const uint32_t num_symbols_be = to_big_endian_u32(num_symbols);
+        const size_t first_member_content_size = 4 + (num_symbols * 4) + sym_str_data.size();
+
+        std::array<char, 60> lm_hdr{};
+        std::fill(lm_hdr.begin(), lm_hdr.end(), ' ');
+        std::snprintf(lm_hdr.data(), 17, "%-16s", "/");
+        std::snprintf(lm_hdr.data() + 16, 13, "%-12d", 0);
+        std::snprintf(lm_hdr.data() + 28, 7, "%-6d", 0);
+        std::snprintf(lm_hdr.data() + 34, 7, "%-6d", 0);
+        std::snprintf(lm_hdr.data() + 40, 9, "%-8o", 0);
+        std::snprintf(lm_hdr.data() + 48, 11, "%-10u", static_cast<unsigned int>(first_member_content_size));
+        lm_hdr[58] = '`';
+        lm_hdr[59] = '\n';
+
+        const size_t lm_pad = (first_member_content_size & 1U) ? 1 : 0;
+        const size_t obj_member_offset = 8 + 60 + first_member_content_size + lm_pad;
+        const uint32_t obj_offset_be = to_big_endian_u32(static_cast<uint32_t>(obj_member_offset));
+
+        std::string obj_name(member_name);
+        if (obj_name.size() > 15) obj_name.resize(15);
+        obj_name.push_back('/');
+
+        std::array<char, 60> obj_hdr{};
+        std::fill(obj_hdr.begin(), obj_hdr.end(), ' ');
+        std::snprintf(obj_hdr.data(), 17, "%-16s", obj_name.c_str());
+        std::snprintf(obj_hdr.data() + 16, 13, "%-12d", 0);
+        std::snprintf(obj_hdr.data() + 28, 7, "%-6d", 0);
+        std::snprintf(obj_hdr.data() + 34, 7, "%-6d", 0);
+        std::snprintf(obj_hdr.data() + 40, 9, "%-8o", 0644);
+        std::snprintf(obj_hdr.data() + 48, 11, "%-10u", static_cast<unsigned int>(object_bytes.size()));
+        obj_hdr[58] = '`';
+        obj_hdr[59] = '\n';
+
+        const size_t obj_pad = (object_bytes.size() & 1U) ? 1 : 0;
+
+        static constexpr char kArMagic[] = "!<arch>\n";
+        out.reserve(8 + 60 + first_member_content_size + lm_pad + 60 + object_bytes.size() + obj_pad);
+
+        out.insert(out.end(), kArMagic, kArMagic + 8);
+        out.insert(out.end(), lm_hdr.begin(), lm_hdr.end());
+        out.insert(out.end(), reinterpret_cast<const uint8_t*>(&num_symbols_be),
+                   reinterpret_cast<const uint8_t*>(&num_symbols_be) + 4);
+        for (uint32_t i = 0; i < num_symbols; ++i) {
+            out.insert(out.end(), reinterpret_cast<const uint8_t*>(&obj_offset_be),
+                       reinterpret_cast<const uint8_t*>(&obj_offset_be) + 4);
+        }
+        out.insert(out.end(), sym_str_data.begin(), sym_str_data.end());
+        if (lm_pad) out.push_back('\n');
+        out.insert(out.end(), obj_hdr.begin(), obj_hdr.end());
+        out.insert(out.end(), object_bytes.begin(), object_bytes.end());
+        if (obj_pad) out.push_back('\n');
+
+        return true;
+    }
+
+    bool build_coff_archive_binary(
+        const std::vector<const machine::MachineFunction*>& module_functions,
+        std::vector<uint8_t>& out,
+        std::string_view member_name = "module.obj",
+        const std::unordered_map<uint32_t, std::string>& slot_to_callee = {},
+        std::span<const uint8_t> rdata_payload = {})
+    {
+        std::vector<std::pair<std::string, const machine::MachineFunction*>> pairs;
+        pairs.reserve(module_functions.size());
+        for (const auto* fn : module_functions) {
+            if (fn) pairs.emplace_back(std::string(fn->name()), fn);
+        }
+        return build_coff_archive_binary(pairs, out, member_name, slot_to_callee, rdata_payload);
+    }
+
     bool build_pe_executable_from_object(const dgtl::object::ObjectFile& object, std::vector<uint8_t>& pe_image) {
         if (dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(object, pe_image)) {
             return true;
@@ -1659,10 +1844,10 @@ public:
         opt->CheckSum = 0;
         opt->Subsystem = 3; // IMAGE_SUBSYSTEM_WINDOWS_CUI
         opt->DllCharacteristics = 0x8100; // IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE
-        opt->SizeOfStackReserve = 0x4000000;
-        opt->SizeOfStackCommit = 0x10000;
-        opt->SizeOfHeapReserve = 0x4000000;
-        opt->SizeOfHeapCommit = 0x10000;
+        opt->SizeOfStackReserve = 0x00400000; // 4MB
+        opt->SizeOfStackCommit  = 0x00100000; // 1MB (guarantees safe headroom before dynamic expansion)
+        opt->SizeOfHeapReserve  = 0x00100000; // 1MB
+        opt->SizeOfHeapCommit   = 0x00001000; // 4KB
         opt->LoaderFlags = 0;
         opt->NumberOfRvaAndSizes = 16;
         opt->DataDirectory[1].VirtualAddress = desc_rva;

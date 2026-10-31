@@ -25,13 +25,12 @@ module;
 // Named module interface declaration
 export module dgtl.api.jit_session;
 
-import dgtl.ir;
 import dgtl.runtime.numa;
 import dgtl.compiler_context;
 import dgtl.runtime.bulletins;
 import dgtl.ir.stream;
+import dgtl.ir.evolution;
 import dgtl.runtime.tls;
-import dgtl.mir;
 import dgtl.mir.machine_ir;
 import dgtl.mir.pipeline;
 import dgtl.object.file;
@@ -39,6 +38,7 @@ import dgtl.target;
 import dgtl.codegen.driver;
 import dgtl.jit.object_loader;
 
+import dgtl.api.config;
 import dgtl.api.execution_engine;
 import dgtl.formal;
 
@@ -59,6 +59,20 @@ public:
         : context_(context),
           target_machine_(),
           pipeline_options_() {
+        switch (context.get_config().target_arch) {
+            case TargetArch::X86_64:  target_machine_ = core::TargetMachine(core::ArchType::X86_64_AVX2); break;
+            case TargetArch::ARM64:   target_machine_ = core::TargetMachine(core::ArchType::AARCH64_SVE); break;
+            case TargetArch::ARM32:   target_machine_ = core::TargetMachine(core::ArchType::ARM32_NEON); break;
+            case TargetArch::RISCV64: target_machine_ = core::TargetMachine(core::ArchType::RISCV64_RVV); break;
+            case TargetArch::WASM:    target_machine_ = core::TargetMachine(core::ArchType::WASM_SIMD); break;
+            case TargetArch::CUDA:
+            case TargetArch::PTX:     target_machine_ = core::TargetMachine(core::ArchType::CUDA_PTX); break;
+            case TargetArch::ROCm:
+            case TargetArch::AMDGPU:  target_machine_ = core::TargetMachine(core::ArchType::ROCM_AMDGCN); break;
+            case TargetArch::SPIRV:   target_machine_ = core::TargetMachine(core::ArchType::SPIRV_LOGICAL); break;
+            case TargetArch::Host:
+            default: break;
+        }
     }
 
     ~JITSession() override = default;
@@ -252,6 +266,11 @@ public:
     [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline() const noexcept { return pipeline_options_; }
     [[nodiscard]] dgtl::mir::MachinePipelineOptions& get_pipeline_options() noexcept { return pipeline_options_; }
     [[nodiscard]] const dgtl::mir::MachinePipelineOptions& get_pipeline_options() const noexcept { return pipeline_options_; }
+
+    [[nodiscard]] core::TargetMachine& get_target_machine() noexcept { return target_machine_; }
+    [[nodiscard]] const core::TargetMachine& get_target_machine() const noexcept { return target_machine_; }
+    void set_target_machine(const core::TargetMachine& tm) noexcept { target_machine_ = tm; }
+    void set_target_arch(core::ArchType arch) noexcept { target_machine_ = core::TargetMachine(arch); }
 
 private:
     Context& context_;

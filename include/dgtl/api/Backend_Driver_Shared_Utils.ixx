@@ -11,6 +11,4 @@
 
 export module dgtl.api.backend_driver_shared;
 
-// 🚀 FIXED: Import and export directly from the unified consolidated pass/backend namespace infrastructure
-export import dgtl.ir;
 export import dgtl.linker.utils;

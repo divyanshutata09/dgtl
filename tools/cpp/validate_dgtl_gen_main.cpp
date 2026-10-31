@@ -50,14 +50,14 @@ int main(int argc,char**argv){
     std::cout<<"[0] canonical operations: "<<n<<"\n";
     std::cout<<"[1] generated metadata rows: "<<m<<"\n";
     std::cout<<"[2] generated typed wrappers: "<<w<<"\n";
-    if(n!=183) fail("canonical schema operation count is not 183");
+    if(n!=203) fail("canonical schema operation count is not 203");
     if(m!=n) fail("generated metadata count does not equal canonical schema count");
     if(w!=n) fail("typed wrapper count does not equal canonical schema count");
     for(const auto& d:{"canonical_source: true","opcode_values: explicit","stable_abi: preserve_existing_values"}) if(!contains(ds,d)) fail(std::string("missing directive: ")+d);
     for(const auto& a:{"alias MOV = REG_MOVE","alias CONST = LOAD_IMM","alias OP_ADD = ADD_I32","alias RETURN = RET","alias ASYNC_LAUNCH = ASYNC_SPAWN","alias SYNC_BARRIER = BARRIER_SYNC"}) if(!contains(ds,a)) fail(std::string("missing canonical alias: ")+a);
     if(contains(ds,"[opcode_aliases]")||contains(ds,"compat ")) fail("old compatibility grammar remains in the canonical DSL");
     if(!contains(ms,"kGeneratedOpAliases")||!contains(ms,"find_op_alias")) fail("generated alias metadata API is missing");
-    if(!contains(ms,"kNumGeneratedOps = 183")) fail("generated operation count constant is stale");
+    if(!contains(ms,"kNumGeneratedOps = 203")) fail("generated operation count constant is stale");
     if(!contains(es,"AND_I64 = 0x41")||!contains(es,"SHR_I64 = 0x45")) fail("canonicalized I64 bitwise operations are missing from generated enum");
     if(fs::exists(ir/"base/IR_Verifier_stack_safe_from_uploaded.ixx")) fail("duplicate verifier artifact remains");
     const auto schema=read(ir/"IR_Schema.ixx"), verifier=read(ir/"base/IR_Verifier.ixx");

@@ -39,7 +39,8 @@ enum class ABIConvention : uint8_t {
     ARM32_AAPCS = 5,    ///< ARM32 AAPCS / EABI
     CUDA_PTX = 6,       ///< CUDA PTX device / kernel parameter ABI
     ROCM_AMDGCN = 7,    ///< ROCm AMDGPU ABI (SGPR/VGPR binding)
-    FPGA_Streaming = 8  ///< FPGA streaming channel handshake ABI
+    FPGA_Streaming = 8,  ///< FPGA streaming channel handshake ABI
+    SPIRV_Logical = 9   ///< SPIR-V Logical SSA parameter binding
 };
 
 /**
@@ -138,6 +139,7 @@ public:
             case ABIConvention::ROCM_AMDGCN:    return 288; /* s32 scratch wave offset */
             case ABIConvention::FPGA_Streaming: return 0;   /* No hardware stack */
             case ABIConvention::WebAssembly:    return 0;   /* Virtual linear stack pointer */
+            case ABIConvention::SPIRV_Logical:  return 0;   /* SSA / Virtual stack */
             default:                            return 4;   /* RSP */
         }
     }
@@ -151,6 +153,7 @@ public:
             case ABIConvention::ROCM_AMDGCN:    return 289; /* s33 frame pointer */
             case ABIConvention::FPGA_Streaming: return 0;   /* No frame pointer */
             case ABIConvention::WebAssembly:    return 0;   /* Virtual frame pointer */
+            case ABIConvention::SPIRV_Logical:  return 0;   /* SSA / Virtual frame */
             default:                            return 5;   /* RBP */
         }
     }
@@ -231,6 +234,10 @@ inline ABIParameter ABI_Lowering::lower_parameter(ABIValueClass val_class,
     };
 
     if (val_class == ABIValueClass::Memory || size > 16u) [[unlikely]] {
+        if (convention_ == ABIConvention::Microsoft_x64 && unified_slots_used_ < 4u) {
+            const uint8_t slot = unified_slots_used_++;
+            return ABIParameter{MICROSOFT_INT_REGS[slot], 0xFFFFFFFFu, 0u, 8u, true, false};
+        }
         return spill_to_stack();
     }
 
@@ -280,6 +287,7 @@ inline ABIParameter ABI_Lowering::lower_parameter(ABIValueClass val_class,
         }
 
         case ABIConvention::WebAssembly:
+        case ABIConvention::SPIRV_Logical:
             if (fp_bank) {
                 const uint32_t reg = 32u + float_regs_used_++;
                 return ABIParameter{reg, 0xFFFFFFFFu, 0u, size, true, false};
@@ -410,6 +418,11 @@ inline ABIParameter ABI_Lowering::lower_aggregate_parameter(std::span<const ABIV
                 if (unified_slots_used_ < 4u) {
                     const uint8_t slot = unified_slots_used_++;
                     return ABIParameter{MICROSOFT_INT_REGS[slot], 0xFFFFFFFFu, 0u, total_size, true, false};
+                }
+            } else {
+                if (unified_slots_used_ < 4u) {
+                    const uint8_t slot = unified_slots_used_++;
+                    return ABIParameter{MICROSOFT_INT_REGS[slot], 0xFFFFFFFFu, 0u, 8u, true, false};
                 }
             }
             return spill_to_stack();

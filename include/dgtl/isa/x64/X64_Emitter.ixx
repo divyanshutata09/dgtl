@@ -644,16 +644,19 @@ private:
             case MachineSemanticKind::FloatSub: mnemonic = is32 ? "subss" : "subsd"; break;
             case MachineSemanticKind::FloatMul: mnemonic = is32 ? "mulss" : "mulsd"; break;
             case MachineSemanticKind::FloatDiv: mnemonic = is32 ? "divss" : "divsd"; break;
+            case MachineSemanticKind::FloatSqrt: mnemonic = is32 ? "sqrtss" : "sqrtsd"; break;
             default: {
                 switch (instruction.opcode) {
                 case machine::GM_FADD32: mnemonic = "addss"; break;
                 case machine::GM_FSUB32: mnemonic = "subss"; break;
                 case machine::GM_FMUL32: mnemonic = "mulss"; break;
                 case machine::GM_FDIV32: mnemonic = "divss"; break;
+                case machine::GM_FSQRT32: mnemonic = "sqrtss"; break;
                 case machine::GM_FADD64: mnemonic = "addsd"; break;
                 case machine::GM_FSUB64: mnemonic = "subsd"; break;
                 case machine::GM_FMUL64: mnemonic = "mulsd"; break;
                 case machine::GM_FDIV64: mnemonic = "divsd"; break;
+                case machine::GM_FSQRT64: mnemonic = "sqrtsd"; break;
                 default: return false;
                 }
                 break;
@@ -665,7 +668,10 @@ private:
 
         case MachineForm::FloatTernaryFma32:
             if (operands.size() >= 4) {
-                append_line("    vfmadd213ss " + get(0) + ", " + get(2) + ", " + get(3));
+                const bool is_f64 = (instruction.opcode == machine::GM_FFMA64 ||
+                                     instruction.target_opcode() == x64_opcode(X64MachineOpcode::Fma64));
+                const char* fma_mnemonic = is_f64 ? "vfmadd213sd " : "vfmadd213ss ";
+                append_line(std::string("    ") + fma_mnemonic + get(0) + ", " + get(2) + ", " + get(3));
                 return true;
             }
             return false;

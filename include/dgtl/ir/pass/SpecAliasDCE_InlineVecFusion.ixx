@@ -27,6 +27,8 @@ import dgtl.ir_node;
 import dgtl.ir_enums;
 import dgtl.ir.stream;
 import dgtl.ir.analysis.cost_model;
+import dgtl.ir.analysis.speculative_value_profiler;
+import dgtl.math;
 import dgtl.ir.analysis.liveness_memory_dependency_unified;
 import dgtl.hir.semantic;
 
@@ -86,7 +88,9 @@ public:
                     should_hoist = true;
                 } else {
                     const float alias_prob = max_alias_probability(loop_body, i);
-                    if (alias_prob < 0.0001f) {
+                    const float node_cost = ai_model.predict_node_cost(node);
+                    const float threshold = (node_cost > 2.0f) ? 0.001f : 0.0001f;
+                    if (alias_prob < threshold) {
                         inject_runtime_alias_guard_transactional(pre_header, node);
                         should_hoist = true;
                     }

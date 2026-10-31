@@ -245,6 +245,19 @@ public:
         lower_vector_binary512(inst, out);
     }
 
+    inline void lower_tensor(const machine::MachineInstruction& inst, ByteStream& out) {
+        if (callbacks_.fail_emission) {
+            callbacks_.fail_emission("Unhandled ROCm TensorOp opcode", static_cast<uint32_t>(inst.opcode));
+        }
+    }
+
+    inline void lower_tensor(const lowering::SelectedInstruction& selected, ByteStream& out) {
+        machine::MachineInstruction inst;
+        inst.form = selected.form;
+        inst.semantic_kind = selected.semantic_kind;
+        lower_tensor(inst, out);
+    }
+
 private:
     EncoderCallbacks callbacks_;
 };

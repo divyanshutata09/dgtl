@@ -110,7 +110,6 @@ extern "C" {
  * SECTION 2 â€” VALUE & COMPILER ID HANDLES
  * ========================================================================== */
 
-#ifndef DGTL_SDK_H
 typedef struct { uint32_t id; } dgtl_value_t;
 typedef struct { uint32_t id; } dgtl_block_t;
 typedef struct { uint32_t id; } dgtl_type_t;
@@ -139,20 +138,17 @@ static inline bool dgtl_block_is_valid(dgtl_block_t b) { return b.id != 0xFFFFFF
 static inline bool dgtl_type_is_valid(dgtl_type_t  t) { return t.id != 0xFFFFFFFFu && t.id != 0u; }
 static inline bool dgtl_func_is_valid(dgtl_func_t  f) { return f.id != 0xFFFFFFFFu; }
 static inline bool dgtl_pass_is_valid(dgtl_pass_t  p) { return p.id != 0xFFFFFFFFu && p.id != 0u; }
-#endif /* DGTL_SDK_H */
 
 /* ============================================================================
- * SECTION 3 â€” OPAQUE STRUCT / SUBSYSTEM HANDLES
+ * SECTION 3 — OPAQUE STRUCT / SUBSYSTEM HANDLES
  * ========================================================================== */
 
-#ifndef DGTL_SDK_H
 /* Compilation & JIT context */
 typedef struct dgtl_context          dgtl_context_t;
 typedef struct dgtl_stream           dgtl_stream_t;
 typedef struct dgtl_session          dgtl_session_t;
 typedef struct dgtl_runtime_context  dgtl_runtime_context_t;
 typedef struct dgtl_func_builder     dgtl_func_builder_t;
-#endif
 
 /* Target Machine & Hardware Model */
 typedef struct dgtl_target_machine*  dgtl_target_machine_t;
@@ -179,10 +175,9 @@ typedef struct dgtl_machine_func*    dgtl_machine_func_t;
 typedef struct dgtl_pass_manager*    dgtl_pass_manager_t;
 
 /* ============================================================================
- * SECTION 4 â€” ERROR CODES & DIAGNOSTIC RECORDS
+ * SECTION 4 — ERROR CODES & DIAGNOSTIC RECORDS
  * ========================================================================== */
 
-#ifndef DGTL_SDK_H
 typedef enum dgtl_severity {
     DGTL_SEV_INFO    = 0,
     DGTL_SEV_WARNING = 1,
@@ -227,15 +222,18 @@ typedef struct dgtl_diag {
     const char*     message;
 } dgtl_diag_t;
 
+#ifndef DGTL_TEXT_T_DEFINED
+#define DGTL_TEXT_T_DEFINED
 typedef struct dgtl_text {
     char*  data;
     size_t length;
 } dgtl_text_t;
+#endif
 
 DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_err_message(dgtl_err_t err) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API const char* DGTL_CALL dgtl_get_last_error(void) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_clear_error(void) DGTL_NOEXCEPT;
 DGTL_API void DGTL_CALL dgtl_free_text(dgtl_text_t text) DGTL_NOEXCEPT;
-#endif /* DGTL_SDK_H */
 
 #ifdef __cplusplus
 }

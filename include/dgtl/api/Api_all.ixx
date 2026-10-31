@@ -25,6 +25,8 @@ export import dgtl.jit.object_loader;
 export import dgtl.linker.driver;
 export import dgtl.execution;
 export import dgtl.formal;
+export import dgtl.math;
+export import dgtl.target;
 
 // --- API PARTITION AGGREGATION ---
 export import dgtl.api.execution_engine;

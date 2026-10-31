@@ -26,6 +26,8 @@ export import dgtl.isa.arm64.arm64_abi;
 export import dgtl.isa.arm64.arm64_frame_lowering;
 export import dgtl.isa.arm64.arm64_machine_form_lowering;
 export import dgtl.isa.arm64.arm64_emitter;
+export import dgtl.isa.arm64.mc_encoder;
+export import dgtl.isa.arm64.arm64_graphcoloring_regalloc;
 
 export namespace dgtl::isa::arm64 {
 

@@ -77,9 +77,9 @@ inline constexpr uint32_t kDosHeaderOffsetToNT = 0x80;
 inline constexpr uint32_t kDefaultTimestamp   = 0x00000000;
 
 inline constexpr uint32_t kStackReserve = 0x00400000; // 4MB
-inline constexpr uint32_t kStackCommit  = 0x00010000;  // 64KB
-inline constexpr uint32_t kHeapReserve  = 0x00100000;  // 1MB
-inline constexpr uint32_t kHeapCommit   = 0x00001000;  // 4KB
+inline constexpr uint32_t kStackCommit  = 0x00100000; // 1MB (guarantees safe headroom before dynamic expansion)
+inline constexpr uint32_t kHeapReserve  = 0x00100000; // 1MB
+inline constexpr uint32_t kHeapCommit   = 0x00001000; // 4KB
 
 } // namespace pe
 
@@ -138,6 +138,11 @@ struct SovereignPELinkerOptions {
     std::string_view entry_import = "ExitProcess";
     std::vector<std::string> additional_imports{};
     std::vector<std::pair<std::string, std::vector<std::string>>> custom_imports{};
+    bool sovereign = true; // Pure sovereign freestanding mode: zero external runtime DLLs
+    uint64_t stack_reserve = pe::kStackReserve; // Default: 4 MB
+    uint64_t stack_commit = pe::kStackCommit;   // Default: 1 MB (guarantees safe headroom before dynamic expansion)
+    uint64_t heap_reserve = pe::kHeapReserve;   // Default: 1 MB
+    uint64_t heap_commit = pe::kHeapCommit;     // Default: 4 KB
 };
 
 class SovereignPELinker {
@@ -185,6 +190,333 @@ private:
         std::vector<uint8_t> data;
     };
 
+    static std::vector<uint8_t> get_sovereign_intrinsic_x64(std::string_view raw_name) {
+        std::string_view name = raw_name;
+        if (name.starts_with("__imp_")) name.remove_prefix(6);
+        std::string_view stripped = name;
+        if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
+        else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
+        else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
+        else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
+        else if (stripped.starts_with("__")) stripped.remove_prefix(2);
+        else if (stripped.starts_with("_")) stripped.remove_prefix(1);
+
+        // Hardware FPU / SSE Math Intrinsics
+        if (name == "__dgtl_rt_sqrt" || stripped == "sqrt") {
+            // sqrtsd xmm0, xmm0; ret
+            return { 0xF2, 0x0F, 0x51, 0xC0, 0xC3 };
+        }
+        if (name == "__dgtl_rt_sqrtf" || stripped == "sqrtf") {
+            // sqrtss xmm0, xmm0; ret
+            return { 0xF3, 0x0F, 0x51, 0xC0, 0xC3 };
+        }
+        if (name == "__dgtl_rt_fast_inv_sqrt" || stripped == "fast_inv_sqrt" || stripped == "fast_inv_sqrt_bits") {
+            // rsqrtss xmm1, xmm0; movaps xmm0, xmm1; ret
+            return { 0xF3, 0x0F, 0x52, 0xC8, 0x0F, 0x28, 0xC1, 0xC3 };
+        }
+        if (name == "__dgtl_rt_abs" || name == "dgtl_rt_abs" ||
+            name == "__dgtl_rt_fabs" || name == "dgtl_rt_fabs" ||
+            stripped == "abs" || stripped == "fabs") {
+            // movq rax, xmm0; btr rax, 63; movq xmm0, rax; ret
+            return { 0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x48, 0x0F, 0xBA, 0xF0, 0x3F, 0x66, 0x48, 0x0F, 0x6E, 0xC0, 0xC3 };
+        }
+        if (name == "__dgtl_rt_absf" || name == "dgtl_rt_absf" ||
+            name == "__dgtl_rt_fabsf" || name == "dgtl_rt_fabsf" ||
+            stripped == "absf" || stripped == "fabsf") {
+            // movd eax, xmm0; btr eax, 31; movd xmm0, eax; ret
+            return { 0x66, 0x0F, 0x7E, 0xC0, 0x0F, 0xBA, 0xF0, 0x1F, 0x66, 0x0F, 0x6E, 0xC0, 0xC3 };
+        }
+        if (name == "__dgtl_rt_floor" || name == "dgtl_rt_floor" || stripped == "floor") {
+            // roundsd xmm0, xmm0, 1; ret
+            return { 0x66, 0x0F, 0x3A, 0x0B, 0xC0, 0x01, 0xC3 };
+        }
+        if (name == "__dgtl_rt_ceil" || name == "dgtl_rt_ceil" || stripped == "ceil") {
+            // roundsd xmm0, xmm0, 2; ret
+            return { 0x66, 0x0F, 0x3A, 0x0B, 0xC0, 0x02, 0xC3 };
+        }
+        if (name == "__dgtl_rt_round" || name == "dgtl_rt_round" || stripped == "round") {
+            // roundsd xmm0, xmm0, 0; ret
+            return { 0x66, 0x0F, 0x3A, 0x0B, 0xC0, 0x00, 0xC3 };
+        }
+        if (name == "__dgtl_rt_trunc" || name == "dgtl_rt_trunc" || stripped == "trunc") {
+            // roundsd xmm0, xmm0, 3; ret
+            return { 0x66, 0x0F, 0x3A, 0x0B, 0xC0, 0x03, 0xC3 };
+        }
+        if (name == "__dgtl_rt_read_tsc" || name == "dgtl_rt_read_tsc" || stripped == "read_tsc") {
+            // rdtsc; shl rdx, 32; or rax, rdx; ret
+            return { 0x0F, 0x31, 0x48, 0xC1, 0xE2, 0x20, 0x48, 0x09, 0xD0, 0xC3 };
+        }
+        if (name == "__dgtl_rt_prefetch" || name == "dgtl_rt_prefetch" ||
+            name == "__dgtl_rt_prefetch_t0" || name == "dgtl_rt_prefetch_t0" ||
+            stripped == "prefetch" || stripped == "prefetch_t0") {
+            // prefetcht0 [rcx]; ret
+            return { 0x0F, 0x18, 0x01, 0xC3 };
+        }
+        if (name == "__dgtl_rt_clflush" || name == "dgtl_rt_clflush" || stripped == "clflush") {
+            // clflush [rcx]; ret
+            return { 0x0F, 0xAE, 0x39, 0xC3 };
+        }
+        if (name == "__dgtl_rt_fma_f32" || name == "dgtl_rt_fma_f32" || stripped == "fma_f32") {
+            // vfmadd213ss xmm0, xmm1, xmm2; ret
+            return { 0xC4, 0xE2, 0x71, 0xA9, 0xC2, 0xC3 };
+        }
+        if (name == "__dgtl_rt_fma_f64" || name == "dgtl_rt_fma_f64" || stripped == "fma_f64") {
+            // vfmadd213sd xmm0, xmm1, xmm2; ret
+            return { 0xC4, 0xE2, 0xF9, 0xA9, 0xC2, 0xC3 };
+        }
+        if (name == "__dgtl_rt_relu" || name == "dgtl_rt_relu" || stripped == "relu") {
+            // xorpd xmm1, xmm1; maxsd xmm0, xmm1; ret
+            return { 0x66, 0x0F, 0x57, 0xC9, 0xF2, 0x0F, 0x5F, 0xC1, 0xC3 };
+        }
+        if (name == "__dgtl_rt_reluf" || name == "dgtl_rt_reluf" || stripped == "reluf") {
+            // xorps xmm1, xmm1; maxss xmm0, xmm1; ret
+            return { 0x0F, 0x57, 0xC9, 0x0F, 0x5F, 0xC1, 0xC3 };
+        }
+        if (name == "__dgtl_rt_sin" || name == "dgtl_rt_sin" || stripped == "sin") {
+            // sub rsp, 8; movsd [rsp], xmm0; fld qword ptr [rsp]; fsin; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xDD, 0x04, 0x24, 0xD9, 0xFE, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_cos" || name == "dgtl_rt_cos" || stripped == "cos") {
+            // sub rsp, 8; movsd [rsp], xmm0; fld qword ptr [rsp]; fcos; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xDD, 0x04, 0x24, 0xD9, 0xFF, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_tan" || name == "dgtl_rt_tan" || stripped == "tan") {
+            // sub rsp, 8; movsd [rsp], xmm0; fld qword ptr [rsp]; fptan; fstp st(0); fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xDD, 0x04, 0x24, 0xD9, 0xF2, 0xDD, 0xD8, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_atan" || name == "dgtl_rt_atan" || stripped == "atan") {
+            // sub rsp, 8; movsd [rsp], xmm0; fld qword ptr [rsp]; fld1; fpatan; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xDD, 0x04, 0x24, 0xD9, 0xE8, 0xD9, 0xF3, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_atan2" || name == "dgtl_rt_atan2" || stripped == "atan2") {
+            // sub rsp, 16; movsd [rsp], xmm0; movsd [rsp+8], xmm1; fld qword ptr [rsp]; fld qword ptr [rsp+8]; fpatan; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 16; ret
+            return { 0x48, 0x83, 0xEC, 0x10, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xF2, 0x0F, 0x11, 0x4C, 0x24, 0x08, 0xDD, 0x04, 0x24, 0xDD, 0x44, 0x24, 0x08, 0xD9, 0xF3, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x10, 0xC3 };
+        }
+        if (name == "__dgtl_rt_log" || name == "dgtl_rt_log" || stripped == "log") {
+            // sub rsp, 8; movsd [rsp], xmm0; fldln2; fld qword ptr [rsp]; fyl2x; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0xED, 0xDD, 0x04, 0x24, 0xD9, 0xF1, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_log2" || name == "dgtl_rt_log2" || stripped == "log2") {
+            // sub rsp, 8; movsd [rsp], xmm0; fld1; fld qword ptr [rsp]; fyl2x; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0xE8, 0xDD, 0x04, 0x24, 0xD9, 0xF1, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_log10" || name == "dgtl_rt_log10" || stripped == "log10") {
+            // sub rsp, 8; movsd [rsp], xmm0; fldlg2; fld qword ptr [rsp]; fyl2x; fstp qword ptr [rsp]; movsd xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0xEC, 0xDD, 0x04, 0x24, 0xD9, 0xF1, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_exp" || name == "dgtl_rt_exp" || stripped == "exp" || stripped == "exp2") {
+            // e^x = 2^(x * log2(e)) via x87 f2xm1
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0xEA, 0xDC, 0x0C, 0x24, 0xD9, 0xC0, 0xD9, 0xFC, 0xDC, 0xE9, 0xD9, 0xC9, 0xD9, 0xF0, 0xD9, 0xE8, 0xDE, 0xC1, 0xD9, 0xFD, 0xDD, 0xD9, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_pow" || name == "dgtl_rt_pow" || stripped == "pow") {
+            // x^y = 2^(y * log2(x)) via x87
+            return { 0x48, 0x83, 0xEC, 0x10, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xF2, 0x0F, 0x11, 0x4C, 0x24, 0x08, 0xDD, 0x44, 0x24, 0x08, 0xDD, 0x04, 0x24, 0xD9, 0xF1, 0xD9, 0xC0, 0xD9, 0xFC, 0xDC, 0xE9, 0xD9, 0xC9, 0xD9, 0xF0, 0xD9, 0xE8, 0xDE, 0xC1, 0xD9, 0xFD, 0xDD, 0xD9, 0xDD, 0x1C, 0x24, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x10, 0xC3 };
+        }
+        if (name == "__dgtl_rt_sinf" || name == "dgtl_rt_sinf" || stripped == "sinf") {
+            // sub rsp, 8; movss [rsp], xmm0; fld dword ptr [rsp]; fsin; fstp dword ptr [rsp]; movss xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF3, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0x04, 0x24, 0xD9, 0xFE, 0xD9, 0x1C, 0x24, 0xF3, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_cosf" || name == "dgtl_rt_cosf" || stripped == "cosf") {
+            // sub rsp, 8; movss [rsp], xmm0; fld dword ptr [rsp]; fcos; fstp dword ptr [rsp]; movss xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF3, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0x04, 0x24, 0xD9, 0xFF, 0xD9, 0x1C, 0x24, 0xF3, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_tanf" || name == "dgtl_rt_tanf" || stripped == "tanf") {
+            // sub rsp, 8; movss [rsp], xmm0; fld dword ptr [rsp]; fptan; fstp st(0); fstp dword ptr [rsp]; movss xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF3, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0x04, 0x24, 0xD9, 0xF2, 0xDD, 0xD8, 0xD9, 0x1C, 0x24, 0xF3, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_logf" || name == "dgtl_rt_logf" || stripped == "logf") {
+            // sub rsp, 8; movss [rsp], xmm0; fldln2; fld dword ptr [rsp]; fyl2x; fstp dword ptr [rsp]; movss xmm0, [rsp]; add rsp, 8; ret
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF3, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0xED, 0xD9, 0x04, 0x24, 0xD9, 0xF1, 0xD9, 0x1C, 0x24, 0xF3, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_expf" || name == "dgtl_rt_expf" || stripped == "expf" || stripped == "exp2f") {
+            return { 0x48, 0x83, 0xEC, 0x08, 0xF3, 0x0F, 0x11, 0x04, 0x24, 0xD9, 0xEA, 0xD8, 0x0C, 0x24, 0xD9, 0xC0, 0xD9, 0xFC, 0xDC, 0xE9, 0xD9, 0xC9, 0xD9, 0xF0, 0xD9, 0xE8, 0xDE, 0xC1, 0xD9, 0xFD, 0xDD, 0xD9, 0xD9, 0x1C, 0x24, 0xF3, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x08, 0xC3 };
+        }
+        if (name == "__dgtl_rt_powf" || name == "dgtl_rt_powf" || stripped == "powf") {
+            return { 0x48, 0x83, 0xEC, 0x10, 0xF3, 0x0F, 0x11, 0x04, 0x24, 0xF3, 0x0F, 0x11, 0x4C, 0x24, 0x04, 0xD9, 0x44, 0x24, 0x04, 0xD9, 0x04, 0x24, 0xD9, 0xF1, 0xD9, 0xC0, 0xD9, 0xFC, 0xDC, 0xE9, 0xD9, 0xC9, 0xD9, 0xF0, 0xD9, 0xE8, 0xDE, 0xC1, 0xD9, 0xFD, 0xDD, 0xD9, 0xD9, 0x1C, 0x24, 0xF3, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x10, 0xC3 };
+        }
+        if (name == "__dgtl_rt_fmod" || name == "dgtl_rt_fmod" || stripped == "fmod" || stripped == "fmodf") {
+            return { 0x48, 0x83, 0xEC, 0x10, 0xF2, 0x0F, 0x11, 0x04, 0x24, 0xF2, 0x0F, 0x11, 0x4C, 0x24, 0x08, 0xDD, 0x44, 0x24, 0x08, 0xDD, 0x04, 0x24, 0xD9, 0xF8, 0xDD, 0x1C, 0x24, 0xDD, 0xD8, 0xF2, 0x0F, 0x10, 0x04, 0x24, 0x48, 0x83, 0xC4, 0x10, 0xC3 };
+        }
+        if (name == "__dgtl_rt_vec4_dot" || name == "dgtl_rt_vec4_dot" || stripped == "vec4_dot") {
+            // movups xmm0, [rcx]; movups xmm1, [rdx]; dpps xmm0, xmm1, 0xF1; ret
+            return { 0x0F, 0x10, 0x01, 0x0F, 0x10, 0x0A, 0x66, 0x0F, 0x3A, 0x40, 0xC1, 0xF1, 0xC3 };
+        }
+        if (name == "__dgtl_rt_vec3_cross" || name == "dgtl_rt_vec3_cross" || stripped == "vec3_cross") {
+            // dst [rcx], a [rdx], b [r8]
+            return {
+                0xF3, 0x0F, 0x10, 0x42, 0x04,             // movss xmm0, [rdx+4]
+                0xF3, 0x0F, 0x59, 0x40, 0x08,             // mulss xmm0, [r8+8]
+                0xF3, 0x0F, 0x10, 0x4A, 0x08,             // movss xmm1, [rdx+8]
+                0xF3, 0x0F, 0x59, 0x48, 0x04,             // mulss xmm1, [r8+4]
+                0xF3, 0x0F, 0x5C, 0xC1,                   // subss xmm0, xmm1
+                0xF3, 0x0F, 0x11, 0x01,                   // movss [rcx], xmm0
+                0xF3, 0x0F, 0x10, 0x42, 0x08,             // movss xmm0, [rdx+8]
+                0xF3, 0x0F, 0x59, 0x00,                   // mulss xmm0, [r8]
+                0xF3, 0x0F, 0x10, 0x0A,                   // movss xmm1, [rdx]
+                0xF3, 0x0F, 0x59, 0x48, 0x08,             // mulss xmm1, [r8+8]
+                0xF3, 0x0F, 0x5C, 0xC1,                   // subss xmm0, xmm1
+                0xF3, 0x0F, 0x11, 0x41, 0x04,             // movss [rcx+4], xmm0
+                0xF3, 0x0F, 0x10, 0x02,                   // movss xmm0, [rdx]
+                0xF3, 0x0F, 0x59, 0x48, 0x04,             // mulss xmm0, [r8+4]
+                0xF3, 0x0F, 0x10, 0x4A, 0x04,             // movss xmm1, [rdx+4]
+                0xF3, 0x0F, 0x59, 0x00,                   // mulss xmm1, [r8]
+                0xF3, 0x0F, 0x5C, 0xC1,                   // subss xmm0, xmm1
+                0xF3, 0x0F, 0x11, 0x41, 0x08,             // movss [rcx+8], xmm0
+                0xC3                                      // ret
+            };
+        }
+        if (name == "memcpy" || name == "__dgtl_rt_memcpy" || stripped == "memcpy") {
+            // Sovereign memcpy x64: rcx=dst, rdx=src, r8=len, rax=dst
+            return {
+                0x48, 0x89, 0xC8,                         // mov rax, rcx
+                0x49, 0x89, 0xC1,                         // mov r9, r8
+                0x49, 0xC1, 0xE9, 0x03,                   // shr r9, 3
+                0x4D, 0x85, 0xC9,                         // test r9, r9
+                0x74, 0x15,                               // jz +21
+                // .qword_loop:
+                0x4C, 0x8B, 0x12,                         // mov r10, [rdx]
+                0x4C, 0x89, 0x11,                         // mov [rcx], r10
+                0x48, 0x83, 0xC2, 0x08,                   // add rdx, 8
+                0x48, 0x83, 0xC1, 0x08,                   // add rcx, 8
+                0x49, 0xFF, 0xC9,                         // dec r9
+                0x75, 0xEE,                               // jnz -18
+                // .byte_rem:
+                0x49, 0x83, 0xE0, 0x07,                   // and r8, 7
+                0x74, 0x10,                               // jz +16
+                // .byte_loop:
+                0x44, 0x8A, 0x12,                         // mov r10b, [rdx]
+                0x44, 0x88, 0x11,                         // mov [rcx], r10b
+                0x48, 0xFF, 0xC2,                         // inc rdx
+                0x48, 0xFF, 0xC1,                         // inc rcx
+                0x49, 0xFF, 0xC8,                         // dec r8
+                0x75, 0xF3,                               // jnz -13
+                0xC3                                      // ret
+            };
+        }
+        if (name == "memmove" || name == "__dgtl_rt_memmove" || stripped == "memmove") {
+            // Sovereign memmove x64: rcx=dst, rdx=src, r8=len, rax=dst
+            return {
+                0x48, 0x89, 0xC8,                         // mov rax, rcx
+                0x48, 0x39, 0xD1,                         // cmp rcx, rdx
+                0x74, 0x37,                               // je .done (+55)
+                0x72, 0x0F,                               // jb .forward (+15)
+                // Check if overlap: if dst >= src + len, forward copy is safe
+                0x4C, 0x89, 0xD1,                         // mov r9, rdx
+                0x49, 0x01, 0xC1,                         // add r9, r8
+                0x49, 0x39, 0xC9,                         // cmp r9, rcx
+                0x76, 0x04,                               // jbe .forward (+4)
+                // Overlapping backward copy:
+                0x4D, 0x85, 0xC0,                         // test r8, r8
+                0x74, 0x29,                               // jz .done (+41)
+                // .backward_loop:
+                0x49, 0xFF, 0xC8,                         // dec r8
+                0x44, 0x8A, 0x14, 0x02,                   // mov r10b, [rdx + r8]
+                0x44, 0x88, 0x14, 0x01,                   // mov [rcx + r8], r10b
+                0x4D, 0x85, 0xC0,                         // test r8, r8
+                0x75, 0xF2,                               // jnz .backward_loop (-14)
+                0xC3,                                     // ret
+                // .forward:
+                0x49, 0x89, 0xC1,                         // mov r9, r8
+                0x49, 0xC1, 0xE9, 0x03,                   // shr r9, 3
+                0x4D, 0x85, 0xC9,                         // test r9, r9
+                0x74, 0x15,                               // jz +21
+                // .qword_loop:
+                0x4C, 0x8B, 0x12,                         // mov r10, [rdx]
+                0x4C, 0x89, 0x11,                         // mov [rcx], r10
+                0x48, 0x83, 0xC2, 0x08,                   // add rdx, 8
+                0x48, 0x83, 0xC1, 0x08,                   // add rcx, 8
+                0x49, 0xFF, 0xC9,                         // dec r9
+                0x75, 0xEE,                               // jnz -18
+                // .byte_rem:
+                0x49, 0x83, 0xE0, 0x07,                   // and r8, 7
+                0x74, 0x10,                               // jz +16
+                // .byte_loop:
+                0x44, 0x8A, 0x12,                         // mov r10b, [rdx]
+                0x44, 0x88, 0x11,                         // mov [rcx], r10b
+                0x48, 0xFF, 0xC2,                         // inc rdx
+                0x48, 0xFF, 0xC1,                         // inc rcx
+                0x49, 0xFF, 0xC8,                         // dec r8
+                0x75, 0xF3,                               // jnz -13
+                // .done:
+                0xC3                                      // ret
+            };
+        }
+        if (name == "memset" || name == "__dgtl_rt_memset" || stripped == "memset") {
+            // Sovereign memset x64: rcx=dst, edx=val, r8=len, rax=dst
+            return {
+                0x48, 0x89, 0xC8,                         // mov rax, rcx
+                0x4D, 0x85, 0xC0,                         // test r8, r8
+                0x74, 0x0B,                               // jz +11
+                // .loop:
+                0x88, 0x11,                               // mov [rcx], dl
+                0x48, 0xFF, 0xC1,                         // inc rcx
+                0x49, 0xFF, 0xC8,                         // dec r8
+                0x75, 0xF7,                               // jnz -9
+                0xC3                                      // ret
+            };
+        }
+        if (name == "memcmp" || name == "__dgtl_rt_memcmp" || stripped == "memcmp") {
+            // Sovereign memcmp x64: rcx=s1, rdx=s2, r8=len, eax=result
+            return {
+                0x31, 0xC0,                               // xor eax, eax
+                0x4D, 0x85, 0xC0,                         // test r8, r8
+                0x74, 0x16,                               // jz +22
+                // .loop:
+                0x44, 0x0F, 0xB6, 0x09,                   // movzx r9d, byte ptr [rcx]
+                0x44, 0x0F, 0xB6, 0x12,                   // movzx r10d, byte ptr [rdx]
+                0x45, 0x39, 0xD1,                         // cmp r9d, r10d
+                0x75, 0x08,                               // jne +8
+                0x48, 0xFF, 0xC1,                         // inc rcx
+                0x48, 0xFF, 0xC2,                         // inc rdx
+                0x49, 0xFF, 0xC8,                         // dec r8
+                0x75, 0xEC,                               // jnz -20
+                0xC3,                                     // ret
+                // .diff:
+                0x45, 0x29, 0xD1,                         // sub r9d, r10d
+                0x44, 0x89, 0xC8,                         // mov eax, r9d
+                0xC3                                      // ret
+            };
+        }
+        if (name == "__chkstk" || name == "_chkstk" || name == "___chkstk_ms" || name == "__chkstk_ms" || name == "_alloca" || name == "__alloca" || stripped == "chkstk" || stripped == "chkstk_ms" || stripped == "alloca") {
+            // Sovereign Windows x64 Dynamic Stack Prober (__chkstk / ___chkstk_ms)
+            // Conforms to Microsoft x64 and MinGW GCC ABI:
+            // Input: RAX = allocation size in bytes
+            // Probes 4096-byte guard pages downward from caller RSP without altering RSP.
+            // Preserves RAX, RCX, RDX, and RFLAGS. Returns via standard ret.
+            return {
+                0x51,                                     // push rcx
+                0x52,                                     // push rdx
+                0x50,                                     // push rax
+                0x9C,                                     // pushfq
+                0x48, 0x8D, 0x4C, 0x24, 0x28,             // lea rcx, [rsp + 40] (caller RSP)
+                0x48, 0x89, 0xC2,                         // mov rdx, rax (bytes to probe)
+                // .probe_pages:
+                0x48, 0x81, 0xFA, 0x00, 0x10, 0x00, 0x00, // cmp rdx, 4096
+                0x72, 0x12,                               // jb .probe_tail (+18)
+                0x48, 0x81, 0xE9, 0x00, 0x10, 0x00, 0x00, // sub rcx, 4096
+                0x85, 0x01,                               // test [rcx], eax (probe guard page)
+                0x48, 0x81, 0xEA, 0x00, 0x10, 0x00, 0x00, // sub rdx, 4096
+                0xEB, 0xE5,                               // jmp .probe_pages (-27)
+                // .probe_tail:
+                0x48, 0x29, 0xD1,                         // sub rcx, rdx
+                0x85, 0x01,                               // test [rcx], eax (probe remainder)
+                0x9D,                                     // popfq
+                0x58,                                     // pop rax
+                0x5A,                                     // pop rdx
+                0x59,                                     // pop rcx
+                0xC3                                      // ret
+            };
+        }
+        if (name == "__acrt_iob_func" || stripped == "acrt_iob_func") {
+            // Sovereign UCRT stream sentinel: return nullptr in rax
+            return {
+                0x31, 0xC0,                               // xor eax, eax
+                0xC3                                      // ret
+            };
+        }
+        return {};
+    }
+
 public:
     static Result emit_standalone_binary(
         const dgtl::object::ObjectFile& obj,
@@ -225,6 +557,48 @@ public:
 
         if (user_text.empty()) {
             return failure(Error::EmptyCode, "DGTL PE linker: ObjectFile has no .text code section");
+        }
+
+        // Synthesize Sovereign In-Binary Runtime Intrinsics (Zero External DLLs)
+        struct SynthesizedIntrinsic {
+            std::string name;
+            uint64_t text_offset;
+        };
+        std::vector<SynthesizedIntrinsic> synthesized_intrinsics;
+
+        if (options.sovereign) {
+            auto try_synth = [&](std::string_view sym_name) {
+                if (sym_name.empty()) return;
+                std::string sym(sym_name);
+                if (sym.starts_with("__imp_")) sym = sym.substr(6);
+                auto code = get_sovereign_intrinsic_x64(sym);
+                bool is_intr = !code.empty() || sym.starts_with("__dgtl_rt_") || sym.starts_with("dgtl_rt_") ||
+                               sym == "memcpy" || sym == "memset" || sym == "memcmp" || sym == "memmove";
+                if (!is_intr) return;
+
+                const auto* existing_sym = obj.find_symbol(sym);
+                if (existing_sym && existing_sym->is_defined()) return;
+
+                for (const auto& s : synthesized_intrinsics) {
+                    if (s.name == sym) return;
+                }
+
+                if (code.empty()) {
+                    code = { 0x31, 0xC0, 0xC3 }; // xor eax, eax; ret fallback
+                }
+
+                while ((user_text.size() % 16) != 0) user_text.push_back(0x90);
+                const uint64_t off = user_text.size();
+                user_text.insert(user_text.end(), code.begin(), code.end());
+                synthesized_intrinsics.push_back({sym, off});
+            };
+
+            for (const auto& rel : obj.relocations()) {
+                try_synth(rel.symbol_name);
+            }
+            for (const auto& s : obj.symbols()) {
+                if (!s.is_defined()) try_synth(s.name);
+            }
         }
 
         auto find_text_offset = [&](uint32_t sec_idx, std::string_view name) -> std::optional<uint64_t> {
@@ -416,12 +790,17 @@ public:
                 "QueryPerformanceCounter", "QueryPerformanceFrequency", "GetSystemTimeAsFileTime",
                 "InitializeCriticalSection", "DeleteCriticalSection", "EnterCriticalSection", "LeaveCriticalSection",
                 "CreateEventA", "CreateEventW", "SetEvent", "ResetEvent", "WaitForSingleObject", "WaitForMultipleObjects",
-                "RtlCaptureContext", "RtlLookupFunctionEntry", "RtlVirtualUnwind", "UnhandledExceptionFilter", "SetUnhandledExceptionFilter"
+                "RtlCaptureContext", "RtlLookupFunctionEntry", "RtlVirtualUnwind", "UnhandledExceptionFilter", "SetUnhandledExceptionFilter",
+                "WideCharToMultiByte", "MultiByteToWideChar", "FormatMessageA", "FormatMessageW", "LocalFree",
+                "GetFileType", "GetConsoleMode", "SetConsoleMode", "GetEnvironmentVariableA", "GetEnvironmentVariableW",
+                "SetEnvironmentVariableA", "SetEnvironmentVariableW", "GetTickCount", "GetTickCount64",
+                "TlsAlloc", "TlsFree", "TlsGetValue", "TlsSetValue", "SwitchToThread", "CreateThread", "TerminateProcess",
+                "FlushFileBuffers", "SetFilePointer", "SetFilePointerEx", "GetFileSize", "GetFileSizeEx"
             };
             for (const auto& fn : k32_funcs_list) {
                 if (fn == name) return true;
             }
-            return std::isupper(static_cast<unsigned char>(name.front())) != 0;
+            return false;
         };
 
         std::vector<std::string> k32_funcs;
@@ -429,9 +808,37 @@ public:
         std::vector<std::string> ntdll_funcs;
         std::vector<std::string> ucrt_funcs;
         std::vector<std::string> msvcrt_funcs;
+        std::vector<std::string> dgtl_rt_funcs;
 
         const std::string entry_exit = options.entry_import.empty() ? "ExitProcess" : std::string(options.entry_import);
         k32_funcs.push_back(entry_exit);
+
+        auto map_dgtl_rt_to_crt = [](std::string_view name) -> std::string_view {
+            if (name == "__dgtl_rt_sin") return "sin";
+            if (name == "__dgtl_rt_cos") return "cos";
+            if (name == "__dgtl_rt_tan") return "tan";
+            if (name == "__dgtl_rt_asin") return "asin";
+            if (name == "__dgtl_rt_acos") return "acos";
+            if (name == "__dgtl_rt_atan") return "atan";
+            if (name == "__dgtl_rt_atan2") return "atan2";
+            if (name == "__dgtl_rt_sinh") return "sinh";
+            if (name == "__dgtl_rt_cosh") return "cosh";
+            if (name == "__dgtl_rt_tanh") return "tanh";
+            if (name == "__dgtl_rt_exp") return "exp";
+            if (name == "__dgtl_rt_exp2") return "exp2";
+            if (name == "__dgtl_rt_log") return "log";
+            if (name == "__dgtl_rt_log2") return "log2";
+            if (name == "__dgtl_rt_log10") return "log10";
+            if (name == "__dgtl_rt_pow") return "pow";
+            if (name == "__dgtl_rt_sqrt") return "sqrt";
+            if (name == "__dgtl_rt_floor") return "floor";
+            if (name == "__dgtl_rt_ceil") return "ceil";
+            if (name == "__dgtl_rt_round") return "round";
+            if (name == "__dgtl_rt_trunc") return "trunc";
+            if (name == "__dgtl_rt_abs") return "abs";
+            if (name == "__dgtl_rt_fmod") return "fmod";
+            return {};
+        };
 
         for (const auto& sym : undefined_syms) {
             std::string raw_name = sym;
@@ -439,6 +846,50 @@ public:
                 raw_name = raw_name.substr(6);
             }
             if (raw_name.empty()) continue;
+
+            bool is_synth = false;
+            for (const auto& s : synthesized_intrinsics) {
+                if (s.name == raw_name) { is_synth = true; break; }
+            }
+            if (is_synth) continue;
+
+            if (options.sovereign) {
+                // In sovereign mode:
+                // 1. Math / runtime / intrinsics are synthesized in-binary, not imported
+                if (!get_sovereign_intrinsic_x64(raw_name).empty() ||
+                    raw_name.starts_with("__dgtl_rt_") || raw_name.starts_with("dgtl_rt_") ||
+                    raw_name.starts_with("__myzon_") || raw_name.starts_with("myzon_") ||
+                    raw_name == "memcpy" || raw_name == "memset" || raw_name == "memmove" || raw_name == "memcmp") {
+                    continue;
+                }
+                // 2. Network socket API -> WS2_32.DLL
+                if (is_ws2_func(raw_name)) {
+                    if (std::find(ws2_funcs.begin(), ws2_funcs.end(), raw_name) == ws2_funcs.end()) {
+                        ws2_funcs.push_back(raw_name);
+                    }
+                } else if (is_kernel32_func(raw_name)) {
+                    if (std::find(k32_funcs.begin(), k32_funcs.end(), raw_name) == k32_funcs.end()) {
+                        k32_funcs.push_back(raw_name);
+                    }
+                }
+                // Zero external CRT/NTDLL imports in sovereign mode
+                continue;
+            }
+
+            const auto crt_alias = map_dgtl_rt_to_crt(raw_name);
+            if (!crt_alias.empty()) {
+                if (std::find(msvcrt_funcs.begin(), msvcrt_funcs.end(), std::string(crt_alias)) == msvcrt_funcs.end()) {
+                    msvcrt_funcs.push_back(std::string(crt_alias));
+                }
+                continue;
+            }
+
+            if (raw_name.starts_with("__dgtl_rt_") || raw_name.starts_with("dgtl_rt_")) {
+                if (std::find(dgtl_rt_funcs.begin(), dgtl_rt_funcs.end(), raw_name) == dgtl_rt_funcs.end()) {
+                    dgtl_rt_funcs.push_back(raw_name);
+                }
+                continue;
+            }
 
             if (is_ws2_func(raw_name)) {
                 if (std::find(ws2_funcs.begin(), ws2_funcs.end(), raw_name) == ws2_funcs.end()) {
@@ -464,7 +915,7 @@ public:
         }
 
         for (const auto& add_fn : options.additional_imports) {
-            if (!add_fn.empty() && std::find(k32_funcs.begin(), k32_funcs.end(), add_fn) == k32_funcs.end()) {
+            if (!add_fn.empty() && is_kernel32_func(add_fn) && std::find(k32_funcs.begin(), k32_funcs.end(), add_fn) == k32_funcs.end()) {
                 k32_funcs.push_back(add_fn);
             }
         }
@@ -480,12 +931,16 @@ public:
                     import_specs.push_back({dll, fns});
                 }
             }
+        } else if (options.sovereign) {
+            if (!k32_funcs.empty()) import_specs.push_back({"KERNEL32.DLL", k32_funcs});
+            if (!ws2_funcs.empty()) import_specs.push_back({"WS2_32.DLL", ws2_funcs});
         } else {
             if (!k32_funcs.empty()) import_specs.push_back({"KERNEL32.DLL", k32_funcs});
             if (!ws2_funcs.empty()) import_specs.push_back({"WS2_32.DLL", ws2_funcs});
             if (!ntdll_funcs.empty()) import_specs.push_back({"NTDLL.DLL", ntdll_funcs});
-            if (!ucrt_funcs.empty()) import_specs.push_back({"ucrtbase.dll", ucrt_funcs});
             if (!msvcrt_funcs.empty()) import_specs.push_back({"MSVCRT.DLL", msvcrt_funcs});
+            if (!ucrt_funcs.empty()) import_specs.push_back({"ucrtbase.dll", ucrt_funcs});
+            if (!dgtl_rt_funcs.empty()) import_specs.push_back({"dgtl_rt.dll", dgtl_rt_funcs});
         }
 
         constexpr uint32_t trampoline_size = 24;
@@ -587,6 +1042,20 @@ public:
             for (const auto& entry : func_to_iat_rva) {
                 if (entry.name == name) return entry.rva;
             }
+            const auto crt_name = map_dgtl_rt_to_crt(name);
+            if (!crt_name.empty()) {
+                for (const auto& entry : func_to_iat_rva) {
+                    if (entry.name == crt_name) return entry.rva;
+                }
+            }
+            if (!name.starts_with("__myzon_") && !name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_")) {
+                if (size_t pos = name.rfind("__"); pos != std::string_view::npos && pos > 0) {
+                    std::string_view bare = name.substr(pos + 2);
+                    for (const auto& entry : func_to_iat_rva) {
+                        if (entry.name == bare) return entry.rva;
+                    }
+                }
+            }
             return std::nullopt;
         };
 
@@ -673,11 +1142,40 @@ public:
                 }
             }
         }
+        for (const auto& synth : synthesized_intrinsics) {
+            symbol_rva_map.push_back({synth.name, text_rva + trampoline_size + synth.text_offset});
+            symbol_rva_map.push_back({"__imp_" + synth.name, text_rva + trampoline_size + synth.text_offset});
+            std::string_view stripped = synth.name;
+            if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
+            else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
+            else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
+            else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
+            else if (stripped.starts_with("__")) stripped.remove_prefix(2);
+            else if (stripped.starts_with("_")) stripped.remove_prefix(1);
+            if (!stripped.empty()) {
+                std::string s(stripped);
+                symbol_rva_map.push_back({s, text_rva + trampoline_size + synth.text_offset});
+                symbol_rva_map.push_back({"__imp_" + s, text_rva + trampoline_size + synth.text_offset});
+                symbol_rva_map.push_back({"__dgtl_rt_" + s, text_rva + trampoline_size + synth.text_offset});
+                symbol_rva_map.push_back({"__imp___dgtl_rt_" + s, text_rva + trampoline_size + synth.text_offset});
+                symbol_rva_map.push_back({"dgtl_rt_" + s, text_rva + trampoline_size + synth.text_offset});
+                symbol_rva_map.push_back({"__myzon_" + s, text_rva + trampoline_size + synth.text_offset});
+                symbol_rva_map.push_back({"myzon_" + s, text_rva + trampoline_size + synth.text_offset});
+            }
+        }
         for (const auto& thunk : func_to_thunk_offset) {
             symbol_rva_map.push_back({thunk.name, text_rva + thunk.offset});
+            std::string dgtl_alias = "__dgtl_rt_" + thunk.name;
+            if (map_dgtl_rt_to_crt(dgtl_alias) == thunk.name) {
+                symbol_rva_map.push_back({dgtl_alias, text_rva + thunk.offset});
+            }
         }
         for (const auto& iat : func_to_iat_rva) {
             symbol_rva_map.push_back({"__imp_" + iat.name, iat.rva});
+            std::string dgtl_alias = "__dgtl_rt_" + iat.name;
+            if (map_dgtl_rt_to_crt(dgtl_alias) == iat.name) {
+                symbol_rva_map.push_back({"__imp_" + dgtl_alias, iat.rva});
+            }
         }
 
         std::sort(symbol_rva_map.begin(), symbol_rva_map.end(),
@@ -698,6 +1196,74 @@ public:
                                        });
             if (it != symbol_rva_map.end() && it->name == name) {
                 return it->rva;
+            }
+            // Dynamic alias resolution fallback
+            const auto crt_name = map_dgtl_rt_to_crt(name);
+            if (!crt_name.empty()) {
+                auto it_crt = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), crt_name,
+                                               [](const SymRvaEntry& entry, std::string_view val) {
+                                                   return entry.name < val;
+                                               });
+                if (it_crt != symbol_rva_map.end() && it_crt->name == crt_name) {
+                    return it_crt->rva;
+                }
+            }
+            if (name.starts_with("__imp_")) {
+                const auto stripped = name.substr(6);
+                const auto crt_stripped = map_dgtl_rt_to_crt(stripped);
+                if (!crt_stripped.empty()) {
+                    std::string imp_crt = "__imp_" + std::string(crt_stripped);
+                    auto it_imp = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), imp_crt,
+                                                   [](const SymRvaEntry& entry, std::string_view val) {
+                                                       return entry.name < val;
+                                                   });
+                    if (it_imp != symbol_rva_map.end() && it_imp->name == imp_crt) {
+                        return it_imp->rva;
+                    }
+                }
+            }
+            if (!name.starts_with("__myzon_") && !name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_") && !name.starts_with(".")) {
+                if (size_t pos = name.rfind("__"); pos != std::string_view::npos && pos > 0) {
+                    std::string_view bare = name.substr(pos + 2);
+                    auto it_bare = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), bare,
+                                                    [](const SymRvaEntry& entry, std::string_view val) {
+                                                        return entry.name < val;
+                                                    });
+                    if (it_bare != symbol_rva_map.end() && it_bare->name == bare) {
+                        return it_bare->rva;
+                    }
+                }
+            }
+
+            // Bare-name alias-stripping fallback
+            std::string_view stripped = name;
+            if (stripped.starts_with("__imp_")) stripped.remove_prefix(6);
+            if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
+            else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
+            else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
+            else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
+            else if (stripped.starts_with("__")) stripped.remove_prefix(2);
+            else if (stripped.starts_with("_")) stripped.remove_prefix(1);
+
+            if (stripped != name) {
+                std::string candidates[] = {
+                    std::string(stripped),
+                    "__dgtl_rt_" + std::string(stripped),
+                    "dgtl_rt_" + std::string(stripped),
+                    "__myzon_" + std::string(stripped),
+                    "myzon_" + std::string(stripped),
+                    "_" + std::string(stripped),
+                    "__" + std::string(stripped)
+                };
+                for (const auto& cand : candidates) {
+                    auto it_cand = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), cand,
+                                                    [](const SymRvaEntry& entry, std::string_view val) {
+                                                        return entry.name < val;
+                                                    });
+                    if (it_cand != symbol_rva_map.end() && it_cand->name == cand) {
+                        return it_cand->rva;
+                    }
+                }
             }
             if (name == ".text") return text_rva + trampoline_size;
             if (name == ".rdata" || name == ".rodata") return rdata_rva;
@@ -776,6 +1342,26 @@ public:
             } else if (auto imp_rva = find_iat_rva(rel.symbol_name)) {
                 target_rva = *imp_rva;
             } else {
+                // Defensive sovereignty safeguard: If an unresolvable call rel32 resides in .text,
+                // replace the 5-byte 'call' instruction (0xE8 xx xx xx xx) with a standard multi-byte NOP
+                // (0x0F 0x1F 0x44 0x00 0x00). This guarantees that unresolved calls NEVER silently execute
+                // 'call $+5', which pushes RIP, misaligns RSP, and corrupts saved frames on 'ret'.
+                if (rel.kind == dgtl::object::RelocationKind::PCRel32 || rel.kind == dgtl::object::RelocationKind::PLT32) {
+                    uint64_t t_base = 0;
+                    if (rel.section_index < obj.sections().size()) {
+                        if (auto toff = find_text_offset(rel.section_index, obj.sections()[rel.section_index].name)) {
+                            t_base = *toff;
+                        }
+                    }
+                    const uint64_t place_offset = trampoline_size + t_base + rel.offset;
+                    if (place_offset > 0 && place_offset + 4 <= text.data.size() && text.data[place_offset - 1] == 0xE8) {
+                        text.data[place_offset - 1] = 0x0F;
+                        text.data[place_offset]     = 0x1F;
+                        text.data[place_offset + 1] = 0x44;
+                        text.data[place_offset + 2] = 0x00;
+                        text.data[place_offset + 3] = 0x00;
+                    }
+                }
                 continue;
             }
 
@@ -1010,10 +1596,10 @@ public:
         if (options.enable_aslr && has_reloc) {
             opt.DllCharacteristics |= pe::kDllCharDynamicBase | pe::kDllCharHighEntropyVA;
         }
-        opt.SizeOfStackReserve = pe::kStackReserve;
-        opt.SizeOfStackCommit = pe::kStackCommit;
-        opt.SizeOfHeapReserve = pe::kHeapReserve;
-        opt.SizeOfHeapCommit = pe::kHeapCommit;
+        opt.SizeOfStackReserve = options.stack_reserve ? options.stack_reserve : pe::kStackReserve;
+        opt.SizeOfStackCommit = options.stack_commit ? options.stack_commit : pe::kStackCommit;
+        opt.SizeOfHeapReserve = options.heap_reserve ? options.heap_reserve : pe::kHeapReserve;
+        opt.SizeOfHeapCommit = options.heap_commit ? options.heap_commit : pe::kHeapCommit;
         opt.NumberOfRvaAndSizes = 16;
         opt.DataDirectories[pe::kDirImport].VirtualAddress = rdata_rva + desc_off;
         opt.DataDirectories[pe::kDirImport].Size = descriptor_size;

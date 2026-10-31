@@ -54,9 +54,11 @@ import dgtl.ir.pass.transform_inlining;
 import dgtl.ir.analysis.escape_analysis;
 import dgtl.ir.pass.simd_gather_scatter;
 import dgtl.ir.pass.transform_poly_loop;
+import dgtl.ir_formal_verifier;
 import dgtl.jit.hardware_scheduler;
 import dgtl.execution.loader;
 import dgtl.testing.filecheck;
+import dgtl.tools.common;
 
 namespace dgtl_opt {
 
@@ -72,6 +74,7 @@ enum class ExitCode : int {
 struct Options {
     std::string input_file;
     std::string output_file;
+    std::string target_arch = "x86_64"; ///< x86_64, arm64, riscv64, wasm32, ptx, amdgpu, spirv
     std::optional<std::string> pass_name;
     int opt_level = 3;              ///< 0=O0, 1=O1, 2=O2, 3=O3, 4=Ofast
     uint32_t num_threads = 0;       ///< Parallel multithreading threads
@@ -82,19 +85,20 @@ struct Options {
     bool filecheck_mode = false;  ///< When true, run FileCheck directives on output
 };
 
-void print_version() {
+static void print_version() {
     std::cout << "dgtl-opt: DGTL Sovereign IR Optimizer v2.1.0 (TataG Systems)\n"
               << "Standards: C++26 / Multi-Pass Parallel IR Optimization & Verification Engine\n";
 }
 
-void print_usage(std::string_view prog_name) {
+static void print_usage(std::string_view prog_name) {
     std::cout << "DGTL Optimizer (dgtl-opt) v2.1.0 - Ultra-High-Performance IR Pass Testing & Optimization Engine\n"
               << "\nUSAGE:\n"
               << "  " << prog_name << " [OPTIONS] <input.dgtl>\n"
               << "\nOPTIONS:\n"
               << "  -O0, -O1, -O2, -O3    Set optimization pipeline level (default: -O3)\n"
               << "  -Ofast                Enable aggressive non-IEEE math and vectorization\n"
-              << "  --pass=<name>         Run specific pass (gvn, dce, predication, inlining, escape, fusion, simd, all)\n"
+              << "  --target=<arch>       Target architecture (x86_64, arm64, riscv64, wasm32, ptx, amdgpu, spirv; default: x86_64)\n"
+              << "  --pass=<name>         Run specific pass (gvn, dce, predication, inlining, escape, fusion, inst-fusion, fma, simd, all)\n"
               << "  --j=<n>               Set parallel thread count for pass optimization (default: auto)\n"
               << "  --output=<file>       Write result to file (default: stdout)\n"
               << "  --filecheck           Enable FileCheck verification mode\n"
@@ -106,22 +110,28 @@ void print_usage(std::string_view prog_name) {
               << "  --help, -h            Display this message\n";
 }
 
-bool parse_args(int argc, char** argv, Options& opts) {
-    if (argc < 2) {
-        print_usage(argv[0]);
-        return false;
+enum class ParseStatus {
+    Ok,
+    ExitSuccess,
+    Error
+};
+
+ParseStatus parse_args(const std::vector<std::string>& args, Options& opts, std::string_view prog_name) {
+    if (args.empty()) {
+        print_usage(prog_name);
+        return ParseStatus::ExitSuccess;
     }
 
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg(argv[i]);
+    for (size_t i = 0; i < args.size(); ++i) {
+        std::string_view arg = args[i];
 
         if (arg == "--help" || arg == "-h") {
-            print_usage(argv[0]);
-            std::exit(0);
+            print_usage(prog_name);
+            return ParseStatus::ExitSuccess;
         }
         if (arg == "--version" || arg == "-v" || arg == "-V") {
             print_version();
-            std::exit(0);
+            return ParseStatus::ExitSuccess;
         }
         if (arg == "--verbose") {
             opts.verbose = true;
@@ -144,25 +154,27 @@ bool parse_args(int argc, char** argv, Options& opts) {
         } else if (arg == "-Ofast") {
             opts.opt_level = 4;
         } else if (arg.starts_with("--j=")) {
-            opts.num_threads = static_cast<uint32_t>(std::atoi(argv[i] + 4));
+            opts.num_threads = static_cast<uint32_t>(std::atoi(args[i].c_str() + 4));
+        } else if (arg.starts_with("--target=")) {
+            opts.target_arch = std::string(arg.substr(9));
         } else if (arg.substr(0, 7) == "--pass=") {
             opts.pass_name = std::string(arg.substr(7));
         } else if (arg.substr(0, 9) == "--output=") {
             opts.output_file = std::string(arg.substr(9));
         } else if (arg[0] == '-') {
             std::cerr << "Unknown option: " << arg << "\n";
-            return false;
+            return ParseStatus::Error;
         } else {
-            opts.input_file = argv[i];
+            opts.input_file = args[i];
         }
     }
 
     if (opts.input_file.empty()) {
         std::cerr << "Error: Input file required\n";
-        return false;
+        return ParseStatus::Error;
     }
 
-    return true;
+    return ParseStatus::Ok;
 }
 
 std::string read_file(const std::string& path) {
@@ -518,12 +530,7 @@ std::string serialize_ir_text(const dgtl::ir::IRStream& stream) {
     return oss.str();
 }
 
-int main(int argc, char** argv) {
-    Options opts;
-    if (!parse_args(argc, argv, opts)) {
-        return static_cast<int>(ExitCode::InvalidArgs);
-    }
-
+int execute_opt(const Options& opts) {
     // Step 1: Read input file
     const std::string input_text = read_file(opts.input_file);
     if (input_text.empty()) {
@@ -575,12 +582,7 @@ int main(int argc, char** argv) {
 
     // Step 5: Execute passes
     bool any_pass_ran = false;
-    if (!opts.pass_name.has_value()) {
-        // Run all passes in canonical order
-        opts.pass_name = "all";
-    }
-
-    std::string pass_name = *opts.pass_name;
+    std::string pass_name = opts.pass_name.value_or("all");
     std::transform(pass_name.begin(), pass_name.end(), pass_name.begin(), ::tolower);
 
     // Registry of available passes with execution logic
@@ -642,14 +644,18 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (pass_name == "fusion" || pass_name == "all" || opts.opt_level >= 3) {
-        if (opts.verbose) std::cerr << "[dgtl-opt] Running: Loop Fusion & Unrolling\n";
+    if (pass_name == "fusion" || pass_name == "inst-fusion" || pass_name == "fma" || pass_name == "all" || opts.opt_level >= 3) {
+        if (opts.verbose) std::cerr << "[dgtl-opt] Running: Instruction & Loop Fusion (FMA32/FMA64)\n";
         try {
+            dgtl::ir::DGTLFormalVerifier verifier;
+            dgtl::ir::pass::transform::DGTLInstructionFusionSynth inst_fusion(verifier);
+            inst_fusion.execute(stream);
+
             dgtl::ir::pass::transform::DGTLLoopFusion fusion;
             fusion.execute(stream);
             any_pass_ran = true;
         } catch (const std::exception& e) {
-            std::cerr << "Error executing Loop Fusion pass: " << e.what() << "\n";
+            std::cerr << "Error executing Fusion pass: " << e.what() << "\n";
             return static_cast<int>(ExitCode::PassExecutionFailed);
         }
     }
@@ -668,7 +674,7 @@ int main(int argc, char** argv) {
 
     if (!any_pass_ran && pass_name != "all") {
         std::cerr << "Error: Unknown pass: " << pass_name << "\n";
-        std::cerr << "Available passes: gvn, dce, predication, inlining, escape, fusion, simd, all\n";
+        std::cerr << "Available passes: gvn, dce, predication, inlining, escape, fusion, inst-fusion, fma, simd, all\n";
         return static_cast<int>(ExitCode::PassExecutionFailed);
     }
 
@@ -734,6 +740,18 @@ int main(int argc, char** argv) {
 
 } // namespace dgtl_opt
 
-int main(int argc, char** argv) {
-    return dgtl_opt::main(argc, argv);
+int dgtl_opt_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    const std::string prog_name = invoked_as.empty() ? "dgtl-opt" : std::string(invoked_as);
+    auto expanded = dgtl::tools::ArgExpander::expand_args(raw_args);
+
+    dgtl_opt::Options opts;
+    auto status = dgtl_opt::parse_args(expanded, opts, prog_name);
+    if (status == dgtl_opt::ParseStatus::ExitSuccess) {
+        return 0;
+    }
+    if (status == dgtl_opt::ParseStatus::Error) {
+        return static_cast<int>(dgtl_opt::ExitCode::InvalidArgs);
+    }
+
+    return dgtl_opt::execute_opt(opts);
 }

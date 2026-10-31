@@ -48,6 +48,7 @@ import dgtl.object.writers.elf;
 import dgtl.object.writers.pe;
 import dgtl.object.writers.macho;
 import dgtl.object.writers.wasm;
+import dgtl.linker.macho;
 import dgtl.target;
 
 export namespace dgtl::linker::driver {
@@ -727,10 +728,17 @@ inline FrontendEmitResult emit_machine_function(const MachineFunctionEmitRequest
             }
             case BackendDriverTarget::macho: {
                 if (req.function) {
-                    ok = detail::emit_macho_direct(*req.function, bytes) && shared::write_binary_file(out_path.string(), bytes);
-                } else if (req.object_file) {
                     dgtl::object::writers::MachOObjectWriter writer;
-                    ok = writer.write(*req.object_file, bytes) && shared::write_binary_file(out_path.string(), bytes);
+                    std::vector<uint8_t> obj_bytes;
+                    if (writer.write_machine_function(*req.function, obj_bytes, req.function->name())) {
+                        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
+                        auto& text_sec = obj.get_text_section();
+                        text_sec.bytes = std::move(obj_bytes);
+                        obj.add_function_symbol(std::string(req.function->name()), 0, text_sec.bytes.size(), true);
+                        ok = dgtl::linker::macho::SovereignMachOLinker::link_executable(obj, bytes) && shared::write_binary_file(out_path.string(), bytes);
+                    }
+                } else if (req.object_file) {
+                    ok = dgtl::linker::macho::SovereignMachOLinker::link_executable(*req.object_file, bytes) && shared::write_binary_file(out_path.string(), bytes);
                 }
                 break;
             }

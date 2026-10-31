@@ -376,7 +376,9 @@ enum GenericMachineOpcode : MachineOpcode {
     // Floating-Point
     GM_FADD32, GM_FSUB32, GM_FMUL32, GM_FDIV32,
     GM_FADD64, GM_FSUB64, GM_FMUL64, GM_FDIV64,
-    GM_FFMA32, GM_FFMA64, GM_FAST_INV_SQRT,
+    GM_FFMA32, GM_FFMA64, GM_FSQRT32, GM_FSQRT64, GM_FAST_INV_SQRT,
+    GM_FSIN32, GM_FCOS32, GM_FTAN32, GM_FEXP32, GM_FLOG32, GM_FPOW32,
+    GM_FSIN64, GM_FCOS64, GM_FTAN64, GM_FEXP64, GM_FLOG64, GM_FPOW64,
 
     // Comparison & Control Flow
     GM_ICMP32, GM_ICMP64, GM_FCMP32, GM_FCMP64,
@@ -423,12 +425,27 @@ enum GenericMachineOpcode : MachineOpcode {
     // Tensor & Accelerator Kernels
     GM_TENSOR_OP, GM_TENSOR_BROADCAST, GM_TENSOR_CONCAT, GM_TENSOR_CONV,
     GM_TENSOR_GEMM, GM_TENSOR_GATHER, GM_TENSOR_POOL, GM_TENSOR_REDUCE,
-    GM_TENSOR_RESHAPE, GM_TENSOR_SCATTER_D, GM_TENSOR_SLICE,
+    GM_TENSOR_RELU, GM_TENSOR_RESHAPE, GM_TENSOR_SCATTER_D, GM_TENSOR_SLICE,
     GM_TENSOR_SOFTMAX, GM_TENSOR_TRANSPOSE,
     GM_MATMUL_BF16, GM_MATMUL_FP8, GM_SDPA_F16,
     GM_SOFTMAX_FAST, GM_LAYER_NORM, GM_ROPE_EMBED,
+    GM_GELU_F32, GM_SILU_F32, GM_SIGMOID_F32, GM_SWIGLU_F32, GM_RMS_NORM_F32,
     GM_MAT4_MUL, GM_QUAT_SLERP, GM_VEC3_CROSS, GM_VEC4_DOT, GM_RAY_AABB_ISECT,
     GM_GPU_LAUNCH, GM_WASM_INVOKE,
+
+    // Memory Typed Form Operations
+    GM_ILOAD32, GM_ILOAD64, GM_FLOAD32, GM_FLOAD64,
+    GM_ISTORE32, GM_ISTORE64, GM_FSTORE32, GM_FSTORE64,
+
+    // Tensor Typed Form Operations
+    GM_TENSOR_RELU64,
+
+    // Integer Modulo Aliases
+    GM_IMOD32 = GM_IREM32,
+    GM_IMOD64 = GM_IREM64,
+
+    // Tensor Aliases
+    GM_TENSOR_RELU32 = GM_TENSOR_RELU,
 
     GM_MAX_GENERIC = GENERIC_OPCODE_END
 };
@@ -828,7 +845,7 @@ struct alignas(64) MachineInstruction {
     }
 
     [[nodiscard]] constexpr bool is_commutable() const noexcept {
-        return has_flag(MachineInstrFlag::Commutable);
+        return has_flag(MachineInstrFlag::Commutable) || has_trait(MachineTrait::Commutative);
     }
 
     [[nodiscard]] constexpr bool is_pseudo() const noexcept {

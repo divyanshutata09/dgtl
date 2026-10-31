@@ -84,7 +84,9 @@ import dgtl.linker.driver;
 import dgtl.linker.pe;
 import dgtl.linker.elf;
 import dgtl.linker.wasm;
+import dgtl.linker.macho;
 import dgtl.linker.driver_api;
+import dgtl.linker.symbols;
 import dgtl.object.archive;
 import dgtl.object.writers.elf;
 import dgtl.object.writers.pe;
@@ -320,16 +322,7 @@ static dgtl_value_t emit_raw_node(dgtl_stream_t* s, dgtl_opcode_t op, uint16_t f
                                  uint32_t forced_result = DGTL_INVALID_SLOT,
                                  uint32_t logic_flags = 0) {
     if (!s) return DGTL_INVALID_VALUE;
-
-    // FIX: Opcodes that produce void must never be assigned an active result register ID.
-    bool produces_void = (op == DGTL_OP_NOP || op == DGTL_OP_STORE || op == DGTL_OP_RET ||
-                          op == DGTL_OP_GOTO || op == DGTL_OP_BRANCH || op == DGTL_OP_BRANCH_COND ||
-                          op == DGTL_OP_BRANCH_FUSED || op == DGTL_OP_SWITCH_DISPATCH ||
-                          op == DGTL_OP_VOLATILE_STORE || op == DGTL_OP_OWNERSHIP_RELEASE ||
-                          op == DGTL_OP_BARRIER_SYNC || op == DGTL_OP_TRIE_INSERT ||
-                          op == DGTL_OP_DSA_DEALLOCATE || op == DGTL_OP_STORE_V512);
-
-    uint32_t rid = produces_void ? 0xFFFFFFFFu : ((forced_result != DGTL_INVALID_SLOT) ? forced_result : s->alloc_slot());
+    uint32_t rid = (forced_result != DGTL_INVALID_SLOT) ? forced_result : s->alloc_slot();
 
     dgtl::ir::IRNode node{};
     node.opcode = static_cast<dgtl::ir::OpCode>(op);
@@ -1153,8 +1146,10 @@ dgtl_value_t DGTL_CALL dgtl_build_call_indirect(dgtl_func_builder_t* fb, dgtl_va
 
 dgtl_value_t DGTL_CALL dgtl_build_fma(dgtl_func_builder_t* fb, dgtl_value_t a, dgtl_value_t b, dgtl_value_t c) DGTL_NOEXCEPT {
     if (!fb) return DGTL_INVALID_VALUE;
-    auto res = emit_raw_node(fb->stream, DGTL_OP_FMA_F32, DGTL_FLAG_IS_FUSED, a.id, b.id, c.id);
-    fb->register_type(res, fb->get_type(a));
+    dgtl_type_t ty = fb->get_type(a);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_FMA_F64 : DGTL_OP_FMA_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_IS_FUSED, a.id, b.id, c.id);
+    fb->register_type(res, ty);
     return res;
 }
 
@@ -1201,6 +1196,112 @@ dgtl_value_t DGTL_CALL dgtl_build_sdpa(dgtl_func_builder_t* fb, dgtl_value_t q, 
 dgtl_value_t DGTL_CALL dgtl_build_rope_embed(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
     if (!fb) return DGTL_INVALID_VALUE;
     auto res = emit_raw_node(fb->stream, DGTL_OP_ROPE_EMBED, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, fb->get_type(x));
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_sqrt(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_SQRT_F64 : DGTL_OP_SQRT_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_sin(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_SIN_F64 : DGTL_OP_SIN_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_cos(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_COS_F64 : DGTL_OP_COS_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_tan(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_TAN_F64 : DGTL_OP_TAN_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_exp(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_EXP_F64 : DGTL_OP_EXP_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_log(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_LOG_F64 : DGTL_OP_LOG_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_pow(dgtl_func_builder_t* fb, dgtl_value_t x, dgtl_value_t y) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    dgtl_type_t ty = fb->get_type(x);
+    dgtl_opcode_t op = (ty.id == DGTL_TYPE_F64.id) ? DGTL_OP_POW_F64 : DGTL_OP_POW_F32;
+    auto res = emit_raw_node(fb->stream, op, DGTL_FLAG_NONE, x.id, y.id, DGTL_INVALID_SLOT);
+    fb->register_type(res, ty);
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_relu(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    auto res = emit_raw_node(fb->stream, DGTL_OP_TENSOR_RELU, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, fb->get_type(x));
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_gelu(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    auto res = emit_raw_node(fb->stream, DGTL_OP_GELU_F32, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, fb->get_type(x));
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_silu(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    auto res = emit_raw_node(fb->stream, DGTL_OP_SILU_F32, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, fb->get_type(x));
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_sigmoid(dgtl_func_builder_t* fb, dgtl_value_t x) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    auto res = emit_raw_node(fb->stream, DGTL_OP_SIGMOID_F32, DGTL_FLAG_NONE, x.id, DGTL_INVALID_SLOT, DGTL_INVALID_SLOT);
+    fb->register_type(res, fb->get_type(x));
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_swiglu(dgtl_func_builder_t* fb, dgtl_value_t gate, dgtl_value_t up) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    auto res = emit_raw_node(fb->stream, DGTL_OP_SWIGLU_F32, DGTL_FLAG_NONE, gate.id, up.id, DGTL_INVALID_SLOT);
+    fb->register_type(res, fb->get_type(gate));
+    return res;
+}
+
+dgtl_value_t DGTL_CALL dgtl_build_rms_norm(dgtl_func_builder_t* fb, dgtl_value_t x, dgtl_value_t weight, float eps) DGTL_NOEXCEPT {
+    if (!fb) return DGTL_INVALID_VALUE;
+    uint32_t eps_bits = std::bit_cast<uint32_t>(eps);
+    auto res = emit_raw_node(fb->stream, DGTL_OP_RMS_NORM_F32, DGTL_FLAG_NONE, x.id, weight.id, eps_bits);
     fb->register_type(res, fb->get_type(x));
     return res;
 }
@@ -1754,7 +1855,12 @@ uint64_t DGTL_CALL dgtl_session_get_symbol_address(dgtl_session_t* session, cons
         return session->entry_addr;
     }
     auto it = session->host_symbols.find(name ? name : "");
-    return it != session->host_symbols.end() ? it->second : 0;
+    if (it != session->host_symbols.end()) return it->second;
+    if (name) {
+        uintptr_t builtin = dgtl::linker::SymbolResolver::resolve_builtin_runtime_symbol(name);
+        if (builtin != 0) return builtin;
+    }
+    return 0;
 }
 
 void* DGTL_CALL dgtl_session_get_function_ptr(dgtl_session_t* session, const char* name) DGTL_NOEXCEPT {
@@ -2419,8 +2525,18 @@ void DGTL_CALL dgtl_free_text(dgtl_text_t text) DGTL_NOEXCEPT {
 }
 
 bool DGTL_CALL dgtl_node_is_terminator(dgtl_opcode_t op, uint16_t flags) DGTL_NOEXCEPT {
-    return op == DGTL_OP_RET || op == DGTL_OP_GOTO || op == DGTL_OP_BRANCH || op == DGTL_OP_BRANCH_COND || (flags & DGTL_FLAG_IS_RETURN) != 0;
+    if ((flags & DGTL_FLAG_IS_RETURN) != 0) return true;
+    return dgtl::ir::gen::op_has_trait(static_cast<dgtl::ir::OpCode>(op), dgtl::ir::gen::GenTrait::IsTerminator);
 }
+
+bool DGTL_CALL dgtl_node_is_barrier(dgtl_opcode_t op, uint16_t flags) DGTL_NOEXCEPT {
+    if ((flags & DGTL_FLAG_IS_RETURN) != 0) return true;
+    const auto opcode = static_cast<dgtl::ir::OpCode>(op);
+    return opcode == dgtl::ir::OpCode::RET ||
+           opcode == dgtl::ir::OpCode::GOTO ||
+           opcode == dgtl::ir::OpCode::BRANCH;
+}
+
 
 bool DGTL_CALL dgtl_node_has_side_effects(dgtl_opcode_t op, uint16_t flags) DGTL_NOEXCEPT {
     return (flags & DGTL_FLAG_HAS_SIDE_EFFECTS) != 0 || op == DGTL_OP_STORE || op == DGTL_OP_CALL;
@@ -2625,15 +2741,33 @@ dgtl_target_machine_t DGTL_CALL dgtl_target_machine_create(
         tm->triple_str = triple ? triple : "x86_64-pc-windows-msvc";
         tm->cpu_str = cpu ? cpu : "generic";
         tm->features_str = features ? features : "";
+        dgtl::core::ArchType core_arch = dgtl::core::ArchType::X86_64_AVX2;
         if (tm->triple_str.find("aarch64") != std::string::npos || tm->triple_str.find("arm64") != std::string::npos) {
             tm->arch = DGTL_ARCH_ARM64;
+            core_arch = dgtl::core::ArchType::AARCH64_SVE;
+        } else if (tm->triple_str.find("arm") != std::string::npos) {
+            tm->arch = DGTL_ARCH_ARM32;
+            core_arch = dgtl::core::ArchType::ARM32_NEON;
         } else if (tm->triple_str.find("wasm") != std::string::npos) {
             tm->arch = DGTL_ARCH_WASM;
+            core_arch = dgtl::core::ArchType::WASM_SIMD;
         } else if (tm->triple_str.find("riscv") != std::string::npos) {
             tm->arch = DGTL_ARCH_RISCV64;
+            core_arch = dgtl::core::ArchType::RISCV64_RVV;
+        } else if (tm->triple_str.find("nvptx") != std::string::npos || tm->triple_str.find("cuda") != std::string::npos || tm->triple_str.find("ptx") != std::string::npos) {
+            tm->arch = DGTL_ARCH_CUDA;
+            core_arch = dgtl::core::ArchType::CUDA_PTX;
+        } else if (tm->triple_str.find("amdgpu") != std::string::npos || tm->triple_str.find("rocm") != std::string::npos) {
+            tm->arch = DGTL_ARCH_ROCM;
+            core_arch = dgtl::core::ArchType::ROCM_AMDGCN;
+        } else if (tm->triple_str.find("spirv") != std::string::npos) {
+            tm->arch = DGTL_ARCH_SPIRV;
+            core_arch = dgtl::core::ArchType::ROCM_AMDGCN;
         } else {
             tm->arch = DGTL_ARCH_X86_64;
+            core_arch = dgtl::core::ArchType::X86_64_AVX2;
         }
+        tm->tm = dgtl::core::TargetMachine(core_arch);
         return tm;
     } catch (...) {
         return nullptr;
@@ -3025,15 +3159,34 @@ struct dgtl_linker {
     std::string entry_point = "main";
     uint64_t image_base = 0x140000000ull;
     dgtl_subsystem_t subsystem = DGTL_SUBSYSTEM_CONSOLE;
+    bool enable_pie = false;
+    bool deterministic = true;
+    bool emit_relocations = true;
+    bool verbose = false;
+    uint64_t stack_size = 0;
+    uint64_t heap_size = 0;
+    uint64_t page_size = 0x1000;
+    uint32_t wasm_initial_memory_pages = 2;
+    uint32_t wasm_max_memory_pages = 256;
     std::vector<std::string> search_paths;
     std::vector<std::string> archives;
+    std::vector<std::string> libraries;
     std::vector<uint8_t> linked_bytes;
 
     explicit dgtl_linker(dgtl_object_format_t fmt) : format(fmt) {
         dgtl::object::ObjectFormat obj_fmt = dgtl::object::ObjectFormat::COFF;
-        if (fmt == DGTL_OBJECT_FMT_ELF) obj_fmt = dgtl::object::ObjectFormat::ELF;
-        else if (fmt == DGTL_OBJECT_FMT_MACHO) obj_fmt = dgtl::object::ObjectFormat::MachO;
-        else if (fmt == DGTL_OBJECT_FMT_WASM) obj_fmt = dgtl::object::ObjectFormat::WASM;
+        if (fmt == DGTL_OBJECT_FMT_ELF) {
+            obj_fmt = dgtl::object::ObjectFormat::ELF;
+            image_base = 0x400000ull;
+        } else if (fmt == DGTL_OBJECT_FMT_MACHO) {
+            obj_fmt = dgtl::object::ObjectFormat::MachO;
+            image_base = 0x100000000ull;
+        } else if (fmt == DGTL_OBJECT_FMT_WASM) {
+            obj_fmt = dgtl::object::ObjectFormat::WASM;
+            image_base = 0ull;
+        } else {
+            image_base = 0x140000000ull;
+        }
         accumulated_object.set_format(obj_fmt);
     }
 };
@@ -3199,6 +3352,67 @@ dgtl_err_t DGTL_CALL dgtl_linker_set_subsystem(dgtl_linker_t linker, dgtl_subsys
     return DGTL_OK;
 }
 
+dgtl_err_t DGTL_CALL dgtl_linker_set_pie(dgtl_linker_t linker, bool enable) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->enable_pie = enable;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_stack_size(dgtl_linker_t linker, uint64_t stack_size) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->stack_size = stack_size;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_heap_size(dgtl_linker_t linker, uint64_t heap_size) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->heap_size = heap_size;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_deterministic(dgtl_linker_t linker, bool enable) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->deterministic = enable;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_page_size(dgtl_linker_t linker, uint64_t page_size) DGTL_NOEXCEPT {
+    if (!linker || page_size == 0) return DGTL_ERR(1);
+    linker->page_size = page_size;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_emit_relocations(dgtl_linker_t linker, bool enable) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->emit_relocations = enable;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_wasm_memory_pages(dgtl_linker_t linker, uint32_t initial_pages, uint32_t max_pages) DGTL_NOEXCEPT {
+    if (!linker || (max_pages != 0 && initial_pages > max_pages)) return DGTL_ERR(1);
+    linker->wasm_initial_memory_pages = initial_pages;
+    linker->wasm_max_memory_pages = max_pages;
+    return DGTL_OK;
+}
+
+dgtl_err_t DGTL_CALL dgtl_linker_set_verbose(dgtl_linker_t linker, bool verbose) DGTL_NOEXCEPT {
+    if (!linker) return DGTL_ERR(1);
+    linker->verbose = verbose;
+    return DGTL_OK;
+}
+
+dgtl_object_format_t DGTL_CALL dgtl_linker_get_format(dgtl_linker_t linker) DGTL_NOEXCEPT {
+    return linker ? linker->format : DGTL_OBJECT_FMT_PE;
+}
+
+const char* DGTL_CALL dgtl_linker_get_entry_point(dgtl_linker_t linker) DGTL_NOEXCEPT {
+    return linker ? linker->entry_point.c_str() : "";
+}
+
+uint64_t DGTL_CALL dgtl_linker_get_image_base(dgtl_linker_t linker) DGTL_NOEXCEPT {
+    return linker ? linker->image_base : 0;
+}
+
 dgtl_err_t DGTL_CALL dgtl_linker_add_object(dgtl_linker_t linker, dgtl_object_t obj) DGTL_NOEXCEPT {
     if (!linker || !obj) return DGTL_ERR(1);
     try {
@@ -3275,6 +3489,7 @@ dgtl_err_t DGTL_CALL dgtl_linker_add_library(dgtl_linker_t linker, const char* l
     if (!linker || !lib_name) return DGTL_ERR(1);
     try {
         std::string name(lib_name);
+        linker->libraries.push_back(name);
         auto file_exists = [](const std::string& filepath) -> bool {
             FILE* f = std::fopen(filepath.c_str(), "rb");
             if (f) {
@@ -3393,34 +3608,62 @@ dgtl_err_t DGTL_CALL dgtl_linker_link_to_memory(
 
         if (kind == DGTL_LINK_EXECUTABLE) {
             if (linker->format == DGTL_OBJECT_FMT_WASM) {
-                dgtl::backend::writers::WASMBinaryWriter writer;
-                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+                dgtl::linker::wasm::WASMBinaryLink wasm_linker;
+                dgtl::linker::wasm::WASMLinkerOptions wasm_opts;
+                wasm_opts.entry_symbol = linker->entry_point;
+                if (linker->stack_size != 0) {
+                    wasm_opts.stack_size = static_cast<uint32_t>(linker->stack_size);
+                }
+                if (linker->wasm_initial_memory_pages != 0) {
+                    wasm_opts.initial_memory_pages = linker->wasm_initial_memory_pages;
+                }
+                if (linker->wasm_max_memory_pages != 0) {
+                    wasm_opts.max_memory_pages = linker->wasm_max_memory_pages;
+                }
+                ok = wasm_linker.link(linker->accumulated_object, linker->linked_bytes, wasm_opts);
             } else if (linker->format == DGTL_OBJECT_FMT_ELF) {
                 dgtl::linker::elf::ELFLinker elf_linker;
+                dgtl::linker::elf::ELFLinker::SovereignELFLinkerOptions elf_opts;
+                elf_opts.image_base = linker->image_base ? linker->image_base : 0x400000;
+                elf_opts.entry_symbol = linker->entry_point;
+                elf_opts.enable_pie = linker->enable_pie;
+                elf_opts.deterministic = linker->deterministic;
+                elf_opts.page_size = linker->page_size ? linker->page_size : 0x1000;
+                elf_opts.emit_relocations = linker->emit_relocations;
                 ok = elf_linker.link_executable(
                     linker->accumulated_object,
                     linker->linked_bytes,
-                    linker->image_base ? linker->image_base : 0x400000,
-                    linker->entry_point
+                    elf_opts
                 );
             } else if (linker->format == DGTL_OBJECT_FMT_MACHO) {
-                dgtl::backend::writers::MachOObjectWriter writer;
-                ok = writer.write(linker->accumulated_object, linker->linked_bytes);
+                dgtl::linker::macho::SovereignMachOLinker macho_linker;
+                ok = macho_linker.link_executable(linker->accumulated_object, linker->linked_bytes);
             } else {
                 dgtl::linker::pe::SovereignPELinkerOptions opts;
                 opts.entry_symbol = linker->entry_point;
-                opts.image_base = linker->image_base ? linker->image_base : 0x140000000ull;
-                dgtl::backend::writers::PEObjectWriter writer;
-                ok = writer.write_standalone_executable(
+                if (linker->image_base != 0) {
+                    opts.image_base = linker->image_base;
+                }
+                auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(
                     linker->accumulated_object,
                     linker->linked_bytes,
                     opts
                 );
+                ok = res.success;
+                if (!ok && !res.message.empty()) {
+                    set_last_error_msg(res.message.c_str());
+                }
             }
         } else if (kind == DGTL_LINK_STATIC_LIB) {
             if (linker->format == DGTL_OBJECT_FMT_ELF) {
                 dgtl::linker::elf::ELFLinker elf_linker;
                 ok = elf_linker.link_static_archive(linker->accumulated_object, linker->linked_bytes, "module.o");
+            } else if (linker->format == DGTL_OBJECT_FMT_MACHO) {
+                dgtl::backend::writers::MachOObjectWriter writer;
+                std::vector<uint8_t> obj_bytes;
+                if (writer.write(linker->accumulated_object, obj_bytes)) {
+                    ok = writer.build_archive(obj_bytes, linker->linked_bytes, "module.o");
+                }
             } else {
                 dgtl::backend::writers::PEObjectWriter writer;
                 std::vector<uint8_t> obj_bytes;
@@ -3617,6 +3860,11 @@ uintptr_t DGTL_CALL dgtl_jit_engine_lookup(dgtl_jit_engine_t engine, const char*
             engine->symbols[name] = addr;
             return addr;
         }
+    }
+    uintptr_t builtin_addr = dgtl::linker::SymbolResolver::resolve_builtin_runtime_symbol(name);
+    if (builtin_addr != 0) {
+        engine->symbols[name] = builtin_addr;
+        return builtin_addr;
     }
     return 0;
 }

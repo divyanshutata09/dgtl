@@ -890,24 +890,45 @@ private:
                 // Handle Shifts (SHL, SHR)
                 if (inst.semantic_kind == MachineSemanticKind::IntegerShl ||
                     inst.semantic_kind == MachineSemanticKind::IntegerShr) {
-                    if (lhs.is_register() && dst_reg != static_cast<std::uint8_t>(lhs.reg.id)) {
-                        emit_rr(text, 0x89, static_cast<std::uint8_t>(lhs.reg.id), dst_reg, is_64);
-                    }
-                    const std::uint8_t shift_ext = (inst.semantic_kind == MachineSemanticKind::IntegerShl) ? 4u : 7u; // /4 for SHL, /7 for SAR
+                    const std::uint8_t shift_ext = (inst.semantic_kind == MachineSemanticKind::IntegerShl) ? 4u : 5u; // /4 for SHL, /5 for SHR
                     if (rhs.is_immediate()) {
+                        if (lhs.is_register() && dst_reg != static_cast<std::uint8_t>(lhs.reg.id)) {
+                            emit_rr(text, 0x89, static_cast<std::uint8_t>(lhs.reg.id), dst_reg, is_64);
+                        }
                         const std::uint8_t rex = make_rex(is_64, shift_ext, 0, dst_reg);
                         if (rex != 0x40u || is_64) emit_u8(text, rex);
                         emit_u8(text, 0xC1);
                         emit_u8(text, static_cast<std::uint8_t>(0xC0u | ((shift_ext & 7u) << 3) | (dst_reg & 7u)));
                         emit_u8(text, static_cast<std::uint8_t>(rhs.immediate & 0xFF));
                     } else if (rhs.is_register()) {
-                        if (rhs.reg.id != 1u /* RCX */) {
-                            emit_rr(text, 0x89, static_cast<std::uint8_t>(rhs.reg.id), 1u, is_64);
+                        const std::uint8_t lhs_reg = lhs.is_register() ? static_cast<std::uint8_t>(lhs.reg.id) : dst_reg;
+                        const std::uint8_t rhs_reg = static_cast<std::uint8_t>(rhs.reg.id);
+                        const std::uint8_t scratch = (rhs_reg == 11u || lhs_reg == 11u || dst_reg == 11u) ? 10u : 11u;
+
+                        // Move lhs into scratch register to safely isolate it from %cl/RCX
+                        emit_rr(text, 0x89, lhs_reg, scratch, is_64);
+                        const bool save_rcx = (dst_reg != 1u && rhs_reg != 1u);
+                        if (save_rcx) {
+                            emit_u8(text, 0x48); emit_u8(text, 0x83); emit_u8(text, 0xEC); emit_u8(text, 0x08); // sub $8, %rsp (16-byte align)
+                            emit_u8(text, 0x51); // push rcx
                         }
-                        const std::uint8_t rex = make_rex(is_64, shift_ext, 0, dst_reg);
+                        // Move rhs into RCX (1u) for variable shift count %cl
+                        if (rhs_reg != 1u) {
+                            emit_rr(text, 0x89, rhs_reg, 1u, is_64);
+                        }
+                        // Shift scratch register by %cl
+                        const std::uint8_t rex = make_rex(is_64, shift_ext, 0, scratch);
                         if (rex != 0x40u || is_64) emit_u8(text, rex);
                         emit_u8(text, 0xD3);
-                        emit_u8(text, static_cast<std::uint8_t>(0xC0u | ((shift_ext & 7u) << 3) | (dst_reg & 7u)));
+                        emit_u8(text, static_cast<std::uint8_t>(0xC0u | ((shift_ext & 7u) << 3) | (scratch & 7u)));
+                        // Move result to destination
+                        if (dst_reg != scratch) {
+                            emit_rr(text, 0x89, scratch, dst_reg, is_64);
+                        }
+                        if (save_rcx) {
+                            emit_u8(text, 0x59); // pop rcx
+                            emit_u8(text, 0x48); emit_u8(text, 0x83); emit_u8(text, 0xC4); emit_u8(text, 0x08); // add $8, %rsp (restore stack)
+                        }
                     }
                     if (!is_64) {
                         emit_rr(text, 0x63, dst_reg, dst_reg, true);
@@ -1011,13 +1032,20 @@ private:
                     case MachineSemanticKind::FloatSub: sse_op = 0x5Cu; break;
                     case MachineSemanticKind::FloatMul: sse_op = 0x59u; break;
                     case MachineSemanticKind::FloatDiv: sse_op = 0x5Eu; break;
+                    case MachineSemanticKind::FloatSqrt: sse_op = 0x51u; break;
                     default: {
-                        switch (inst.opcode) {
-                            case GM_FADD32: case GM_FADD64: sse_op = 0x58u; break;
-                            case GM_FSUB32: case GM_FSUB64: sse_op = 0x5Cu; break;
-                            case GM_FMUL32: case GM_FMUL64: sse_op = 0x59u; break;
-                            case GM_FDIV32: case GM_FDIV64: sse_op = 0x5Eu; break;
-                            default: sse_op = 0x58u; break;
+                        if (inst.target_opcode() == x64_opcode(X64MachineOpcode::FSqrt32) ||
+                            inst.target_opcode() == x64_opcode(X64MachineOpcode::FSqrt64)) {
+                            sse_op = 0x51u;
+                        } else {
+                            switch (inst.opcode) {
+                                case GM_FADD32: case GM_FADD64: sse_op = 0x58u; break;
+                                case GM_FSUB32: case GM_FSUB64: sse_op = 0x5Cu; break;
+                                case GM_FMUL32: case GM_FMUL64: sse_op = 0x59u; break;
+                                case GM_FDIV32: case GM_FDIV64: sse_op = 0x5Eu; break;
+                                case GM_FSQRT32: case GM_FSQRT64: sse_op = 0x51u; break;
+                                default: sse_op = 0x58u; break;
+                            }
                         }
                         break;
                     }
@@ -1103,16 +1131,19 @@ private:
                     if (out_diag) *out_diag = "FloatTernaryFma32 operands < 3";
                     return false;
                 }
+                const bool is_f64 = (inst.opcode == GM_FFMA64 ||
+                                     inst.target_opcode() == x64_opcode(X64MachineOpcode::Fma64));
+                const std::uint8_t prefix = is_f64 ? 0xF2u : 0xF3u;
                 const auto& dst = inst.operands[0];
                 const auto& lhs = inst.operands[1];
                 const auto& rhs = inst.operands[2];
                 emit_movq_to_xmm(text, 0u, static_cast<std::uint8_t>(lhs.reg.id));
                 emit_movq_to_xmm(text, 1u, static_cast<std::uint8_t>(rhs.reg.id));
-                emit_sse_rr(text, 0xF3, 0x59, 0u, 1u); // mulss xmm0, xmm1
+                emit_sse_rr(text, prefix, 0x59, 0u, 1u); // mulss or mulsd
                 if (inst.operands.size() >= 4) {
                     const auto& acc = inst.operands[3];
                     emit_movq_to_xmm(text, 1u, static_cast<std::uint8_t>(acc.reg.id));
-                    emit_sse_rr(text, 0xF3, 0x58, 0u, 1u); // addss xmm0, xmm1
+                    emit_sse_rr(text, prefix, 0x58, 0u, 1u); // addss or addsd
                 }
                 emit_movq_from_xmm(text, static_cast<std::uint8_t>(dst.reg.id), 0u);
                 return true;
@@ -1610,7 +1641,34 @@ private:
             }
 
             case MachineForm::TensorOp: {
-                // VFMADD213PS: 0xC4 m-mmmm=00010 W=0 ~vvvv L=1 pp=01 Opcode=0xA8
+                const char* rt_sym = dgtl::mir::runtime_contract::runtime_symbol_for_opcode(inst.opcode);
+                if (inst.opcode != GM_FFMA32 && inst.opcode != GM_FFMA64 &&
+                    inst.semantic_kind != MachineSemanticKind::FloatFma &&
+                    rt_sym != nullptr) {
+                    // Route aggregate tensor kernel to runtime helper
+                    std::uintptr_t direct_addr = 0;
+                    auto r_it = runtime_symbols.find(rt_sym);
+                    if (r_it != runtime_symbols.end() && r_it->second != 0) {
+                        direct_addr = r_it->second;
+                    }
+                    if (direct_addr != 0) {
+                        emit_u8(text, 0x49);
+                        emit_u8(text, 0xBB);
+                        emit_u64(text, direct_addr);
+                        emit_u8(text, 0x41);
+                        emit_u8(text, 0xFF);
+                        emit_u8(text, 0xD3); // call r11
+                        return true;
+                    }
+                    emit_u8(text, 0xE8);
+                    const std::size_t reloc_offset = text.size();
+                    emit_u32(text, 0);
+                    std::string sym = std::string(rt_sym).starts_with("__imp_") ? std::string(rt_sym).substr(6) : std::string(rt_sym);
+                    object.add_relocation(reloc_offset, std::move(sym), -4, 4, dgtl::object::RelocationKind::PCRel32);
+                    return true;
+                }
+
+                // Pure register FMA: VFMADD213PS (f32, W=0) or VFMADD213PD (f64, W=1)
                 if (inst.operands.size() < 3) {
                     if (out_diag) *out_diag = "TensorOp requires >= 3 operands";
                     return false;
@@ -1625,7 +1683,9 @@ private:
                 const std::uint8_t dst_id = static_cast<std::uint8_t>(dst.reg.id);
                 const std::uint8_t s1_id = static_cast<std::uint8_t>(src1.reg.id);
                 const std::uint8_t s2_id = static_cast<std::uint8_t>(src2.reg.id);
-                emit_vex3(text, dst_id, s1_id, s2_id, 1u /* pp=66 */, 2u /* m=0F38 */, false, true);
+                const bool is_f64 = (inst.opcode == GM_FFMA64 ||
+                                     inst.target_opcode() == x64_opcode(X64MachineOpcode::Fma64));
+                emit_vex3(text, dst_id, s1_id, s2_id, 1u /* pp=66 */, 2u /* m=0F38 */, is_f64 /* W=1 for f64 */, true);
                 emit_u8(text, 0xA8);
                 emit_u8(text, static_cast<std::uint8_t>(0xC0u | ((dst_id & 7u) << 3) | (s2_id & 7u)));
                 return true;

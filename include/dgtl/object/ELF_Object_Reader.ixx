@@ -402,13 +402,17 @@ private:
 
                 dgtl::object::RelocationKind rk = dgtl::object::RelocationKind::Absolute64;
                 if (rel_type == 1u) {
-                    rk = dgtl::object::RelocationKind::PCRel32;
+                    rk = dgtl::object::RelocationKind::Absolute64; // R_X86_64_64
                 } else if (rel_type == 2u) {
-                    rk = dgtl::object::RelocationKind::PCRel32;
+                    rk = dgtl::object::RelocationKind::PCRel32;    // R_X86_64_PC32
                 } else if (rel_type == 4u) {
-                    rk = dgtl::object::RelocationKind::PLT32;
+                    rk = dgtl::object::RelocationKind::PLT32;      // R_X86_64_PLT32
                 } else if (rel_type == 8u) {
-                    rk = dgtl::object::RelocationKind::Relative64;
+                    rk = dgtl::object::RelocationKind::Relative64; // R_X86_64_RELATIVE
+                } else if (rel_type == 10u || rel_type == 11u) {
+                    rk = dgtl::object::RelocationKind::Absolute32; // R_X86_64_32 / 32S
+                } else if (rel_type == 283u || rel_type == 282u) {
+                    rk = dgtl::object::RelocationKind::Call26;     // R_AARCH64_CALL26 / JUMP26
                 }
 
                 std::string symbol_name;

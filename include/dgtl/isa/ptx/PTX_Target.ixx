@@ -32,14 +32,27 @@ export namespace dgtl::isa::ptx {
 inline constexpr std::string_view kTargetName = "nvptx64";
 inline constexpr std::string_view kTargetTripleDefault = "nvptx64-nvidia-cuda";
 
+struct PTXTargetSubtarget {
+    CUDATargetRegisterInfo reg_info{};
+    CUDATargetInstructionInfo instr_info{};
+    CUDAFrameInfo frame_info{};
+    CUDAABI cuda_abi{};
+    CUDAEmitter emitter{};
+
+    [[nodiscard]] const dgtl::machine::TargetABI& abi() const noexcept {
+        return cuda_abi;
+    }
+
+    [[nodiscard]] dgtl::machine::TargetSubtarget as_subtarget() const noexcept {
+        return dgtl::machine::TargetSubtarget{
+            reg_info, instr_info, frame_info, cuda_abi, &emitter
+        };
+    }
+};
+
 [[nodiscard]] inline const dgtl::machine::TargetSubtarget& get_ptx_target_subtarget() noexcept {
-    static const CUDATargetRegisterInfo reg_info{};
-    static const CUDATargetInstructionInfo instr_info{};
-    static const CUDAFrameInfo frame_info{};
-    static const CUDAABI cuda_abi{};
-    static const dgtl::machine::TargetSubtarget subtarget{
-        reg_info, instr_info, frame_info, cuda_abi, nullptr
-    };
+    static const PTXTargetSubtarget subtarget_holder{};
+    static const dgtl::machine::TargetSubtarget subtarget = subtarget_holder.as_subtarget();
     return subtarget;
 }
 

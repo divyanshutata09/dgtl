@@ -26,7 +26,7 @@ export module dgtl.ir.pass.query_optimizer;
 
 // 🚀 FIXED CYCLIC LOOP: Import local core leaf siblings natively via short-form shortcuts
 import dgtl.ir.pipeline.pass_manager_config;
-import dgtl.ir;
+import dgtl.ir.stream;
 import dgtl.ir_node;
 import dgtl.ir_enums;
 import dgtl.ir.analysis.cost_model;

@@ -49,7 +49,9 @@ module;
 
 export module dgtl.jit.tiered_optimizer;
 
-import dgtl.ir;
+import dgtl.ir.stream;
+import dgtl.ir_node;
+import dgtl.ir_enums;
 import dgtl.jit.executor;
 import dgtl.ir.bridge;
 import dgtl.hir.semantic;
@@ -57,7 +59,6 @@ import dgtl.mir.instruction_selector;
 import dgtl.mir.machine_ir;
 import dgtl.mir.pipeline;
 import dgtl.mir.isel_gen;
-import dgtl.mir;
 import dgtl.isa.x64.x64_reg_map;
 import dgtl.isa.x64.x64_instruction_info;
 import dgtl.isa.x64.x64_abi;

@@ -33,6 +33,8 @@ import dgtl.ir.pipeline.pass_manager_config;
 import dgtl.ir.analysis.cost_model;
 
 import dgtl.ir.analysis.liveness_memory_dependency_unified;
+import dgtl.ir.analysis.polyhedral_scop_unified;
+import dgtl.math;
 import dgtl.ir_formal_verifier;
 import dgtl.graph.region;
 
@@ -130,9 +132,24 @@ public:
         return is_valid_scop_for_transform(region) && region.scop_annotation.can_parallelize;
     }
 
-    static void apply_tiling(ir::IRStream& stream, const LoopNest& nest, [[maybe_unused]] uint32_t tile_size) noexcept {
+    [[nodiscard]] static uint32_t calculate_optimal_tile_size(const LoopNest& nest, size_t element_size = 8) noexcept {
+        constexpr uint32_t kL1DataCacheBytes = 32768; // 32KB L1D cache target
+        if (!nest.is_valid() || nest.depth == 0) return 32;
+        const double target_elements = static_cast<double>(kL1DataCacheBytes / 2) / static_cast<double>(element_size > 0 ? element_size : 8);
+        const double dim_size = dgtl::utils::math::pow(target_elements, 1.0 / static_cast<double>(nest.depth));
+        uint32_t tile = static_cast<uint32_t>(dim_size);
+        if (tile < 4) tile = 4;
+        if (tile > 128) tile = 128;
+        return tile;
+    }
+
+    static void apply_tiling(ir::IRStream& stream, const LoopNest& nest, uint32_t tile_size = 0) noexcept {
         if (!nest.is_valid() || stream.is_null() || stream.size() == 0) {
             return;
+        }
+
+        if (tile_size == 0) {
+            tile_size = calculate_optimal_tile_size(nest);
         }
 
         const size_t stream_size = stream.size();
@@ -503,9 +520,9 @@ public:
             const bool is_control_terminator = stream.get_node_readonly(i).is_terminator();
             if (is_control_terminator && is_loop_invariant(core.op_a, stream)) {
 
-                float cost_before = static_cast<float>(stream.size());
-                float speedup_gain = cost_before * 0.18f;
-                float cache_penalty = (count > 256) ? 8.5f : 1.2f;
+                const float branch_node_cost = m_ai_model.predict_node_cost(stream.get_node_readonly(i));
+                const float speedup_gain = branch_node_cost * static_cast<float>(count > 16 ? count / 8 : 2);
+                const float cache_penalty = (count > 128) ? 8.5f : 1.2f;
 
                 if (speedup_gain > cache_penalty) {
                     stream.begin_transaction();

@@ -35,6 +35,7 @@ using dgtl::machine::MachineOperand;
 using dgtl::machine::MachineOperandKind;
 using dgtl::machine::MachineSemanticKind;
 using dgtl::machine::MachineForm;
+using dgtl::machine::MachineTrait;
 using dgtl::machine::GM_COPY;
 
 class TwoAddressInstructionPass {
@@ -156,6 +157,7 @@ private:
             case MachineForm::IntegerBinary64:
             case MachineForm::FloatBinary32:
             case MachineForm::FloatBinary64:
+            case MachineForm::VectorBinary512:
                 return true;
             default:
                 return false;
@@ -163,7 +165,7 @@ private:
     }
 
     [[nodiscard]] static bool is_commutable(const MachineInstruction& inst) noexcept {
-        if (inst.has_flag(MachineInstrFlag::Commutable)) {
+        if (inst.has_flag(MachineInstrFlag::Commutable) || inst.has_trait(MachineTrait::Commutative)) {
             return true;
         }
 
@@ -175,6 +177,8 @@ private:
             case MachineSemanticKind::IntegerXor:
             case MachineSemanticKind::FloatAdd:
             case MachineSemanticKind::FloatMul:
+            case MachineSemanticKind::VectorAdd:
+            case MachineSemanticKind::VectorMul:
                 return true;
             default:
                 return false;

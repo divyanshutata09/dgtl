@@ -72,15 +72,14 @@ struct AppOptions {
     bool print_asm = true;
     bool run_evolution = false;
     bool benchmark_mode = false;
+    bool benchmark_dump = false;
     BackendKind backend = BackendKind::arm64;
     std::string backend_name = "arm64";
     std::string asm_output_path;
     size_t benchmark_iterations = 256;
     BenchmarkProfile benchmark_profile = BenchmarkProfile::fold;
     uint32_t pressure_vars = 25;
-    bool benchmark_dump = false;
-    // Benchmark-only surrogate path: serializes emitted ARM64 assembly bytes.
-    // Keep opt-in until DGTL has a real ARM64 machine-code emitter path.
+    // Native ARM64 machine-code binary emission via ARM64MCEncoder.
     bool arm64_binary_stream = false;
     PolyhedralMode polyhedral_mode = PolyhedralMode::off;
     std::string polyhedral_mode_name = "off";

@@ -159,6 +159,30 @@ dgtl::execution::dispatcher::Execution_Dispatcher& emit_dispatcher() {
                 dgtl::linker::driver::DGTLAOTLinker linker;
                 return linker.build_pe_executable_buffer(*ctx->function, *ctx->out) ? 0 : -2;
             });
+
+        dispatcher.set_executor(dgtl::execution::dispatcher::DispatchTarget::ELF_Executable,
+            [](void* raw) -> int64_t {
+                auto* ctx = static_cast<EmitContext*>(raw);
+                if (!ctx || !ctx->function || !ctx->out) return -1;
+                dgtl::linker::driver::DGTLAOTLinker linker;
+                return linker.build_elf_relocatable_binary(*ctx->function, *ctx->out) ? 0 : -2;
+            });
+
+        dispatcher.set_executor(dgtl::execution::dispatcher::DispatchTarget::MachO_Executable,
+            [](void* raw) -> int64_t {
+                auto* ctx = static_cast<EmitContext*>(raw);
+                if (!ctx || !ctx->function || !ctx->out) return -1;
+                dgtl::linker::driver::DGTLAOTLinker linker;
+                return linker.build_elf_relocatable_binary(*ctx->function, *ctx->out) ? 0 : -2;
+            });
+
+        dispatcher.set_executor(dgtl::execution::dispatcher::DispatchTarget::RiscV64_Native,
+            [](void* raw) -> int64_t {
+                auto* ctx = static_cast<EmitContext*>(raw);
+                if (!ctx || !ctx->function || !ctx->out) return -1;
+                dgtl::linker::driver::DGTLAOTLinker linker;
+                return linker.build_elf_relocatable_binary(*ctx->function, *ctx->out) ? 0 : -2;
+            });
     });
     return dispatcher;
 }

@@ -35,18 +35,21 @@ template class std::vector<std::string>;
 
 import dgtl.object.archive;
 import dgtl.object.file;
+import dgtl.tools.common;
 
 namespace fs = std::filesystem;
 using namespace dgtl::object::archive;
 
+namespace {
+
 void print_version() {
     std::cout << "dgtl-ar: DGTL Sovereign Universal Archive Librarian v2.1.0 (TataG Systems)\n"
-              << "Standards: Universal GNU/BSD/COFF Static Archive Synthesis Engine\n";
+              << "Standards: Universal GNU/BSD/COFF/Mach-O Static Archive Synthesis Engine\n";
 }
 
 void print_usage(std::string_view prog_name) {
     std::cout << "DGTL Sovereign Universal Archive Librarian (dgtl-ar)\n"
-              << "Multi-Format Static Library & Universal Archive Synthesizer\n\n"
+              << "Multi-Format Static Library & Universal Archive Synthesizer (COFF, ELF, Mach-O)\n\n"
               << "USAGE:\n"
               << "  " << prog_name << " [-]{dmpqrstx}[abcDfiklMNoOPsSTuvV] [member-name] <archive-file> [files...]\n"
               << "  " << prog_name << " rcs <archive.a> <file1.o> [file2.o...]\n"
@@ -67,9 +70,14 @@ void print_usage(std::string_view prog_name) {
               << "  " << prog_name << " x libcore.a kernel.o\n";
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        print_usage(argv[0]);
+} // namespace
+
+int dgtl_ar_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    const std::string prog_name = invoked_as.empty() ? "dgtl-ar" : std::string(invoked_as);
+    auto expanded = dgtl::tools::ArgExpander::expand_args(raw_args);
+
+    if (expanded.empty()) {
+        print_usage(prog_name);
         return 1;
     }
 
@@ -77,11 +85,11 @@ int main(int argc, char* argv[]) {
     std::string archive_path;
     std::vector<std::string> member_files;
 
-    int arg_idx = 1;
-    std::string first_arg = argv[arg_idx++];
+    size_t arg_idx = 0;
+    std::string first_arg = expanded[arg_idx++];
 
     if (first_arg == "--help" || first_arg == "-h") {
-        print_usage(argv[0]);
+        print_usage(prog_name);
         return 0;
     }
     if (first_arg == "--version" || first_arg == "-V" || first_arg == "-v") {
@@ -90,7 +98,7 @@ int main(int argc, char* argv[]) {
     }
 
     // If invoked with a single file argument, default to open and display (tv)
-    if (argc == 2 && first_arg != "--help" && first_arg != "-h" && first_arg != "--version" && first_arg != "-v" && first_arg != "-V") {
+    if (expanded.size() == 1 && first_arg != "--help" && first_arg != "-h" && first_arg != "--version" && first_arg != "-v" && first_arg != "-V") {
         std::error_code ec;
         if (fs::exists(first_arg, ec)) {
             op = "tv";
@@ -105,16 +113,16 @@ int main(int argc, char* argv[]) {
         }
         op = first_arg;
 
-        if (arg_idx < argc) {
-            archive_path = argv[arg_idx++];
+        if (arg_idx < expanded.size()) {
+            archive_path = expanded[arg_idx++];
         } else {
             std::cerr << "error[dgtl-ar]: no archive or binary file specified\n";
             return 1;
         }
     }
 
-    while (arg_idx < argc) {
-        member_files.emplace_back(argv[arg_idx++]);
+    while (arg_idx < expanded.size()) {
+        member_files.emplace_back(expanded[arg_idx++]);
     }
 
     bool is_run    = (op == "run" || op == "-run" || op == "--run" || op == "exec");
@@ -122,6 +130,7 @@ int main(int argc, char* argv[]) {
     bool is_list   = (!is_run && (op.find('t') != std::string::npos || op.find('v') != std::string::npos));
     bool is_extract = (!is_run && (op.find('x') != std::string::npos));
     bool is_delete = (!is_run && (op.find('d') != std::string::npos));
+    bool is_index  = (!is_run && (op == "s" || op == "-s" || op == "ranlib" || op == "--index" || op == "index"));
     bool is_verbose = (op.find('v') != std::string::npos || is_run);
 
     // ─── Direct Execution / Result Display (run / exec) ──────────────────────
@@ -150,11 +159,21 @@ int main(int argc, char* argv[]) {
         if (run_rc == 0) {
             std::cout << " (SUCCESS: 0 errors)\n";
         } else if (run_rc == -1073741515 || run_rc == static_cast<int>(0xC0000139)) {
-            std::cout << " (FATAL: STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139 - missing DLL export)\n";
-        } else if (run_rc == -1073741819 || run_rc == static_cast<int>(0xC0000005)) {
-            std::cout << " (FATAL: STATUS_ACCESS_VIOLATION 0xC0000005 - memory access fault / null call)\n";
+            std::cout << " (FATAL: STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139 - missing DLL export / unresolved dynamic symbol)\n";
+        } else if (run_rc == -1073741819 || run_rc == static_cast<int>(0xC0000005) || run_rc == 139) {
+            std::cout << " (FATAL: STATUS_ACCESS_VIOLATION / SIGSEGV 0xC0000005 - memory access fault / null dereference)\n";
+        } else if (run_rc == -1073741676 || run_rc == static_cast<int>(0xC0000094) || run_rc == 136) {
+            std::cout << " (FATAL: STATUS_INTEGER_DIVIDE_BY_ZERO / SIGFPE 0xC0000094 - integer division by zero)\n";
+        } else if (run_rc == -1073741795 || run_rc == static_cast<int>(0xC000001D) || run_rc == 132) {
+            std::cout << " (FATAL: STATUS_ILLEGAL_INSTRUCTION / SIGILL 0xC000001D - illegal instruction opcode)\n";
+        } else if (run_rc == -1073741571 || run_rc == static_cast<int>(0xC00000FD)) {
+            std::cout << " (FATAL: STATUS_STACK_OVERFLOW 0xC00000FD - execution recursion exhausted stack pages)\n";
+        } else if (run_rc == 134) {
+            std::cout << " (FATAL: SIGABRT - process aborted by abort() or assertion failure)\n";
+        } else if (run_rc == 138) {
+            std::cout << " (FATAL: SIGBUS - memory bus error / unaligned access)\n";
         } else {
-            std::cout << " (ABNORMAL TERMINATION)\n";
+            std::cout << " (ABNORMAL TERMINATION: 0x" << std::hex << run_rc << std::dec << ")\n";
         }
         std::cout << "======================================================================\n";
         return run_rc;
@@ -290,6 +309,33 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // ─── Symbol Table Indexing (s / ranlib) ──────────────────────────────────
+    if (is_index) {
+        UniversalArchiveReader reader;
+        if (!reader.load_archive(archive_path)) {
+            std::cerr << "error[dgtl-ar]: failed to open archive for indexing: " << archive_path << "\n";
+            return 2;
+        }
+
+        std::vector<ArchiveMember> updated_members = reader.members();
+        for (auto& m : updated_members) {
+            m.symbols.clear();
+            extract_universal_symbols(m.data, m.symbols);
+        }
+
+        auto res = UniversalArchiveWriter::create_static_archive_from_memory(archive_path, updated_members);
+        if (!res.ok) {
+            std::cerr << "error[dgtl-ar]: failed to write indexed archive: " << res.error_message << "\n";
+            return 3;
+        }
+
+        std::cout << "[dgtl-ar] Rebuilt symbol index for: " << archive_path
+                  << " (" << res.total_bytes << " bytes, "
+                  << res.symbols_count << " symbols, "
+                  << res.members_count << " members)\n";
+        return 0;
+    }
+
     // ─── Insertion / Creation (r, rcs, cr, q) ────────────────────────────────
     if (is_insert) {
         if (member_files.empty()) {
@@ -406,6 +452,6 @@ int main(int argc, char* argv[]) {
     }
 
     std::cerr << "error[dgtl-ar]: unrecognized operation: " << op << "\n";
-    print_usage(argv[0]);
+    print_usage(prog_name);
     return 1;
 }

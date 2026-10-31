@@ -37,6 +37,7 @@ namespace spirv_op {
     inline constexpr uint32_t Source             = 3;
     inline constexpr uint32_t Name               = 5;
     inline constexpr uint32_t ExtInstImport      = 11;
+    inline constexpr uint32_t ExtInst            = 12;
     inline constexpr uint32_t MemoryModel        = 14;
     inline constexpr uint32_t EntryPoint         = 15;
     inline constexpr uint32_t ExecutionMode      = 16;
@@ -170,9 +171,12 @@ public:
         const auto uses = mir_uses(inst);
 
         const uint32_t def_id = def ? (def->reg.id + 100u) : 0u;
-        const uint32_t type_i32 = 1u;
-        const uint32_t type_f32 = 2u;
-        const uint32_t type_bool = 3u;
+        const uint32_t type_i32 = 2u;
+        const uint32_t type_f32 = 3u;
+        const uint32_t type_bool = 4u;
+        const uint32_t type_f64 = 6u;
+        const uint32_t type_i64 = 7u;
+        const uint32_t glsl_ext_id = 8u;
 
         auto emit_raw = [&](uint32_t opcode, std::initializer_list<uint32_t> operands) {
             const uint32_t count = static_cast<uint32_t>(operands.size() + 1u);
@@ -203,6 +207,7 @@ public:
             case MachineForm::IntegerBinary32:
             case MachineForm::IntegerBinary64: {
                 if (def && uses.size() >= 2) {
+                    const uint32_t type_int = (inst.form == MachineForm::IntegerBinary64) ? type_i64 : type_i32;
                     const uint32_t a = uses[0]->reg.id + 100u;
                     const uint32_t b = uses[1]->reg.id + 100u;
                     uint32_t op = spirv_op::IAdd;
@@ -218,13 +223,19 @@ public:
                         case MachineSemanticKind::IntegerShr: op = spirv_op::ShiftRightArithmetic; break;
                         default: break;
                     }
-                    emit_raw(op, {type_i32, def_id, a, b});
+                    emit_raw(op, {type_int, def_id, a, b});
                 }
                 break;
             }
             case MachineForm::FloatBinary32:
             case MachineForm::FloatBinary64: {
-                if (def && uses.size() >= 2) {
+                const uint32_t flt_type = (inst.form == MachineForm::FloatBinary64) ? type_f64 : type_f32;
+                if (inst.semantic_kind == MachineSemanticKind::FloatSqrt) {
+                    if (def && !uses.empty()) {
+                        const uint32_t a = uses[0]->reg.id + 100u;
+                        emit_raw(spirv_op::ExtInst, {flt_type, def_id, glsl_ext_id, 31u /* Sqrt */, a});
+                    }
+                } else if (def && uses.size() >= 2) {
                     const uint32_t a = uses[0]->reg.id + 100u;
                     const uint32_t b = uses[1]->reg.id + 100u;
                     uint32_t op = spirv_op::FAdd;
@@ -234,7 +245,17 @@ public:
                         case MachineSemanticKind::FloatDiv: op = spirv_op::FDiv; break;
                         default: break;
                     }
-                    emit_raw(op, {type_f32, def_id, a, b});
+                    emit_raw(op, {flt_type, def_id, a, b});
+                }
+                break;
+            }
+            case MachineForm::FloatTernaryFma32: {
+                if (def && uses.size() >= 3) {
+                    const uint32_t flt_type = (inst.opcode == GM_FFMA64) ? type_f64 : type_f32;
+                    const uint32_t a = uses[0]->reg.id + 100u;
+                    const uint32_t b = uses[1]->reg.id + 100u;
+                    const uint32_t c = uses[2]->reg.id + 100u;
+                    emit_raw(spirv_op::ExtInst, {flt_type, def_id, glsl_ext_id, 50u /* Fma */, a, b, c});
                 }
                 break;
             }
@@ -242,16 +263,49 @@ public:
                 if (def && uses.size() >= 2) {
                     const uint32_t a = uses[0]->reg.id + 100u;
                     const uint32_t b = uses[1]->reg.id + 100u;
-                    uint32_t op = spirv_op::IEqual;
-                    switch (inst.comparison_predicate()) {
-                        case ComparisonPredicate::NotEqual: op = spirv_op::INotEqual; break;
-                        case ComparisonPredicate::SignedLessThan: op = spirv_op::SLessThan; break;
-                        case ComparisonPredicate::SignedLessEqual: op = spirv_op::SLessThanEqual; break;
-                        case ComparisonPredicate::SignedGreaterThan: op = spirv_op::SGreaterThan; break;
-                        case ComparisonPredicate::SignedGreaterEqual: op = spirv_op::SGreaterThanEqual; break;
-                        default: break;
+                    const bool is_f64 = (inst.opcode == GM_FCMP64 || (inst.opcode >= GM_FCMP64_EQ && inst.opcode <= GM_FCMP64_GE));
+                    const bool is_f32 = (inst.opcode == GM_FCMP32 || (inst.opcode >= GM_FCMP32_EQ && inst.opcode <= GM_FCMP32_GE) ||
+                                         inst.semantic_kind == MachineSemanticKind::FloatCmp);
+
+                    if (is_f64 || is_f32) {
+                        uint32_t op = spirv_op::FOrdEqual;
+                        switch (inst.comparison_predicate()) {
+                            case ComparisonPredicate::Equal: op = spirv_op::FOrdEqual; break;
+                            case ComparisonPredicate::NotEqual: op = spirv_op::FOrdNotEqual; break;
+                            case ComparisonPredicate::SignedLessThan: op = spirv_op::FOrdLessThan; break;
+                            case ComparisonPredicate::SignedLessEqual: op = spirv_op::FOrdLessThanEqual; break;
+                            case ComparisonPredicate::SignedGreaterThan: op = spirv_op::FOrdGreaterThan; break;
+                            case ComparisonPredicate::SignedGreaterEqual: op = spirv_op::FOrdGreaterThanEqual; break;
+                            default: break;
+                        }
+                        emit_raw(op, {type_bool, def_id, a, b});
+                    } else {
+                        uint32_t op = spirv_op::IEqual;
+                        switch (inst.comparison_predicate()) {
+                            case ComparisonPredicate::NotEqual: op = spirv_op::INotEqual; break;
+                            case ComparisonPredicate::SignedLessThan: op = spirv_op::SLessThan; break;
+                            case ComparisonPredicate::SignedLessEqual: op = spirv_op::SLessThanEqual; break;
+                            case ComparisonPredicate::SignedGreaterThan: op = spirv_op::SGreaterThan; break;
+                            case ComparisonPredicate::SignedGreaterEqual: op = spirv_op::SGreaterThanEqual; break;
+                            default: break;
+                        }
+                        emit_raw(op, {type_bool, def_id, a, b});
                     }
-                    emit_raw(op, {type_bool, def_id, a, b});
+                }
+                break;
+            }
+            case MachineForm::TensorOp: {
+                if (def && !uses.empty()) {
+                    const uint32_t a = uses[0]->reg.id + 100u;
+                    emit_raw(spirv_op::ExtInst, {type_f32, def_id, glsl_ext_id, 40u /* FMax */, a, a});
+                }
+                break;
+            }
+            case MachineForm::Call: {
+                if (def && !uses.empty()) {
+                    const uint32_t callee_id = 9u;
+                    const uint32_t arg0 = uses[0]->reg.id + 100u;
+                    emit_raw(spirv_op::FunctionCall, {type_i32, def_id, callee_id, arg0});
                 }
                 break;
             }
@@ -298,6 +352,10 @@ public:
         builder.emit_inst(spirv_op::Capability, {4u}); // Float64
         builder.emit_inst(spirv_op::Capability, {5u}); // Int64
 
+        // Extended instruction set import
+        const uint32_t glsl_ext_id = 8u;
+        builder.emit_string(spirv_op::ExtInstImport, "GLSL.std.450", {glsl_ext_id});
+
         // Memory model: Logical, GLSL450
         builder.emit_inst(spirv_op::MemoryModel, {0u, 1u});
 
@@ -314,12 +372,16 @@ public:
         const uint32_t type_f32  = 3u;
         const uint32_t type_bool = 4u;
         const uint32_t type_func = 5u;
+        const uint32_t type_f64  = 6u;
+        const uint32_t type_i64  = 7u;
 
         builder.emit_inst(spirv_op::TypeVoid, {type_void});
         builder.emit_inst(spirv_op::TypeInt, {type_i32, 32u, 1u});
         builder.emit_inst(spirv_op::TypeFloat, {type_f32, 32u});
         builder.emit_inst(spirv_op::TypeBool, {type_bool});
         builder.emit_inst(spirv_op::TypeFunction, {type_func, type_void});
+        builder.emit_inst(spirv_op::TypeFloat, {type_f64, 64u});
+        builder.emit_inst(spirv_op::TypeInt, {type_i64, 64u, 1u});
 
         // Function start
         builder.emit_inst(spirv_op::Function, {type_void, func_id, 0u, type_func});

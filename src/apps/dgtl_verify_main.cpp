@@ -32,12 +32,14 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <span>
 #include <memory>
 #include <optional>
 #include <cctype>
 #include <cstring>
 #include <iomanip>
 
+import dgtl.tools.common;
 import dgtl.arena;
 import dgtl.ir_enums;
 import dgtl.ir_node;
@@ -71,6 +73,7 @@ struct Options {
     std::string original_file;
     std::string optimized_file;
     std::string pass_name = "unknown";
+    std::string target_arch = "x86_64";
     std::string solver_name = "z3";
     VerificationLevel level = VerificationLevel::Standard;
     std::string output_report;
@@ -79,12 +82,12 @@ struct Options {
     int timeout_seconds = 30;
 };
 
-void print_version() {
+static void print_version() {
     std::cout << "dgtl-verify: DGTL Formal Verification Tool v2.1.0 (TataG Systems)\n"
               << "Standards: C++26 / SMT-LIB2 Mathematical Equivalence & Translation Validation\n";
 }
 
-void print_usage(std::string_view prog_name) {
+static void print_usage(std::string_view prog_name) {
     std::cout << "DGTL Formal Verification Tool (dgtl-verify) v2.1.0\n"
               << "\nUSAGE:\n"
               << "  " << prog_name << " --original=<before.dgtl> --optimized=<after.dgtl> [OPTIONS]\n"
@@ -93,6 +96,7 @@ void print_usage(std::string_view prog_name) {
               << "  --optimized=<file>      Optimized IR after pass\n"
               << "\nOPTIONAL:\n"
               << "  --pass=<name>           Pass name for reporting (default: unknown)\n"
+              << "  --target=<arch>         Target architecture model (x86_64, arm64, riscv64, wasm, ptx, amdgpu; default: x86_64)\n"
               << "  --solver=<solver>       SMT solver (z3, cvc4, cvc5, yices2; default: z3)\n"
               << "  --level=<level>         Verification level (basic, standard, full, exhaustive; default: standard)\n"
               << "  --output=<file>         Write report to file (default: stdout)\n"
@@ -107,22 +111,28 @@ void print_usage(std::string_view prog_name) {
               << "  " << prog_name << " --original=in.dgtl --optimized=out.dgtl --output=report.txt --smtlib=proof.smt2\n";
 }
 
-bool parse_args(int argc, char** argv, Options& opts) {
-    if (argc < 2) {
-        print_usage(argv[0]);
-        return false;
+enum class ParseAction {
+    Success,
+    HelpOrVersion,
+    Error
+};
+
+ParseAction parse_args(const std::vector<std::string>& args, std::string_view prog_name, Options& opts) {
+    if (args.empty()) {
+        print_usage(prog_name);
+        return ParseAction::Error;
     }
 
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg(argv[i]);
+    for (size_t i = 0; i < args.size(); ++i) {
+        std::string_view arg(args[i]);
 
         if (arg == "--help" || arg == "-h") {
-            print_usage(argv[0]);
-            std::exit(0);
+            print_usage(prog_name);
+            return ParseAction::HelpOrVersion;
         }
         if (arg == "--version" || arg == "-v" || arg == "-V") {
             print_version();
-            std::exit(0);
+            return ParseAction::HelpOrVersion;
         }
         if (arg == "--verbose") {
             opts.verbose = true;
@@ -132,6 +142,8 @@ bool parse_args(int argc, char** argv, Options& opts) {
             opts.optimized_file = std::string(arg.substr(12));
         } else if (arg.substr(0, 7) == "--pass=") {
             opts.pass_name = std::string(arg.substr(7));
+        } else if (arg.substr(0, 9) == "--target=") {
+            opts.target_arch = std::string(arg.substr(9));
         } else if (arg.substr(0, 9) == "--solver=") {
             opts.solver_name = std::string(arg.substr(9));
         } else if (arg.substr(0, 9) == "--output=") {
@@ -151,27 +163,27 @@ bool parse_args(int argc, char** argv, Options& opts) {
                 opts.level = VerificationLevel::Exhaustive;
             } else {
                 std::cerr << "Unknown verification level: " << level_str << "\n";
-                return false;
+                return ParseAction::Error;
             }
         } else if (arg.substr(0, 10) == "--timeout=") {
             try {
                 opts.timeout_seconds = std::stoi(std::string(arg.substr(10)));
             } catch (...) {
                 std::cerr << "Invalid timeout value\n";
-                return false;
+                return ParseAction::Error;
             }
         } else if (arg[0] == '-') {
             std::cerr << "Unknown option: " << arg << "\n";
-            return false;
+            return ParseAction::Error;
         }
     }
 
     if (opts.original_file.empty() || opts.optimized_file.empty()) {
         std::cerr << "Error: Both --original and --optimized required\n";
-        return false;
+        return ParseAction::Error;
     }
 
-    return true;
+    return ParseAction::Success;
 }
 
 std::string read_file(const std::string& path) {
@@ -392,9 +404,13 @@ dgtl::formal::VerificationLevel map_level(VerificationLevel level) {
     }
 }
 
-int main(int argc, char** argv) {
+int execute_verify(const std::vector<std::string>& args, std::string_view prog_name) {
     Options opts;
-    if (!parse_args(argc, argv, opts)) {
+    ParseAction action = parse_args(args, prog_name, opts);
+    if (action == ParseAction::HelpOrVersion) {
+        return static_cast<int>(ExitCode::Success);
+    }
+    if (action == ParseAction::Error) {
         return static_cast<int>(ExitCode::InvalidArgs);
     }
 
@@ -523,6 +539,8 @@ int main(int argc, char** argv) {
 
 } // namespace dgtl_verify
 
-int main(int argc, char** argv) {
-    return dgtl_verify::main(argc, argv);
+int dgtl_verify_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    std::string prog_name = invoked_as.empty() ? "dgtl-verify" : std::string(invoked_as);
+    std::vector<std::string> expanded = dgtl::tools::ArgExpander::expand(raw_args);
+    return dgtl_verify::execute_verify(expanded, prog_name);
 }
