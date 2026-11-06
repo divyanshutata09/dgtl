@@ -34,6 +34,21 @@ import dgtl.object.relocation;
 
 export namespace dgtl::object::readers {
 
+namespace elf_reloc_x86_64 {
+    inline constexpr uint32_t R_X86_64_NONE      = 0u;
+    inline constexpr uint32_t R_X86_64_64        = 1u;
+    inline constexpr uint32_t R_X86_64_PC32      = 2u;
+    inline constexpr uint32_t R_X86_64_PLT32     = 4u;
+    inline constexpr uint32_t R_X86_64_RELATIVE  = 8u;
+    inline constexpr uint32_t R_X86_64_32        = 10u;
+    inline constexpr uint32_t R_X86_64_32S       = 11u;
+}
+
+namespace elf_reloc_aarch64 {
+    inline constexpr uint32_t R_AARCH64_JUMP26   = 282u;
+    inline constexpr uint32_t R_AARCH64_CALL26   = 283u;
+}
+
 class ELFObjectReader {
 public:
     ELFObjectReader() = default;
@@ -401,18 +416,40 @@ private:
                 const uint32_t sym_index = static_cast<uint32_t>((r_info >> 32) & 0xFFFFFFFFu);
 
                 dgtl::object::RelocationKind rk = dgtl::object::RelocationKind::Absolute64;
-                if (rel_type == 1u) {
-                    rk = dgtl::object::RelocationKind::Absolute64; // R_X86_64_64
-                } else if (rel_type == 2u) {
-                    rk = dgtl::object::RelocationKind::PCRel32;    // R_X86_64_PC32
-                } else if (rel_type == 4u) {
-                    rk = dgtl::object::RelocationKind::PLT32;      // R_X86_64_PLT32
-                } else if (rel_type == 8u) {
-                    rk = dgtl::object::RelocationKind::Relative64; // R_X86_64_RELATIVE
-                } else if (rel_type == 10u || rel_type == 11u) {
-                    rk = dgtl::object::RelocationKind::Absolute32; // R_X86_64_32 / 32S
-                } else if (rel_type == 283u || rel_type == 282u) {
-                    rk = dgtl::object::RelocationKind::Call26;     // R_AARCH64_CALL26 / JUMP26
+                switch (rel_type) {
+                    case elf_reloc_x86_64::R_X86_64_64:
+                        rk = dgtl::object::RelocationKind::Absolute64;
+                        break;
+                    case elf_reloc_x86_64::R_X86_64_PC32:
+                        rk = dgtl::object::RelocationKind::PCRel32;
+                        break;
+                    case elf_reloc_x86_64::R_X86_64_PLT32:
+                        rk = dgtl::object::RelocationKind::PLT32;
+                        break;
+                    case elf_reloc_x86_64::R_X86_64_RELATIVE:
+                        rk = dgtl::object::RelocationKind::Relative64;
+                        break;
+                    case elf_reloc_x86_64::R_X86_64_32:
+                    case elf_reloc_x86_64::R_X86_64_32S:
+                        rk = dgtl::object::RelocationKind::Absolute32;
+                        break;
+                    case elf_reloc_aarch64::R_AARCH64_JUMP26:
+                    case elf_reloc_aarch64::R_AARCH64_CALL26:
+                        rk = dgtl::object::RelocationKind::Call26;
+                        break;
+                    default:
+                        rk = dgtl::object::RelocationKind::Absolute64;
+                        break;
+                }
+
+                // If section uses REL rather than RELA, extract in-place addend from target section raw data
+                if (!is_rela && sh.info < headers.size()) {
+                    const auto& target_sh = headers[sh.info];
+                    if (target_sh.offset != 0 && r_offset < target_sh.size && target_sh.offset + r_offset + 4 <= buffer.size()) {
+                        int32_t in_place32 = 0;
+                        std::memcpy(&in_place32, buffer.data() + target_sh.offset + r_offset, 4);
+                        r_addend = in_place32;
+                    }
                 }
 
                 std::string symbol_name;

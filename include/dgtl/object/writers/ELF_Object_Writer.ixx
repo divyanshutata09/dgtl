@@ -27,6 +27,7 @@ module;
 #include <vector>
 #include <array>
 #include <cstdio>
+#include <unordered_map>
 
 export module dgtl.object.writers.elf;
 
@@ -59,6 +60,31 @@ public:
             }
         }
 
+        // 0. Gather all symbols, including external symbols from relocations
+        std::vector<dgtl::object::Symbol> all_symbols = obj.symbols();
+        std::unordered_map<std::string, std::uint32_t> symbol_indices;
+        for (std::size_t i = 0; i < all_symbols.size(); ++i) {
+            symbol_indices[all_symbols[i].name] = static_cast<std::uint32_t>(i + 1); // 1-based index (0 is STN_UNDEF)
+        }
+
+        for (const auto& rel : obj.relocations()) {
+            if (rel.symbol_name.empty()) continue;
+            if (!symbol_indices.contains(rel.symbol_name)) {
+                symbol_indices[rel.symbol_name] = static_cast<std::uint32_t>(all_symbols.size() + 1);
+                all_symbols.push_back(dgtl::object::Symbol::make_external(
+                    rel.symbol_name, dgtl::object::SymbolType::Function, 1));
+            }
+        }
+
+        // Locate text section index (for relocations)
+        std::size_t text_sec_idx = 0;
+        for (std::size_t i = 0; i < emit_sections.size(); ++i) {
+            if (emit_sections[i]->is_code() || emit_sections[i]->name == ".text") {
+                text_sec_idx = i;
+                break;
+            }
+        }
+
         // Build Section Header String Table (.shstrtab)
         std::vector<std::uint8_t> shstrtab;
         shstrtab.push_back(0); // initial null byte
@@ -67,6 +93,15 @@ public:
         for (const auto* sec : emit_sections) {
             shstrtab_offsets.push_back(static_cast<std::uint32_t>(shstrtab.size()));
             for (char c : sec->name) shstrtab.push_back(static_cast<std::uint8_t>(c));
+            shstrtab.push_back(0);
+        }
+
+        const bool has_relocs = !obj.relocations().empty();
+        std::uint32_t rela_name_offset = 0;
+        if (has_relocs) {
+            rela_name_offset = static_cast<std::uint32_t>(shstrtab.size());
+            const char rela_name[] = ".rela.text";
+            for (char c : rela_name) shstrtab.push_back(static_cast<std::uint8_t>(c));
             shstrtab.push_back(0);
         }
 
@@ -90,7 +125,7 @@ public:
         strtab.push_back(0); // initial null
 
         std::vector<std::uint32_t> strtab_offsets;
-        for (const auto& sym : obj.symbols()) {
+        for (const auto& sym : all_symbols) {
             strtab_offsets.push_back(static_cast<std::uint32_t>(strtab.size()));
             for (char c : sym.name) strtab.push_back(static_cast<std::uint8_t>(c));
             strtab.push_back(0);
@@ -98,7 +133,7 @@ public:
 
         // Build Symbol Table (.symtab, 24 bytes per Elf64_Sym)
         std::vector<std::uint8_t> symtab;
-        // Null symbol entry
+        // Null symbol entry (STN_UNDEF)
         for (int i = 0; i < 24; ++i) symtab.push_back(0);
 
         auto emit_u16 = [](std::vector<std::uint8_t>& buf, std::uint16_t v) {
@@ -112,10 +147,10 @@ public:
             for (int i = 0; i < 8; ++i) buf.push_back(static_cast<std::uint8_t>((v >> (i * 8)) & 0xFF));
         };
 
-        for (std::size_t i = 0; i < obj.symbols().size(); ++i) {
-            const auto& sym = obj.symbols()[i];
+        for (std::size_t i = 0; i < all_symbols.size(); ++i) {
+            const auto& sym = all_symbols[i];
             emit_u32(symtab, strtab_offsets[i]); // st_name
-            std::uint8_t info = (sym.is_global() ? 1 : 0) << 4; // STB_GLOBAL / STB_LOCAL
+            std::uint8_t info = (sym.is_global() || sym.external ? 1 : 0) << 4; // STB_GLOBAL / STB_LOCAL
             info |= (sym.is_function() ? 2 : (sym.is_object() ? 1 : 0)); // STT_FUNC / STT_OBJECT
             std::uint16_t shndx = 0;
             if (!sym.external) {
@@ -135,6 +170,21 @@ public:
             emit_u64(symtab, sym.size);  // st_size
         }
 
+        // Build .rela.text (Elf64_Rela, 24 bytes each)
+        std::vector<std::uint8_t> rela_bytes;
+        if (has_relocs) {
+            for (const auto& rel : obj.relocations()) {
+                emit_u64(rela_bytes, rel.offset);
+                std::uint32_t sym_idx = 0;
+                auto sit = symbol_indices.find(rel.symbol_name);
+                if (sit != symbol_indices.end()) sym_idx = sit->second;
+                const std::uint32_t r_type = rel.type != 0 ? rel.type : 2u; // Default R_X86_64_PC32
+                const std::uint64_t r_info = (static_cast<std::uint64_t>(sym_idx) << 32) | static_cast<std::uint64_t>(r_type);
+                emit_u64(rela_bytes, r_info);
+                emit_u64(rela_bytes, static_cast<std::uint64_t>(rel.addend));
+            }
+        }
+
         // Layout offsets
         const std::size_t ehdr_size = 64;
         std::size_t cur_offset = ehdr_size;
@@ -145,6 +195,14 @@ public:
             cur_offset = (cur_offset + (align - 1)) & ~(align - 1);
             section_offsets.push_back(cur_offset);
             cur_offset += sec->bytes.size();
+        }
+
+        // .rela.text offset
+        std::size_t rela_offset = 0;
+        if (has_relocs) {
+            cur_offset = (cur_offset + 7) & ~7;
+            rela_offset = cur_offset;
+            cur_offset += rela_bytes.size();
         }
 
         // .symtab offset
@@ -164,8 +222,8 @@ public:
         cur_offset = (cur_offset + 7) & ~7;
         const std::size_t shdr_offset = cur_offset;
 
-        // Total sections: null + emit_sections + .symtab + .strtab + .shstrtab
-        const std::uint16_t num_shdrs = static_cast<std::uint16_t>(1 + emit_sections.size() + 3);
+        // Total sections: null + emit_sections + (.rela.text) + .symtab + .strtab + .shstrtab
+        const std::uint16_t num_shdrs = static_cast<std::uint16_t>(1 + emit_sections.size() + (has_relocs ? 1 : 0) + 3);
         const std::uint16_t shstrtab_idx = static_cast<std::uint16_t>(num_shdrs - 1);
 
         // 2. Emit ELF64 Header (64 bytes)
@@ -205,6 +263,11 @@ public:
         for (std::size_t i = 0; i < emit_sections.size(); ++i) {
             if (out.size() < section_offsets[i]) out.resize(section_offsets[i], 0);
             out.insert(out.end(), emit_sections[i]->bytes.begin(), emit_sections[i]->bytes.end());
+        }
+
+        if (has_relocs) {
+            if (out.size() < rela_offset) out.resize(rela_offset, 0);
+            out.insert(out.end(), rela_bytes.begin(), rela_bytes.end());
         }
 
         if (out.size() < symtab_offset) out.resize(symtab_offset, 0);
@@ -248,8 +311,15 @@ public:
             emit_shdr(shstrtab_offsets[i], type, flags, 0, section_offsets[i], sec->size(), 0, 0, sec->alignment, 0);
         }
 
+        // .rela.text (if present)
+        const std::uint32_t symtab_shndx = static_cast<std::uint32_t>(1 + emit_sections.size() + (has_relocs ? 1 : 0));
+        const std::uint32_t strtab_shndx = symtab_shndx + 1;
+        if (has_relocs) {
+            const std::uint32_t text_shndx = static_cast<std::uint32_t>(text_sec_idx + 1);
+            emit_shdr(rela_name_offset, 4, 0x40, 0, rela_offset, rela_bytes.size(), symtab_shndx, text_shndx, 8, 24); // SHT_RELA, SHF_INFO_LINK
+        }
+
         // .symtab
-        const std::uint32_t strtab_shndx = static_cast<std::uint32_t>(1 + emit_sections.size() + 1);
         emit_shdr(symtab_name_offset, 2, 0, 0, symtab_offset, symtab.size(), strtab_shndx, 1, 8, 24); // SHT_SYMTAB
 
         // .strtab

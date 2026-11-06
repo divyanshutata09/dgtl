@@ -889,6 +889,11 @@ DGTL_API void DGTL_CALL dgtl_stream_destroy(dgtl_stream_t* s) DGTL_NOEXCEPT;
 DGTL_API void DGTL_CALL dgtl_stream_reset(dgtl_stream_t* s) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_size(const dgtl_stream_t* s) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_stream_max_slot(const dgtl_stream_t* s) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_next_slot(dgtl_stream_t* s, uint32_t base) DGTL_NOEXCEPT;
+DGTL_API dgtl_err_t DGTL_CALL dgtl_stream_add_rdata_bytes(dgtl_stream_t* s, const char* symbol_name, const void* data, size_t size, uint64_t* out_offset) DGTL_NOEXCEPT;
+DGTL_API dgtl_err_t DGTL_CALL dgtl_stream_add_rdata_string(dgtl_stream_t* s, const char* symbol_name, const char* str, size_t len, uint64_t* out_offset) DGTL_NOEXCEPT;
+DGTL_API dgtl_err_t DGTL_CALL dgtl_stream_add_data_global(dgtl_stream_t* s, const char* symbol_name, const void* data, size_t size, size_t alignment, uint64_t* out_offset) DGTL_NOEXCEPT;
+DGTL_API dgtl_err_t DGTL_CALL dgtl_stream_add_bss_global(dgtl_stream_t* s, const char* symbol_name, size_t size, size_t alignment, uint64_t* out_offset) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_stream_get_node(const dgtl_stream_t* s, size_t index, dgtl_node_t* DGTL_NONNULL(3) out_node) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API bool DGTL_CALL dgtl_stream_get_core_record(const dgtl_stream_t* s, size_t index, dgtl_core_record_t* DGTL_NONNULL(3) out_rec) DGTL_NOEXCEPT;
 DGTL_API void DGTL_CALL dgtl_stream_set_ir_mode(dgtl_stream_t* s, dgtl_ir_mode_t mode) DGTL_NOEXCEPT;
@@ -906,6 +911,8 @@ DGTL_API void DGTL_CALL dgtl_stream_set_result_ids(dgtl_stream_t* s, size_t node
 DGTL_NODISCARD DGTL_API size_t DGTL_CALL dgtl_stream_get_result_ids(const dgtl_stream_t* s, size_t node_idx, uint32_t* out, size_t max_out) DGTL_NOEXCEPT;
 DGTL_API void DGTL_CALL dgtl_stream_set_node_effects(dgtl_stream_t* s, size_t node_idx, uint32_t effect_set) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API uint32_t DGTL_CALL dgtl_stream_get_node_effects(const dgtl_stream_t* s, size_t node_idx) DGTL_NOEXCEPT;
+DGTL_API void DGTL_CALL dgtl_stream_set_result_type(dgtl_stream_t* s, uint32_t val_id, dgtl_type_t type) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API dgtl_type_t DGTL_CALL dgtl_stream_get_result_type(const dgtl_stream_t* s, uint32_t val_id) DGTL_NOEXCEPT;
 
 /* ============================================================================
  * SECTION 19 â€” FUNCTION & CONTROL FLOW GRAPH BUILDER
@@ -1155,6 +1162,7 @@ DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_register_symbols(dgtl_
 DGTL_API void DGTL_CALL dgtl_session_clear_symbols(dgtl_session_t* DGTL_NONNULL(1) session) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_session_compile(dgtl_session_t* DGTL_NONNULL(1) session, dgtl_stream_t* DGTL_NONNULL(2) stream) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API uint64_t DGTL_CALL dgtl_session_get_symbol_address(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) name) DGTL_NOEXCEPT;
+DGTL_NODISCARD DGTL_API uint64_t DGTL_CALL dgtl_session_get_rdata_address(dgtl_session_t* DGTL_NONNULL(1) session) DGTL_NOEXCEPT;
 DGTL_NODISCARD DGTL_API void* DGTL_CALL dgtl_session_get_function_ptr(dgtl_session_t* DGTL_NONNULL(1) session, const char* DGTL_NONNULL(2) name) DGTL_NOEXCEPT;
 
 /* Universal ABI Marshaller */
@@ -1547,6 +1555,18 @@ public:
     [[nodiscard]] dgtl_err_t emit_object(dgtl_target_t target, void** out_buf, size_t* out_size) noexcept {
         return dgtl_emit_object_binary_in_memory(s_, target, out_buf, out_size);
     }
+    dgtl_err_t add_rdata_bytes(const char* name, const void* data, size_t size, uint64_t* out_offset = nullptr) noexcept {
+        return dgtl_stream_add_rdata_bytes(s_, name, data, size, out_offset);
+    }
+    dgtl_err_t add_rdata_string(const char* name, const char* str, size_t len, uint64_t* out_offset = nullptr) noexcept {
+        return dgtl_stream_add_rdata_string(s_, name, str, len, out_offset);
+    }
+    dgtl_err_t add_data_global(const char* name, const void* data, size_t size, size_t alignment = 16, uint64_t* out_offset = nullptr) noexcept {
+        return dgtl_stream_add_data_global(s_, name, data, size, alignment, out_offset);
+    }
+    dgtl_err_t add_bss_global(const char* name, size_t size, size_t alignment = 16, uint64_t* out_offset = nullptr) noexcept {
+        return dgtl_stream_add_bss_global(s_, name, size, alignment, out_offset);
+    }
     [[nodiscard]] dgtl_text_t disassemble(const TargetMachine& tm) const noexcept;
     [[nodiscard]] dgtl_text_t dump_machine_ir(const TargetMachine& tm) const noexcept;
 private:
@@ -1873,6 +1893,18 @@ public:
     dgtl_err_t add_global_data(const char* name, const uint8_t* data, size_t size, size_t alignment = 16, bool is_constant = false, dgtl_linkage_t linkage = DGTL_LINKAGE_EXTERNAL) noexcept {
         return dgtl_module_add_global_data(mod_, name, data, size, alignment, is_constant, linkage);
     }
+    dgtl_symbol_id_t emit_rdata_cstring(const char* str) noexcept {
+        return dgtl_emit_rdata_cstring(mod_, str);
+    }
+    dgtl_symbol_id_t emit_rdata_blob(const char* symbol_name, const uint8_t* data, size_t size, size_t alignment = 16) noexcept {
+        return dgtl_emit_rdata_blob(mod_, symbol_name, data, size, alignment);
+    }
+    dgtl_symbol_id_t emit_data_global(const char* name, const uint8_t* data, size_t size, size_t alignment = 16, bool is_constant = false, dgtl_linkage_t linkage = DGTL_LINKAGE_EXTERNAL) noexcept {
+        return dgtl_emit_data_global(mod_, name, data, size, alignment, is_constant, linkage);
+    }
+    dgtl_symbol_id_t emit_bss_global(const char* name, size_t size, size_t alignment = 16, dgtl_linkage_t linkage = DGTL_LINKAGE_EXTERNAL) noexcept {
+        return dgtl_emit_bss_global(mod_, name, size, alignment, linkage);
+    }
     [[nodiscard]] size_t function_count() const noexcept { return dgtl_module_get_function_count(mod_); }
     [[nodiscard]] const char* function_name(size_t idx) const noexcept { return dgtl_module_get_function_name(mod_, idx); }
     [[nodiscard]] size_t global_count() const noexcept { return dgtl_module_get_global_count(mod_); }
@@ -2021,6 +2053,17 @@ namespace sdk {
 #  endif
 #else
 #  include "math.h"
+#endif
+
+/* Entire-DGTL Polyglot Conformance & Diagnostic Oracle */
+#if defined(__has_include)
+#  if __has_include("dgtl_sdk/client_debug.h")
+#    include "dgtl_sdk/client_debug.h"
+#  elif __has_include("client_debug.h")
+#    include "client_debug.h"
+#  endif
+#else
+#  include "client_debug.h"
 #endif
 
 #endif /* DGTL_SDK_H */

@@ -107,7 +107,7 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * SECTION 2 â€” VALUE & COMPILER ID HANDLES
+ * SECTION 2 — VALUE & COMPILER ID HANDLES
  * ========================================================================== */
 
 typedef struct { uint32_t id; } dgtl_value_t;
@@ -116,6 +116,18 @@ typedef struct { uint32_t id; } dgtl_type_t;
 typedef struct { uint32_t id; } dgtl_func_t;
 typedef struct { uint32_t id; } dgtl_str_t;
 typedef struct { uint32_t id; } dgtl_pass_t;
+
+typedef enum dgtl_section_kind {
+    DGTL_SEC_TEXT   = 0,
+    DGTL_SEC_RDATA  = 1,
+    DGTL_SEC_DATA   = 2,
+    DGTL_SEC_BSS    = 3,
+    DGTL_SEC_TDATA  = 4,
+    DGTL_SEC_TBSS   = 5
+} dgtl_section_kind_t;
+
+typedef uint32_t dgtl_symbol_id_t;
+#define DGTL_INVALID_SYMBOL_ID (0xFFFFFFFFu)
 
 #ifdef __cplusplus
 #  define DGTL_INVALID_VALUE  (dgtl_value_t{0xFFFFFFFFu})

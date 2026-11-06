@@ -64,6 +64,7 @@ inline constexpr uint32_t kSectionMemWrite       = 0x80000000;
 inline constexpr uint32_t kSectionMemDiscardable = 0x02000000;
 inline constexpr uint32_t kSectionContainsCode   = 0x00000020;
 inline constexpr uint32_t kSectionInitializedData = 0x00000040;
+inline constexpr uint32_t kSectionUninitializedData = 0x00000080;
 
 inline constexpr uint32_t kDirImport    = 1;
 inline constexpr uint32_t kDirBaseReloc = 5;
@@ -196,8 +197,6 @@ private:
         std::string_view stripped = name;
         if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
         else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
-        else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
-        else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
         else if (stripped.starts_with("__")) stripped.remove_prefix(2);
         else if (stripped.starts_with("_")) stripped.remove_prefix(1);
 
@@ -477,6 +476,21 @@ private:
                 0xC3                                      // ret
             };
         }
+        if (name == "strlen" || name == "__dgtl_rt_strlen" || stripped == "strlen") {
+            // Sovereign strlen x64: rcx=str, returns rax=length
+            return {
+                0x48, 0x31, 0xC0,                         // xor rax, rax
+                0x48, 0x85, 0xC9,                         // test rcx, rcx
+                0x74, 0x0C,                               // jz .done (+12)
+                // .loop:
+                0x80, 0x3C, 0x01, 0x00,                   // cmp byte ptr [rcx + rax], 0
+                0x74, 0x06,                               // je .done (+6)
+                0x48, 0xFF, 0xC0,                         // inc rax
+                0xEB, 0xF5,                               // jmp .loop (-11)
+                // .done:
+                0xC3                                      // ret
+            };
+        }
         if (name == "__chkstk" || name == "_chkstk" || name == "___chkstk_ms" || name == "__chkstk_ms" || name == "_alloca" || name == "__alloca" || stripped == "chkstk" || stripped == "chkstk_ms" || stripped == "alloca") {
             // Sovereign Windows x64 Dynamic Stack Prober (__chkstk / ___chkstk_ms)
             // Conforms to Microsoft x64 and MinGW GCC ABI:
@@ -650,19 +664,15 @@ public:
             return std::nullopt;
         };
 
-        // Collect mutable and zero-initialized (BSS) data sections into user_data (.data)
+        // Collect mutable initialized data sections into user_data (.data)
         std::vector<uint8_t> user_data;
         std::vector<SecDataOff> section_data_offsets;
         for (size_t i = 0; i < obj.sections().size(); ++i) {
             const auto& sec = obj.sections()[i];
-            if (is_code_section(sec) || !is_writable_sec(sec)) continue;
+            if (is_code_section(sec) || !is_writable_sec(sec) || sec.is_bss() || sec.name == ".bss") continue;
             while ((user_data.size() % 16) != 0) user_data.push_back(0);
             section_data_offsets.push_back({static_cast<uint32_t>(i), sec.name, user_data.size()});
-            if (sec.is_bss()) {
-                user_data.resize(user_data.size() + sec.bss_size, 0);
-            } else {
-                user_data.insert(user_data.end(), sec.bytes.begin(), sec.bytes.end());
-            }
+            user_data.insert(user_data.end(), sec.bytes.begin(), sec.bytes.end());
         }
         auto find_data_offset = [&](uint32_t sec_idx, std::string_view name) -> std::optional<uint64_t> {
             if (sec_idx != UINT32_MAX) {
@@ -677,6 +687,32 @@ public:
             }
             return std::nullopt;
         };
+
+        // Collect zero-initialized (BSS) data sections into bss (.bss)
+        uint32_t bss_virtual_size = 0;
+        std::vector<SecDataOff> section_bss_offsets;
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (!sec.is_bss() && sec.name != ".bss") continue;
+            while ((bss_virtual_size % 16) != 0) bss_virtual_size++;
+            section_bss_offsets.push_back({static_cast<uint32_t>(i), sec.name, bss_virtual_size});
+            const uint32_t sz = sec.bss_size > 0 ? static_cast<uint32_t>(sec.bss_size) : static_cast<uint32_t>(sec.bytes.size());
+            bss_virtual_size += sz;
+        }
+        auto find_bss_offset = [&](uint32_t sec_idx, std::string_view name) -> std::optional<uint64_t> {
+            if (sec_idx != UINT32_MAX) {
+                for (const auto& item : section_bss_offsets) {
+                    if (item.sec_index == sec_idx) return item.offset;
+                }
+            }
+            if (!name.empty()) {
+                for (const auto& item : section_bss_offsets) {
+                    if (item.name == name) return item.offset;
+                }
+            }
+            return std::nullopt;
+        };
+        const bool has_bss = (bss_virtual_size > 0);
 
         // Identify undefined external symbols referenced by relocations
         std::vector<std::string> undefined_syms;
@@ -748,7 +784,7 @@ public:
         auto is_msvcrt_func = [&](std::string_view name) {
             if (is_ucrt_func(name)) return false;
             if (!is_valid_c_ident(name)) return false;
-            if (name.starts_with("__myzon") || name.starts_with("myzon_") || name.starts_with("dgtl_")) return false;
+            if (name.starts_with("dgtl_")) return false;
             if (name == "__iob_func") return true;
             if (name.find("__") != std::string_view::npos && !name.starts_with("__stdio") && !name.starts_with("__p__")) return false;
             if (name.starts_with("_") && !name.starts_with("__") && !name.starts_with("_Z") && !name.starts_with("_Unwind")) return true;
@@ -780,7 +816,7 @@ public:
 
         auto is_kernel32_func = [&](std::string_view name) {
             if (!is_valid_c_ident(name)) return false;
-            if (name.find("__") != std::string_view::npos || name.starts_with("myzon_") || name.starts_with("dgtl_")) return false;
+            if (name.find("__") != std::string_view::npos || name.starts_with("dgtl_")) return false;
             static constexpr std::string_view k32_funcs_list[] = {
                 "ExitProcess", "VirtualAlloc", "VirtualFree", "VirtualProtect", "VirtualQuery",
                 "GetStdHandle", "WriteFile", "ReadFile", "GetProcessHeap", "HeapAlloc", "HeapFree", "HeapReAlloc",
@@ -858,8 +894,7 @@ public:
                 // 1. Math / runtime / intrinsics are synthesized in-binary, not imported
                 if (!get_sovereign_intrinsic_x64(raw_name).empty() ||
                     raw_name.starts_with("__dgtl_rt_") || raw_name.starts_with("dgtl_rt_") ||
-                    raw_name.starts_with("__myzon_") || raw_name.starts_with("myzon_") ||
-                    raw_name == "memcpy" || raw_name == "memset" || raw_name == "memmove" || raw_name == "memcmp") {
+                    raw_name == "memcpy" || raw_name == "memset" || raw_name == "memmove" || raw_name == "memcmp" || raw_name == "strlen") {
                     continue;
                 }
                 // 2. Network socket API -> WS2_32.DLL
@@ -947,11 +982,13 @@ public:
         Section text;
         Section rdata;
         Section data;
+        Section bss;
         Section reloc;
 
         initialize_section(text, ".text", pe::kSectionMemExecute | pe::kSectionMemRead | pe::kSectionContainsCode);
         initialize_section(rdata, ".rdata", pe::kSectionMemRead | pe::kSectionInitializedData);
         initialize_section(data, ".data", pe::kSectionMemRead | pe::kSectionMemWrite | pe::kSectionInitializedData);
+        initialize_section(bss, ".bss", pe::kSectionMemRead | pe::kSectionMemWrite | pe::kSectionUninitializedData);
         initialize_section(reloc, ".reloc", pe::kSectionMemRead | pe::kSectionInitializedData | pe::kSectionMemDiscardable);
 
         rdata.data.assign(user_rdata.begin(), user_rdata.end());
@@ -1048,11 +1085,32 @@ public:
                     if (entry.name == crt_name) return entry.rva;
                 }
             }
-            if (!name.starts_with("__myzon_") && !name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_")) {
+            if (!name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_") && !name.starts_with(".")) {
                 if (size_t pos = name.rfind("__"); pos != std::string_view::npos && pos > 0) {
                     std::string_view bare = name.substr(pos + 2);
                     for (const auto& entry : func_to_iat_rva) {
                         if (entry.name == bare) return entry.rva;
+                    }
+                }
+            }
+            return std::nullopt;
+        };
+
+        auto find_thunk_rva = [&](std::string_view name) -> std::optional<uint32_t> {
+            for (const auto& entry : func_to_thunk_offset) {
+                if (entry.name == name) return text_rva + entry.offset;
+            }
+            const auto crt_name = map_dgtl_rt_to_crt(name);
+            if (!crt_name.empty()) {
+                for (const auto& entry : func_to_thunk_offset) {
+                    if (entry.name == crt_name) return text_rva + entry.offset;
+                }
+            }
+            if (!name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_") && !name.starts_with(".")) {
+                if (size_t pos = name.rfind("__"); pos != std::string_view::npos && pos > 0) {
+                    std::string_view bare = name.substr(pos + 2);
+                    for (const auto& entry : func_to_thunk_offset) {
+                        if (entry.name == bare) return text_rva + entry.offset;
                     }
                 }
             }
@@ -1104,6 +1162,8 @@ public:
 
         const uint32_t rdata_virtual_size = static_cast<uint32_t>(rdata.data.size());
         const uint32_t data_rva = detail::align_up(rdata_rva + rdata_virtual_size, pe::kSectionAlignment);
+        const uint32_t data_virtual_size = static_cast<uint32_t>(data.data.size());
+        const uint32_t bss_rva = detail::align_up(data_rva + (has_data ? data_virtual_size : 0), pe::kSectionAlignment);
 
         // Patch Import Thunks (FF 25 [disp32]) to jump through IAT slots
         for (const auto& thunk : func_to_thunk_offset) {
@@ -1134,11 +1194,13 @@ public:
                         symbol_rva_map.push_back({sym.name, rdata_rva + *roff + eff_val});
                     } else if (auto doff = find_data_offset(sym.section_index, sec.name)) {
                         symbol_rva_map.push_back({sym.name, data_rva + *doff + eff_val});
+                    } else if (auto boff = find_bss_offset(sym.section_index, sec.name)) {
+                        symbol_rva_map.push_back({sym.name, bss_rva + *boff + eff_val});
                     } else {
                         symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + eff_val});
                     }
                 } else {
-                    symbol_rva_map.push_back({sym.name, text_rva + trampoline_size + eff_val});
+                    symbol_rva_map.push_back({sym.name, eff_val});
                 }
             }
         }
@@ -1148,8 +1210,6 @@ public:
             std::string_view stripped = synth.name;
             if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
             else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
-            else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
-            else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
             else if (stripped.starts_with("__")) stripped.remove_prefix(2);
             else if (stripped.starts_with("_")) stripped.remove_prefix(1);
             if (!stripped.empty()) {
@@ -1159,8 +1219,6 @@ public:
                 symbol_rva_map.push_back({"__dgtl_rt_" + s, text_rva + trampoline_size + synth.text_offset});
                 symbol_rva_map.push_back({"__imp___dgtl_rt_" + s, text_rva + trampoline_size + synth.text_offset});
                 symbol_rva_map.push_back({"dgtl_rt_" + s, text_rva + trampoline_size + synth.text_offset});
-                symbol_rva_map.push_back({"__myzon_" + s, text_rva + trampoline_size + synth.text_offset});
-                symbol_rva_map.push_back({"myzon_" + s, text_rva + trampoline_size + synth.text_offset});
             }
         }
         for (const auto& thunk : func_to_thunk_offset) {
@@ -1222,7 +1280,7 @@ public:
                     }
                 }
             }
-            if (!name.starts_with("__myzon_") && !name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_") && !name.starts_with(".")) {
+            if (!name.starts_with("__builtin_") && !name.starts_with("__dgtl_rt_") && !name.starts_with(".")) {
                 if (size_t pos = name.rfind("__"); pos != std::string_view::npos && pos > 0) {
                     std::string_view bare = name.substr(pos + 2);
                     auto it_bare = std::lower_bound(symbol_rva_map.begin(), symbol_rva_map.end(), bare,
@@ -1240,8 +1298,6 @@ public:
             if (stripped.starts_with("__imp_")) stripped.remove_prefix(6);
             if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
             else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
-            else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
-            else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
             else if (stripped.starts_with("__")) stripped.remove_prefix(2);
             else if (stripped.starts_with("_")) stripped.remove_prefix(1);
 
@@ -1250,8 +1306,6 @@ public:
                     std::string(stripped),
                     "__dgtl_rt_" + std::string(stripped),
                     "dgtl_rt_" + std::string(stripped),
-                    "__myzon_" + std::string(stripped),
-                    "myzon_" + std::string(stripped),
                     "_" + std::string(stripped),
                     "__" + std::string(stripped)
                 };
@@ -1272,8 +1326,8 @@ public:
                 return data_rva;
             }
             if (name == ".bss") {
-                if (auto doff = find_data_offset(UINT32_MAX, ".bss")) return data_rva + *doff;
-                return data_rva;
+                if (auto boff = find_bss_offset(UINT32_MAX, ".bss")) return bss_rva + *boff;
+                return bss_rva;
             }
             return std::nullopt;
         };
@@ -1291,7 +1345,7 @@ public:
             resolved_entry_rva = text_rva + trampoline_size;
         }
 
-        // Patch Entry Trampoline: sub rsp, 28h; call entry; mov ecx, eax; call ExitProcess; add rsp, 28h; ret
+        // Patch Entry Trampoline: sub rsp, 20h; call entry; mov ecx, eax; call ExitProcess; add rsp, 20h; ret
         {
             const int64_t main_rva = static_cast<int64_t>(resolved_entry_rva);
             const int64_t call_next_rva = static_cast<int64_t>(text_rva) + 9;
@@ -1301,7 +1355,7 @@ public:
                 return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: main function is outside rel32 range");
             }
 
-            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28
+            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28 (Win64 ABI 16-byte stack alignment: initial RSP%16==8 -> -40 -> RSP%16==0)
             text.data[4] = 0xE8; // call rel32
             write_i32(text.data, 5, static_cast<int32_t>(call_disp));
             text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax
@@ -1331,8 +1385,21 @@ public:
             if (rel.symbol_name.empty()) continue;
 
             uint64_t target_rva = 0;
+            const bool is_code_rel = (rel.kind == dgtl::object::RelocationKind::PCRel32 ||
+                                      rel.kind == dgtl::object::RelocationKind::PLT32);
+
             if (auto rva = find_symbol_rva(rel.symbol_name)) {
                 target_rva = *rva;
+            } else if (is_code_rel) {
+                if (auto thunk_rva = find_thunk_rva(rel.symbol_name)) {
+                    target_rva = *thunk_rva;
+                } else if (rel.symbol_name.starts_with("__imp_")) {
+                    if (auto imp_rva = find_iat_rva(rel.symbol_name.substr(6))) {
+                        target_rva = *imp_rva;
+                    } else {
+                        continue;
+                    }
+                }
             } else if (rel.symbol_name.starts_with("__imp_")) {
                 if (auto imp_rva = find_iat_rva(rel.symbol_name.substr(6))) {
                     target_rva = *imp_rva;
@@ -1341,7 +1408,9 @@ public:
                 }
             } else if (auto imp_rva = find_iat_rva(rel.symbol_name)) {
                 target_rva = *imp_rva;
-            } else {
+            }
+
+            if (target_rva == 0) {
                 // Defensive sovereignty safeguard: If an unresolvable call rel32 resides in .text,
                 // replace the 5-byte 'call' instruction (0xE8 xx xx xx xx) with a standard multi-byte NOP
                 // (0x0F 0x1F 0x44 0x00 0x00). This guarantees that unresolved calls NEVER silently execute
@@ -1400,6 +1469,9 @@ public:
                     } else if (rel.kind == dgtl::object::RelocationKind::PCRel32) {
                         const uint64_t reloc_rva = rdata_rva + place_offset;
                         const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(reloc_rva);
+                        if (!detail::fits_int32(delta)) {
+                            return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: .rdata PCRel32 displacement out of 32-bit range");
+                        }
                         write_i32(rdata.data, place_offset, static_cast<int32_t>(delta));
                     }
                 }
@@ -1420,6 +1492,9 @@ public:
                     } else if (rel.kind == dgtl::object::RelocationKind::PCRel32) {
                         const uint64_t reloc_rva = data_rva + place_offset;
                         const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(reloc_rva);
+                        if (!detail::fits_int32(delta)) {
+                            return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: .data PCRel32 displacement out of 32-bit range");
+                        }
                         write_i32(data.data, place_offset, static_cast<int32_t>(delta));
                     }
                 }
@@ -1431,6 +1506,9 @@ public:
                     if (rel.kind == dgtl::object::RelocationKind::PCRel32 || rel.kind == dgtl::object::RelocationKind::PLT32) {
                         const uint64_t reloc_rva = place_rva;
                         const int64_t delta = static_cast<int64_t>(target_rva) + rel.addend - static_cast<int64_t>(reloc_rva);
+                        if (!detail::fits_int32(delta)) {
+                            return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: .text PCRel32/PLT32 displacement out of 32-bit range");
+                        }
                         write_i32(text.data, place_offset, static_cast<int32_t>(delta));
                     } else if (rel.kind == dgtl::object::RelocationKind::Absolute64 && place_offset + 8 <= text.data.size()) {
                         const uint64_t abs_addr = options.image_base + target_rva + rel.addend;
@@ -1488,48 +1566,58 @@ public:
             }
         }
 
-        // Section Virtual and Raw size metrics
+        // Section Virtual and Raw size metrics (Strict Raw Offset Chaining)
         text.virtual_address = text_rva;
         text.virtual_size = static_cast<uint32_t>(text.data.size());
         text.raw_size = detail::align_up(text.virtual_size, pe::kFileAlignment);
+        text.raw_offset = pe::kHeadersSize;
 
         rdata.virtual_address = rdata_rva;
         rdata.virtual_size = static_cast<uint32_t>(rdata.data.size());
         rdata.raw_size = detail::align_up(rdata.virtual_size, pe::kFileAlignment);
+        rdata.raw_offset = text.raw_offset + text.raw_size;
 
-        data.virtual_address = data_rva;
-        data.virtual_size = static_cast<uint32_t>(data.data.size());
-        data.raw_size = detail::align_up(data.virtual_size, pe::kFileAlignment);
+        if (has_data) {
+            data.virtual_address = data_rva;
+            data.virtual_size = static_cast<uint32_t>(data.data.size());
+            data.raw_size = detail::align_up(data.virtual_size, pe::kFileAlignment);
+            data.raw_offset = rdata.raw_offset + rdata.raw_size;
+        }
 
-        const uint32_t post_data_rva = has_data
-            ? detail::align_up(data_rva + data.virtual_size, pe::kSectionAlignment)
-            : data_rva;
-        const uint32_t reloc_rva = post_data_rva;
+        if (has_bss) {
+            bss.virtual_address = bss_rva;
+            bss.virtual_size = bss_virtual_size;
+            bss.raw_size = 0; // SizeOfRawData = 0 for .bss (Zero disk footprint)
+            bss.raw_offset = 0; // PointerToRawData = 0 for .bss
+        }
+
+        const uint32_t post_bss_rva = has_bss
+            ? detail::align_up(bss_rva + bss.virtual_size, pe::kSectionAlignment)
+            : (has_data ? detail::align_up(data_rva + data.virtual_size, pe::kSectionAlignment) : detail::align_up(rdata_rva + rdata.virtual_size, pe::kSectionAlignment));
+        const uint32_t reloc_rva = post_bss_rva;
 
         const bool has_reloc = options.emit_relocations && !base_relocs.empty();
         if (has_reloc) {
             reloc.virtual_address = reloc_rva;
             reloc.virtual_size = static_cast<uint32_t>(reloc.data.size());
             reloc.raw_size = detail::align_up(reloc.virtual_size, pe::kFileAlignment);
+            const uint32_t prev_raw_off = has_data ? (data.raw_offset + data.raw_size) : (rdata.raw_offset + rdata.raw_size);
+            reloc.raw_offset = prev_raw_off;
         }
 
         uint32_t cursor = pe::kHeadersSize;
-        text.raw_offset = cursor;
         if (!detail::checked_add_u32(cursor, text.raw_size, cursor)) {
             return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .text file offset overflow");
         }
-        rdata.raw_offset = cursor;
         if (!detail::checked_add_u32(cursor, rdata.raw_size, cursor)) {
             return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .rdata file offset overflow");
         }
         if (has_data) {
-            data.raw_offset = cursor;
             if (!detail::checked_add_u32(cursor, data.raw_size, cursor)) {
                 return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .data file offset overflow");
             }
         }
         if (has_reloc) {
-            reloc.raw_offset = cursor;
             if (!detail::checked_add_u32(cursor, reloc.raw_size, cursor)) {
                 return failure(Error::HeaderLayoutOverflow, "DGTL PE linker: .reloc file offset overflow");
             }
@@ -1540,6 +1628,9 @@ public:
         image_end = std::max(image_end, rdata_rva + detail::align_up(rdata.virtual_size, pe::kSectionAlignment));
         if (has_data) {
             image_end = std::max(image_end, data_rva + detail::align_up(data.virtual_size, pe::kSectionAlignment));
+        }
+        if (has_bss) {
+            image_end = std::max(image_end, bss_rva + detail::align_up(bss.virtual_size, pe::kSectionAlignment));
         }
         if (has_reloc) {
             image_end = std::max(image_end, reloc_rva + detail::align_up(reloc.virtual_size, pe::kSectionAlignment));
@@ -1560,6 +1651,11 @@ public:
         if (has_data) {
             section_headers.push_back({});
             fill_section_header(section_headers.back(), data);
+        }
+
+        if (has_bss) {
+            section_headers.push_back({});
+            fill_section_header(section_headers.back(), bss);
         }
 
         if (has_reloc) {
@@ -1917,7 +2013,7 @@ public:
                 return failure(Error::RelativeCallOutOfRange, "DGTL PE linker: main function is outside rel32 range");
             }
 
-            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28
+            text.data[0] = 0x48; text.data[1] = 0x83; text.data[2] = 0xEC; text.data[3] = 0x28; // sub rsp, 0x28 (Win64 ABI 16-byte stack alignment: initial RSP%16==8 -> -40 -> RSP%16==0)
             text.data[4] = 0xE8; // call rel32
             write_i32(text.data, 5, static_cast<int32_t>(call_disp));
             text.data[9] = 0x89; text.data[10] = 0xC1; // mov ecx, eax

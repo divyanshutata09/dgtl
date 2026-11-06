@@ -3979,6 +3979,55 @@ public:
         return true;
     }
 
+    static bool inspect_smt_script(const fs::path& path, const std::string& content, std::ostream& out) {
+        out << Terminal::bold() << Terminal::cyan()
+            << "================================================================================\n"
+            << "         DGTL SOVEREIGN SMT-LIB2 FORMAL VERIFICATION INSPECTOR                  \n"
+            << "================================================================================\n"
+            << Terminal::reset();
+        out << "SMT Script: " << path.string() << " (" << content.size() << " bytes)\n\n";
+
+        std::istringstream stream(content);
+        std::string line;
+        size_t asserts = 0, decls = 0, checks = 0;
+        std::string logic;
+
+        std::vector<std::string> lines;
+        while (std::getline(stream, line)) {
+            lines.push_back(line);
+            std::string t = trim(line);
+            if (t.starts_with("(set-logic")) {
+                size_t p1 = t.find(' ');
+                size_t p2 = t.find(')', p1);
+                if (p1 != std::string::npos && p2 != std::string::npos) {
+                    logic = t.substr(p1 + 1, p2 - p1 - 1);
+                }
+            } else if (t.starts_with("(assert")) {
+                asserts++;
+            } else if (t.starts_with("(declare-")) {
+                decls++;
+            } else if (t.starts_with("(check-sat")) {
+                checks++;
+            }
+        }
+
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " SMT Logic     : " << Terminal::bold() << (logic.empty() ? "QF_BV (default/unspecified)" : logic) << Terminal::reset() << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Declarations  : " << decls << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Assertions    : " << asserts << "\n";
+        out << "  " << Terminal::cyan() << "•" << Terminal::reset() << " Solvability   : " << checks << " check-sat queries\n\n";
+        out << "--------------------------------------------------------------------------------\n";
+        out << "SMT SCRIPT CONTENT (First 100 lines):\n";
+        out << "--------------------------------------------------------------------------------\n";
+        for (size_t i = 0; i < std::min<size_t>(lines.size(), 100); ++i) {
+            out << std::right << std::setw(4) << (i + 1) << " | " << lines[i] << "\n";
+        }
+        if (lines.size() > 100) {
+            out << "     ... (" << (lines.size() - 100) << " more lines)\n";
+        }
+        out << "--------------------------------------------------------------------------------\n\n";
+        return true;
+    }
+
     static bool open_and_inspect(const fs::path& path, std::ostream& out = std::cout) {
         if (!fs::exists(path)) {
             out << Terminal::red() << "[!] Error: File does not exist: " << path.string() << Terminal::reset() << "\n";
@@ -4027,12 +4076,17 @@ public:
 
         std::string content(reinterpret_cast<const char*>(buffer.data()), buffer.size());
 
-        // 6. Assembly source (.s, .asm)
+        // 6. SMT-LIB2 formal verification scripts (.smt, .smt2)
+        if (ext == ".smt" || ext == ".smt2") {
+            return inspect_smt_script(path, content, out);
+        }
+
+        // 7. Assembly source (.s, .asm)
         if (ext == ".s" || ext == ".asm") {
             return inspect_assembly(path, content, out);
         }
 
-        // 7. DGTL IR & Compute Graph (.dgtl, .mzc)
+        // 8. DGTL IR & Compute Graph (.dgtl, .mzc)
         if (ext == ".dgtl" || ext == ".mzc") {
             return inspect_dgtl_ir(path, content, out);
         }

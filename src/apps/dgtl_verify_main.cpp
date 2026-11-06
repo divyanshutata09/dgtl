@@ -48,6 +48,10 @@ import dgtl.ir.io;
 import dgtl.ir.gen;
 import dgtl.ir_schema;
 import dgtl.formal;
+import dgtl.target;
+import dgtl.mir;
+import dgtl.mir.machine_ir;
+import dgtl.isa.x64.target;
 
 namespace dgtl_verify {
 
@@ -60,6 +64,12 @@ enum class ExitCode : int {
     EquivalenceNotProven       = 5,
     SolverNotFound             = 6,
     UndefinedBehaviorDetected  = 7,
+};
+
+enum class VerificationScope {
+    IR_Pass,
+    MIR_Pass,
+    Lowering_Validation,
 };
 
 enum class VerificationLevel {
@@ -75,6 +85,7 @@ struct Options {
     std::string pass_name = "unknown";
     std::string target_arch = "x86_64";
     std::string solver_name = "z3";
+    VerificationScope scope = VerificationScope::IR_Pass;
     VerificationLevel level = VerificationLevel::Standard;
     std::string output_report;
     bool verbose = false;
@@ -95,7 +106,8 @@ static void print_usage(std::string_view prog_name) {
               << "  --original=<file>       Original IR before optimization\n"
               << "  --optimized=<file>      Optimized IR after pass\n"
               << "\nOPTIONAL:\n"
-              << "  --pass=<name>           Pass name for reporting (default: unknown)\n"
+                << "  --pass=<name>           Pass name for reporting (default: unknown)\n"
+              << "  --scope=<scope>         Verification scope (ir, mir, lowering; default: ir)\n"
               << "  --target=<arch>         Target architecture model (x86_64, arm64, riscv64, wasm, ptx, amdgpu; default: x86_64)\n"
               << "  --solver=<solver>       SMT solver (z3, cvc4, cvc5, yices2; default: z3)\n"
               << "  --level=<level>         Verification level (basic, standard, full, exhaustive; default: standard)\n"
@@ -107,6 +119,7 @@ static void print_usage(std::string_view prog_name) {
               << "  --help, -h              Display this message\n"
               << "\nEXAMPLES:\n"
               << "  " << prog_name << " --original=test_before.dgtl --optimized=test_after.dgtl --pass=gvn\n"
+              << "  " << prog_name << " --original=before.dgtl --optimized=after.dgtl --scope=lowering\n"
               << "  " << prog_name << " --original=before.dgtl --optimized=after.dgtl --level=full --solver=cvc5\n"
               << "  " << prog_name << " --original=in.dgtl --optimized=out.dgtl --output=report.txt --smtlib=proof.smt2\n";
 }
@@ -142,6 +155,18 @@ ParseAction parse_args(const std::vector<std::string>& args, std::string_view pr
             opts.optimized_file = std::string(arg.substr(12));
         } else if (arg.substr(0, 7) == "--pass=") {
             opts.pass_name = std::string(arg.substr(7));
+        } else if (arg.substr(0, 8) == "--scope=") {
+            const auto scope_str = arg.substr(8);
+            if (scope_str == "ir") {
+                opts.scope = VerificationScope::IR_Pass;
+            } else if (scope_str == "mir") {
+                opts.scope = VerificationScope::MIR_Pass;
+            } else if (scope_str == "lowering") {
+                opts.scope = VerificationScope::Lowering_Validation;
+            } else {
+                std::cerr << "Unknown verification scope: " << scope_str << "\n";
+                return ParseAction::Error;
+            }
         } else if (arg.substr(0, 9) == "--target=") {
             opts.target_arch = std::string(arg.substr(9));
         } else if (arg.substr(0, 9) == "--solver=") {
@@ -384,6 +409,33 @@ bool parse_ir_text(std::string_view text, dgtl::ir::IRStream& stream, std::strin
     return stream.validate_shadow_integrity();
 }
 
+bool load_ir_from_file(const std::string& path, dgtl::ir::IRStream& stream, std::string_view label) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+    std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(file)),
+                                 std::istreambuf_iterator<char>());
+    if (buffer.empty()) {
+        return false;
+    }
+
+    std::span<const uint8_t> span(buffer.data(), buffer.size());
+    if (dgtl::ir::IRSerializer::probe(span)) {
+        std::string err;
+        auto records = dgtl::ir::IRSerializer::deserialize(span, &err);
+        if (!records.empty() || err.empty()) {
+            for (const auto& rec : records) {
+                stream.push_node(rec.atom, rec.core);
+            }
+            return stream.validate_shadow_integrity();
+        }
+    }
+
+    std::string text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    return parse_ir_text(text, stream, label);
+}
+
 std::string level_to_string(VerificationLevel level) {
     switch (level) {
         case VerificationLevel::Basic:      return "basic";
@@ -419,38 +471,23 @@ int execute_verify(const std::vector<std::string>& args, std::string_view prog_n
         std::cerr << "  Original:   " << opts.original_file << "\n";
         std::cerr << "  Optimized:  " << opts.optimized_file << "\n";
         std::cerr << "  Pass:       " << opts.pass_name << "\n";
+        std::cerr << "  Scope:      " << (opts.scope == VerificationScope::Lowering_Validation ? "lowering" : (opts.scope == VerificationScope::MIR_Pass ? "mir" : "ir")) << "\n";
         std::cerr << "  Level:      " << level_to_string(opts.level) << "\n";
         std::cerr << "  Solver:     " << opts.solver_name << "\n";
         std::cerr << "  Timeout:    " << opts.timeout_seconds << " sec\n";
     }
 
-    // Step 1: Read IR files
-    std::string orig_text = read_file(opts.original_file);
-    if (orig_text.empty()) {
-        std::cerr << "Error: Could not read original IR file: " << opts.original_file << "\n";
-        return static_cast<int>(ExitCode::FileNotFound);
-    }
-
-    std::string opt_text = read_file(opts.optimized_file);
-    if (opt_text.empty()) {
-        std::cerr << "Error: Could not read optimized IR file: " << opts.optimized_file << "\n";
-        return static_cast<int>(ExitCode::FileNotFound);
-    }
-
-    if (opts.verbose) {
-        std::cerr << "[dgtl-verify] Loaded " << orig_text.size() << " bytes (original) + "
-                  << opt_text.size() << " bytes (optimized)\n";
-    }
-
-    // Step 2: Create IR streams (minimal parsing for demo)
+    // Step 1: Create IR streams and load inputs (supporting both binary BIR streams and text IR)
     dgtl::core::DGTL_Arena arena(1, 64);
     dgtl::ir::IRStream original_ir(arena, 256);
     dgtl::ir::IRStream optimized_ir(arena, 256);
 
-    if (!parse_ir_text(orig_text, original_ir, "original")) {
+    if (!load_ir_from_file(opts.original_file, original_ir, "original")) {
+        std::cerr << "Error: Could not load or parse original IR file: " << opts.original_file << "\n";
         return static_cast<int>(ExitCode::ParseError);
     }
-    if (!parse_ir_text(opt_text, optimized_ir, "optimized")) {
+    if (!load_ir_from_file(opts.optimized_file, optimized_ir, "optimized")) {
+        std::cerr << "Error: Could not load or parse optimized IR file: " << opts.optimized_file << "\n";
         return static_cast<int>(ExitCode::ParseError);
     }
 
@@ -459,18 +496,33 @@ int execute_verify(const std::vector<std::string>& args, std::string_view prog_n
                   << " optimized=" << optimized_ir.size() << "\n";
     }
 
-    // Step 3: Perform formal verification
+    // Step 2: Perform formal verification
     if (opts.verbose) {
-        std::cerr << "[dgtl-verify] Starting formal verification...\n";
+        std::cerr << "[dgtl-verify] Starting formal verification ("
+                  << (opts.scope == VerificationScope::Lowering_Validation ? "Lowering Translation Validation" : "Equivalence Proof")
+                  << ")...\n";
     }
 
     dgtl::formal::DGTLFormalVerificationSMT verifier;
-    auto result = verifier.verify_pass_equivalence(
-        original_ir,
-        optimized_ir,
-        opts.pass_name,
-        map_level(opts.level)
-    );
+    dgtl::formal::VerificationResult result;
+
+    if (opts.scope == VerificationScope::Lowering_Validation) {
+        dgtl::machine::MachineFunction mf("DGTL_kernel_entry");
+        dgtl::core::TargetMachine tm(dgtl::core::ArchType::X86_64_AVX2);
+        const dgtl::isa::x64::X64TargetSubtarget subtarget;
+        dgtl::mir::pipeline::MachinePipeline::compile(
+            mf, optimized_ir, tm,
+            subtarget.reg_info, &subtarget.instr_info, &subtarget.frame_info,
+            &subtarget.abi(true), dgtl::mir::isel::make_builtin_instruction_selector_program());
+        result = verifier.verify_lowering(original_ir, mf, opts.target_arch, map_level(opts.level));
+    } else {
+        result = verifier.verify_pass_equivalence(
+            original_ir,
+            optimized_ir,
+            opts.pass_name,
+            map_level(opts.level)
+        );
+    }
 
     if (opts.verbose) {
         std::cerr << "[dgtl-verify] Verification complete\n";

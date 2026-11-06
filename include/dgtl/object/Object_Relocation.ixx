@@ -117,6 +117,27 @@ public:
         return true;
     }
 
+    static bool apply_jal_rv64(std::uint8_t* p, std::uint64_t place, std::uint64_t target, std::int64_t addend = 0) noexcept {
+        if (!p) return false;
+        const std::int64_t delta = static_cast<std::int64_t>(target) + addend - static_cast<std::int64_t>(place);
+        if ((delta & 1) != 0) return false;
+        if (delta < -(1 << 20) || delta >= (1 << 20)) return false;
+        const std::uint32_t imm20 = (static_cast<std::uint32_t>(delta) >> 20) & 0x1;
+        const std::uint32_t imm10_1 = (static_cast<std::uint32_t>(delta) >> 1) & 0x3FF;
+        const std::uint32_t imm11 = (static_cast<std::uint32_t>(delta) >> 11) & 0x1;
+        const std::uint32_t imm19_12 = (static_cast<std::uint32_t>(delta) >> 12) & 0xFF;
+        const std::uint32_t imm_bits = (imm20 << 31) | (imm10_1 << 21) | (imm11 << 20) | (imm19_12 << 12);
+        std::uint32_t insn = static_cast<std::uint32_t>(p[0]) |
+                             (static_cast<std::uint32_t>(p[1]) << 8) |
+                             (static_cast<std::uint32_t>(p[2]) << 16) |
+                             (static_cast<std::uint32_t>(p[3]) << 24);
+        insn = (insn & 0x00000FFFu) | imm_bits;
+        for (std::size_t i = 0; i < 4; ++i) {
+            p[i] = static_cast<std::uint8_t>(insn >> (i * 8));
+        }
+        return true;
+    }
+
     static bool apply(std::span<std::uint8_t> section_bytes, const Relocation& reloc, std::uint64_t place, std::uint64_t symbol_target_address) noexcept {
         if (reloc.offset >= section_bytes.size()) return false;
         std::uint8_t* target = section_bytes.data() + reloc.offset;

@@ -424,13 +424,28 @@ public:
                             break;
                         }
                         case dgtl::machine::MachineSemanticKind::Move: {
-                            if (inst.operands.size() >= 2 && inst.operands[0].is_register() && inst.operands[1].is_register()) {
+                            if (inst.operands.size() >= 2 && inst.operands[0].is_register()) {
                                 const uint32_t dst = inst.operands[0].reg.id;
-                                const uint32_t src = inst.operands[1].reg.id;
-                                body.push_back(wasm_op::LOCAL_GET);
-                                emit_leb128_to(body, src);
-                                body.push_back(wasm_op::LOCAL_SET);
-                                emit_leb128_to(body, dst);
+                                const auto& src_op = inst.operands[1];
+                                const bool is_dst_fp = (inst.operands[0].reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint);
+                                if (src_op.kind == dgtl::machine::MachineOperandKind::Symbol) {
+                                    body.push_back(wasm_op::I32_CONST);
+                                    emit_sleb128_to(body, static_cast<int32_t>(src_op.symbol));
+                                    body.push_back(wasm_op::LOCAL_SET);
+                                    emit_leb128_to(body, dst);
+                                } else if (src_op.is_register()) {
+                                    const uint32_t src = src_op.reg.id;
+                                    const bool is_src_fp = (src_op.reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint);
+                                    body.push_back(wasm_op::LOCAL_GET);
+                                    emit_leb128_to(body, src);
+                                    if (is_dst_fp && !is_src_fp) {
+                                        body.push_back(wasm_op::F64_CONVERT_I64_S);
+                                    } else if (!is_dst_fp && is_src_fp) {
+                                        body.push_back(wasm_op::I64_TRUNC_F64_S);
+                                    }
+                                    body.push_back(wasm_op::LOCAL_SET);
+                                    emit_leb128_to(body, dst);
+                                }
                             }
                             break;
                         }

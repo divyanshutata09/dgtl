@@ -437,6 +437,33 @@ bool parse_ir_text(std::string_view text, dgtl::ir::IRStream& stream) {
     return true;
 }
 
+bool load_ir_from_file(const std::string& path, dgtl::ir::IRStream& stream) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+    std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(file)),
+                                 std::istreambuf_iterator<char>());
+    if (buffer.empty()) {
+        return false;
+    }
+
+    std::span<const uint8_t> span(buffer.data(), buffer.size());
+    if (dgtl::ir::IRSerializer::probe(span)) {
+        std::string err;
+        auto records = dgtl::ir::IRSerializer::deserialize(span, &err);
+        if (!records.empty() || err.empty()) {
+            for (const auto& rec : records) {
+                stream.push_node(rec.atom, rec.core);
+            }
+            return stream.validate_shadow_integrity();
+        }
+    }
+
+    std::string text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    return parse_ir_text(normalize_line_endings(text), stream);
+}
+
 /**
  * @brief Serialize IRStream to human-readable text format with Phase C aux_flags support (production implementation).
  * 
@@ -560,9 +587,9 @@ int execute_opt(const Options& opts) {
     dgtl::core::DGTL_Arena arena(1, 64);
     dgtl::ir::IRStream stream(arena, 256);
 
-    // Step 3: Parse IR (placeholder; in production use binary format + proper parser)
-    if (!parse_ir_text(normalized_input, stream)) {
-        std::cerr << "Error: Failed to parse IR text\n";
+    // Step 3: Parse IR (supporting binary BIR stream & text)
+    if (!load_ir_from_file(opts.input_file, stream)) {
+        std::cerr << "Error: Failed to parse IR text or binary stream from: " << opts.input_file << "\n";
         return static_cast<int>(ExitCode::ParseError);
     }
 

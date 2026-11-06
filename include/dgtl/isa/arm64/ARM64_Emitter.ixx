@@ -796,10 +796,21 @@ private:
         const auto uses = mir_uses(instruction);
         if (!def || uses.empty()) return;
         const auto& src = *uses[0];
+        if (src.kind == dgtl::machine::MachineOperandKind::Symbol) {
+            out << "    adrp " << mir_reg(def->reg, 64u) << ", " << mir_operand(function, src, 64u) << "\n";
+            out << "    add " << mir_reg(def->reg, 64u) << ", " << mir_reg(def->reg, 64u) << ", :lo12:" << mir_operand(function, src, 64u) << "\n";
+            return;
+        }
         if (def->reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint) {
+            if (src.kind == dgtl::machine::MachineOperandKind::Register && src.reg.reg_class == dgtl::machine::RegisterClassKind::General) {
+                out << "    scvtf " << mir_reg(def->reg, 64u) << ", " << mir_operand(function, src, 64u) << "\n";
+                return;
+            }
             const std::uint32_t width = def->subregister == 32u ? 32u : 64u;
             out << "    fmov " << mir_reg(def->reg, width) << ", "
                 << mir_operand(function, src, width) << "\n";
+        } else if (def->reg.reg_class == dgtl::machine::RegisterClassKind::General && src.kind == dgtl::machine::MachineOperandKind::Register && src.reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint) {
+            out << "    fcvtzs " << mir_reg(def->reg, 64u) << ", " << mir_operand(function, src, 64u) << "\n";
         } else if (def->reg.reg_class == dgtl::machine::RegisterClassKind::Vector) {
             out << "    mov " << mir_reg(def->reg, 128u) << ".16b, "
                 << mir_operand(function, src, 128u) << ".16b\n";

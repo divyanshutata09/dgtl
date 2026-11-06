@@ -47,11 +47,19 @@ public:
             v = i->second;
             return true;
         }
+        if (n.starts_with('_')) {
+            auto i2 = m_.find(std::string(n.substr(1)));
+            if (i2 != m_.end()) {
+                v = i2->second;
+                return true;
+            }
+        }
         return resolve_builtin_runtime_symbol(n, v);
     }
 
     bool contains(std::string_view n) const {
         if (m_.contains(std::string(n))) return true;
+        if (n.starts_with('_') && m_.contains(std::string(n.substr(1)))) return true;
         uint64_t dummy = 0;
         return resolve_builtin_runtime_symbol(n, dummy);
     }
@@ -65,7 +73,15 @@ public:
     }
 
     static bool resolve_builtin_runtime_symbol(std::string_view n, uint64_t& v) noexcept {
-        if (!n.starts_with("__dgtl_rt_")) return false;
+        if (n.starts_with("dgtl_rt_")) {
+            std::string mapped = "__" + std::string(n);
+            return resolve_builtin_runtime_symbol(mapped, v);
+        }
+        if (!n.starts_with("__dgtl_rt_")) {
+            std::string mapped = "__dgtl_rt_" + std::string(n);
+            if (resolve_builtin_runtime_symbol(mapped, v)) return true;
+            return false;
+        }
         #define DGTL_RESOLVE_RT(sym) if (n == #sym) { v = reinterpret_cast<uint64_t>(&sym); return true; }
         DGTL_RESOLVE_RT(__dgtl_rt_sin);
         DGTL_RESOLVE_RT(__dgtl_rt_cos);

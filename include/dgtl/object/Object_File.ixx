@@ -18,6 +18,7 @@ module;
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -78,6 +79,13 @@ public:
         return nullptr;
     }
 
+    [[nodiscard]] std::optional<std::uint32_t> find_section_index(std::string_view name) const noexcept {
+        for (std::size_t i = 0; i < sections_.size(); ++i) {
+            if (sections_[i].name == name) return static_cast<std::uint32_t>(i);
+        }
+        return std::nullopt;
+    }
+
     Section& get_or_create_section(std::string_view name, SectionKind kind = SectionKind::Text) {
         if (auto* sec = find_section(name)) return *sec;
         std::uint32_t flags = SectionFlags::Read;
@@ -134,6 +142,21 @@ public:
 
     Symbol& add_function_symbol(std::string name, std::uint64_t offset, std::uint64_t size, bool is_global = true) {
         symbols_.push_back(Symbol::make_function(std::move(name), offset, size, is_global));
+        return symbols_.back();
+    }
+
+    Symbol& add_data_symbol(std::string name, std::uint32_t section_idx, std::uint64_t offset, std::uint64_t size, bool is_global = true) {
+        Symbol s;
+        s.name = std::move(name);
+        s.value = offset;
+        s.size = size;
+        s.section_index = section_idx;
+        s.binding = is_global ? SymbolBinding::Global : SymbolBinding::Local;
+        s.binding_raw = is_global ? 1u : 0u;
+        s.type = SymbolType::Object;
+        s.type_raw = 1u;
+        s.external = false;
+        symbols_.push_back(std::move(s));
         return symbols_.back();
     }
 

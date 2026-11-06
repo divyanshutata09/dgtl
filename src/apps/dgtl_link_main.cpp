@@ -404,11 +404,12 @@ std::optional<LinkOptions> parse_args(const std::vector<std::string>& args, std:
 }
 
 static std::string_view canonical_section_name(std::string_view name) {
-    if (name == ".text" || name.starts_with(".text$")) return ".text";
+    if (name == ".text" || name.starts_with(".text$") || name == "__text" || name == "__TEXT,__text") return ".text";
     if (name == ".rdata" || name.starts_with(".rdata$") || name == ".rodata" || name.starts_with(".rodata$") ||
-        name == ".idata" || name.starts_with(".idata$")) return ".rdata";
-    if (name == ".data" || name.starts_with(".data$")) return ".data";
-    if (name == ".bss" || name.starts_with(".bss$")) return ".bss";
+        name == ".idata" || name.starts_with(".idata$") || name == "__const" || name == "__cstring" ||
+        name == "__literal4" || name == "__literal8" || name == "__literal16" || name == "__TEXT,__const") return ".rdata";
+    if (name == ".data" || name.starts_with(".data$") || name == "__data" || name == "__DATA,__data") return ".data";
+    if (name == ".bss" || name.starts_with(".bss$") || name == "__bss" || name == "__DATA,__bss") return ".bss";
     return name;
 }
 
@@ -470,27 +471,47 @@ bool merge_object_file(dgtl::object::ObjectFile& target, const dgtl::object::Obj
                 if (it_idx != section_target_idx.end()) target_sec = it_idx->second;
             }
 
-            const bool is_section_symbol = sym.name.starts_with(".") ||
+            const bool is_section_symbol = sym.type == dgtl::object::SymbolType::Section ||
+                                           sym.name.starts_with(".") ||
+                                           sym.name.starts_with("__") ||
                                            sym.name == ".text" || sym.name == ".data" ||
-                                           sym.name == ".rdata" || sym.name == ".bss";
+                                           sym.name == ".rdata" || sym.name == ".rodata" ||
+                                           sym.name == ".bss";
             const std::string norm_name = is_section_symbol
                 ? std::string(canonical_section_name(sym.name))
                 : sym.name;
 
-            auto* existing_sym = target.find_symbol(norm_name);
-            if (!existing_sym) {
+            if (is_section_symbol) {
+                auto* existing_sym = target.find_symbol(norm_name);
+                if (!existing_sym) {
+                    auto new_sym = sym;
+                    new_sym.name = norm_name;
+                    new_sym.value = 0;
+                    new_sym.section_index = target_sec;
+                    target.symbols().push_back(std::move(new_sym));
+                } else {
+                    existing_sym->value = 0;
+                    existing_sym->section_index = target_sec;
+                }
+            } else if (!sym.is_global()) {
+                // Local symbols (e.g. file-private strings, static data) are preserved
                 auto new_sym = sym;
-                new_sym.name = norm_name;
-                new_sym.value = is_section_symbol ? 0 : (sym.value + shift);
+                new_sym.value = sym.value + shift;
                 new_sym.section_index = target_sec;
                 target.symbols().push_back(std::move(new_sym));
-            } else if (is_section_symbol) {
-                existing_sym->value = 0;
-                existing_sym->section_index = target_sec;
-            } else if (existing_sym->is_external() || !existing_sym->is_defined()) {
-                *existing_sym = sym;
-                existing_sym->value += shift;
-                existing_sym->section_index = target_sec;
+            } else {
+                auto* existing_sym = target.find_symbol(norm_name);
+                if (!existing_sym) {
+                    auto new_sym = sym;
+                    new_sym.name = norm_name;
+                    new_sym.value = sym.value + shift;
+                    new_sym.section_index = target_sec;
+                    target.symbols().push_back(std::move(new_sym));
+                } else if (existing_sym->is_external() || !existing_sym->is_defined()) {
+                    *existing_sym = sym;
+                    existing_sym->value += shift;
+                    existing_sym->section_index = target_sec;
+                }
             }
         } else {
             if (!target.find_symbol(sym.name)) {
@@ -511,7 +532,7 @@ bool merge_object_file(dgtl::object::ObjectFile& target, const dgtl::object::Obj
         auto new_r = r;
         new_r.offset += shift;
         new_r.section_index = target_sec;
-        if (r.symbol_name.starts_with(".")) {
+        if (r.symbol_name.starts_with(".") || r.symbol_name.starts_with("__")) {
             auto it_sym_sec = section_offsets.find(r.symbol_name);
             if (it_sym_sec != section_offsets.end()) {
                 new_r.addend += static_cast<int64_t>(it_sym_sec->second);
@@ -707,11 +728,17 @@ int run_link(const LinkOptions& opts) {
                     std::string match_sym;
                     if (ar.has_symbol(sym_name)) {
                         match_sym = sym_name;
-                    } else if (!sym_name.starts_with("__myzon_") && !sym_name.starts_with("__builtin_") && !sym_name.starts_with("__dgtl_rt_")) {
+                    } else if (sym_name.starts_with('_') && ar.has_symbol(sym_name.substr(1))) {
+                        match_sym = sym_name.substr(1);
+                    } else if (ar.has_symbol("_" + sym_name)) {
+                        match_sym = "_" + sym_name;
+                    } else if (!sym_name.starts_with("__builtin_") && !sym_name.starts_with("__dgtl_rt_")) {
                         if (size_t pos = sym_name.rfind("__"); pos != std::string::npos && pos > 0) {
                             std::string bare = sym_name.substr(pos + 2);
                             if (ar.has_symbol(bare)) {
                                 match_sym = bare;
+                            } else if (ar.has_symbol("_" + bare)) {
+                                match_sym = "_" + bare;
                             }
                         }
                     }

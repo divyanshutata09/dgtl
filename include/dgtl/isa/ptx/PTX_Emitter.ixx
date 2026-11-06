@@ -68,9 +68,27 @@ public:
                     case dgtl::machine::MachineForm::Return:
                         ptx << "    ret;\n";
                         break;
-                    case dgtl::machine::MachineForm::Move:
-                        ptx << "    mov.b32 %r" << rd << ", %r" << rs1 << ";\n";
+                    case dgtl::machine::MachineForm::Move: {
+                        bool is_dst_fp = false, is_src_fp = false;
+                        for (const auto& op : inst->operands) {
+                            if (op.kind == dgtl::machine::MachineOperandKind::Register) {
+                                if (op.role == dgtl::machine::OperandRole::Def)
+                                    is_dst_fp = (op.reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint);
+                                else
+                                    is_src_fp = (op.reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint);
+                            }
+                        }
+                        if (is_dst_fp && !is_src_fp) {
+                            ptx << "    cvt.rn.f64.s64 %fd" << rd << ", %rd" << rs1 << ";\n";
+                        } else if (!is_dst_fp && is_src_fp) {
+                            ptx << "    cvt.rzi.s64.f64 %rd" << rd << ", %fd" << rs1 << ";\n";
+                        } else if (is_dst_fp && is_src_fp) {
+                            ptx << "    mov.f64 %fd" << rd << ", %fd" << rs1 << ";\n";
+                        } else {
+                            ptx << "    mov.b64 %rd" << rd << ", %rd" << rs1 << ";\n";
+                        }
                         break;
+                    }
                     case dgtl::machine::MachineForm::LoadImmediate:
                         ptx << "    mov.u32 %r" << rd << ", " << imm << ";\n";
                         break;

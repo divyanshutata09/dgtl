@@ -109,12 +109,16 @@ public:
         const auto form = inst.form;
 
         uint32_t rd = 0, rs1 = 0, rs2 = 0;
+        bool is_dst_fp = false;
+        bool is_src_fp = false;
         for (const auto& operand : inst.operands) {
             if (operand.kind == MachineOperandKind::Register) {
                 if (operand.role == OperandRole::Def) {
                     rd = operand.reg.id & 0x1F;
+                    is_dst_fp = (operand.reg.reg_class == RegisterClassKind::FloatingPoint);
                 } else if (rs1 == 0) {
                     rs1 = operand.reg.id & 0x1F;
+                    is_src_fp = (operand.reg.reg_class == RegisterClassKind::FloatingPoint);
                 } else {
                     rs2 = operand.reg.id & 0x1F;
                 }
@@ -133,6 +137,37 @@ public:
                 return true;
 
             case MachineForm::Move:
+                for (const auto& operand : inst.operands) {
+                    if (operand.kind == MachineOperandKind::Symbol) {
+                        std::string sym_name;
+                        auto it = symbol_table.find(operand.symbol);
+                        if (it != symbol_table.end()) {
+                            sym_name = it->second;
+                        } else {
+                            sym_name = "sym_" + std::to_string(operand.symbol);
+                        }
+                        const uint64_t reloc_offset = text.size();
+                        emit_u32(text, encode_u(0, rd, 0x17)); // auipc rd, 0
+                        emit_u32(text, encode_i(0, rd, 0, rd, 0x13)); // addi rd, rd, 0
+                        object.add_relocation(reloc_offset, std::move(sym_name), 0, 1, dgtl::object::RelocationKind::PCRel32);
+                        return true;
+                    }
+                }
+                if (is_dst_fp && is_src_fp) {
+                    // fsgnj.d fd, fs1, fs1 (0x22000053 | (rs1 << 15) | (rs1 << 20) | (rd << 7))
+                    emit_u32(text, 0x22000053u | (rs1 << 15) | (rs1 << 20) | (rd << 7));
+                    return true;
+                }
+                if (is_dst_fp && !is_src_fp) {
+                    // fcvt.d.l fd, rs1 (0xD2200053 | (rs1 << 15) | (rd << 7))
+                    emit_u32(text, 0xD2200053u | (rs1 << 15) | (rd << 7));
+                    return true;
+                }
+                if (!is_dst_fp && is_src_fp) {
+                    // fcvt.l.d rd, fs1, rtz (0xC2201053 | (rs1 << 15) | (rd << 7))
+                    emit_u32(text, 0xC2201053u | (rs1 << 15) | (rd << 7));
+                    return true;
+                }
                 // addi rd, rs1, 0  (mv alias)
                 emit_u32(text, encode_i(0, rs1, 0, rd, 0x13));
                 return true;
@@ -444,6 +479,48 @@ public:
                         0
                     );
                 }
+                return true;
+            }
+
+            case MachineForm::Syscall: {
+                // ecall (0x00000073)
+                emit_u32(text, 0x00000073u);
+                return true;
+            }
+
+            case MachineForm::HardwareFence: {
+                // fence iorw, iorw (0x0FF0000F)
+                emit_u32(text, 0x0FF0000Fu);
+                return true;
+            }
+
+            case MachineForm::ConcurrentSync: {
+                // fence (0x0FF0000F)
+                emit_u32(text, 0x0FF0000Fu);
+                return true;
+            }
+
+            case MachineForm::AtomicOp: {
+                // fence; amoadd.d rd, rs2, (rs1); fence
+                emit_u32(text, 0x0FF0000Fu);
+                const uint32_t base = (rs1 != 0) ? rs1 : 2; // sp
+                emit_u32(text, 0x0600302Fu | (rs2 << 20) | (base << 15) | (rd << 7));
+                emit_u32(text, 0x0FF0000Fu);
+                return true;
+            }
+
+            case MachineForm::VectorGather512: {
+                // vle64.v vd, (rs1)
+                const uint32_t base = (rs1 != 0) ? rs1 : 2;
+                emit_u32(text, 0x02007007u | (base << 15) | (rd << 7));
+                return true;
+            }
+
+            case MachineForm::VectorStore512: {
+                // vse64.v vs3, (rs1)
+                const uint32_t base = (rs1 != 0) ? rs1 : 2;
+                const uint32_t val = (rd != 0) ? rd : rs2;
+                emit_u32(text, 0x02007027u | (base << 15) | (val << 7));
                 return true;
             }
 

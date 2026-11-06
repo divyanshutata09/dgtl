@@ -214,6 +214,29 @@ private:
 
 export namespace dgtl::isa::spirv {
 
+class SPIRVTargetLoweringContract {
+public:
+    using MachineOpcode = machine::MachineOpcode;
+
+    struct Result {
+        MachineOpcode opcode = machine::INVALID_MACHINE_OPCODE;
+        bool assigned = false;
+        const char* diagnostic = nullptr;
+    };
+
+    [[nodiscard]] static Result assign_opcode(
+        const machine::MachineInstruction& instruction) noexcept {
+        const auto op = dgtl::isa::spirv::opcode_for(instruction.form, instruction.semantic_kind);
+        if (op != machine::INVALID_MACHINE_OPCODE) {
+            return Result{op, true, nullptr};
+        }
+        return Result{
+            machine::INVALID_MACHINE_OPCODE,
+            false,
+            "SPIR-V target lowering unhandled MachineForm or SemanticKind"};
+    }
+};
+
 class SPIRVMIRBoundary {
 public:
     [[nodiscard]] static bool lower(
@@ -236,9 +259,9 @@ public:
                 auto* inst = function.instruction(inst_id);
                 if (!inst) continue;
                 if (inst->opcode == machine::INVALID_MACHINE_OPCODE || inst->opcode == machine::GM_NOOP) {
-                    const auto op = dgtl::isa::spirv::opcode_for(inst->form, inst->semantic_kind);
-                    if (op != machine::GM_NOOP || inst->form == machine::MachineForm::NoOp) {
-                        inst->opcode = op;
+                    const auto result = SPIRVTargetLoweringContract::assign_opcode(*inst);
+                    if (result.assigned) {
+                        inst->opcode = result.opcode;
                     }
                 }
             }

@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_map>
 #include <span>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -43,6 +44,8 @@ import dgtl.execution.loader;
 import dgtl.object.file;
 import dgtl.object.readers.elf;
 import dgtl.object.readers.pe;
+import dgtl.jit.object_loader;
+import dgtl.linker.symbols;
 import dgtl.runtime.bulletins;
 
 namespace fs = std::filesystem;
@@ -211,8 +214,10 @@ int run_engine(const EngineOptions& opts) {
     dgtl::object::ObjectFile obj;
     dgtl::object::readers::ELFObjectReader elf_reader;
     dgtl::object::readers::PEObjectReader pe_reader;
+    bool is_relocatable_object = false;
 
     if (elf_reader.read(buffer.data(), buffer.size(), obj)) {
+        is_relocatable_object = true;
         if (opts.verbose) {
             std::cout << "[dgtl-engine] Identified input as ELF64 object\n";
         }
@@ -240,6 +245,7 @@ int run_engine(const EngineOptions& opts) {
             entry_offset = main_sym->value;
         }
     } else if (pe_reader.read(buffer.data(), buffer.size(), obj)) {
+        is_relocatable_object = true;
         if (opts.verbose) {
             std::cout << "[dgtl-engine] Identified input as PE/COFF image ("
                       << (obj.format() == dgtl::object::ObjectFormat::PE ? "PE executable" : "COFF object") << ")\n";
@@ -315,31 +321,84 @@ int run_engine(const EngineOptions& opts) {
         executable_code = std::move(buffer);
     }
 
+    dgtl::jit::JITLoadedModule jit_module;
+    if (is_relocatable_object) {
+        std::unordered_map<std::string, std::uintptr_t> host_symbols;
+#if defined(_WIN32) || defined(_WIN64)
+        HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+        if (hKernel) {
+            auto add_sym = [&](const char* name) {
+                FARPROC proc = GetProcAddress(hKernel, name);
+                if (proc) {
+                    host_symbols[name] = reinterpret_cast<std::uintptr_t>(proc);
+                    host_symbols[std::string("_") + name] = reinterpret_cast<std::uintptr_t>(proc);
+                }
+            };
+            add_sym("ExitProcess");
+            add_sym("GetStdHandle");
+            add_sym("WriteFile");
+            add_sym("ReadFile");
+            add_sym("GetLastError");
+        }
+#endif
+        host_symbols["printf"] = reinterpret_cast<std::uintptr_t>(&printf);
+        host_symbols["_printf"] = reinterpret_cast<std::uintptr_t>(&printf);
+        host_symbols["puts"] = reinterpret_cast<std::uintptr_t>(&puts);
+        host_symbols["_puts"] = reinterpret_cast<std::uintptr_t>(&puts);
+        host_symbols["malloc"] = reinterpret_cast<std::uintptr_t>(&malloc);
+        host_symbols["_malloc"] = reinterpret_cast<std::uintptr_t>(&malloc);
+        host_symbols["free"] = reinterpret_cast<std::uintptr_t>(&free);
+        host_symbols["_free"] = reinterpret_cast<std::uintptr_t>(&free);
+        host_symbols["exit"] = reinterpret_cast<std::uintptr_t>(&exit);
+        host_symbols["_exit"] = reinterpret_cast<std::uintptr_t>(&exit);
+
+        auto jit_res = dgtl::jit::JITObjectLoader::load(obj, host_symbols, opts.entry_symbol);
+        if (!jit_res.success && opts.entry_symbol != "main") {
+            jit_res = dgtl::jit::JITObjectLoader::load(obj, host_symbols, "main");
+        }
+        if (jit_res.success) {
+            jit_module = std::move(jit_res.module);
+            if (opts.verbose) {
+                std::cout << "[dgtl-engine] Object module successfully relocated and loaded via JIT Object Loader ("
+                          << jit_module.size() << " bytes at " << jit_module.memory() << ")\n";
+            }
+        } else if (opts.verbose) {
+            std::cout << "[dgtl-engine] JITObjectLoader notice: " << jit_res.error_message
+                      << " (falling back to native code cache)\n";
+        }
+    }
+
     // Initialize Sovereign Execution Coordinator & Cache (lean cache in dry-run mode)
     const size_t cache_bytes = opts.dry_run
         ? std::max<size_t>(64 * 1024, executable_code.size() * 2)
         : (opts.cache_size_mb * 1024 * 1024);
     dgtl::execution::ExecutionCoordinator coordinator(cache_bytes);
 
-    // Register with native code cache (W^X compliant executable memory)
-    if (!coordinator.cache().store(opts.entry_symbol, executable_code.data(), executable_code.size(), true)) {
-        std::cerr << "error[dgtl-engine]: failed to cache code into executable memory\n";
-        return 5;
+    const uint8_t* entry_ptr = nullptr;
+
+    if (jit_module.valid()) {
+        entry_ptr = reinterpret_cast<const uint8_t*>(jit_module.entry_point());
+    } else {
+        // Register with native code cache (W^X compliant executable memory)
+        if (!coordinator.cache().store(opts.entry_symbol, executable_code.data(), executable_code.size(), true)) {
+            std::cerr << "error[dgtl-engine]: failed to cache code into executable memory\n";
+            return 5;
+        }
+
+        const void* code_base = coordinator.cache().retrieve(opts.entry_symbol);
+        if (!code_base) {
+            std::cerr << "error[dgtl-engine]: failed to retrieve entry from code cache\n";
+            return 5;
+        }
+        entry_ptr = static_cast<const uint8_t*>(code_base) + entry_offset;
     }
 
     if (opts.dry_run) {
         std::cout << "[dgtl-engine] Dry run successful: code verified and cached ("
-                  << executable_code.size() << " bytes). Skipping execution.\n";
+                  << (jit_module.valid() ? jit_module.size() : executable_code.size())
+                  << " bytes). Skipping execution.\n";
         return 0;
     }
-
-    const void* code_base = coordinator.cache().retrieve(opts.entry_symbol);
-    if (!code_base) {
-        std::cerr << "error[dgtl-engine]: failed to retrieve entry from code cache\n";
-        return 5;
-    }
-
-    const uint8_t* entry_ptr = static_cast<const uint8_t*>(code_base) + entry_offset;
 
     if (opts.verbose) {
         std::cout << "[dgtl-engine] Dispatching entry point at " 

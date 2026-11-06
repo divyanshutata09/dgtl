@@ -20,8 +20,8 @@ export module dgtl.isa.arm64.isel_rules;
 export namespace dgtl::isa::arm64::generated {
 inline constexpr std::string_view kGeneratedTarget = "arm64";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0xC777FC1EC2936348";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0xC43B7017EE6AE9E";
 inline constexpr std::string_view kRuleDslSource = "defs/isel/arm64_core.dgtl_isel";
 inline constexpr std::size_t kRuleDslCount = 4;
 inline constexpr std::array<std::string_view, 4> kRuleDslLines = {

@@ -63,6 +63,8 @@ import dgtl.object.readers.pe;
 import dgtl.object.readers.elf;
 import dgtl.linker.pe;
 import dgtl.linker.elf;
+import dgtl.linker.macho;
+import dgtl.linker.wasm;
 import dgtl.jit.jit_orchestrator;
 import dgtl.execution.loader;
 import dgtl.hir.semantic;
@@ -480,6 +482,33 @@ bool parse_ir_text(std::string_view text, dgtl::ir::IRStream& stream) {
     return stream.validate_shadow_integrity();
 }
 
+bool load_ir_from_file(const std::string& path, dgtl::ir::IRStream& stream) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+    std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(file)),
+                                 std::istreambuf_iterator<char>());
+    if (buffer.empty()) {
+        return false;
+    }
+
+    std::span<const uint8_t> span(buffer.data(), buffer.size());
+    if (dgtl::ir::IRSerializer::probe(span)) {
+        std::string err;
+        auto records = dgtl::ir::IRSerializer::deserialize(span, &err);
+        if (!records.empty() || err.empty()) {
+            for (const auto& rec : records) {
+                stream.push_node(rec.atom, rec.core);
+            }
+            return stream.validate_shadow_integrity();
+        }
+    }
+
+    std::string text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    return parse_ir_text(text, stream);
+}
+
 static bool lower_stream_to_mir(const dgtl::ir::IRStream& stream,
                                 dgtl::machine::MachineFunction& out_mf,
                                 const dgtl::core::TargetMachine& target) {
@@ -586,28 +615,16 @@ std::string lower_ir_to_asm(
 }
 
 int execute_llc(const Options& opts) {
-    // Step 1: Read input file
-    const std::string input_text = read_file(opts.input_file);
-    if (input_text.empty()) {
-        std::cerr << "Error: Could not read input file: " << opts.input_file << "\n";
-        return static_cast<int>(ExitCode::InputNotFound);
-    }
-
-    if (opts.verbose) {
-        std::cerr << "[dgtl-llc] Loaded " << input_text.size() << " bytes from " 
-                  << opts.input_file << "\n";
-    }
-
-    // Step 2: Create arena and stream
+    // Step 1: Create arena and stream
     dgtl::core::DGTL_Arena arena(1, 64);
     dgtl::ir::IRStream stream(arena, 256);
 
-    // Step 3: Parse IR text
+    // Step 2: Load IR (supporting binary BIR stream & text)
     if (opts.verbose) {
-        std::cerr << "[dgtl-llc] Parsing IR\n";
+        std::cerr << "[dgtl-llc] Loading and parsing IR from " << opts.input_file << "\n";
     }
-    if (!parse_ir_text(input_text, stream)) {
-        std::cerr << "Error: Failed to parse input IR\n";
+    if (!load_ir_from_file(opts.input_file, stream)) {
+        std::cerr << "Error: Failed to load or parse input IR from: " << opts.input_file << "\n";
         return static_cast<int>(ExitCode::ParseError);
     }
 
@@ -780,36 +797,134 @@ int execute_llc(const Options& opts) {
                 return static_cast<int>(ExitCode::CodegenFailed);
             }
 
-            dgtl::linker::LinkerDriver driver;
-            std::vector<uint8_t> obj_bytes;
-            bool ok = driver.emit(dgtl::linker::OutputFormat::COFFObject, mf, obj_bytes, opts.entry_symbol);
-            if (!ok || obj_bytes.empty()) {
-                std::cerr << "Error: Failed to emit intermediate object for executable synthesis\n";
-                return static_cast<int>(ExitCode::CodegenFailed);
+            ObjectBinaryFormat resolved_format = opts.binary_format;
+            if (resolved_format == ObjectBinaryFormat::Auto) {
+                if (opts.target_arch == TargetArch::WASM32) {
+                    resolved_format = ObjectBinaryFormat::WASM;
+                } else if (opts.target_arch == TargetArch::RISCV64) {
+                    resolved_format = ObjectBinaryFormat::ELF;
+                } else if (opts.target_arch == TargetArch::AARCH64) {
+#if defined(__APPLE__)
+                    resolved_format = ObjectBinaryFormat::MachO;
+#else
+                    resolved_format = ObjectBinaryFormat::ELF;
+#endif
+                }
+#if defined(_WIN32)
+                else {
+                    resolved_format = ObjectBinaryFormat::COFF;
+                }
+#elif defined(__APPLE__)
+                else {
+                    resolved_format = ObjectBinaryFormat::MachO;
+                }
+#else
+                else {
+                    resolved_format = ObjectBinaryFormat::ELF;
+                }
+#endif
             }
-
-            dgtl::object::ObjectFile obj_file(dgtl::object::ObjectFormat::PE);
-            dgtl::object::readers::PEObjectReader pe_reader;
-            if (!pe_reader.read(obj_bytes.data(), obj_bytes.size(), obj_file)) {
-                std::cerr << "Error: Failed to parse intermediate object\n";
-                return static_cast<int>(ExitCode::CodegenFailed);
-            }
-
-            if (!obj_file.find_symbol(opts.entry_symbol)) {
-                obj_file.add_function_symbol(opts.entry_symbol, 0, obj_file.get_text_section().size(), true);
-            }
-
-            dgtl::linker::pe::SovereignPELinkerOptions pe_opts;
-            pe_opts.entry_symbol = opts.entry_symbol;
-            pe_opts.stack_reserve = opts.stack_reserve;
-            pe_opts.stack_commit = opts.stack_commit;
-            pe_opts.sovereign = true;
 
             std::vector<uint8_t> exe_bytes;
-            auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(obj_file, exe_bytes, pe_opts);
-            if (!res.success) {
-                std::cerr << "Error: Sovereign PE executable synthesis failed: " << res.message << "\n";
-                return static_cast<int>(ExitCode::CodegenFailed);
+
+            if (resolved_format == ObjectBinaryFormat::WASM) {
+                dgtl::linker::wasm::WASMBinaryLink wasm_linker;
+                dgtl::linker::wasm::WASMLinkerOptions wasm_opts;
+                wasm_opts.entry_symbol = opts.entry_symbol;
+                wasm_opts.sovereign = true;
+                if (!wasm_linker.link(mf, exe_bytes)) {
+                    std::cerr << "Error: Sovereign WASM executable synthesis failed\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+            } else if (resolved_format == ObjectBinaryFormat::MachO) {
+                dgtl::linker::LinkerDriver driver;
+                std::vector<uint8_t> obj_bytes;
+                if (!driver.emit(dgtl::linker::OutputFormat::MachOObject, mf, obj_bytes, opts.entry_symbol) || obj_bytes.empty()) {
+                    std::cerr << "Error: Failed to emit intermediate Mach-O object for executable synthesis\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+                dgtl::object::ObjectFile obj_file(dgtl::object::ObjectFormat::MachO);
+                auto& text_sec = obj_file.get_text_section();
+                text_sec.bytes = std::move(obj_bytes);
+                if (!obj_file.find_symbol(opts.entry_symbol)) {
+                    obj_file.add_function_symbol(opts.entry_symbol, 0, text_sec.bytes.size(), true);
+                }
+                dgtl::linker::macho::SovereignMachOLinker::Options macho_opts;
+                macho_opts.entry_symbol = opts.entry_symbol;
+                if (opts.target_arch == TargetArch::AARCH64) {
+                    macho_opts.cpu_type = dgtl::linker::macho::CPU_TYPE_ARM64_VAL;
+                    macho_opts.page_size = 0x4000;
+                }
+                macho_opts.sovereign = true;
+                if (!dgtl::linker::macho::SovereignMachOLinker::link_executable(obj_file, exe_bytes, macho_opts)) {
+                    std::cerr << "Error: Sovereign Mach-O executable synthesis failed\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+            } else if (resolved_format == ObjectBinaryFormat::ELF) {
+                dgtl::linker::LinkerDriver driver;
+                std::vector<uint8_t> obj_bytes;
+                if (!driver.emit(dgtl::linker::OutputFormat::ELFObject, mf, obj_bytes, opts.entry_symbol) || obj_bytes.empty()) {
+                    std::cerr << "Error: Failed to emit intermediate ELF object for executable synthesis\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+                dgtl::object::ObjectFile obj_file(dgtl::object::ObjectFormat::ELF);
+                dgtl::object::readers::ELFObjectReader elf_reader;
+                if (!elf_reader.read(obj_bytes.data(), obj_bytes.size(), obj_file)) {
+                    std::cerr << "Error: Failed to parse intermediate ELF object\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+                if (!obj_file.find_symbol(opts.entry_symbol)) {
+                    obj_file.add_function_symbol(opts.entry_symbol, 0, obj_file.get_text_section().size(), true);
+                }
+                dgtl::linker::elf::ELFLinker elf_linker;
+                dgtl::linker::elf::ELFLinker::SovereignELFLinkerOptions elf_opts;
+                elf_opts.entry_symbol = opts.entry_symbol;
+                elf_opts.sovereign = true;
+                if (opts.target_arch == TargetArch::AARCH64) {
+                    elf_opts.target_machine = dgtl::linker::elf::EM_AARCH64;
+                    elf_opts.page_size = 0x10000;
+                } else if (opts.target_arch == TargetArch::RISCV64) {
+                    elf_opts.target_machine = dgtl::linker::elf::EM_RISCV;
+                    elf_opts.page_size = 0x1000;
+                } else {
+                    elf_opts.target_machine = dgtl::linker::elf::EM_X86_64;
+                    elf_opts.page_size = 0x1000;
+                }
+                if (!elf_linker.link_executable(obj_file, exe_bytes, elf_opts)) {
+                    std::cerr << "Error: Sovereign ELF executable synthesis failed\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+            } else {
+                dgtl::linker::LinkerDriver driver;
+                std::vector<uint8_t> obj_bytes;
+                bool ok = driver.emit(dgtl::linker::OutputFormat::COFFObject, mf, obj_bytes, opts.entry_symbol);
+                if (!ok || obj_bytes.empty()) {
+                    std::cerr << "Error: Failed to emit intermediate object for executable synthesis\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+
+                dgtl::object::ObjectFile obj_file(dgtl::object::ObjectFormat::PE);
+                dgtl::object::readers::PEObjectReader pe_reader;
+                if (!pe_reader.read(obj_bytes.data(), obj_bytes.size(), obj_file)) {
+                    std::cerr << "Error: Failed to parse intermediate object\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
+
+                if (!obj_file.find_symbol(opts.entry_symbol)) {
+                    obj_file.add_function_symbol(opts.entry_symbol, 0, obj_file.get_text_section().size(), true);
+                }
+
+                dgtl::linker::pe::SovereignPELinkerOptions pe_opts;
+                pe_opts.entry_symbol = opts.entry_symbol;
+                pe_opts.stack_reserve = opts.stack_reserve;
+                pe_opts.stack_commit = opts.stack_commit;
+                pe_opts.sovereign = true;
+
+                auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(obj_file, exe_bytes, pe_opts);
+                if (!res.success) {
+                    std::cerr << "Error: Sovereign PE executable synthesis failed: " << res.message << "\n";
+                    return static_cast<int>(ExitCode::CodegenFailed);
+                }
             }
 
             std::string raw_str(reinterpret_cast<const char*>(exe_bytes.data()), exe_bytes.size());

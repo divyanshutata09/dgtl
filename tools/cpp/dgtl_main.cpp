@@ -56,6 +56,33 @@ enum class ApiMode {
     both
 };
 
+enum class TargetPlatform {
+    Windows,
+    Linux,
+    MacOS,
+    Unknown
+};
+
+inline TargetPlatform detect_host_platform() {
+#if defined(_WIN32) || defined(_WIN64)
+    return TargetPlatform::Windows;
+#elif defined(__APPLE__)
+    return TargetPlatform::MacOS;
+#elif defined(__linux__)
+    return TargetPlatform::Linux;
+#else
+    return TargetPlatform::Unknown;
+#endif
+}
+
+inline std::string get_shared_lib_filename() {
+    switch (detect_host_platform()) {
+        case TargetPlatform::Windows: return "dgtl.dll";
+        case TargetPlatform::MacOS:   return "libdgtl.dylib";
+        default:                      return "libdgtl.so";
+    }
+}
+
 void ensure_directory(const fs::path& p);
 std::optional<ApiMode> parse_api_mode(std::vector<std::string>& args,
                                       ApiMode default_mode,
@@ -65,6 +92,9 @@ int verify_public_api_artifacts();
 int handle_api_status(ApiMode mode);
 int handle_prepare_api(ApiMode mode);
 int build_internal_static_library();
+int build_sdk_static_library();
+int build_sdk_shared_library();
+int build_sdk_libraries(bool build_static = true, bool build_shared = true);
 
 // Security Utility: Ensures paths with spaces don't break shell commands
 [[nodiscard]] inline std::string quote_path(const fs::path& p) {
@@ -786,7 +816,7 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
     if (ec != 0) return ec;
 
     std::string cmd = g_config.gpp_path;
-    cmd += " -std=c++26 -fmodules-ts -O2 -pipe";
+    cmd += " -std=c++26 -fmodules-ts -O2 -pipe -Wl,--gc-sections -s";
     if (strict) {
         cmd += " -Wall -Wextra -Wpedantic -Werror";
     }
@@ -828,6 +858,8 @@ int build_binary(std::string_view binary_name, const fs::path& output, const fs:
     std::cout << "[build] Linking " << binary_name << std::endl;
     ec = run_command(final_cmd);
     if (ec == 0) {
+        std::string strip_cmd = "strip -s --strip-unneeded " + quote_path(output);
+        (void)run_command(strip_cmd, false);
         std::cout << "[build] Wrote " << output.string() << std::endl;
     }
     return ec;
@@ -1235,6 +1267,7 @@ int build_tools_optimized(const fs::path& prod_main,
     const fs::path objdump_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_objdump_main.cpp").lexically_normal();
     const fs::path as_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_as_main.cpp").lexically_normal();
     const fs::path inspect_main = fs::absolute(g_config.src_dir / "apps" / "dgtl_inspect_main.cpp").lexically_normal();
+    const fs::path rodata_main = fs::absolute(g_config.tools_dir / "dgtl_rodata_maker_main.cpp").lexically_normal();
     const fs::path debugger_main = fs::absolute(g_config.tools_dir / "dgtl_debugger_main.cpp").lexically_normal();
 
     std::vector<fs::path> excluded = {
@@ -1290,7 +1323,7 @@ int build_tools_optimized(const fs::path& prod_main,
     // Compile tool sources into obj_dir
     const std::vector<fs::path> tool_sources = {
         tools_main, opt_main, llc_main, verify_main, inspect_main,
-        link_main, engine_main, ar_main, objdump_main, as_main, debugger_main
+        link_main, engine_main, ar_main, objdump_main, as_main, rodata_main, debugger_main
     };
 
     std::vector<fs::path> tool_objs;
@@ -1340,7 +1373,7 @@ int build_tools_optimized(const fs::path& prod_main,
 
     if (needs_link) {
         std::string cmd = g_config.gpp_path;
-        cmd += " -std=c++26 -fmodules-ts -O3 -pipe";
+        cmd += " -std=c++26 -fmodules-ts -O3 -pipe -Wl,--gc-sections -s";
         for (const auto& obj : common_objs) {
             cmd += " " + quote_path(obj);
         }
@@ -1383,9 +1416,13 @@ int build_tools_optimized(const fs::path& prod_main,
         if (ec != 0) {
             return ec;
         }
+        std::string strip_cmd = "strip -s --strip-unneeded " + quote_path(tools_multicall_exe);
+        (void)run_command(strip_cmd, false);
         std::cout << "[build-tools] Wrote " << tools_multicall_exe.string() << std::endl;
     } else {
         std::cout << "[build-tools] Reusing up-to-date dgtl-tools.exe" << std::endl;
+        std::string strip_cmd = "strip -s --strip-unneeded " + quote_path(tools_multicall_exe);
+        (void)run_command(strip_cmd, false);
     }
 
     // Build Forwarder Launcher Stub
@@ -1412,7 +1449,7 @@ int build_tools_optimized(const fs::path& prod_main,
     const std::vector<std::string> integrated_tool_names = {
         "dgtl-ar.exe", "dgtl-as.exe", "dgtl-link.exe", "dgtl-llc.exe", "dgtl-opt.exe",
         "dgtl-objdump.exe", "dgtl-inspect.exe", "dgtl-debugger.exe", "dgtl-verify.exe",
-        "dgtl-engine.exe", "dgtl-filecheck.exe"
+        "dgtl-engine.exe", "dgtl-rodata-maker.exe", "dgtl-rodata.exe", "dgtl-filecheck.exe"
     };
 
     auto stage_multicall_link = [&](const fs::path& dest_path) {
@@ -1462,19 +1499,6 @@ int build_tools_optimized(const fs::path& prod_main,
         } else {
             copy_file_if_exists(config_exe, tools_dir / "dgtl-config.exe");
             copy_file_if_exists(config_exe, g_config.build_dir / "dgtl-config.exe");
-        }
-    }
-
-    // Helper tool: dgtl-rodata-maker.exe
-    const fs::path rodata_source = g_config.tools_dir / "dgtl_rodata_maker_main.cpp";
-    const fs::path rodata_exe = g_config.build_dir / "tools" / "dgtl-rodata-maker.exe";
-    ensure_directory(rodata_exe.parent_path());
-    if (file_exists(rodata_source)) {
-        if (!file_exists(rodata_exe) || get_file_mtime(rodata_source) > get_file_mtime(rodata_exe)) {
-            const std::string rodata_cmd = g_config.gpp_path + " -std=c++26 -O3 -pipe " + quote_path(rodata_source) + " -o " + quote_path(rodata_exe);
-            if (run_command(rodata_cmd) == 0) {
-                std::cout << "[build] Wrote " << rodata_exe.string() << std::endl;
-            }
         }
     }
 
@@ -1570,10 +1594,14 @@ int build_sdk_static_library() {
 
     if (!needs_archive) {
         std::cout << "[build] Reusing up-to-date " << sdk_lib.string() << std::endl;
+        const fs::path sdk_a = sdk_lib_dir / "libdgtl.a";
+        copy_file_if_exists(sdk_lib, sdk_a);
+        copy_file_if_exists(sdk_lib, g_config.build_dir / "libdgtl.a");
+        copy_file_if_exists(sdk_lib, g_config.root / "libdgtl.a");
         return 0;
     }
 
-    std::string cmd = "ar rcs " + quote_path(sdk_lib);
+    std::string cmd = "ar -Drcs " + quote_path(sdk_lib);
     for (const auto& obj : sdk_objs) {
         cmd += " " + quote_path(obj);
     }
@@ -1595,16 +1623,23 @@ int build_sdk_static_library() {
         }
         rsp_out.close();
 
-        final_cmd = "ar rcs " + quote_path(sdk_lib) + " @" + quote_path(rsp_path);
+        final_cmd = "ar -Drcs " + quote_path(sdk_lib) + " @" + quote_path(rsp_path);
     }
 #endif
 
-    std::cout << "[build] Archiving dgtl.lib" << std::endl;
+    std::cout << "[build] Archiving dgtl.lib (deterministic -Drcs)" << std::endl;
     int ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << sdk_lib.string() << std::endl;
         copy_file_if_exists(sdk_lib, g_config.build_dir / "dgtl.lib");
         copy_file_if_exists(sdk_lib, g_config.root / "dgtl.lib");
+
+        // Dual Static Archive: generate standard GNU/POSIX libdgtl.a alongside dgtl.lib
+        const fs::path sdk_a = sdk_lib_dir / "libdgtl.a";
+        copy_file_if_exists(sdk_lib, sdk_a);
+        copy_file_if_exists(sdk_lib, g_config.build_dir / "libdgtl.a");
+        copy_file_if_exists(sdk_lib, g_config.root / "libdgtl.a");
+        std::cout << "[build] Wrote " << sdk_a.string() << std::endl;
 
         // Compile & stage dgtl-config discovery tool
         const fs::path sdk_bin_dir = g_config.build_dir / "DGTL_SDK" / "bin";
@@ -1620,39 +1655,49 @@ int build_sdk_static_library() {
             }
         }
 
-        // Generate pkg-config metadata (dgtl.pc)
-        const fs::path pkgconfig_dir = g_config.build_dir / "DGTL_SDK" / "lib" / "pkgconfig";
-        ensure_directory(pkgconfig_dir);
-        {
-            std::ofstream pc(pkgconfig_dir / "dgtl.pc", std::ios::trunc);
-            pc << "prefix=${pcfiledir}/../..\n"
-               << "exec_prefix=${prefix}\n"
-               << "libdir=${prefix}/lib/x64\n"
-               << "includedir=${prefix}/include\n\n"
-               << "Name: DGTL\n"
-               << "Description: Deep General-purpose Transformation Layer Compiler & JIT Engine\n"
-               << "Version: 2.1.0-SOVEREIGN\n"
-               << "Cflags: -I${includedir}\n"
-               << "Libs: -L${libdir} -ldgtl\n";
-        }
+        // Generate Sovereign MYZON-compatible Package Manifests (dgtl.pkg & dgtl.toml)
+        const fs::path sdk_dir = g_config.build_dir / "DGTL_SDK";
+        auto write_sovereign_manifest = [](const fs::path& target_file) {
+            std::ofstream out(target_file, std::ios::trunc);
+            out << "[package]\n"
+                << "name = \"dgtl\"\n"
+                << "version = \"2.1.0\"\n"
+                << "edition = \"2026\"\n"
+                << "license = \"Proprietary-Sovereign\"\n"
+                << "description = \"Deep General-purpose Transformation Layer Compiler & JIT Engine\"\n\n"
+                << "[lib]\n"
+                << "name = \"dgtl\"\n"
+                << "crate-type = [\"staticlib\", \"cdylib\"]\n\n"
+                << "[target.x86_64-pc-windows-gnu]\n"
+                << "static-lib = \"lib/x64/dgtl.lib\"\n"
+                << "static-lib-alt = \"lib/x64/libdgtl.a\"\n"
+                << "shared-lib = \"bin/dgtl.dll\"\n"
+                << "import-lib = \"lib/x64/libdgtl.dll.a\"\n"
+                << "include = \"include\"\n\n"
+                << "[target.x86_64-unknown-linux-gnu]\n"
+                << "static-lib = \"lib/x64/libdgtl.a\"\n"
+                << "shared-lib = \"lib/x64/libdgtl.so\"\n"
+                << "include = \"include\"\n\n"
+                << "[target.aarch64-unknown-linux-gnu]\n"
+                << "static-lib = \"lib/arm64/libdgtl.a\"\n"
+                << "shared-lib = \"lib/arm64/libdgtl.so\"\n"
+                << "include = \"include\"\n\n"
+                << "[target.x86_64-apple-darwin]\n"
+                << "static-lib = \"lib/libdgtl.a\"\n"
+                << "shared-lib = \"lib/libdgtl.dylib\"\n"
+                << "include = \"include\"\n\n"
+                << "[target.aarch64-apple-darwin]\n"
+                << "static-lib = \"lib/libdgtl.a\"\n"
+                << "shared-lib = \"lib/libdgtl.dylib\"\n"
+                << "include = \"include\"\n\n"
+                << "[dependencies]\n"
+                << "# Zero third-party runtime dependencies (100% sovereign)\n";
+        };
 
-        // Generate CMake package config (DGTLConfig.cmake)
-        const fs::path cmake_dir = g_config.build_dir / "DGTL_SDK" / "lib" / "cmake" / "DGTL";
-        ensure_directory(cmake_dir);
-        {
-            std::ofstream cm(cmake_dir / "DGTLConfig.cmake", std::ios::trunc);
-            cm << "# DGTL CMake Package Configuration\n"
-               << "set(DGTL_VERSION \"2.1.0-SOVEREIGN\")\n"
-               << "set(DGTL_INCLUDE_DIRS \"${CMAKE_CURRENT_LIST_DIR}/../../../include\")\n"
-               << "set(DGTL_LIBRARIES \"${CMAKE_CURRENT_LIST_DIR}/../../x64/dgtl.lib\")\n\n"
-               << "if(NOT TARGET DGTL::dgtl)\n"
-               << "    add_library(DGTL::dgtl UNKNOWN IMPORTED)\n"
-               << "    set_target_properties(DGTL::dgtl PROPERTIES\n"
-               << "        IMPORTED_LOCATION \"${DGTL_LIBRARIES}\"\n"
-               << "        INTERFACE_INCLUDE_DIRECTORIES \"${DGTL_INCLUDE_DIRS}\"\n"
-               << "    )\n"
-               << "endif()\n";
-        }
+        write_sovereign_manifest(sdk_dir / "dgtl.pkg");
+        write_sovereign_manifest(sdk_dir / "dgtl.toml");
+        write_sovereign_manifest(g_config.root / "dgtl.pkg");
+        write_sovereign_manifest(g_config.root / "dgtl.toml");
 
         // Generate Component Manifest
         const fs::path manifest_path = sdk_lib_dir / "COMPONENT_MANIFEST.json";
@@ -1663,12 +1708,150 @@ int build_sdk_static_library() {
                << "  \"version\": \"2.1.0-SOVEREIGN\",\n"
                << "  \"components\": [\"core\", \"ir\", \"opt\", \"mir\", \"isa\", \"codegen\", \"object\", \"jit\", \"linker\", \"runtime\", \"math\", \"sdk\"],\n"
                << "  \"libraries\": {\n"
-               << "    \"unified\": \"dgtl.lib\"\n"
+               << "    \"static\": [\"dgtl.lib\", \"libdgtl.a\"],\n"
+               << "    \"shared\": {\n"
+               << "      \"windows\": \"dgtl.dll\",\n"
+               << "      \"linux\": \"libdgtl.so\",\n"
+               << "      \"macos\": \"libdgtl.dylib\"\n"
+               << "    }\n"
                << "  }\n"
                << "}\n";
         }
     }
     return ec;
+}
+
+int build_sdk_shared_library() {
+    const fs::path sdk_bin_dir = g_config.build_dir / "DGTL_SDK" / "bin";
+    const fs::path sdk_lib_dir = g_config.build_dir / "DGTL_SDK" / "lib" / "x64";
+    const fs::path mod_obj_dir = g_config.build_dir / "obj" / "modules";
+    const fs::path sdk_obj_dir = g_config.build_dir / "sdk_obj";
+
+    ensure_directory(sdk_bin_dir);
+    ensure_directory(sdk_lib_dir);
+    ensure_directory(g_config.build_dir / "bin");
+
+    if (compile_all_modules() != 0) {
+        return 1;
+    }
+
+    // Collect all SDK object files
+    std::vector<fs::path> sdk_objs;
+    std::error_code ec_mod;
+    for (const auto& entry : fs::directory_iterator(mod_obj_dir, ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            sdk_objs.push_back(entry.path());
+        }
+    }
+    for (const auto& entry : fs::directory_iterator(sdk_obj_dir, ec_mod)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".o") {
+            sdk_objs.push_back(entry.path());
+        }
+    }
+    std::sort(sdk_objs.begin(), sdk_objs.end());
+    sdk_objs.erase(std::unique(sdk_objs.begin(), sdk_objs.end()), sdk_objs.end());
+
+    if (sdk_objs.empty()) {
+        std::cerr << "[build-shared] Error: No compiled objects found for shared library." << std::endl;
+        return 1;
+    }
+
+    const fs::path rsp_path = g_config.build_dir / "obj" / "sdk_shared.rsp";
+    ensure_directory(rsp_path.parent_path());
+    {
+        std::ofstream rsp_out(rsp_path, std::ios::binary | std::ios::trunc);
+        if (!rsp_out.is_open()) {
+            std::cerr << "[build-shared] Failed to write shared response file: " << rsp_path.string() << std::endl;
+            return 1;
+        }
+        for (const auto& obj : sdk_objs) {
+            rsp_out << quote_path(obj) << "\n";
+        }
+    }
+
+    TargetPlatform host = detect_host_platform();
+    std::string link_cmd;
+
+    if (host == TargetPlatform::Windows) {
+        const fs::path sdk_dll = sdk_bin_dir / "dgtl.dll";
+        const fs::path sdk_implib = sdk_lib_dir / "libdgtl.dll.a";
+
+        link_cmd = g_config.gpp_path + " -shared -O2 -pipe -s -DDGTL_BUILD_SHARED -o " + quote_path(sdk_dll)
+                 + " -Wl,--out-implib," + quote_path(sdk_implib)
+                 + " -Wl,--export-all-symbols -Wl,--gc-sections @" + quote_path(rsp_path)
+                 + " -lkernel32 -lntdll";
+
+        std::cout << "[build] Linking sovereign shared library: " << sdk_dll.filename().string() << std::endl;
+        int ec = run_command(link_cmd);
+        if (ec != 0) {
+            std::cerr << "[build-shared] Linking failed with exit code: " << ec << std::endl;
+            return ec;
+        }
+
+        std::string strip_dll_cmd = "strip -s --strip-unneeded " + quote_path(sdk_dll);
+        (void)run_command(strip_dll_cmd, false);
+
+        copy_file_if_exists(sdk_dll, g_config.build_dir / "dgtl.dll");
+        copy_file_if_exists(sdk_dll, g_config.build_dir / "bin" / "dgtl.dll");
+        copy_file_if_exists(sdk_dll, g_config.root / "dgtl.dll");
+
+        copy_file_if_exists(sdk_implib, sdk_lib_dir / "dgtl_dll.lib");
+        copy_file_if_exists(sdk_implib, g_config.build_dir / "libdgtl.dll.a");
+        copy_file_if_exists(sdk_implib, g_config.build_dir / "dgtl_dll.lib");
+        copy_file_if_exists(sdk_implib, g_config.root / "libdgtl.dll.a");
+        std::cout << "[build] Wrote " << sdk_dll.string() << std::endl;
+        std::cout << "[build] Wrote " << sdk_implib.string() << std::endl;
+        return 0;
+    } else if (host == TargetPlatform::MacOS) {
+        const fs::path sdk_dylib = sdk_lib_dir / "libdgtl.dylib";
+
+        link_cmd = g_config.gpp_path + " -dynamiclib -O2 -pipe -DDGTL_BUILD_SHARED -Wl,-install_name,@rpath/libdgtl.dylib -o "
+                 + quote_path(sdk_dylib) + " @" + quote_path(rsp_path);
+
+        std::cout << "[build] Linking sovereign dynamic library: " << sdk_dylib.filename().string() << std::endl;
+        int ec = run_command(link_cmd);
+        if (ec != 0) return ec;
+
+        copy_file_if_exists(sdk_dylib, g_config.build_dir / "libdgtl.dylib");
+        copy_file_if_exists(sdk_dylib, g_config.root / "libdgtl.dylib");
+        std::cout << "[build] Wrote " << sdk_dylib.string() << std::endl;
+        return 0;
+    } else {
+        // Linux / POSIX default
+        const fs::path sdk_so_versioned = sdk_lib_dir / "libdgtl.so.2.1.0";
+        const fs::path sdk_so_soname = sdk_lib_dir / "libdgtl.so.2";
+        const fs::path sdk_so_link = sdk_lib_dir / "libdgtl.so";
+
+        link_cmd = g_config.gpp_path + " -shared -fPIC -O2 -pipe -DDGTL_BUILD_SHARED -Wl,-soname,libdgtl.so.2 -o "
+                 + quote_path(sdk_so_versioned) + " @" + quote_path(rsp_path);
+
+        std::cout << "[build] Linking sovereign shared library: " << sdk_so_versioned.filename().string() << std::endl;
+        int ec = run_command(link_cmd);
+        if (ec != 0) return ec;
+
+        std::error_code ec_sym;
+        fs::remove(sdk_so_soname, ec_sym);
+        fs::remove(sdk_so_link, ec_sym);
+        fs::create_symlink("libdgtl.so.2.1.0", sdk_so_soname, ec_sym);
+        fs::create_symlink("libdgtl.so.2", sdk_so_link, ec_sym);
+
+        copy_file_if_exists(sdk_so_versioned, g_config.build_dir / "libdgtl.so");
+        copy_file_if_exists(sdk_so_versioned, g_config.root / "libdgtl.so");
+        std::cout << "[build] Wrote " << sdk_so_versioned.string() << std::endl;
+        return 0;
+    }
+}
+
+int build_sdk_libraries(bool build_static, bool build_shared) {
+    if (build_static) {
+        int ec = build_sdk_static_library();
+        if (ec != 0) return ec;
+    }
+    if (build_shared) {
+        int ec = build_sdk_shared_library();
+        if (ec != 0) return ec;
+    }
+    return 0;
 }
 
 int build_internal_static_library() {
@@ -1759,7 +1942,7 @@ int build_internal_static_library() {
         return 0;
     }
 
-    std::string cmd = "ar rcs " + quote_path(internal_lib);
+    std::string cmd = "ar -Drcs " + quote_path(internal_lib);
     for (const auto& obj : internal_objs) {
         cmd += " " + quote_path(obj);
     }
@@ -1781,11 +1964,11 @@ int build_internal_static_library() {
         }
         rsp_out.close();
 
-        final_cmd = "ar rcs " + quote_path(internal_lib) + " @" + quote_path(rsp_path);
+        final_cmd = "ar -Drcs " + quote_path(internal_lib) + " @" + quote_path(rsp_path);
     }
 #endif
 
-    std::cout << "[build] Archiving dgtl_internal.lib" << std::endl;
+    std::cout << "[build] Archiving dgtl_internal.lib (deterministic -Drcs)" << std::endl;
     int ec = run_command(final_cmd);
     if (ec == 0) {
         std::cout << "[build] Wrote " << internal_lib.string() << std::endl;
@@ -1822,6 +2005,9 @@ BUILD COMMANDS:
                           compliance gates -> modules -> build-release ->
                           build-tools -> build-strict -> build-smoke -> package --verify
   build, build-release    Build production binary -> build/dgtl_release.exe
+  build-static            Build sovereign static library archives (dgtl.lib & libdgtl.a)
+  build-shared            Build sovereign dynamic shared library (dgtl.dll / libdgtl.so / libdgtl.dylib)
+  build-all-libs          Build both static archives and dynamic shared library targets
   build-smoke             Build smoke/conformance test binary
   build-strict            Build with strict validation (Wall, Wextra, Werror)
   build-tools             Compile optimizer tools (dgtl-opt, dgtl-llc, dgtl-verify, dgtl-inspect)
@@ -2032,14 +2218,14 @@ int handle_build(std::vector<std::string> args = {}) {
         return verify_internal_api_artifacts();
     }
     if (*parsed_mode == ApiMode::public_sdk) {
-        ec = build_sdk_static_library();
+        ec = build_sdk_libraries(true, true);
         if (ec != 0) return ec;
         return verify_public_api_artifacts();
     }
 
     ec = build_internal_static_library();
     if (ec != 0) return ec;
-    ec = build_sdk_static_library();
+    ec = build_sdk_libraries(true, true);
     if (ec != 0) return ec;
     ec = verify_internal_api_artifacts();
     if (ec != 0) return ec;
@@ -2078,14 +2264,14 @@ int handle_build_tools(std::vector<std::string> args = {}) {
         return verify_internal_api_artifacts();
     }
     if (*parsed_mode == ApiMode::public_sdk) {
-        ec = build_sdk_static_library();
+        ec = build_sdk_libraries(true, true);
         if (ec != 0) return ec;
         return verify_public_api_artifacts();
     }
 
     ec = build_internal_static_library();
     if (ec != 0) return ec;
-    ec = build_sdk_static_library();
+    ec = build_sdk_libraries(true, true);
     if (ec != 0) return ec;
     ec = verify_internal_api_artifacts();
     if (ec != 0) return ec;
@@ -2185,15 +2371,27 @@ int handle_test_command(const std::vector<std::string>& args) {
             // Search dynamically in tests directory
             std::error_code ec;
             bool found = false;
-            for (const auto& entry : fs::recursive_directory_iterator(g_config.root / "tests", ec)) {
-                if (entry.is_regular_file(ec) && entry.path().stem() == candidate.stem()) {
-                    candidate = entry.path();
-                    found = true;
-                    break;
+            const fs::path newtest_dir = g_config.root / "newtest";
+            if (file_exists(newtest_dir)) {
+                for (const auto& entry : fs::recursive_directory_iterator(newtest_dir, ec)) {
+                    if (entry.is_regular_file(ec) && entry.path().stem() == candidate.stem()) {
+                        candidate = entry.path();
+                        found = true;
+                        break;
+                    }
                 }
             }
             if (!found) {
-                candidate = g_config.root / "tests" / (candidate.string() + ".cpp");
+                for (const auto& entry : fs::recursive_directory_iterator(g_config.root / "tests", ec)) {
+                    if (entry.is_regular_file(ec) && entry.path().stem() == candidate.stem()) {
+                        candidate = entry.path();
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                candidate = (file_exists(newtest_dir) ? newtest_dir : (g_config.root / "tests")) / (candidate.string() + ".cpp");
             }
         }
         return handle_single_file_run(candidate);
@@ -2250,7 +2448,10 @@ int handle_test() {
     if (invoke_header_compliance() != 0) return 1;
     if (sync_sdk_public_headers() != 0) return 1;
 
-    const fs::path tests_root = g_config.root / "tests";
+    fs::path tests_root = g_config.root / "newtest";
+    if (!file_exists(tests_root)) {
+        tests_root = g_config.root / "tests";
+    }
     const fs::path test_exe = g_config.build_dir / "dgtl_tests.exe";
     const fs::path test_success_stamp = g_config.build_dir / "tests" / "dgtl_test.success";
     const fs::path test_main = tests_root / "test_suite_main.cpp";
@@ -2465,15 +2666,23 @@ int verify_package_archive(const fs::path& package_zip, const std::string& packa
     buffer << in.rdbuf();
     const std::string listing = buffer.str();
 
-    const std::vector<std::string> required_entries = {
+    std::vector<std::string> required_entries = {
         package_dir_name + "/",
         package_dir_name + "/include/",
         package_dir_name + "/lib/x64/dgtl.lib",
+        package_dir_name + "/lib/x64/libdgtl.a",
         package_dir_name + "/bin/",
         package_dir_name + "/README.md",
         package_dir_name + "/LICENSE",
-        package_dir_name + "/PACKAGE_MANIFEST.txt"
+        package_dir_name + "/PACKAGE_MANIFEST.txt",
+        package_dir_name + "/dgtl.pkg",
+        package_dir_name + "/dgtl.toml"
     };
+
+    if (detect_host_platform() == TargetPlatform::Windows) {
+        required_entries.push_back(package_dir_name + "/bin/dgtl.dll");
+        required_entries.push_back(package_dir_name + "/lib/x64/libdgtl.dll.a");
+    }
 
     for (const auto& entry : required_entries) {
         if (listing.find(entry) == std::string::npos) {
@@ -2518,6 +2727,35 @@ int handle_package(bool verify_mode = false) {
         std::cerr << "[package] Missing SDK static library: " << sdk_lib.string() << std::endl;
         return 1;
     }
+    const fs::path sdk_a = g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "libdgtl.a";
+    if (file_exists(sdk_a)) {
+        copy_file_if_exists(sdk_a, stage_root / "lib" / "x64" / "libdgtl.a");
+    } else {
+        copy_file_if_exists(sdk_lib, stage_root / "lib" / "x64" / "libdgtl.a");
+        copy_file_if_exists(sdk_lib, sdk_a);
+    }
+
+    TargetPlatform host = detect_host_platform();
+    if (host == TargetPlatform::Windows) {
+        const fs::path sdk_dll = g_config.build_dir / "DGTL_SDK" / "bin" / "dgtl.dll";
+        const fs::path dest_dll = stage_root / "bin" / "dgtl.dll";
+        if (copy_file_if_exists(sdk_dll, dest_dll)) {
+            const std::string strip_dll_cmd = "strip -s --strip-unneeded " + quote_path(dest_dll);
+            (void)run_command(strip_dll_cmd);
+        }
+        copy_file_if_exists(g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "libdgtl.dll.a",
+                            stage_root / "lib" / "x64" / "libdgtl.dll.a");
+        copy_file_if_exists(g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "dgtl_dll.lib",
+                            stage_root / "lib" / "x64" / "dgtl_dll.lib");
+    } else if (host == TargetPlatform::MacOS) {
+        copy_file_if_exists(g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "libdgtl.dylib",
+                            stage_root / "lib" / "x64" / "libdgtl.dylib");
+    } else {
+        copy_file_if_exists(g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "libdgtl.so.2.1.0",
+                            stage_root / "lib" / "x64" / "libdgtl.so.2.1.0");
+        copy_file_if_exists(g_config.build_dir / "DGTL_SDK" / "lib" / "x64" / "libdgtl.so",
+                            stage_root / "lib" / "x64" / "libdgtl.so");
+    }
 
     const std::vector<fs::path> bin_candidates = {
         g_config.build_dir / "dgtl_release.exe",
@@ -2537,12 +2775,20 @@ int handle_package(bool verify_mode = false) {
 
     for (const auto& src : bin_candidates) {
         if (file_exists(src)) {
-            copy_file_if_exists(src, stage_root / "bin" / src.filename());
+            const fs::path dest = stage_root / "bin" / src.filename();
+            copy_file_if_exists(src, dest);
+            if (dest.extension() == ".exe") {
+                // Strip debug/unneeded symbols for minimum footprint in release distributions
+                const std::string strip_cmd = "strip -s --strip-unneeded " + quote_path(dest);
+                (void)run_command(strip_cmd);
+            }
         }
     }
 
     copy_file_if_exists(g_config.root / "README.md", stage_root / "README.md");
     copy_file_if_exists(g_config.root / "LICENSE", stage_root / "LICENSE");
+    copy_file_if_exists(g_config.root / "dgtl.pkg", stage_root / "dgtl.pkg");
+    copy_file_if_exists(g_config.root / "dgtl.toml", stage_root / "dgtl.toml");
     copy_file_if_exists(g_config.root / "docs" / "COMMAND_EXECUTION_GUIDE.md",
                         stage_root / "docs" / "COMMAND_EXECUTION_GUIDE.md");
 
@@ -2556,10 +2802,12 @@ int handle_package(bool verify_mode = false) {
         out << "Root: " << g_config.root.string() << "\n\n";
         out << "Included:\n";
         out << "- include/ (public SDK headers)\n";
-        out << "- lib/x64/dgtl.lib\n";
-        out << "- bin/ (release + tool binaries + wrappers when present)\n";
+        out << "- lib/x64/dgtl.lib & lib/x64/libdgtl.a (static library archives)\n";
+        out << "- bin/ (release + tool binaries + shared libraries + wrappers)\n";
         out << "- README.md\n";
         out << "- LICENSE\n";
+        out << "- dgtl.pkg (MYZON-compatible sovereign package manifest)\n";
+        out << "- dgtl.toml (MYZON-compatible sovereign package config)\n";
     }
 
     const fs::path package_parent = stage_root.parent_path();
@@ -2774,13 +3022,17 @@ int main(int argc, char** argv) {
 
         if (command == "build" || command == "build-release" || command == "build-tools" ||
             command == "smoke-build" || command == "build-smoke" || command == "strict" ||
-            command == "build-strict" || command == "test" || command == "gen-build") {
+            command == "build-strict" || command == "test" || command == "gen-build" ||
+            command == "build-static" || command == "build-shared" || command == "build-all-libs") {
             int ec_mod = compile_all_modules();
             if (ec_mod != 0) return ec_mod;
         }
 
         if (command == "production" || command == "prod") return handle_production();
         if (command == "build" || command == "build-release") return handle_build(args);
+        if (command == "build-static") return build_sdk_static_library();
+        if (command == "build-shared") return build_sdk_shared_library();
+        if (command == "build-all-libs") return build_sdk_libraries(true, true);
         if (command == "build-tools") return handle_build_tools(args);
         if (command == "smoke-build" || command == "build-smoke") return handle_smoke_build();
         if (command == "strict" || command == "build-strict") return handle_strict();
@@ -3069,7 +3321,7 @@ int handle_prepare_api(ApiMode mode) {
     }
 
     if (mode == ApiMode::public_sdk || mode == ApiMode::both) {
-        int ec = build_sdk_static_library();
+        int ec = build_sdk_libraries(true, true);
         if (ec != 0) return ec;
         ec = verify_public_api_artifacts();
         if (ec != 0) return ec;

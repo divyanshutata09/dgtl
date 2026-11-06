@@ -286,7 +286,7 @@ public:
     [[nodiscard]] static Result assign_opcode(
         const machine::MachineInstruction& instruction) noexcept {
         const auto op = dgtl::isa::arm64::opcode_for(instruction.form, instruction.semantic_kind);
-        if (op != machine::GM_NOOP || instruction.form == machine::MachineForm::NoOp) {
+        if (op != machine::INVALID_MACHINE_OPCODE) {
             return Result{op, true, nullptr};
         }
         return Result{

@@ -16,5 +16,5 @@ export module dgtl.mir.isel_rules;
 
 export namespace dgtl::mir::generated {
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
 }

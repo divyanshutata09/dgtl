@@ -46,12 +46,16 @@ public:
         const auto* inst = &inst_ref;
         uint32_t vd = 0, vs1 = 0, vs2 = 0, vs3 = 0;
         int64_t imm = 0;
+        bool is_dst_fp = false;
+        bool is_src_fp = false;
         for (const auto& op : inst->operands) {
             if (op.kind == dgtl::machine::MachineOperandKind::Register) {
                 if (op.role == dgtl::machine::OperandRole::Def) {
                     vd = op.reg.id & 0x3F;
+                    is_dst_fp = (op.reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint);
                 } else if (vs1 == 0) {
                     vs1 = op.reg.id & 0x3F;
+                    is_src_fp = (op.reg.reg_class == dgtl::machine::RegisterClassKind::FloatingPoint);
                 } else if (vs2 == 0) {
                     vs2 = op.reg.id & 0x3F;
                 } else {
@@ -70,7 +74,13 @@ public:
                         asm_out << "    s_endpgm\n";
                         break;
                     case dgtl::machine::MachineForm::Move:
-                        asm_out << "    v_mov_b32 v" << vd << ", v" << vs1 << "\n";
+                        if (is_dst_fp && !is_src_fp) {
+                            asm_out << "    v_cvt_f64_i32 v[" << vd << ":" << (vd + 1) << "], v" << vs1 << "\n";
+                        } else if (!is_dst_fp && is_src_fp) {
+                            asm_out << "    v_cvt_i32_f64 v" << vd << ", v[" << vs1 << ":" << (vs1 + 1) << "]\n";
+                        } else {
+                            asm_out << "    v_mov_b32 v" << vd << ", v" << vs1 << "\n";
+                        }
                         break;
                     case dgtl::machine::MachineForm::LoadImmediate:
                         asm_out << "    v_mov_b32 v" << vd << ", " << imm << "\n";

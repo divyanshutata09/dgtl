@@ -537,12 +537,24 @@ private:
             if (dst_name.empty() || src_name.empty()) return false;
 
             if (dst.reg.reg_class == RegisterClassKind::FloatingPoint) {
+                if (src.kind == MachineOperandKind::Register && src.reg.reg_class == RegisterClassKind::General) {
+                    append_line("    cvtsi2sd " + dst_name + ", " + src_name);
+                    return true;
+                }
                 const bool f32 = dst.subregister == 32u;
                 append_line(std::string("    ") + (f32 ? "movss " : "movsd ") + dst_name + ", " + src_name);
                 return true;
             }
+            if (dst.reg.reg_class == RegisterClassKind::General && src.kind == MachineOperandKind::Register && src.reg.reg_class == RegisterClassKind::FloatingPoint) {
+                append_line("    cvttsd2si " + dst_name + ", " + src_name);
+                return true;
+            }
             if (dst.reg.reg_class == RegisterClassKind::Vector) {
                 return false; // Vector moves require width-aware AVX lowering.
+            }
+            if (src.kind == MachineOperandKind::Symbol) {
+                append_line("    lea " + dst_name + ", [rel " + src_name + "]");
+                return true;
             }
             append_line("    mov " + dst_name + ", " + src_name);
             return true;
@@ -550,6 +562,10 @@ private:
 
         case MachineForm::LoadImmediate:
             if (operands.size() >= 2) {
+                if (instruction.operands.size() >= 2 && instruction.operands[1].kind == MachineOperandKind::Symbol) {
+                    append_line("    lea " + get(0) + ", [rel " + get(1) + "]");
+                    return true;
+                }
                 append_line("    mov " + get(0) + ", " + get(1));
                 return true;
             }

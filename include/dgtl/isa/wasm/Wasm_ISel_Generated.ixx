@@ -29,8 +29,8 @@ namespace generated {
 
 inline constexpr std::string_view kGeneratedTarget = "wasm";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0xE5B07962AC31A279";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0x7C6EF246274F39BB";
 
 // Target capabilities declared in targets.dgtl_contract
 inline constexpr std::size_t kCapabilityCount = 5;

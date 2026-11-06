@@ -1,1228 +1,348 @@
 /*
  * Copyright (c) 2026 TataG Systems. All rights reserved.
  *
- * Project:    DGTL (Deep General-purpose Transformation Layer)
- * Owner:      Divyanshu Tata
- * Repository: github.com/TataG-Systems/DGTL
+ * Project:     DGTL — Deep General-purpose Transformation Layer
+ * Owner:       Divyanshu Tata
+ * Repository:  github.com/TataG-Systems/DGTL
  *
- * This software is the proprietary property of TataG Systems.
+ * This software is the proprietary sovereign property of TataG Systems.
  * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
-# DGTL: High-Performance Compiler Infrastructure
+# DGTL 2.1.0: Sovereign Industry-Grade Compiler & JIT Engine
 
-**DGTL** is a retargetable compiler infrastructure designed for high-performance code generation and optimization. It targets **AI inference, high-frequency trading (HFT), cloud computing, and embedded systems** requiring low-latency, vectorized code generation.
+[![CI](https://github.com/TataG-Systems/DGTL/actions/workflows/dgtl_industrial_ci.yml/badge.svg)](https://github.com/TataG-Systems/DGTL/actions/workflows/dgtl_industrial_ci.yml)
+[![Version](https://img.shields.io/badge/DGTL-2.1.0--SOVEREIGN-blue.svg)](https://github.com/TataG-Systems/DGTL)
+[![Zero-Dependency](https://img.shields.io/badge/Dependencies-Zero%20External-success.svg)](https://github.com/TataG-Systems/DGTL)
+[![Language](https://img.shields.io/badge/C%2B%2B-20%20%2F%2023%20%2F%2026-magenta.svg)](https://github.com/TataG-Systems/DGTL)
+[![Package](https://img.shields.io/badge/Package-MYZON%20.pkg%20%2F%20.toml-orange.svg)](file:///D:/TataG/DGTL/dgtl.pkg)
 
-## Access And Licensing
+**DGTL (Deep General-purpose Transformation Layer)** is an ultra-high-velocity, **100% zero-dependency**, frontend-agnostic sovereign compiler infrastructure and Just-In-Time (JIT) execution engine. Engineered from the silicon up by TataG Systems, DGTL replaces legacy heavy compiler backends with an autonomous, high-density transactional pipeline spanning intermediate representation, 26-pass optimization, SMT formal verification, instruction selection across 9 hardware ISAs, native binary linkers, and in-memory W^X machine code execution.
 
-DGTL is released under a proprietary software notice. Source access, usage rights, and distribution rights are controlled by written agreement.
+---
 
-- Repository notice: [LICENSE](LICENSE)
-- Licensing/evaluation draft terms: [PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md](docs/business/PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md)
-- Technical disclosure policy for deep questions: [DEEP_TECHNICAL_RESPONSE_POLICY.md](docs/business/DEEP_TECHNICAL_RESPONSE_POLICY.md)
-- Technical whitepaper outline (black-box publication model): [TECHNICAL_WHITEPAPER_OUTLINE.md](docs/analysis/TECHNICAL_WHITEPAPER_OUTLINE.md)
+## 1. Architectural Highlights
 
-For commercial licensing or evaluation access, contact: **licensing@dgtl.tech**
+- **100% Zero External Dependencies**: Completely independent of CMake, LLVM, GNU Make, Ninja, Python, and external linkers. Bootstrapped with a single compiler invocation.
+- **Sovereign Package Standard**: Native integration with MYZON's package manager (`mypm` / `pm`) using standard `dgtl.pkg` and `dgtl.toml` manifests.
+- **Cross-Platform Static & Dynamic Libraries**: Emits deterministic static archives (`dgtl.lib`, `libdgtl.a`) and dynamic shared libraries (`dgtl.dll`, `libdgtl.so`, `libdgtl.dylib`) across Windows, Linux, and macOS.
+- **12-Layer Verification Architecture**: Comprehensive stack auditing covering frontend ingestion through live JIT execution.
+- **Deterministic Bit-for-Bit Archives**: Employs timestamp and UID/GID normalization (`ar -Drcs`) guaranteeing reproducible hashes.
+- **Production Footprint Stripping**: Built-in release stripping drops executable and library sizes by over 65% for lean edge and cloud deployments.
+- **Formal SMT Proof Verification**: Invariant verification using bit-vector formal models to mathematically prove the semantics of compiler optimization passes.
 
-## Core Features
+---
 
-- **Bit-Packed Intermediate Representation (BIR 2.1)**: Compact, SIMD-friendly IR with transactional semantics
-- **Transactional Memory Model**: Thread-local arenas with speculative execution and rollback via shadow buffers
-- **AI-Guided Optimization**: Neural network-based cost prediction for intelligent pass ordering
-- **Multi-Target Code Generation with 100% Feature Parity**: ARM64/AArch64, ARM32 NEON, x86-64, RISC-V 64, WebAssembly, NASM, CUDA PTX, ROCm LLVM IR, FPGA Verilog
-  - ✅ Gather/Scatter operations on **all 9 ISA backends**
-  - ✅ Hardware-native FMA (Fused Multiply-Add) on **all 9 ISA backends**
-  - ✅ Cross-backend feature completeness (ZERO feature matrix crossmarks)
-- **Native Object & Library Emission**:
-  - ELF64 relocatable objects (`.o`) with `.rela.text` relocations
-  - GNU `ar` static archives (`.a`)
-  - COFF relocatable objects (`.obj`, IMAGE_FILE_MACHINE_AMD64)
-  - COFF import libraries (`.lib`) with first linker member
-  - Mach-O 64-bit ARM64 objects with real instruction encoding
-- **Advanced Optimization Passes** (26 total, 11 stages): 
-  - **Transform Passes (10)**: Global Value Numbering (GVN), Dead Code Elimination, Constant Folding, Polyhedral Transformations, Masked Predication, Loop Unswitching, Instruction Reordering, Instruction Fusion, **Aggressive Inlining**, **Loop Fusion**
-  - **SIMD Passes (4)**: SIMD Legalization, Gather/Scatter Optimization, **Advanced SIMD Recognition**, **Advanced Vectorization**
-  - **Analysis Passes (1)**: **Escape Analysis** for stack-local optimization
-  - **Speculative Passes (4)**: Speculative Inlining, Speculative DCE, Speculative Alias Analysis, Temporal Vector Fusion
-  - **Tuning Passes (3)**: Auto-Tuner, **Profile-Guided Optimization (PGO)**, **Microarchitecture Tuning**
-  - **Error Handling (1)**: **Enhanced Error Recovery** with graceful degradation
-  - **Orchestration (2)**: **Distributed GPU Scheduling**, Pass Composer
-  - **Memory (1)**: Redundant Store Fusion
-- **Execution Runtime**: W^X-protected code execution via `StrikeOrchestrator` with closed-loop AI cost feedback
-- **Graph-Based Analysis**: Execution graphs, dependency tracking, region-level optimization, polyhedral regions
-
-## DGTL Architecture & Subsystem Layout
-
-DGTL is structured into clean, decoupled compiler layers separating IR middle-end transformations from backend target emission and execution.
+## 2. 12-Layer Sovereign Compiler Pipeline
 
 ```
-DGTL Compiler Infrastructure
-├── 1. API Subsystem (include/dgtl/api/)
-│   ├── AOTSession.ixx          # High-performance Ahead-Of-Time compilation session
-│   ├── JITSession.ixx          # Ultra-low-latency Just-In-Time execution session
-│   ├── HybridSession.ixx       # Adaptive tier-routing execution engine
-│   ├── ExecutionEngine.ixx     # Abstract execution engine foundation
-│   ├── IRBuilder.ixx           # Programmatic fluent IR stream builder
-│   └── Config.ixx              # Global engine and telemetry configuration
-│
-├── 2. Core Foundation Subsystem (include/dgtl/core/)
-│   ├── Target.ixx              # TargetMachine, ArchType, CPU feature query & port models
-│   ├── Arena.ixx               # Transactional arena memory allocators
-│   ├── Compiler_Context.ixx    # DGTL compilation context & session state
-│   ├── ControlFlow.ixx         # CFG nodes, basic blocks, jump graphs
-│   ├── Function.ixx            # Function abstractions & signatures
-│   ├── MemoryManager.ixx       # Virtual memory & W^X page controls
-│   └── NUMA.ixx                # NUMA topology & memory affinity
-│
-├── 3. Intermediate Representation (include/dgtl/ir/)
-│   ├── base/
-│   │   ├── IR_Node.ixx         # 64-byte canonical IR node representation
-│   │   ├── IR_Stream.ixx       # Transactional shadow stream & instruction buffer
-│   │   ├── IR_SSA.ixx          # SSA form invariants & dominance frontiers
-│   │   ├── IR_Storage.ixx      # Compressed bit-packed IR arrays
-│   │   └── IR_PrintSerialDumper.ixx # Textual IR dumper & format serializer
-│   ├── gen/
-│   │   ├── DGTL_Gen_Enums.ixx  # 183 canonical opcodes and flag definitions (auto-generated)
-│   │   ├── DGTL_Gen_Ops.ixx    # 183 operation metadata descriptors & lookup helpers (auto-generated)
-│   │   └── DGTL_Gen_Op_Wrappers.ixx # Strongly-typed dialect builder wrappers (auto-generated)
-│   └── Global_IR.ixx           # Whole-program translation units
-│
-├── 4. Analysis & Cost Modeling (include/dgtl/analysis/)
-│   ├── AI_Cost_Model.ixx       # AI neural cost model for loop/latency estimation
-│   ├── Liveness_Memory_Dependency_Unified.ixx # Liveness analysis & alias disambiguation
-│   ├── Polyhedral_Scop_Unified.ixx # Polyhedral SCoP detector & iteration space mapper
-│   └── Speculative_Value_Profiler.ixx # Value profiling & branch probability tracker
-│
-├── 5. Optimization Passes (include/dgtl/pass/)
-│   ├── transform/
-│   │   ├── Transform_Scalar_Core.ixx # GVN, SCCP, Constant Folding, Algebraic Simplify
-│   │   ├── Transform_Inlining.ixx # Adaptive multi-level function inliner
-│   │   ├── Transform_Poly_Loop.ixx # Polyhedral loop fusion, tiling & skewing
-│   │   └── Transform_Control_Predication.ixx # Branchless select/cmov predication
-│   ├── simd/
-│   │   └── SimdGScatter_LegalVecRecognizer.ixx # Vectorizer & gather/scatter matcher
-│   ├── speculative/
-│   │   └── SpecAliasDCE_InlineVecFusion.ixx # Speculative inlining, DCE & vector fusion
-│   └── error_handling/
-│       └── Enhanced_Error_Recovery.ixx # Transactional error recovery
-│
-├── 6. Optimization Pipeline (include/dgtl/pipeline/)
-│   ├── Pass_Manager.ixx        # Master pass manager aggregate
-│   ├── Pass_Manager_Config.ixx # Precision modes (HFT, CLOUD, HPC) & pass telemetry
-│   ├── Pass_Manager_Analysis.ixx # Analysis preservation & invalidation manager
-│   └── Pass_Manager_Orchestrator.ixx # Multi-threaded parallel pass pipelines
-│
-├── 7. JIT Execution Subsystem (include/dgtl/jit/)
-│   ├── JIT_Orchestrator.ixx    # Strike runner, Tier-1/Tier-2 compilation, OSR poller
-│   ├── JIT_Executor.ixx        # W^X in-memory code executor & trace mapper
-│   ├── Hardware_Scheduler.ixx  # Cycle-accurate hardware port scheduler & quiet-core policy
-│   └── Async_Dopt_Tiered.ixx   # Background speculative re-optimizer & deopt handlers
-│
-├── 8. Backend Code Generation & Linkers (include/dgtl/backend/ & include/dgtl/isa/)
-│   ├── orchestrator/
-│   │   └── AOT_Orchestrator.ixx # Static offline compilation dispatcher (.obj, .lib, .exe, .o, .a)
-│   ├── linker/
-│   │   ├── AOT_Linker.ixx      # Sovereign COFF/PE/ELF binary format synthesis
-│   │   └── Linker_Backend.ixx  # Dynamic in-memory JIT machine code lowerer & W^X flips
-│   ├── isel/ & lowering/
-│   │   ├── Instruction_Selector.ixx # Instruction selection engine
-│   │   ├── Legalizer.ixx       # Type & vector legalization
-│   │   └── X64_Machine_Form_Lowering.ixx # Canonical x64 machine form lowering
-│   ├── regalloc/
-│   │   ├── X64_GraphColoring_RegAlloc.ixx # Chaitin-Briggs graph coloring register allocator
-│   │   ├── X64_Reg_Map.ixx     # Register constraints and ABI mapping
-│   │   └── Strike_Live_Manager.ixx # Live range intervals & spill manager
-│   └── emitter/
-│       ├── ARM64_Emitter.ixx   # ARM64 / AArch64 machine code emitter
-│       ├── ARM32NEON_Emitter.ixx # ARM32 NEON SIMD emitter
-│       ├── NASM_Emitter.ixx    # x86-64 assembly emitter
-│       ├── RiscV64_Emitter.ixx # RISC-V 64 vector emitter
-│       └── WasmSIMD_FMA_Emitter.ixx # WebAssembly SIMD/FMA encoder
-│
-└── 9. Host Runtime Subsystem (include/dgtl/runtime/)
-    ├── Runtime_Intrinsics.ixx  # Math, string, memory runtime helpers
-    ├── Runtime_Context.ixx     # Per-thread TLS execution context
-    ├── dgtl_bulletins.ixx      # Intrinsic symbol dispatch tables
-    ├── NUMA_Runtime.ixx        # NUMA thread-pinning & memory allocator
-    └── TaskScheduler.ixx       # Work-stealing fiber & task scheduler
+                                  [ Source Code / AST / DSL ]
+                                               │
+ ┌─────────────────────────────────────────────▼────────────────────────────────────────────┐
+ │  LAYER 1: Polyglot Frontend Ingestion (MYZON AST, C-ABI, Textual IR, High-Level DSL)      │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 2: Transactional SoA IRStream & Arena Megabuffer (Graph SSA, Dominance Frontiers) │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 3: SMT Formal Equivalence & Sentinel Proof Gate (Z3/Bit-Vector Semantics Proof)   │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 4: 26 Optimization Passes Pipeline & AI Cost Model (GVN, DCE, LICM, Inlining, FMA)│
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 5: Polyhedral Loop Nest Transformation Engine (Iteration Tiling, Skewing, Fusion) │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 6: MIR Tree-Munch Instruction Selection (Canonical Pattern Matching & Costs)      │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 7: Universal Register Allocation (Linear-Scan & Graph-Coloring Spill Resolver)   │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 8: Machine IR (MIR) & Multi-Target Peephole Optimizer                             │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 9: 9-ISA Native Machine Codegen (x86-64, ARM64, RISC-V 64, WASM, PTX, ROCm, etc) │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 10: Sovereign Binary Object Writers (PE/COFF, ELF64, Mach-O 64, WebAssembly)      │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 11: Sovereign Linkers & Toolchain Suite (PE Linker, Archive Tool, Disassembler)   │
+ ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ │  LAYER 12: In-Memory JIT Execution Engine (W^X Virtual Memory, Hardware SEH/VEH Traps)   │
+ └─────────────────────────────────────────────┬────────────────────────────────────────────┘
+                                               │
+                                   [ Execution / Machine Code ]
 ```
 
-### Decoupled Execution Pipelines: JIT vs. AOT
+---
 
-| Capability | JIT Pipeline (`dgtl/jit/` & `Linker_Backend.ixx`) | AOT Pipeline (`AOT_Orchestrator.ixx` & `AOT_Linker.ixx`) |
-| :--- | :--- | :--- |
-| **Primary Goal** | Sub-millisecond startup, dynamic tiering & in-memory execution | Whole-program whole-file offline compilation |
-| **Output Targets** | Direct RAM execution (`VirtualAlloc`/`mprotect`, W^X page flips) | Standalone `.exe`, Windows `.obj`/`.lib`, Linux `.o`/`.a` |
-| **Compilation Tiers** | Tier-1 Strike Baseline (<1ms) $\rightarrow$ Tier-2 Graph Coloring RegAlloc | Deep multi-pass optimization with full link-time string pooling |
-| **Relocation Handling** | Direct in-process host pointer patching | Industry-standard COFF/ELF relocation tables (`IMAGE_REL_AMD64_REL32`) |
-| **String Table Layout** | In-process immutable string interning | Dual-section `.text` + `.rdata` merged string tables |
+## 3. Cross-Platform Library Support Matrix
 
-## DGTL Public SDK & Cross-Language C-ABI
+DGTL builds native static archives and dynamic shared libraries for all major platforms:
 
-DGTL includes a standalone **Public C-ABI SDK** designed for embedding high-performance JIT and AOT code generation into any host language (C, C++, Rust, Python, Go, Zig, Odin, etc.) via Foreign Function Interface (FFI).
+| Operating System | Target Triple | Dynamic / Shared Library | Import Library | Static Archive |
+| :--- | :--- | :--- | :--- | :--- |
+| **Windows** | `x86_64-pc-windows-gnu` / `msvc` | `dgtl.dll` | `libdgtl.dll.a` & `dgtl_dll.lib` | `dgtl.lib` & `libdgtl.a` |
+| **Linux (x64)** | `x86_64-unknown-linux-gnu` | `libdgtl.so` (`libdgtl.so.2.1.0`) | Direct ELF Dynamic Link | `libdgtl.a` |
+| **Linux (ARM)** | `aarch64-unknown-linux-gnu` | `libdgtl.so` (`libdgtl.so.2.1.0`) | Direct ELF Dynamic Link | `libdgtl.a` |
+| **macOS (Apple Silicon)**| `aarch64-apple-darwin` | `libdgtl.dylib` | Direct Mach-O Dynamic Link | `libdgtl.a` |
+| **macOS (Intel)** | `x86_64-apple-darwin` | `libdgtl.dylib` | Direct Mach-O Dynamic Link | `libdgtl.a` |
 
-### SDK Package Layout
+---
 
-When running `dgtl package`, the self-contained SDK is generated under `build/package/DGTL_v*/`:
+## 4. Multi-Target Hardware Backend Coverage (9 ISAs)
 
-```
-DGTL_SDK/
-├── include/
-│   └── dgtl_sdk/
-│       ├── dgtl.h              # Master Umbrella Header (include this for C/C++)
-│       ├──         # Pure C ABI, handles, and return statuses
-│       ├── dgtl_core.h         # Core scalar instructions and memory operations
-│       ├──          # SIMD vectorization, AVX-512, gather/scatter, FMA
-│       ├── dgtl_session.h      # JIT / AOT execution session controls
-│       └── dgtl_capabilities.h # Target machine ISA & hardware feature queries
-└── lib/
-    └── x64/
-        └── dgtl.lib            # Ingestion static library (Windows MSVC / GCC)
-```
+DGTL delivers instruction selection and machine code generation across 9 discrete targets with 100% feature parity:
 
-### Cross-Language FFI Type Mappings
+| Target Architecture | Dialect / Spec | Vectorization / SIMD | Calling Conventions |
+| :--- | :--- | :--- | :--- |
+| **x86-64 / AMD64** | AVX-512, AVX2, SSE4.2 | 128 / 256 / 512-bit SIMD | Microsoft x64, System V AMD64 ABI |
+| **ARM64 / AArch64** | ARMv8.5-A, ARMv9-A | NEON, SVE, SVE2 | AAPCS64 |
+| **RISC-V 64** | RV64GC, RV64IMAFD | RVV Vector Extension | Standard LP64D |
+| **WebAssembly** | WASM MVP + SIMD128 | 128-bit SIMD vector ops | WASI C-ABI |
+| **NVIDIA CUDA** | PTX ISA 7.0+ | Warp-level primitives | PTX Parameter passing |
+| **AMD ROCm** | GCN / CDNA / RDNA | Wavefront SIMD instructions | AMDGPU kernel ABI |
+| **SPIR-V** | Vulkan / OpenCL compute | Subgroup vector arithmetic | SPIR-V logical addressing |
+| **NASM / Netwide** | Intel syntax assembly | Complete x86 mnemonic set | Universal x64 ABI |
+| **ARM32 / Thumb-2** | ARMv7-A | NEON 128-bit SIMD | AAPCS32 |
 
-| C ABI Handle | Description | Rust | Python (`ctypes`) | Go | Zig |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `dgtl_context_t*` | Context Handle | `*mut c_void` | `ctypes.c_void_p` | `unsafe.Pointer` | `?*anyopaque` |
-| `dgtl_stream_t*` | IR Stream Handle | `*mut c_void` | `ctypes.c_void_p` | `unsafe.Pointer` | `?*anyopaque` |
-| `dgtl_session_t*` | Session Handle | `*mut c_void` | `ctypes.c_void_p` | `unsafe.Pointer` | `?*anyopaque` |
-| `dgtl_status_t` | Response Code | `DGTLStatus` | `class DGTLStatus(Structure)` | `struct DGTLStatus` | `DGTLStatus` |
-| `uint32_t` | Virtual Slot ID | `u32` | `ctypes.c_uint32` | `uint32` | `u32` |
+---
 
-### Embedding Quickstart (C / C++)
+## 5. Sovereign Zero-Dependency Build Guide
 
-```c
-#include <dgtl_sdk/dgtl.h>
-#include <stdio.h>
+DGTL requires no third-party build systems. You compile the sovereign C++ build orchestrator using your C++20 compiler, which then manages all builds, tests, and packaging.
 
-int main(void) {
-    // 1. Initialize DGTL Context & IR Stream
-    dgtl_context_t* ctx = dgtl_context_create();
-    dgtl_stream_t* stream = dgtl_stream_create(ctx);
+### Step 1: Bootstrap the Sovereign Build Orchestrator
+```bash
+# On Windows (MinGW-w64 / MSYS2 UCRT64 / GCC):
+g++ -std=c++20 -O2 -pipe tools/cpp/dgtl_main.cpp -o dgtl.exe
 
-    // 2. Build IR: func add(a, b) -> a + b
-    dgtl_emit_label(stream, 1);
-    dgtl_emit_add_i64(stream, 10, 1, 2); // slot 10 = slot 1 + slot 2
-    dgtl_emit_ret(stream, 10);
+# On Linux / POSIX:
+g++ -std=c++20 -O2 -pipe tools/cpp/dgtl_main.cpp -o dgtl
 
-    // 3. Create JIT Session & Execute in Memory
-    dgtl_session_t* session = dgtl_session_create_jit(ctx);
-    dgtl_session_compile(session, stream);
-
-    typedef uint64_t (*add_fn)(uint64_t, uint64_t);
-    add_fn fn = (add_fn)dgtl_session_get_function_pointer(session, "DGTL_kernel_entry");
-    
-    uint64_t result = fn(20, 22);
-    printf("Result: %llu\n", (unsigned long long)result); // Output: 42
-
-    // 4. Release Handles
-    dgtl_session_destroy(session);
-    dgtl_stream_destroy(stream);
-    dgtl_context_destroy(ctx);
-    return 0;
-}
+# On macOS:
+clang++ -std=c++20 -O2 tools/cpp/dgtl_main.cpp -o dgtl
 ```
 
-For full integration details, refer to the [Public SDK Guide](docs/dgtl_public_sdk_guide.md).
+### Step 2: Build DGTL Libraries
+```bash
+# Build BOTH static archives (.lib/.a) and dynamic shared libraries (.dll/.so/.dylib):
+./dgtl build-all-libs
 
-## Performance-First Lowering
-
-DGTL lowers high-level logic to backend-native output with traceability markers for post-run analysis.
-
-```armasm
-// Example Output: Arithmetic Lowering (ARM64, IRMode=int)
-_DGTL_entry:
-  add x20, x10, x11               // TR_HASH:0x98786E76E5341832
-  add x21, x12, x20               // TR_HASH:0x98786E76E511C260
-  add x22, x13, x20               // TR_HASH:0x98786E76E51C4600
-  mul x23, x21, x22               // TR_HASH:0x98786E76ED599010
-  ret
+# Or build specific library formats:
+./dgtl build-static    # Produces dgtl.lib and libdgtl.a
+./dgtl build-shared    # Produces dgtl.dll (+ libdgtl.dll.a) or libdgtl.so / libdgtl.dylib
 ```
 
-Current proof point from production run:
-
-- `LogicHash=0x9c13c402303ba602`
-- per-instruction `TR_HASH` tags in emitted assembly
-- artifact logs under `benchmarks/logs/`
-
-## Repository Face For Proprietary Launch
-
-- Source is organized under `src/` and public interfaces under `include/dgtl/`.
-- Build artifacts (including `dgtl_release.exe`) are ignored via `.gitignore`.
-- Binary distribution should go through GitHub Releases, not through committed build outputs.
-- Public technical depth is documented under `docs/analysis/` with black-box disclosure boundaries.
-
-## v1.0.2 Production Status: COMPLETE CROSS-BACKEND FEATURE PARITY
-
-✅ **ALL 9 ISA BACKENDS NOW 100% FEATURE-COMPLETE**
-
-Backend feature parity is fully established across all 9 targets including:
-- **Gather/Scatter operations**: Native implementation on all backends (x64, ARM64, ARM32, RISC-V, WASM, CUDA, ROCm, NASM, FPGA)
-- **Hardware-native FMA**: Complete support across all backends (or via pattern-recognition synthesis for WASM)
-- **Native object/library emission**: ELF, COFF, Mach-O formats
-- ** execution**: Production-grade W^X protection and I-cache synchronization
-
-Gate verification completed:
-
-1. ✅ Gather/Scatter and FMA parity verified across all 9 backends
-2. ✅ Object/library output verified: `elfobj`, `staticlib`, `coffobj`, `cofflib`, `macho`
-3. ✅  execution validated with `DGTL_STRIKE_EXECUTE=1` on x64
-4. ✅ Cross-backend feature matrix: **18/18 features (100% coverage, ZERO crossmarks)**
-5. ✅ Production-grade error handling and diagnostics
-6. ✅ Distributed GPU scheduling for multi-GPU workloads
-
-## Public Reveal Kit
-
-Use this section when publishing DGTL v1.0.2 as the first public-facing release.
-
-### v1.0.2 Release Highlights
-
-- ✅ **PRODUCTION READY**: 100/100 audit score - all gaps closed
-- ✅ **COMPLETE FEATURE MATRIX**: 18/18 features across all 9 backends (ZERO crossmarks)
-- ✅ **CROSS-BACKEND PARITY**: Gather/Scatter + FMA on all ISA targets
-- ✅ **32 OPTIMIZATION PASSES**: Advanced passes for transform, SIMD, analysis, tuning, orchestration
-
-### Backend Parity Snapshot (DGTL v1.0.2) - Production Ready
-
-| Backend | Output Kind | Status | LogicHash | Evidence |
-|---|---|---|---|---|
-| `arm64` | text assembly | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_arm64_int.log` |
-| `x64` | binary bytes | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_x64_int.log` |
-| `nasm` | text assembly | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_nasm_int.log` |
-| `wasm` | binary bytes | Ready | `0x9c13c402303ba602` | `benchmarks/logs/release_wasm_int.log` |
-| `elfobj` | ELF .o binary | Ready | â€” | Verified: ELF64 ET_REL, 6 sections |
-| `staticlib` | GNU .a archive | Ready | â€” | Verified: `!<arch>` header |
-| `coffobj` | COFF .obj binary | Ready | â€” | Verified: `64 86` (MACHINE_AMD64) |
-| `cofflib` | COFF .lib archive | Ready | â€” | Verified: first linker member + COFF member |
-| `macho` | Mach-O ARM64 binary | Ready | â€” | Verified: `CF FA ED FE`, LC_SEGMENT_64 + LC_SYMTAB |
-
-### Copy-Paste Reveal Announcement (v1.0.2 - COMPLETE)
-
-```markdown
-DGTL v1.0.2 is now available under a proprietary software notice for evaluation and commercial licensing.
-
-What is included in v1.0.2:
-- \u2705 COMPLETE CROSS-BACKEND FEATURE PARITY: Gather/Scatter + FMA on all 9 ISA backends
-  * x64 AVX-512: Native 512-bit gather/scatter, native VFMADD
-  * ARM64 SVE: Scalable vector gather/scatter, native FMLA  
-  * ARM32 NEON: Lane-pair gather/scatter, VFMA.F32
-  * RISC-V 64: V-extension indexed gather/scatter, native FMADD
-  * WASM SIMD: Shuffle-based gather/scatter, pattern-recognition FMA
-  * CUDA PTX: Native gather/scatter, native FMA
-  * ROCm LLVM IR: Native gather/scatter, native FMA
-  * NASM x64: Scalar fallback gather/scatter, synthetic FMA
-  * FPGA Verilog: Dataflow blocks, DSP-based FMA
-- Multi-target lowering evidence across all 9 backends with verified feature parity
-- Native object/library emission: ELF .o, GNU .a, COFF .obj, COFF .lib, Mach-O ARM64
--  execution via \`---execute\` (x64, W^X-protected, closed-loop AI feedback)
-- 26 production optimization passes across 11 compiler stages (Transform, SIMD, Analysis, Speculative, Tuning, Error Handling, Orchestration, Memory)
-- Production-grade error recovery, distributed GPU scheduling, PGO-driven tuning
-- Backend proof logs under \`benchmarks/logs/\`
-- Feature matrix documentation: \`FEATURE_MATRIX_v1_0_2_COMPLETE.md\`
-- Audit report: \`DGTL_PRODUCTION_AUDIT_REPORT.md\` (v1.0.2: 100/100 PRODUCTION READY)
-
-Sample runs:
-\`./build/dgtl_release.exe --backend arm64 --ir-mode int\`
-\`./build/dgtl_release.exe --backend arm32 --simd-gather\`
-\`./build/dgtl_release.exe --backend wasm --simd-fma\`
-\`./build/dgtl_release.exe --backend coffobj --emit-output kernel.obj\`
-\`./build/dgtl_release.exe --backend x64 ---execute\`
-
-Licensing and evaluation:
-- Notice: \`LICENSE\`
-- Technical disclosure: \`docs/business/DEEP_TECHNICAL_RESPONSE_POLICY.md\`
-- Contact: licensing@dgtl.tech
+### Step 3: Build the Complete Sovereign Toolchain Suite
+```bash
+./dgtl build-tools
 ```
 
-## Requirements
+### Step 4: Full Sovereign Production Release
+```bash
+# Clean, generate code, validate, compile all modules, libraries, and package with verification:
+./dgtl production
+```
 
-- **C++26** compatible compiler (GCC 15.2.0+ with UCRT64 on Windows, G++ on Linux/macOS)
-- **Windows 10+**, **Linux (glibc 2.31+)**, or **macOS 11+**
-- **PowerShell 5.1+** on Windows for the `dgtl` command runner
+### Step 5: Package Distribution SDK
+```bash
+./dgtl package --verify
+```
 
-## Building
+---
 
-### One-Time Setup
+## 6. Sovereign Package Manifests (`dgtl.pkg` & `dgtl.toml`)
 
-Install the short `dgtl` command into your PowerShell profile:
+DGTL natively adheres to the **MYZON Sovereign Package Standard**, allowing seamless consumption without CMake or external package managers:
+
+```toml
+[package]
+name = "dgtl"
+version = "2.1.0"
+edition = "2026"
+license = "Proprietary-Sovereign"
+description = "Deep General-purpose Transformation Layer Compiler & JIT Engine"
+
+[lib]
+name = "dgtl"
+crate-type = ["staticlib", "cdylib"]
+
+[target.x86_64-pc-windows-gnu]
+static-lib = "lib/x64/dgtl.lib"
+static-lib-alt = "lib/x64/libdgtl.a"
+shared-lib = "bin/dgtl.dll"
+import-lib = "lib/x64/libdgtl.dll.a"
+include = "include"
+
+[target.x86_64-unknown-linux-gnu]
+static-lib = "lib/x64/libdgtl.a"
+shared-lib = "lib/x64/libdgtl.so"
+include = "include"
+
+[target.aarch64-unknown-linux-gnu]
+static-lib = "lib/arm64/libdgtl.a"
+shared-lib = "lib/arm64/libdgtl.so"
+include = "include"
+
+[target.x86_64-apple-darwin]
+static-lib = "lib/libdgtl.a"
+shared-lib = "lib/libdgtl.dylib"
+include = "include"
+
+[target.aarch64-apple-darwin]
+static-lib = "lib/libdgtl.a"
+shared-lib = "lib/libdgtl.dylib"
+include = "include"
+
+[dependencies]
+# Zero third-party runtime dependencies (100% sovereign)
+```
+
+---
+
+## 7. Industrial 12-Tier Verification Test Suite (`NEWTEST`)
+
+DGTL includes an enterprise-grade automated test runner ([`newtest/run_newtest.ps1`](file:///D:/TataG/DGTL/newtest/run_newtest.ps1)) covering 54 standalone test modules:
 
 ```powershell
-.\tools\scripts\install_dgtl_command.ps1
+# Run the complete test suite (Golden Diagnostic Oracle + Master Test Suite):
+powershell.exe -ExecutionPolicy Bypass -File .\newtest\run_newtest.ps1
+
+# Run only the 12-layer full stack diagnostic oracle:
+.\newtest\run_newtest.ps1 -Target oracle
+
+# Test against the dynamic shared library (dgtl.dll):
+.\newtest\run_newtest.ps1 -Target oracle -LinkType shared
+
+# Run an isolated architectural tier:
+.\newtest\run_newtest.ps1 -Target tier7    # Concurrency Torture (16 threads)
+.\newtest\run_newtest.ps1 -Target tier11   # Toolchain Suite (14 tools)
+
+# Export standard JUnit 3.0 XML for CI/CD pipelines:
+.\newtest\run_newtest.ps1 -Target all -JUnitXml build\newtest\test-results.xml
+
+# List all 54 available tests and architectural tiers without building:
+.\newtest\run_newtest.ps1 -List
 ```
 
-Open a new PowerShell session, then verify the command is available:
+---
 
-```powershell
-dgtl help
-```
+## 8. C and C++20 SDK Integration
 
-### Build Commands
-
-```powershell
-dgtl build
-```
-
-Builds the production driver at `build\dgtl_release.exe`.
-
-Run the production driver with explicit IR mode selection:
-
-```powershell
-.\build\dgtl_release.exe --backend arm64 --ir-mode int
-.\build\dgtl_release.exe --backend arm64 --ir-mode float
-.\build\dgtl_release.exe --backend arm64 --ir-mode float-simd-widen
-.\build\dgtl_release.exe --backend arm64 --ir-mode fcvtl
-.\build\dgtl_release.exe --backend arm64 --ir-mode float-simd-narrow
-.\build\dgtl_release.exe --backend arm64 --ir-mode fcvtn
-```
-
-`--ir-mode int` is the default v1.0.0 release path. `--ir-mode float` enables the float profile and FMA-capable fusion path. `--ir-mode float-simd-widen` (alias `--ir-mode fcvtl`) emits an ARM64 SIMD widening probe using `fcvtl` (`vN.4h` -> `vD.4s`). `--ir-mode float-simd-narrow` (alias `--ir-mode fcvtn`) emits an ARM64 SIMD narrowing probe using `fcvtn` (`vN.4s` -> `vD.4h`).
-
-Emit native object files and libraries:
-
-```powershell
-.\build\dgtl_release.exe --backend elfobj --emit-output kernel.o
-.\build\dgtl_release.exe --backend staticlib --emit-output libkernel.a
-.\build\dgtl_release.exe --backend coffobj --emit-output kernel.obj
-.\build\dgtl_release.exe --backend cofflib --emit-output kernel.lib
-.\build\dgtl_release.exe --backend macho --emit-output kernel.macho
-```
-
--compile and execute x64 machine code in-process (requires `DGTL_STRIKE_EXECUTE=1` env gate):
-
-```powershell
-$env:DGTL_STRIKE_EXECUTE="1"
-.\build\dgtl_release.exe --backend x64 ---execute
-```
-
-`---execute` invokes the full `StrikeOrchestrator` pipeline: emit â†’ W^X inject â†’ execute â†’ closed-loop AI cost feedback. Only valid with `--backend x64`.
-
-Polyhedral control flags are available in both drivers:
-
-```powershell
---polyhedral-mode off|safe|aggressive
---polyhedral-tile <n>
---polyhedral-parallel auto|off|on
-```
-
-Defaults are `--polyhedral-mode off`, `--polyhedral-parallel auto`, and `--polyhedral-tile 0` (auto tile sizing).
-
-```powershell
-dgtl smoke-build
-```
-
-Builds the smoke and conformance driver at `build\dgtl_main.exe`.
-
-```powershell
-dgtl strict
-```
-
-Builds a strict variant at `build\dgtl_main_strict.exe` using warning-heavy flags and `-Werror`.
-
-## Command Reference
-
-All commands below are run from the repository root using the PowerShell `dgtl` function.
-
-### Pick by Intent (Recommended)
-
-Use the descriptive names below to reduce ambiguity:
-
-```powershell
-dgtl build-release
-dgtl build-smoke
-dgtl build-strict
-dgtl run-all
-dgtl run-backend x64
-dgtl bench-backend x64 fusion
-dgtl update-goldens
-dgtl run-strict-conformance
-dgtl test
-dgtl clean-all
-dgtl clean-build-and-run
-```
-
-### Production Workflow
-
-Use this sequence when building and validating a release for deployment:
-
-| Step | Command | Purpose |
-|---|---|---|
-| 1 â€” Build | `dgtl build-release` | Compiles the production binary at `build\dgtl_release.exe`. Only this binary is a production build. |
-| 2 â€” Validate | `dgtl run-all` | Full conformance across all 4 backends (arm64, x64, nasm, wasm). |
-| 2a â€” Strict gate | `dgtl run-strict-conformance` | Strict executable gate â€” catches edge cases not covered by default conformance. |
-| 2b â€” Aggregate tests | `dgtl test` | Functional + robustness sanity suite (fast, incremental). |
-| 3 â€” Benchmark (optional) | `dgtl bench-backend x64` | Timing profile for your target backend before shipping. |
-| All-in-one | `dgtl clean-build-and-run` | Clean â†’ rebuild â†’ full conformance in one command. |
-
-> **Note:** `dgtl build-smoke` and `dgtl build-strict` produce **test/debug binaries only** â€” do not use them as production artifacts.
-
-### Categories and When to Use
-
-#### 1) Build Binaries
-
-Use when: you need an executable before running validation or benchmarks.
-
-```powershell
-dgtl build-release
-dgtl build-smoke
-dgtl build-strict
-```
-
-Outputs:
-
-- `dgtl build-release` -> `build\dgtl_release.exe`
-- `dgtl build-smoke` -> `build\dgtl_main.exe`
-- `dgtl build-strict` -> `build\dgtl_main_strict.exe`
-
-#### 2) Validate Correctness
-
-Use when: you want to confirm backend output and conformance behavior.
-
-```powershell
-dgtl run-all
-dgtl run-backend arm64
-dgtl run-backend x64
-dgtl run-backend nasm
-dgtl run-backend wasm
-dgtl run-strict-conformance
-dgtl test
-```
-
-#### 3) Benchmark Performance
-
-Use when: you want optimization/emission timing data for one backend.
-
-```powershell
-dgtl bench-backend <backend> [profile|iterations] [pressure-vars] [dump]
-```
-
-You can optionally append polyhedral controls to benchmark runs:
-
-```powershell
-dgtl bench-backend x64 fusion --polyhedral-mode safe --polyhedral-tile 64 --polyhedral-parallel on
-```
-
-Profiles: `fold` (default), `fusion`, `simd`, `pressure`, `predication`.
-
-Examples:
-
-```powershell
-dgtl bench-backend x64
-dgtl bench-backend x64 1000
-dgtl bench-backend x64 fusion
-dgtl bench-backend x64 simd
-dgtl bench-backend x64 pressure 64
-dgtl bench-backend arm64 predication
-dgtl bench-backend x64 fusion dump
-dgtl bench-backend wasm simd
-dgtl bench-backend nasm fusion dump
-```
-
-For ARM64, benchmark output now includes AI telemetry-triggered hot-path retuning signals:
-
-- `hot_swaps=<n>`: Number of iterations where adaptive mode switching occurred
-- `hot_swap_mode=<mode>`: Last applied adaptive mode (for example `int->float-simd/predication`)
-
-#### 4) Manage Golden Baselines
-
-Use when: backend output changes are intentional and expected baselines must be refreshed.
-
-```powershell
-dgtl update-goldens
-dgtl update-goldens strict
-```
-
-#### 5) Cleanup and One-Shot Flow
-
-Use when: you want a clean workspace state or a clean-build-run sequence.
-
-```powershell
-dgtl clean-all
-dgtl clean-build-and-run
-```
-
-### Legacy Short Names (Still Supported)
-
-Short names remain available for existing scripts and muscle memory:
-
-```powershell
-dgtl help
-dgtl build
-dgtl smoke-build
-dgtl strict
-dgtl run
-dgtl run arm64
-dgtl bench x64 fusion
-dgtl update-golden
-dgtl srun
-dgtl test
-dgtl header-check
-dgtl clean
-dgtl crun
-dgtl run-tests
-dgtl check-headers
-```
-
-Alias mapping:
-
-| Recommended Name | Legacy Short Name |
-|---|---|
-| `dgtl build-release` | `dgtl build` |
-| `dgtl build-smoke` | `dgtl smoke-build` |
-| `dgtl build-strict` | `dgtl strict` |
-| `dgtl run-all` | `dgtl run` |
-| `dgtl run-backend <backend>` | `dgtl run <backend>` |
-| `dgtl bench-backend <backend> ...` | `dgtl bench <backend> ...` |
-| `dgtl update-goldens [strict]` | `dgtl update-golden [strict]` |
-| `dgtl run-strict-conformance` | `dgtl srun` |
-| `dgtl test` | `dgtl test` |
-| `dgtl clean-all` | `dgtl clean` |
-| `dgtl clean-build-and-run` | `dgtl crun` |
-
-### Conformance Prerequisite (Important)
-
-Full conformance commands (`dgtl run-all`, `dgtl run-strict-conformance`, `dgtl update-goldens`, `dgtl update-goldens strict`, and `dgtl clean-build-and-run`) call a PowerShell conformance script expected at:
-
-```text
-My_Docs\commands\backend_conformance_check.ps1
-or
-docs\My_Docs\commands\backend_conformance_check.ps1
-```
-
-If that file is missing, those commands fail with:
-
-```text
-Missing conformance script: ...\docs\My_Docs\commands\backend_conformance_check.ps1
-```
-
-Current repository layout note:
-
-- The checked-in script is under `docs\My_Docs\commands\backend_conformance_check.ps1`.
-- `dgtl.ps1` now checks both locations automatically.
-
-Quick workaround when you only need smoke output from one backend:
-
-```powershell
-dgtl run-backend arm64
-dgtl run-backend x64
-dgtl run-backend nasm
-dgtl run-backend wasm
-```
-
-| Recommended Command | Legacy Equivalent | Requires existing build? | What it does |
-|---|---|---|---|
-| `dgtl help` | `dgtl help` | No | Prints command usage and examples. |
-| `dgtl build-release` | `dgtl build` | No | Builds production `build\dgtl_release.exe`. |
-| `dgtl build-smoke` | `dgtl smoke-build` | No | Builds smoke/conformance `build\dgtl_main.exe`. |
-| `dgtl build-strict` | `dgtl strict` | No | Builds strict smoke `build\dgtl_main_strict.exe` with strict warnings and `-Werror`. |
-| `dgtl run-all` | `dgtl run` | No (auto-builds if missing) | Runs full backend conformance through the conformance script (all backends). Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
-| `dgtl run-backend <backend>` | `dgtl run <backend>` | No (auto-builds if missing) | Runs a single backend directly (`arm64`, `x64`, `nasm`, `wasm`) without the conformance script. |
-| `dgtl bench-backend <backend> [profile\|iterations] [pressure-vars] [dump]` | `dgtl bench <backend> [profile\|iterations] [pressure-vars] [dump]` | Auto-builds strict if missing | Runs strict benchmark mode for one backend with profile and optional dump output. |
-| `dgtl update-goldens` | `dgtl update-golden` | Auto-builds default if missing | Refreshes default conformance goldens through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
-| `dgtl update-goldens strict` | `dgtl update-golden strict` | Auto-builds strict if missing | Refreshes strict conformance goldens through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
-| `dgtl run-strict-conformance` | `dgtl srun` | Auto-builds strict if missing | Runs full backend conformance with strict executable through the conformance script. Requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`. |
-| `dgtl test` | `dgtl test` | Builds test binary if sources changed | Runs functional + robustness sanity suite. Incremental: reuses existing binary when sources are unchanged (~0.04s warm). |
-| `dgtl clean-all` | `dgtl clean` | No | Deletes DGTL build outputs, conformance logs, and conformance cache files. |
-| `dgtl clean-build-and-run` | `dgtl crun` | No | Executes `clean -> smoke-build -> run` (full conformance path, so the conformance script is required). |
-
-### Command Runner Flags
-
-- **Default build**: `-std=c++26 -O2 -I ./include`
-- **Strict build**: `-std=c++26 -O2 -I ./include -Wall -Wextra -Wpedantic -Werror`
-- **Custom tuning**: If you need flags such as `-march=native` or `-flto`, add them in your own local build flow rather than assuming the `dgtl` wrapper uses them.
-
-## Running Tests
-
-### Option 1: Run Full Backend Validation
-
-```powershell
-dgtl run-all
-```
-
-Legacy equivalent: `dgtl run`
-
-Runs the conformance gate across `arm64`, `x64`, `nasm`, and `wasm` using `build\dgtl_main.exe`, then compares normalized output against stored goldens.
-
-If `build\dgtl_main.exe` is missing, `dgtl run` auto-builds it.
-
-`dgtl run-all` (legacy: `dgtl run`) also requires `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`.
-
-### Option 2: Run One Backend Only
-
-```powershell
-dgtl run-backend arm64
-```
-
-Legacy equivalent: `dgtl run arm64`
-
-Replace `arm64` with `x64`, `nasm`, or `wasm` to run a quick single-backend smoke check without invoking the full conformance gate.
-
-If `build\dgtl_main.exe` is missing, `dgtl run-backend <backend>` (legacy: `dgtl run <backend>`) auto-builds it.
-
-Single-backend `dgtl run-backend <backend>` does not require the conformance script.
-
-### Benchmark One Backend
-
-Runs the strict executable in benchmark mode and prints split `opt_us`, `emit_us`, `total_us`, `output_size`, `fallback_ops` (x64 unsupported-op fallback count), node progression (`nodes=built->post_profile->post_core_opt`), and `exec_us` (x64 fold only).
-
-Supported backends: `arm64`, `x64`, `nasm`, `wasm`.
-
-Benchmark command form:
-
-```powershell
-dgtl bench <backend> [profile|iterations] [pressure-vars] [dump]
-```
-
-Argument rules:
-
-- If the second argument is numeric, it is treated as `iterations` and profile defaults to `fold`.
-- If the second argument is a profile name (`fold`, `fusion`, `simd`, `pressure`), it is treated as `profile`.
-- `pressure-vars` applies only when profile is `pressure`.
-- `dump` is optional and prints the benchmark-emitted artifact (`hex` for binary backends, text for NASM).
-- The short `dgtl bench` wrapper currently supports either `iterations` or `profile` in that second position, not both simultaneously.
-
-**Default profile (fold) â€” 2-node constant-fold IR, measures baseline emit cost:**
-
-```powershell
-dgtl bench x64
-dgtl bench wasm
-```
-
-**Override iteration count (backward-compatible):**
-
-```powershell
-dgtl bench x64 1000
-```
-
-**Named profiles â€” benchmark a specific optimization workload:**
-
-| Profile | IR workload | Key measurement |
-|---------|-------------|-----------------|
-| `fold` | 2-node constant-fold | baseline opt + emit |
-| `fusion` | 6-node mul+add â†’ FMA synthesis | fusion pass cost |
-| `simd` | 13-node SIMD legalization | legalizer throughput |
-| `pressure` | N-var register pressure | spill threshold |
-
-```powershell
-dgtl bench x64 fusion
-dgtl bench x64 simd
-dgtl bench nasm fusion
-dgtl bench wasm simd
-```
-
-**Pressure test â€” configure variable count (default: 25):**
-
-```powershell
-dgtl bench x64 pressure 64
-dgtl bench x64 pressure 100
-```
-
-**Dump benchmark artifact (hex for binary backends, text for NASM):**
-
-```powershell
-dgtl bench x64 fusion dump
-dgtl bench wasm simd dump
-dgtl bench nasm fusion dump
-```
-
-Strict benchmark executable behavior:
-
-- `dgtl bench ...` auto-builds `build\dgtl_main_strict.exe` if missing.
-- x64 runtime execution timing (`exec_us`) is reported only for the `fold` profile.
-
-### Refresh Goldens Intentionally
-
-```powershell
-dgtl update-golden
-```
-
-Use this only when backend output changes are intentional and you want to refresh stored conformance baselines.
-
-If you are validating the strict build, refresh that baseline explicitly:
-
-```powershell
-dgtl update-golden strict
-```
-
-Auto-build behavior:
-
-- `dgtl update-golden` auto-builds `build\dgtl_main.exe` if missing.
-- `dgtl update-golden strict` auto-builds `build\dgtl_main_strict.exe` if missing.
-- Both commands require `My_Docs\commands\backend_conformance_check.ps1` or `docs\My_Docs\commands\backend_conformance_check.ps1`.
-
-### Combined Workflow
-
-```powershell
-dgtl clean
-dgtl smoke-build
-dgtl run
-```
-
-Or use the equivalent one-shot command:
-
-```powershell
-dgtl crun
-```
-
-## Who Uses Which Commands
-
-### Maintainers (this repository)
-
-Use the `dgtl` command runner from the repository root for build, conformance, benchmark, and baseline workflows.
-
-Recommended day-to-day maintainer flow:
-
-```powershell
-dgtl strict
-dgtl srun
-dgtl bench x64 fusion
-```
-
-When output changes are intentional:
-
-```powershell
-dgtl update-golden
-dgtl update-golden strict
-```
-
-For exact behavior and argument forms, use the Command Reference above.
-
-### Backend Consumers (users integrating DGTL)
-
-If you are building your own language frontend and using DGTL as the backend, your primary interface is:
-
-- DGTL C++ APIs in `include/dgtl/` (IR construction, optimization, emission)
-- An integration contract in your own compiler driver (for example: `my_backend --ir-plan plan.json --target arm64 --out out.s`)
-
-The maintainer `dgtl ...` commands are not the end-user product CLI for external frontend projects.
-
-See `docs/analysis/LANGUAGE_BACKEND_USAGE.md` for the integration pattern.
-
-## Testing
-
-DGTL currently ships with test suites under `tests/` covering:
-
-### Functional Tests (`tests/functional/`)
-- **Pipeline tests**: Identity merge, SSA, NOP absorption, fusion, dependency tracking
-- **SIMD operations**: 512-bit vector operations, gather/scatter optimization
-- **Memory operations**: Unaligned loads, transactional rollback, stress scenarios
-- **Intent validation**: Hash-based collision detection and error recovery
-
-### Latency Benchmarks (`tests/latency/`)
-- Cache killer patterns
-- Fractal torture tests (branch misprediction stress)
-- Ghost loads (non-temporal patterns)
-- Micro-benchmarks for latency measurement
-- Register exhaustion tests
-
-### Performance Tests (`tests/performance/`)
-- Multi-threaded Arena performance
-- SIMD micro-kernels
-- Stress tests under high load
-
-## Quick Start: Your First IR Emission
-
-Create a minimal program that builds a tiny IR stream and emits ARM64 assembly:
-
+### C++20 Zero-Overhead Modern SDK Usage:
 ```cpp
-#include "dgtl/all.hpp"
+#include <dgtl_sdk/dgtl.h>
 #include <iostream>
-#include <sstream>
 
 int main() {
-    dgtl::core::DGTL_Arena arena(1, 64);
-    dgtl::core::SymbolTable symbols(arena);
-    dgtl::ir::IRStream stream(arena, 16);
+    // 1. Initialize DGTL compilation context
+    dgtl::Context ctx;
 
-    stream.begin_transaction();
-    stream.push_node(
-        dgtl::ir::OpCode::LOAD_IMM,
-        dgtl::ir::Flags::IS_CONST,
-        1,
-        dgtl::ir::INVALID_SLOT,
-        84,
-        dgtl::ir::INVALID_SLOT,
-        0
-    );
-    stream.push_node(
-        dgtl::ir::OpCode::RET,
-        dgtl::ir::Flags::IS_RETURN,
-        0,
-        1,
-        dgtl::ir::INVALID_SLOT,
-        dgtl::ir::INVALID_SLOT,
-        0
-    );
-    stream.commit_transaction();
+    // 2. Create transactional IR stream
+    dgtl::IRStream ir(ctx);
+    auto fn = ir.create_function("compute_sum", dgtl::Type::I32, {dgtl::Type::I32, dgtl::Type::I32});
 
-    stream.perform_gvn();
+    auto arg0 = fn.get_param(0);
+    auto arg1 = fn.get_param(1);
+    auto sum  = ir.build_add(arg0, arg1);
+    ir.build_return(sum);
 
-    dgtl::isa::ARM64Emitter emitter(stream, symbols);
-    dgtl::isa::ARM64Emitter::Config config;
-    config.verbose_asm = true;
+    // 3. Execute optimization pipeline (all 26 passes)
+    dgtl::PassManager pm;
+    pm.add_default_pipeline(dgtl::OptLevel::O2);
+    pm.run(fn);
 
-    std::ostringstream asm_out;
-    emitter.emit_assembly(asm_out, config);
-    std::cout << asm_out.str();
+    // 4. JIT compile to native machine code & execute in-memory
+    dgtl::JITEngine jit(ctx);
+    auto native_fn = jit.compile_function<int(int, int)>(fn);
+
+    int result = native_fn(40, 2);
+    std::cout << "Computed JIT Result: " << result << std::endl; // 42
     return 0;
 }
 ```
 
-Compile and run:
+### Compiling Client Code Against DGTL:
 ```bash
-g++ -std=c++26 -O2 -I./include your_program.cpp -o your_program.exe
-./your_program.exe
+# Static linking (Windows):
+g++ -std=c++20 -O2 client.cpp dgtl.lib -lkernel32 -lntdll -o client.exe
+
+# Dynamic shared linking (Windows):
+g++ -std=c++20 -O2 -DDGTL_IMPORT_SHARED client.cpp libdgtl.dll.a -o client.exe
+
+# Static linking (Linux):
+g++ -std=c++20 -O2 client.cpp libdgtl.a -lpthread -ldl -o client
+
+# Dynamic shared linking (Linux):
+g++ -std=c++20 -O2 client.cpp -L. -ldgtl -o client
 ```
 
-For repository validation, prefer the built-in smoke/conformance flow instead of ad hoc compile commands:
+---
 
-```powershell
-dgtl smoke-build
-dgtl run arm64
-```
+## 9. Sovereign Toolchain Executables Reference
 
-## Architecture Overview
+The DGTL unified multi-call dispatcher (`dgtl-tools.exe` / `dgtl_release.exe`) hosts 14 production utilities:
 
-### Intermediate Representation (BIR 2.1)
+| Executable | Subcommand | Purpose |
+| :--- | :--- | :--- |
+| `dgtl-opt.exe` | `dgtl opt` | Intermediate Representation optimizer running 26 discrete transform passes |
+| `dgtl-llc.exe` | `dgtl llc` | Multi-target machine code compiler emitting native assembly and binary code |
+| `dgtl-link.exe` | `dgtl link` | Sovereign PE/COFF, ELF, and Mach-O standalone binary linker |
+| `dgtl-ar.exe` | `dgtl ar` | Sovereign deterministic archiver creating `.lib` and `.a` libraries |
+| `dgtl-as.exe` | `dgtl as` | Native assembler encoding mnemonics into relocatable object files |
+| `dgtl-objdump.exe` | `dgtl objdump` | Disassembler and forensic binary section dumper |
+| `dgtl-inspect.exe` | `dgtl inspect` | Binary security forensics, W^X compliance, relocations, and SEH unwinding |
+| `dgtl-verify.exe` | `dgtl verify` | Formal SMT-LIB2 bit-vector equivalence and theorem verifier |
+| `dgtl-engine.exe` | `dgtl engine` | Ultra-low-latency in-memory JIT execution runner |
+| `dgtl-filecheck.exe`| `dgtl filecheck` | Industrial test pattern matching utility (`CHECK`, `CHECK-NEXT`, `CHECK-NOT`) |
+| `dgtl-rodata.exe` | `dgtl rodata` | Read-only data string interning generator using 32-bit FNV-1a hashing |
+| `dgtl-debugger.exe`| `dgtl debugger` | Process telemetry, crash diagnostics, and stack frame inspection |
+| `dgtl-config.exe` | `dgtl config` | ABI version query, target ISA discovery, and compiler configuration |
 
-DGTL's IR is organized in three tiers:
+---
 
-- **Tier 1 (Atom)**: OpCode + Flags (8 bytes, packed for density)
-- **Tier 2 (Core)**: Result ID + 3 Operands + Intent Hash (32 bytes, cache-line aligned)
-- **Tier 3 (Joined)**: Unified IRNode structure for emission
-
-This design enables:
-- Transactional mutations via shadow buffers
-- SIMD-accelerated fingerprinting in GVN
-- Zero-copy speculative execution with rollback
-- Intent-hash validation to prevent hallucination
-
-### Compilation Pipeline
-
-```
-IR Construction (IRStream) 
-  â†“
-Analysis (Liveness, Memory Deps, Cost Modeling)
-  â†“
-Transformations (GVN, DCE, SIMD Legalization, etc.)
-  â†“
-Polyhedral Analysis (SCoP detection, tiling, parallelization)
-  â†“
-Graph Scheduling (Region-level, multi-backend aware)
-  â†“
-ISA Emission (ARM64 / x86-64 / WASM / NASM)
-  â†“                          â†“
-Object/Library Emission       Execution (---execute)
-(ELF .o / .a / COFF .obj    (StrikeOrchestrator: W^X inject
- / .lib / Mach-O)             + execute + AI cost feedback)
-```
-
-### Supported Backends
-
-| Backend | CLI Name | Status | Use Case |
-|---------|----------|--------|----------|
-| **ARM64 (AArch64)** | `arm64` | âœ… Primary | Mobile, edge, AWS Graviton |
-| **x86-64** | `x64` | âœ… Primary | Intel/AMD servers, HFT workstations |
-| **WebAssembly** | `wasm` | âœ… Complete | Browser, cloud-native portability |
-| **NASM** | `nasm` | âœ… Complete | Traditional assembly toolchains |
-| **ELF Relocatable** | `elfobj` | âœ… Complete | Linux `.o` for `ld` / `gcc` linking |
-| **Static Archive** | `staticlib` | âœ… Complete | GNU `ar` `.a` for static linking |
-| **COFF Object** | `coffobj` | âœ… Complete | Windows `.obj` for MSVC `link.exe` |
-| **COFF Library** | `cofflib` | âœ… Complete | Windows `.lib` import library |
-| **Mach-O ARM64** | `macho` | âœ… Complete | macOS/iOS ARM64 object files |
-
-## Key Components
-
-### Core (`include/dgtl/core/`)
-- `Arena.hpp`: Thread-local, transactional memory allocation with huge-page alignment
-- `Context.hpp`: Compiler context with fast emit paths
-- `Symbol_Table.hpp`: IR reference tracking
-- `Memory_Guard.hpp`: Safety invariant enforcement
-- `Target.hpp`: Backend target specification
-
-### IR (`include/dgtl/ir/`)
-- `IR_Types.hpp`: OpCode definitions and flags
-- `IR_Stream.hpp`: Transactional IR streaming with shadow buffers
-- `IR_Dialect_Interface.hpp`: Dialect rules (AI opcodes, HFT opcodes, etc.)
-- `IR_Evolver.hpp`: IR mutation strategies for testing
-
-### Analysis (`include/dgtl/analysis/`)
-- `AI_Cost_Model.hpp`: Neural network-based cycle cost prediction
-- `Liveness_Analyzer.hpp`: Live variable analysis
-- `Memory_Dependency_Smasher.hpp`: Memory dependency elimination
-- `Speculative_Value_Profiler.hpp`: Value profiling for speculation
-
-### Optimization Passes (`include/dgtl/pass/`)
-- **Transform**: GVN, DCE, constant folding, instruction reordering, fusion
-- **SIMD**: Legalization, gather/scatter optimization, vectorization
-- **Memory**: Redundant store fusion
-- **Speculative**: Speculative DCE, inlining, alias hoisting
-- **Tuning**: Auto-tuner for parameter selection
-
-### ISA & Codegen (`include/dgtl/isa/`)
-- `ARM64_Emitter.hpp` / `X64_Strike_Emitter.hpp`: Assembly generation
-- `ARM64_RegAlloc.hpp` / `X64_Reg_Map.hpp`: Register allocation
-- `Wasm_Encoder.hpp`: WebAssembly binary encoding
-- `MachO_Emitter.hpp`: Mach-O 64-bit ARM64 object emission with real instruction encoding
-- `Linker_Backend.hpp`: ELF64 relocatable, GNU `ar` archive, COFF `.obj`, and COFF `.lib` emission
-- `Stack_Spiller.hpp`: Spill code generation
-
-###  Runtime (`include/dgtl//`)
-- `_Executor.hpp`: W^X memory protection, cross-platform I-Cache sync
-- `Strike_Orchestrator.hpp`: Full compileâ†’injectâ†’executeâ†’feedback pipeline (`---execute`)
-- `Strike_Runner.hpp`: Low-level VirtualAlloc/mmap executable memory injection
-- `MultiArch_Orchestrator.hpp`: Multi-target dispatch (ARM64, x64, NASM, WASM, ELF, COFF, Mach-O)
-- `Hardware_Scheduler.hpp`: Hardware-aware execution scheduling
-- `Async_Speculator.hpp`: Asynchronous speculation support
-
-## Documentation
-
-- [BitPacked_IR_Core.md](docs/analysis/DGPM_SPEC.md): IR architecture deep-dive
-- [V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md](docs/analysis/V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md): v1.0.0 technical roadmap for polyhedral legality, scheduling, tiling, and parallel lowering
-- [V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md](docs/analysis/V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md): prioritized implementation backlog mapped to concrete modules and files
-- [THEORY_OF_OPERATION.md](docs/analysis/THEORY_OF_OPERATION.md): End-to-end backend flow and architecture diagram
-- [BACKEND_BRIDGE_PRE_REVEAL_PLAN.md](docs/analysis/BACKEND_BRIDGE_PRE_REVEAL_PLAN.md): x86-64 and multi-backend parity checklist before public reveal
-- [VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md): Manual verification checklist
-- [DGTL_BUSINESS_MODEL.md](docs/business/DGTL_BUSINESS_MODEL.md): Commercial packaging, target customers, and launch phases
-- [DGTL_PRICING_AND_PILOT_OFFER.md](docs/business/DGTL_PRICING_AND_PILOT_OFFER.md): Concrete pricing structure and pilot offer
-- [DGTL_ONE_PAGE_SALES_DECK.md](docs/business/DGTL_ONE_PAGE_SALES_DECK.md): One-page website / sales deck copy
-- [DGTL_WEBSITE_LANDING_COPY.md](docs/business/DGTL_WEBSITE_LANDING_COPY.md): Website landing-page copy for commercial launch
-- [DGTL_COMMERCIAL_PROPOSAL_TEMPLATE.md](docs/business/DGTL_COMMERCIAL_PROPOSAL_TEMPLATE.md): Reusable pilot and commercial proposal template
-- [DGTL_BRANDED_PROPOSAL.md](docs/business/DGTL_BRANDED_PROPOSAL.md): Customer-facing polished proposal document
-- [DGTL_HFT_PROPOSAL.md](docs/business/DGTL_HFT_PROPOSAL.md): HFT and low-latency specific proposal variant
-- [DGTL_AI_RUNTIME_PROPOSAL.md](docs/business/DGTL_AI_RUNTIME_PROPOSAL.md): AI runtime and execution team proposal variant
-- [DGTL_DSL_ENTERPRISE_LANGUAGE_PROPOSAL.md](docs/business/DGTL_DSL_ENTERPRISE_LANGUAGE_PROPOSAL.md): Internal DSL and enterprise language proposal variant
-- [PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md](docs/business/PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md): Draft proprietary licensing and evaluation terms
-- [DEEP_TECHNICAL_RESPONSE_POLICY.md](docs/business/DEEP_TECHNICAL_RESPONSE_POLICY.md): How to answer deep technical questions while protecting implementation IP
-- [PRODUCT_POSITIONING.md](docs/business/PRODUCT_POSITIONING.md): Customer-facing positioning and messaging
-- [TECHNICAL_WHITEPAPER_OUTLINE.md](docs/analysis/TECHNICAL_WHITEPAPER_OUTLINE.md): Black-box whitepaper structure, benchmark evidence plan, and assembly demo format
-- [LICENSE](LICENSE): Release-facing proprietary software notice
-- [RELEASE_NOTES.md](docs/RELEASE_NOTES.md): Release summary, backend evidence, and distribution notes
-- [DEPENDENCY_VERSION_CONTROL.md](docs/DEPENDENCY_VERSION_CONTROL.md): Locked tool versions
-- [benchmarks/README.md](benchmarks/README.md): Proof-of-life benchmark logs and regeneration instructions
-- [docs/My_Docs/](docs/My_Docs/): Detailed module documentation and examples
-
-## Project Structure
+## 10. Repository Directory Structure
 
 ```
 DGTL/
-â”œâ”€â”€ include/dgtl/           # Public header files (all compilation context)
-â”‚   â”œâ”€â”€ core/               # Arena, Context, Symbol Table, Memory Guards
-â”‚   â”œâ”€â”€ ir/                 # IR streams, types, opcodes, transactional semantics
-â”‚   â”œâ”€â”€ analysis/           # Cost models, liveness, dataflow analysis
-â”‚   â”œâ”€â”€ pass/               # Optimization passes (GVN, DCE, SIMD, speculative)
-â”‚   â”œâ”€â”€ graph/              # Execution graphs, regions, dependency tracking
-â”‚   â”œâ”€â”€ pipeline/           # Pass manager, analysis manager
-â”‚   â”œâ”€â”€ isa/                # Code generation (emitters, register allocation)
-â”‚   â”œâ”€â”€ /                #  runtime, orchestration, execution
-â”‚   â””â”€â”€ all.hpp             # Umbrella header (single-include convenience)
-â”‚
-â”œâ”€â”€ src/                    # Source implementations
-â”‚   â”œâ”€â”€ main.cpp            # Production driver
-â”‚   â”œâ”€â”€ apps/
-â”‚   â”‚   â””â”€â”€ smoke_main.cpp  # Smoke/conformance/benchmark driver
-â”‚   â”œâ”€â”€ ir/
-â”‚   â”œâ”€â”€ analysis/
-â”‚   â”œâ”€â”€ core/
-â”‚   â””â”€â”€ [other modules]/
-â”‚
-â”œâ”€â”€ tests/                  # Comprehensive test suites
-â”‚   â”œâ”€â”€ functional/         # Correctness tests (25+ pipeline tests)
-â”‚   â”œâ”€â”€ latency/            # Micro-benchmarks (cache, branch, ghost loads)
-â”‚   â”œâ”€â”€ performance/        # Performance stress tests
-â”‚   â””â”€â”€ robustness/         # Edge cases, safety invariants
-â”‚
-â”œâ”€â”€ docs/                   # Public documentation
-â”‚   â”œâ”€â”€ TESTING_INDEX.md
-â”‚   â”œâ”€â”€ VERIFICATION_GUIDE.md
-â”‚   â”œâ”€â”€ business/
-â”‚   â”‚   â”œâ”€â”€ DGTL_BUSINESS_MODEL.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_PRICING_AND_PILOT_OFFER.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_ONE_PAGE_SALES_DECK.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_WEBSITE_LANDING_COPY.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_COMMERCIAL_PROPOSAL_TEMPLATE.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_BRANDED_PROPOSAL.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_HFT_PROPOSAL.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_AI_RUNTIME_PROPOSAL.md
-â”‚   â”‚   â”œâ”€â”€ DGTL_DSL_ENTERPRISE_LANGUAGE_PROPOSAL.md
-â”‚   â”‚   â”œâ”€â”€ PROPRIETARY_LICENSE_AND_EVALUATION_DRAFT.md
-â”‚   â”‚   â””â”€â”€ PRODUCT_POSITIONING.md
-â”‚   â””â”€â”€ analysis/
-â”‚       â”œâ”€â”€ DGPM_SPEC.md
-â”‚       â”œâ”€â”€ V1_2_POLYHEDRAL_EXECUTION_BACKLOG.md
-â”‚       â”œâ”€â”€ V1_2_POLYHEDRAL_PARALLELIZATION_ROADMAP.md
-â”‚       â””â”€â”€ LANGUAGE_BACKEND_USAGE.md
-â”‚
-â”‚   â”œâ”€â”€ My_Docs/            # Detailed technical documentation (generated)
-â”‚   â”‚   â”œâ”€â”€ core/           # Arena, Context, Symbols, Guards
-â”‚   â”‚   â”œâ”€â”€ ir/             # IR format, streams, dialect rules
-â”‚   â”‚   â”œâ”€â”€ analysis/       # Cost models, liveness, dataflow
-â”‚   â”‚   â”œâ”€â”€ pass/           # Pass designs, transformation rules
-â”‚   â”‚   â”œâ”€â”€ isa/            # Emitter specs, register allocation
-â”‚   â”‚   â””â”€â”€ /            #  design, orchestration
-â”‚
-â”œâ”€â”€ dgtl.ps1                # Main command runner
-â”œâ”€â”€ dgtl.cmd                # Windows shim for the command runner
-â”œâ”€â”€ LICENSE                 # Proprietary software notice
-â”œâ”€â”€ README.md               # This file
-â””â”€â”€ docs/
-    â”œâ”€â”€ RELEASE_NOTES.md              # Release changelog
-    â”œâ”€â”€ DEPENDENCY_VERSION_CONTROL.md  # Locked tool/platform versions
+├── .github/workflows/          # Industrial CI/CD workflows for Windows, Linux, macOS
+├── build/                      # Build outputs, object cache, and staged SDK distributions
+│   ├── DGTL_SDK/               # Authoritative public SDK (headers, libraries, manifests)
+│   │   ├── bin/                # Executables & dynamic shared libraries (dgtl.dll)
+│   │   ├── include/            # Clean namespaced public SDK headers (dgtl_sdk/)
+│   │   └── lib/x64/            # Static archives (dgtl.lib, libdgtl.a) & import libs
+│   └── package/                # Production distribution release staging
+├── docs/                       # Architectural manuals and technical documentation
+├── include/
+│   ├── dgtl/                   # Modular internal C++20 module partitions
+│   │   ├── analysis/           # AI cost model, polyhedral SCoP, and liveness analysis
+│   │   ├── api/                # High-level AOT, JIT, and Hybrid session interfaces
+│   │   ├── core/               # TargetMachine, transactional memory arena, CFG graphs
+│   │   ├── ir/                 # Canonical IRNode, IRStream, and SSA form representations
+│   │   ├── isa/                # Native instruction emitters across all 9 ISAs
+│   │   ├── jit/                # In-memory W^X JIT execution engine
+│   │   ├── linker/             # Sovereign PE, ELF, Mach-O, and WASM binary linkers
+│   │   ├── mir/                # Machine IR pipeline, tree-munch ISel, and regalloc
+│   │   ├── object/             # Object file readers and binary object writers
+│   │   └── pass/               # 26 optimization passes across 11 stages
+│   └── dgtl_sdk/               # Public SDK headers (dgtl.h, types.h, math.h, client_debug.h)
+├── newtest/                    # 12-Tier Sovereign Industry-Grade Verification Test Suite
+│   ├── run_newtest.ps1         # Industrial test runner harness with JUnit 3.0 reporting
+│   ├── test_client_debug_oracle.cpp # 12-layer diagnostic oracle audit
+│   └── tier1_* .. tier12_*     # 54 exhaustive standalone test modules
+├── src/                        # Core implementation source files & app entry points
+│   ├── apps/                   # Standalone tool entry points (dgtl-opt, dgtl-link, etc.)
+│   ├── main.cpp                # Release binary driver and multi-call forwarder
+│   └── sdk/                    # Public C-ABI implementation
+├── tools/                      # Tool implementations & Sovereign Build Orchestrator
+│   └── cpp/dgtl_main.cpp       # Zero-dependency build orchestrator
+├── dgtl.pkg                    # MYZON-compatible sovereign package manifest
+├── dgtl.toml                   # MYZON-compatible sovereign package configuration
+├── LICENSE                     # Proprietary sovereign software license notice
+└── README.md                   # Authoritative repository documentation
 ```
 
-## Release Readiness
+---
 
-See [prelaunch.md](docs/My_Docs/zen_misc/prelaunch.md) for current gate status and open issues before broader rollout.
+## 11. Proprietary Sovereign License
 
-## Evaluation Access And Technical Review
+Copyright (c) 2026 **TataG Systems**. All rights reserved.
 
-This repository is not managed as an open contribution project.
+Project Owner: **Divyanshu Tata**  
+Repository: [github.com/TataG-Systems/DGTL](https://github.com/TataG-Systems/DGTL)
 
-### Access Path
-
-1. Request evaluation or commercial access by email: **licensing@dgtl.tech**
-2. Define scope: backend targets, performance scenarios, and evaluation duration.
-3. Execute under written terms before source sharing or production usage.
-
-### Technical Review Policy
-
-Technical depth is shared using a black-box model:
-
-- architecture and algorithm narratives
-- benchmark methodology and reproducible test settings
-- DGTL input to assembly output demonstrations
-
-Implementation details of internal passes, heuristics, and lowering internals remain proprietary.
-
-### Source Header Compliance
-
-Use the short proprietary header in source files and verify coverage with:
-
-```powershell
-.\tools\scripts\verify_proprietary_headers.ps1
-```
-
-Compliance is also enforced automatically by validation commands:
-
-- `dgtl run-all`
-- `dgtl run-strict-conformance`
-- `dgtl update-goldens` (and `strict` mode)
-- `dgtl test`
-- `dgtl clean-build-and-run`
-- `dgtl header-check`
-
-Useful modes:
-
-```powershell
-# Summary only (non-verbose on failures)
-.\tools\scripts\verify_proprietary_headers.ps1 -SummaryOnly
-
-# CI-friendly JSON to stdout
-.\tools\scripts\verify_proprietary_headers.ps1 -Json
-
-# CI-friendly JSON written to file
-.\tools\scripts\verify_proprietary_headers.ps1 -Json -JsonOut build\logs\header-compliance.json
-
-# Restrict scope or exclusions when needed
-.\tools\scripts\verify_proprietary_headers.ps1 -Include *.hpp,*.cpp -ExcludeRegex "[\\/]third_party[\\/]"
-```
-
-## Troubleshooting
-
-### Build Issues
-
-**`g++: command not found`**
-- Install GCC 15.2.0+ via MSYS2 (Windows) or system package manager (Linux/macOS)
-
-**`dgtl: command not found`**
-- Re-run `./tools/scripts/install_dgtl_command.ps1`
-- Open a new PowerShell session and confirm the command exists with `dgtl help`
-
-**Compilation hangs**
-- Run `dgtl clean` and rebuild from a fresh state
-- Check for recursive includes in headers (use `#pragma once`)
-
-**Strict build fails**
-- Run `dgtl strict` directly to surface warning-as-error failures
-- Fix the reported warnings before refreshing strict baselines with `dgtl update-golden strict`
-
-### Test Failures
-
-**Tests timeout**
-- Run a quick single-backend smoke check first: `dgtl run arm64`
-- Check ulimit (Linux): `ulimit -a` should have sufficient stack
-
-**Assertion failures in transactional code**
-- Check whether shadow buffer initialization succeeded
-- Verify arena capacity: `DGTL_Arena(size_bytes)` should allocate sufficient memory
-
-### Runtime Errors
-
-**Segmentation fault in code emission**
-- Verify the IRStream was populated before emission
-- Check that Target.hpp specifies a valid backend
-
-**Intent hash mismatch**
-- This indicates a malformed IR mutation (likely in a pass)
-- Enable verbose output to trace the problematic node
-
-## License & Attribution
-
-See project root for licensing information.
-
-## Community & Support
-
-For questions, issues, or discussions:
-1. Review [prelaunch.md](prelaunch.md) for known limitations
-2. Check [docs/My_Docs/](docs/My_Docs/) for detailed explanations
-3. Run verification tests from [VERIFICATION_GUIDE.md](docs/VERIFICATION_GUIDE.md)
-
-## Pre-Release Heavy Gates
-
-Run this sequence before release (intentionally slower and comprehensive):
-
-```powershell
-# 1. Clean slate
-dgtl clean-all
-
-# 2. Production build
-dgtl build-release
-
-# 3. Aggregate test suite (functional + robustness)
-dgtl test
-
-# 4. Full backend conformance (arm64, x64, nasm, wasm)
-dgtl run-all
-
-# 5. Strict build (-Wall -Wextra -Wpedantic -Werror)
-dgtl build-strict
-
-# 6. Strict conformance gate
-dgtl run-strict-conformance
-
-# 7. Proprietary header compliance
-dgtl header-check
-
-# 8. Full performance benchmark gate (default multi-file suite)
-dgtl brun
-
-# 9. SDK package (builds lib, runs smoke link test, creates zip)
-dgtl package
-```
-
-## Faster Day-to-Day Loop
-
-Use this during development:
-
-```powershell
-dgtl build-release
-dgtl testl
-dgtl run-backend x64
-dgtl build-strict
-dgtl bench-backend x64 fusion
-dgtl brun
-```
-
-Notes:
-- `dgtl build-release` and `dgtl build-strict` are incremental and reuse binaries when inputs are unchanged.
-- `dgtl test` is the primary test gate. Use `dgtl brun` for the two retained benchmark suites only.
+This software is the proprietary and confidential property of TataG Systems. Unauthorized reproduction, reverse engineering, decompilation, or distribution of this software, or any portion thereof, without explicit written consent from TataG Systems is strictly prohibited.

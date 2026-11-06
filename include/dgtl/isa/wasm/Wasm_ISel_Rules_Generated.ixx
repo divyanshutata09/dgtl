@@ -20,8 +20,8 @@ export module dgtl.isa.wasm.isel_rules;
 export namespace dgtl::isa::wasm::generated {
 inline constexpr std::string_view kGeneratedTarget = "wasm";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0xE5B07962AC31A279";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0x7C6EF246274F39BB";
 inline constexpr std::string_view kRuleDslSource = "defs/isel/wasm_core.dgtl_isel";
 inline constexpr std::size_t kRuleDslCount = 0;
 inline constexpr std::array<std::string_view, 0> kRuleDslLines = {

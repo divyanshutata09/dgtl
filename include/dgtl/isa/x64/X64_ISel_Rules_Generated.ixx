@@ -20,11 +20,11 @@ export module dgtl.isa.x64.isel_rules;
 export namespace dgtl::isa::x64::generated {
 inline constexpr std::string_view kGeneratedTarget = "x64";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0x3C5D5A0636326410";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0xA8E4C6B1DC23A628";
 inline constexpr std::string_view kRuleDslSource = "defs/isel/x64_core.dgtl_isel";
-inline constexpr std::size_t kRuleDslCount = 18;
-inline constexpr std::array<std::string_view, 18> kRuleDslLines = {
+inline constexpr std::size_t kRuleDslCount = 12;
+inline constexpr std::array<std::string_view, 12> kRuleDslLines = {
     "rule x64_div_pow2_to_shr:         DivI64($val, Const($imm)) -> ShrI64($val, $imm) [targets=X86_64_AVX2|X86_64_AVX512, benefit=50]",
     "rule x64_fma_f32_commutative:     AddF32($c, MulF32($a, $b)) -> FMA_F32($a, $b, $c) [targets=X86_64_AVX2|X86_64_AVX512, benefit=100, require_fma=true]",
     "rule x64_fma_f32_standard:        AddF32(MulF32($a, $b), $c) -> FMA_F32($a, $b, $c) [targets=X86_64_AVX2|X86_64_AVX512, benefit=100, require_fma=true]",
@@ -33,12 +33,6 @@ inline constexpr std::array<std::string_view, 18> kRuleDslLines = {
     "rule x64_fold_gep_add:            AddI64($base, $index) -> GEP($base, $index) [targets=X86_64_AVX2|X86_64_AVX512, benefit=15]",
     "rule x64_fold_gep_shl:            AddI64($base, ShlI64($index, $scale)) -> GEP($base, $index) [targets=X86_64_AVX2|X86_64_AVX512, benefit=40]",
     "rule x64_fold_gep_shl_rev:        AddI64(ShlI64($index, $scale), $base) -> GEP($base, $index) [targets=X86_64_AVX2|X86_64_AVX512, benefit=40]",
-    "rule x64_fuse_branch_eq:          BranchCond(CmpEqI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=X86_64_AVX2|X86_64_AVX512, benefit=20]",
-    "rule x64_fuse_branch_ge:          BranchCond(CmpGeI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=X86_64_AVX2|X86_64_AVX512, benefit=20]",
-    "rule x64_fuse_branch_gt:          BranchCond(CmpGtI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=X86_64_AVX2|X86_64_AVX512, benefit=20]",
-    "rule x64_fuse_branch_le:          BranchCond(CmpLeI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=X86_64_AVX2|X86_64_AVX512, benefit=20]",
-    "rule x64_fuse_branch_lt:          BranchCond(CmpLtI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=X86_64_AVX2|X86_64_AVX512, benefit=20]",
-    "rule x64_fuse_branch_ne:          BranchCond(CmpNeI32($a, $b), $t) -> BRANCH_COMPARE_FUSED($a, $b, $t) [targets=X86_64_AVX2|X86_64_AVX512, benefit=20]",
     "rule x64_mod_pow2_to_and:         ModI64($val, Const($imm)) -> AndI64($val, $imm) [targets=X86_64_AVX2|X86_64_AVX512, benefit=50]",
     "rule x64_mul_pow2_to_shl:         MulI64($val, Const($imm)) -> ShlI64($val, $imm) [targets=X86_64_AVX2|X86_64_AVX512, benefit=25]",
     "rule x64_vec_fma_512:             VecAddF32512(VecMulF32512($a, $b), $c) -> VEC_ADD_F32_512($a, $b, $c) [targets=X86_64_AVX2|X86_64_AVX512, benefit=30]",

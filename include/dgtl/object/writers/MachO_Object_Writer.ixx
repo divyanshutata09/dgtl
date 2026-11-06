@@ -75,9 +75,9 @@ public:
         return "Mach-O 64";
     }
 
-    [[nodiscard]] bool write_machine_function(
+    [[nodiscard]] bool build_object_file(
         const machine::MachineFunction& function,
-        std::vector<std::uint8_t>& out,
+        dgtl::object::ObjectFile& obj,
         std::string_view entry_name = "_DGTL_kernel_entry") const {
 
         namespace m = dgtl::object::writers::macho;
@@ -92,9 +92,10 @@ public:
         }
 
         // Build fully synthesized Mach-O ObjectFile with unwind and frame info
-        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
+        obj = dgtl::object::ObjectFile(dgtl::object::ObjectFormat::MachO);
         auto& text_sec = obj.get_text_section();
         text_sec.bytes = std::move(codegen.code);
+        obj.add_function_symbol(std::string(entry_name), 0, text_sec.bytes.size(), true);
 
         for (const auto& r : codegen.runtime_relocs) {
             if (!obj.find_symbol(r.symbol)) {
@@ -103,6 +104,15 @@ public:
             obj.add_relocation(r.text_offset, r.symbol, 0, m::ARM64_RELOC_BRANCH26, dgtl::object::RelocationKind::Branch26);
         }
 
+        return true;
+    }
+
+    [[nodiscard]] bool write_machine_function(
+        const machine::MachineFunction& function,
+        std::vector<std::uint8_t>& out,
+        std::string_view entry_name = "_DGTL_kernel_entry") const {
+        dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
+        if (!build_object_file(function, obj, entry_name)) return false;
         return write(obj, out);
     }
 

@@ -1,0 +1,75 @@
+# DGTL layering waivers for tools\check_layers.ps1
+#
+# Format:   <relative file path> -> <module name>
+#           <relative file path> -> *
+# Paths are relative to D:\TataG\DGTL. Paths may use -like wildcards.
+# '#' starts a comment.
+#
+# RULE: this list may only SHRINK as legacy modules are factored into the codegen driver.
+#
+# Sovereign Core Pipeline (Strictly enforced, 0 violations, NO waivers):
+#   include\dgtl\ir\* (except pass profiler below)
+#   include\dgtl\mir\*
+#   include\dgtl\codegen\*
+#   include\dgtl\jit\JIT_Object_Loader.ixx
+#   include\dgtl\object\Object_File.ixx
+
+# ---------------------------------------------------------------------------
+# Instruction Selection (ISel) translation bridges (map IR OpCodes/Nodes to Target MachineForms)
+# ---------------------------------------------------------------------------
+include\dgtl\isa\ISel_Dispatch.ixx -> dgtl.ir_enums
+include\dgtl\isa\ISel_Dispatch.ixx -> dgtl.ir_node
+include\dgtl\isa\x64\X64_ISel_Generated.ixx -> dgtl.ir_enums
+
+# ---------------------------------------------------------------------------
+# TODO(layering): move to codegen driver
+# Linker modules that import ISA emitters / MIR / IR. They are drivers, not pure linkers.
+# ---------------------------------------------------------------------------
+include\dgtl\linker\Linker_binary_weaver.ixx -> *
+include\dgtl\linker\driver\Backend_Driver_API.ixx -> *
+include\dgtl\linker\driver\Backend_Driver_Shared_Utils.ixx -> *
+include\dgtl\linker\orchestrator\AOT_Orchestrator.ixx -> *
+include\dgtl\linker\elf\ELF_Linker.ixx -> *
+include\dgtl\linker\Entry_Point.ixx -> *
+include\dgtl\linker\Linker_Context.ixx -> *
+include\dgtl\linker\Linker_Driver.ixx -> *
+include\dgtl\linker\Linker_Driver_API.ixx -> *
+include\dgtl\linker\Symbol_Resolver.ixx -> *
+include\dgtl\linker\wasm\WASM_Binary_Link.ixx -> *
+
+# ---------------------------------------------------------------------------
+# TODO(layering): move to codegen driver
+# JIT modules that import ISA / MIR / IR / linker (tiering & compilation monoliths).
+# ---------------------------------------------------------------------------
+include\dgtl\jit\Async_Dopt_Tiered.ixx -> *
+include\dgtl\jit\Hardware_Scheduler.ixx -> *
+include\dgtl\jit\JIT_Executor.ixx -> *
+include\dgtl\jit\JIT_Orchestrator.ixx -> *
+src\jit\JIT_Orchestrator.cpp -> *
+
+# ---------------------------------------------------------------------------
+# TODO(layering): decouple legacy MachineFunction writer overloads
+# Object writers that contain convenience overloads for MachineFunction / PE executables.
+# ---------------------------------------------------------------------------
+include\dgtl\object\writers\* -> *
+
+# ---------------------------------------------------------------------------
+# TODO(layering): move to codegen driver
+# IR modules that import dgtl.jit.executor for profile data.
+# Fix: inject an IR-level ProfileData interface.
+# ---------------------------------------------------------------------------
+include\dgtl\ir\pipeline\Pass_Manager_Orchestrator.ixx -> *
+include\dgtl\ir\analysis\Speculative_Value_Profiler.ixx -> *
+src\ir\analysis\Speculative_Value_Profiler.cpp -> *
+include\dgtl\ir\pass\Tuning_Optimize.ixx -> *
+
+# ---------------------------------------------------------------------------
+# TODO(layering): move to codegen driver
+# Non-x64 ISA backends (match on IR opcodes / import IR or linker helpers).
+# ---------------------------------------------------------------------------
+include\dgtl\isa\arm64\* -> *
+include\dgtl\isa\riscv64\* -> *
+include\dgtl\isa\wasm\* -> *
+include\dgtl\isa\ptx\* -> *
+include\dgtl\isa\amdgpu\* -> *
+include\dgtl\isa\spirv\* -> *

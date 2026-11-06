@@ -84,12 +84,16 @@ public:
         const auto form = inst.form;
 
         uint32_t rd = 0, rn = 0, rm = 0;
+        bool is_dst_fp = false;
+        bool is_src_fp = false;
         for (const auto& operand : inst.operands) {
             if (operand.kind == MachineOperandKind::Register) {
                 if (operand.role == OperandRole::Def) {
                     rd = operand.reg.id & 0x1F;
+                    is_dst_fp = (operand.reg.reg_class == RegisterClassKind::FloatingPoint);
                 } else if (rn == 0) {
                     rn = operand.reg.id & 0x1F;
+                    is_src_fp = (operand.reg.reg_class == RegisterClassKind::FloatingPoint);
                 } else {
                     rm = operand.reg.id & 0x1F;
                 }
@@ -106,8 +110,38 @@ public:
                 return true;
 
             case MachineForm::Move:
-                // ORR Wd, WZR, Wn  (mov alias: 0x2A0003E0 | (rn << 16) | rd)
-                emit_u32(text, 0x2A0003E0u | (rn << 16) | rd);
+                for (const auto& operand : inst.operands) {
+                    if (operand.kind == MachineOperandKind::Symbol) {
+                        std::string sym_name;
+                        auto it = symbol_table.find(operand.symbol);
+                        if (it != symbol_table.end()) {
+                            sym_name = it->second;
+                        } else {
+                            sym_name = "sym_" + std::to_string(operand.symbol);
+                        }
+                        const uint64_t reloc_offset = text.size();
+                        emit_u32(text, 0x10000000u | rd); // ADR Xd, #0
+                        object.add_relocation(reloc_offset, std::move(sym_name), 0, 1, dgtl::object::RelocationKind::PCRel32);
+                        return true;
+                    }
+                }
+                if (is_dst_fp && is_src_fp) {
+                    // FMOV Dd, Dn (0x1E604000 | (rn << 5) | rd)
+                    emit_u32(text, 0x1E604000u | (rn << 5) | rd);
+                    return true;
+                }
+                if (is_dst_fp && !is_src_fp) {
+                    // SCVTF Dd, Xn (0x9E620000 | (rn << 5) | rd)
+                    emit_u32(text, 0x9E620000u | (rn << 5) | rd);
+                    return true;
+                }
+                if (!is_dst_fp && is_src_fp) {
+                    // FCVTZS Xd, Dn (0x9E780000 | (rn << 5) | rd)
+                    emit_u32(text, 0x9E780000u | (rn << 5) | rd);
+                    return true;
+                }
+                // ORR Xd, XZR, Xn (64-bit mov: 0xAA0003E0 | (rn << 16) | rd)
+                emit_u32(text, 0xAA0003E0u | (rn << 16) | rd);
                 return true;
 
             case MachineForm::LoadImmediate: {
@@ -361,6 +395,46 @@ public:
                         0
                     );
                 }
+                return true;
+            }
+
+            case MachineForm::Syscall: {
+                // svc #0 (0xD4000001)
+                emit_u32(text, 0xD4000001u);
+                return true;
+            }
+
+            case MachineForm::HardwareFence: {
+                // dmb ish (0xD5033BBF)
+                emit_u32(text, 0xD5033BBFu);
+                return true;
+            }
+
+            case MachineForm::ConcurrentSync: {
+                // dsb ish (0xD5033B9F)
+                emit_u32(text, 0xD5033B9Fu);
+                return true;
+            }
+
+            case MachineForm::AtomicOp: {
+                // Full barrier before and after atomic memory operation
+                emit_u32(text, 0xD5033BBFu); // dmb ish
+                // LDXR Xd, [Xn] (0xC85F7C00 | (rn << 5) | rd)
+                emit_u32(text, 0xC85F7C00u | (rn << 5) | rd);
+                emit_u32(text, 0xD5033BBFu); // dmb ish
+                return true;
+            }
+
+            case MachineForm::VectorGather512: {
+                // LDR Qt, [Xn] (128-bit NEON load: 0x3DC00000 | (rn << 5) | rd)
+                emit_u32(text, 0x3DC00000u | (rn << 5) | rd);
+                return true;
+            }
+
+            case MachineForm::VectorStore512: {
+                // STR Qt, [Xn] (128-bit NEON store: 0x3D800000 | (rn << 5) | (rd != 0 ? rd : rm))
+                const uint32_t val = (rd != 0) ? rd : rm;
+                emit_u32(text, 0x3D800000u | (rn << 5) | val);
                 return true;
             }
 

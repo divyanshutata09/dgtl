@@ -1,0 +1,70 @@
+# ==============================================================================
+# DGTL Sovereign Compiler Platform - Git Ignore Rules
+# ==============================================================================
+
+# --- Compiled Binary Artifacts (Never commit binaries to Git) ---
+*.exe
+*.out
+*.app
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.idb
+*.exp
+
+# --- Packaging & Archive Artifacts ---
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.mzp
+
+# --- Compiler & Module Caches ---
+gcm.cache/
+*.d
+*.gch
+*.pch
+
+# --- Build Output Directories ---
+build/
+bin/
+out/
+tools/bin/
+tests/functional/build/
+tests/latency/*.exe
+tests/**/logs/
+
+# --- Transient Intermediate & Payload Files ---
+*.dgtl.payload
+dgtl_oracle_tmp*.my
+
+# --- Logs, Telemetry & Scratch Files ---
+debug_logs/
+*.log
+*.pstat
+*.tmp
+
+# --- IDE, Editor, & Local Workspace Metadata ---
+.vscode/
+.vs/
+.idea/
+.history/
+*.suo
+*.user
+
+# --- OS System Files ---
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- Whitelist: Keep Benchmark & Verification Proof Logs ---
+!benchmarks/
+!benchmarks/**/*.md
+!benchmarks/**/*.log

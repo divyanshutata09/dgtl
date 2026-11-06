@@ -83,6 +83,25 @@ public:
             }
         }
 
+        // Partition relocations by target section
+        std::vector<std::vector<const dgtl::object::Relocation*>> sec_relocs(emit_sections.size());
+        for (const auto& rel : obj.relocations()) {
+            if (rel.symbol_name.empty()) continue;
+            size_t target_sec = text_sec_idx;
+            if (rel.section_index < obj.sections().size()) {
+                const auto* src_sec = &obj.sections()[rel.section_index];
+                for (size_t s = 0; s < emit_sections.size(); ++s) {
+                    if (emit_sections[s] == src_sec) {
+                        target_sec = s;
+                        break;
+                    }
+                }
+            }
+            if (target_sec < sec_relocs.size()) {
+                sec_relocs[target_sec].push_back(&rel);
+            }
+        }
+
         const std::size_t file_header_size = 20;
         const std::size_t section_header_size = 40;
         const std::uint16_t num_sections = static_cast<std::uint16_t>(emit_sections.size());
@@ -97,13 +116,14 @@ public:
             cur_offset += sec->bytes.size();
         }
 
-        // Relocations offset (associated with text section)
-        std::size_t reloc_offset = 0;
-        const std::size_t num_relocs = obj.relocations().size();
-        if (num_relocs > 0) {
-            cur_offset = (cur_offset + 3) & ~3;
-            reloc_offset = cur_offset;
-            cur_offset += num_relocs * 10;
+        // Relocations offsets per section
+        std::vector<std::size_t> section_reloc_offsets(emit_sections.size(), 0);
+        for (size_t i = 0; i < emit_sections.size(); ++i) {
+            if (!sec_relocs[i].empty()) {
+                cur_offset = (cur_offset + 3) & ~3;
+                section_reloc_offsets[i] = cur_offset;
+                cur_offset += sec_relocs[i].size() * 10;
+            }
         }
 
         // Symbol Table & String Table
@@ -157,10 +177,11 @@ public:
             emit_u32(out, static_cast<std::uint32_t>(is_bss_sec ? sec->bss_size : sec->bytes.size())); // SizeOfRawData
             emit_u32(out, static_cast<std::uint32_t>(is_bss_sec ? 0 : section_offsets[i])); // PointerToRawData
 
-            if (i == text_sec_idx && num_relocs > 0) {
-                emit_u32(out, static_cast<std::uint32_t>(reloc_offset)); // PointerToRelocations
+            const std::size_t n_rel = sec_relocs[i].size();
+            if (n_rel > 0) {
+                emit_u32(out, static_cast<std::uint32_t>(section_reloc_offsets[i])); // PointerToRelocations
                 emit_u32(out, 0); // PointerToLinenumbers
-                emit_u16(out, static_cast<std::uint16_t>(num_relocs)); // NumberOfRelocations
+                emit_u16(out, static_cast<std::uint16_t>(n_rel)); // NumberOfRelocations
                 emit_u16(out, 0); // NumberOfLinenumbers
             } else {
                 emit_u32(out, 0); // PointerToRelocations
@@ -187,10 +208,12 @@ public:
             out.insert(out.end(), emit_sections[i]->bytes.begin(), emit_sections[i]->bytes.end());
         }
 
-        // 4. Relocations Data
-        if (num_relocs > 0) {
-            if (out.size() < reloc_offset) out.resize(reloc_offset, 0);
-            for (const auto& rel : obj.relocations()) {
+        // 4. Relocations Data (partitioned per section)
+        for (std::size_t i = 0; i < emit_sections.size(); ++i) {
+            if (sec_relocs[i].empty()) continue;
+            if (out.size() < section_reloc_offsets[i]) out.resize(section_reloc_offsets[i], 0);
+            for (const auto* rel_ptr : sec_relocs[i]) {
+                const auto& rel = *rel_ptr;
                 emit_u32(out, static_cast<std::uint32_t>(rel.offset));
                 std::uint32_t sym_idx = 0;
                 auto sit = symbol_indices.find(rel.symbol_name);

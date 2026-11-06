@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_map>
 
 import dgtl.tools.common;
 
@@ -41,7 +42,8 @@ enum class BinaryFormat {
     ELF64,
     MachO64,
     WASM,
-    Archive
+    Archive,
+    SMT
 };
 
 struct SectionInfo {
@@ -166,6 +168,27 @@ DumpReport inspect_object(const fs::path& file_path) {
     file.close();
 
     const uint8_t* raw = buffer.data();
+
+    // ─── SMT Formal Verification Script Detection (.smt, .smt2) ───────────
+    std::string ext = file_path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+    std::string text_preview(reinterpret_cast<const char*>(raw), std::min<size_t>(file_size, 512));
+    if (ext == ".smt" || ext == ".smt2" ||
+        text_preview.find("(set-logic") != std::string::npos ||
+        text_preview.find("(assert") != std::string::npos ||
+        text_preview.find("(declare-") != std::string::npos) {
+        report.format = BinaryFormat::SMT;
+        report.arch = "smt2-solver";
+        SectionInfo s;
+        s.name = ".smt2";
+        s.virtual_size = file_size;
+        s.file_size = file_size;
+        s.is_code = false;
+        s.is_readable = true;
+        s.data = buffer;
+        report.sections.push_back(std::move(s));
+        return report;
+    }
 
     // ─── 1. Archive Detection ──────────────────────────────────────────────
     if (file_size >= 8 && std::memcmp(raw, "!<arch>\n", 8) == 0) {
@@ -673,6 +696,305 @@ DumpReport inspect_object(const fs::path& file_path) {
     return report;
 }
 
+struct DisasmInstr {
+    std::string text;
+    size_t length{1};
+};
+
+inline DisasmInstr decode_x86_instruction(const uint8_t* code, size_t max_len, uint64_t rip) {
+    DisasmInstr res;
+    if (!code || max_len == 0) {
+        res.text = "db 0x00";
+        res.length = 1;
+        return res;
+    }
+
+    size_t offset = 0;
+    bool rex_w = false, rex_r = false, rex_x = false, rex_b = false;
+    bool has_66 = false, has_67 = false;
+
+    while (offset < max_len) {
+        uint8_t pfx = code[offset];
+        if (pfx == 0x66) { has_66 = true; ++offset; }
+        else if (pfx == 0x67) { has_67 = true; ++offset; }
+        else if (pfx == 0xF2 || pfx == 0xF3) { ++offset; }
+        else if (pfx >= 0x40 && pfx <= 0x4F) {
+            rex_w = (pfx & 0x08) != 0;
+            rex_r = (pfx & 0x04) != 0;
+            rex_x = (pfx & 0x02) != 0;
+            rex_b = (pfx & 0x01) != 0;
+            ++offset;
+            break;
+        } else if (pfx == 0x2E || pfx == 0x36 || pfx == 0x3E || pfx == 0x26 || pfx == 0x64 || pfx == 0x65) {
+            ++offset;
+        } else {
+            break;
+        }
+    }
+
+    if (offset >= max_len) {
+        res.text = "db 0x" + std::to_string(code[0]);
+        res.length = 1;
+        return res;
+    }
+
+    static const char* r64[] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+                                 "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15" };
+    static const char* r32[] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
+                                 "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
+    static const char* r16[] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di",
+                                 "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w" };
+    static const char* r8[]  = { "al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil",
+                                 "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b" };
+
+    auto reg_name = [&](uint8_t id, bool is_64, bool is_16, bool is_8) -> std::string {
+        id &= 0x0F;
+        if (is_64) return r64[id];
+        if (is_16) return r16[id];
+        if (is_8)  return r8[id];
+        return r32[id];
+    };
+
+    uint8_t op = code[offset++];
+
+    auto decode_modrm = [&](bool is_64, bool is_16, bool is_8,
+                            std::string& out_rm, std::string& out_reg, uint8_t& out_reg_id, uint8_t& out_rm_id) -> bool {
+        if (offset >= max_len) return false;
+        uint8_t modrm = code[offset++];
+        uint8_t mod = (modrm >> 6) & 3;
+        uint8_t reg = ((modrm >> 3) & 7) | (rex_r ? 8 : 0);
+        uint8_t rm  = (modrm & 7) | (rex_b ? 8 : 0);
+        out_reg_id = reg;
+        out_rm_id = rm;
+        out_reg = reg_name(reg, is_64, is_16, is_8);
+
+        if (mod == 3) {
+            out_rm = reg_name(rm, is_64, is_16, is_8);
+            return true;
+        }
+
+        std::string ptr_size = is_64 ? "qword ptr " : (is_16 ? "word ptr " : (is_8 ? "byte ptr " : "dword ptr "));
+
+        bool has_sib = ((rm & 7) == 4);
+        uint8_t scale = 1, idx = 0, base = 0;
+        bool has_index = false;
+
+        if (has_sib) {
+            if (offset >= max_len) return false;
+            uint8_t sib = code[offset++];
+            scale = 1 << ((sib >> 6) & 3);
+            idx = ((sib >> 3) & 7) | (rex_x ? 8 : 0);
+            base = (sib & 7) | (rex_b ? 8 : 0);
+            has_index = (idx != 4);
+        }
+
+        int64_t disp = 0;
+        if (mod == 0) {
+            if (!has_sib && (rm & 7) == 5) {
+                if (offset + 4 > max_len) return false;
+                int32_t d32 = 0;
+                std::memcpy(&d32, &code[offset], 4);
+                offset += 4;
+                std::ostringstream ss;
+                ss << ptr_size << "[rip " << (d32 >= 0 ? "+ " : "- ") << "0x" << std::hex << std::abs(d32) << "]";
+                out_rm = ss.str();
+                return true;
+            }
+            if (has_sib && (base & 7) == 5) {
+                if (offset + 4 > max_len) return false;
+                int32_t d32 = 0;
+                std::memcpy(&d32, &code[offset], 4);
+                offset += 4;
+                disp = d32;
+            }
+        } else if (mod == 1) {
+            if (offset >= max_len) return false;
+            int8_t d8 = static_cast<int8_t>(code[offset++]);
+            disp = d8;
+        } else if (mod == 2) {
+            if (offset + 4 > max_len) return false;
+            int32_t d32 = 0;
+            std::memcpy(&d32, &code[offset], 4);
+            offset += 4;
+            disp = d32;
+        }
+
+        std::ostringstream mem_ss;
+        mem_ss << ptr_size << "[";
+        bool has_base = !(mod == 0 && has_sib && (base & 7) == 5);
+        if (has_base) {
+            mem_ss << (has_sib ? r64[base] : r64[rm]);
+        }
+        if (has_sib && has_index) {
+            if (has_base) mem_ss << " + ";
+            mem_ss << r64[idx];
+            if (scale > 1) mem_ss << "*" << (int)scale;
+        }
+        if (disp != 0 || !has_base) {
+            if (disp >= 0) {
+                if (has_base || (has_sib && has_index)) mem_ss << " + ";
+                mem_ss << "0x" << std::hex << disp;
+            } else {
+                mem_ss << " - 0x" << std::hex << -disp;
+            }
+        }
+        mem_ss << "]";
+        out_rm = mem_ss.str();
+        return true;
+    };
+
+    if (op >= 0x50 && op <= 0x57) {
+        uint8_t r = (op - 0x50) | (rex_b ? 8 : 0);
+        res.text = "push " + std::string(r64[r]);
+    } else if (op >= 0x58 && op <= 0x5F) {
+        uint8_t r = (op - 0x58) | (rex_b ? 8 : 0);
+        res.text = "pop " + std::string(r64[r]);
+    } else if (op == 0xC3) {
+        res.text = "ret";
+    } else if (op == 0xC2 && offset + 2 <= max_len) {
+        uint16_t imm16 = read16_le(code + offset); offset += 2;
+        res.text = "ret 0x" + std::to_string(imm16);
+    } else if (op == 0x90) {
+        res.text = "nop";
+    } else if (op == 0xCC) {
+        res.text = "int3";
+    } else if (op == 0xC9) {
+        res.text = "leave";
+    } else if (op == 0xE8 && offset + 4 <= max_len) {
+        int32_t rel = 0; std::memcpy(&rel, &code[offset], 4); offset += 4;
+        uint64_t target = rip + offset + rel;
+        std::ostringstream ss; ss << "call 0x" << std::hex << target;
+        res.text = ss.str();
+    } else if (op == 0xE9 && offset + 4 <= max_len) {
+        int32_t rel = 0; std::memcpy(&rel, &code[offset], 4); offset += 4;
+        uint64_t target = rip + offset + rel;
+        std::ostringstream ss; ss << "jmp 0x" << std::hex << target;
+        res.text = ss.str();
+    } else if (op == 0xEB && offset < max_len) {
+        int8_t rel = static_cast<int8_t>(code[offset++]);
+        uint64_t target = rip + offset + rel;
+        std::ostringstream ss; ss << "jmp 0x" << std::hex << target;
+        res.text = ss.str();
+    } else if (op >= 0x70 && op <= 0x7F && offset < max_len) {
+        static const char* jcc[] = { "jo", "jno", "jb", "jnb", "jz", "jnz", "jbe", "ja",
+                                     "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg" };
+        int8_t rel = static_cast<int8_t>(code[offset++]);
+        uint64_t target = rip + offset + rel;
+        std::ostringstream ss; ss << jcc[op - 0x70] << " 0x" << std::hex << target;
+        res.text = ss.str();
+    } else if (op == 0x89 || op == 0x8B || op == 0x8D || op == 0x31 || op == 0x33 || op == 0x85 || op == 0x01 || op == 0x29) {
+        std::string rm_str, reg_str;
+        uint8_t r_id = 0, rm_id = 0;
+        if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+            if (op == 0x89) res.text = "mov " + rm_str + ", " + reg_str;
+            else if (op == 0x8B) res.text = "mov " + reg_str + ", " + rm_str;
+            else if (op == 0x8D) res.text = "lea " + reg_str + ", " + rm_str;
+            else if (op == 0x31) res.text = "xor " + rm_str + ", " + reg_str;
+            else if (op == 0x33) res.text = "xor " + reg_str + ", " + rm_str;
+            else if (op == 0x85) res.text = "test " + rm_str + ", " + reg_str;
+            else if (op == 0x01) res.text = "add " + rm_str + ", " + reg_str;
+            else if (op == 0x29) res.text = "sub " + rm_str + ", " + reg_str;
+        }
+    } else if (op == 0x83 || op == 0x81) {
+        std::string rm_str, reg_str;
+        uint8_t r_id = 0, rm_id = 0;
+        if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id)) {
+            static const char* mnem[] = { "add", "or", "adc", "sbb", "and", "sub", "xor", "cmp" };
+            if (op == 0x83 && offset < max_len) {
+                int8_t imm = static_cast<int8_t>(code[offset++]);
+                std::ostringstream ss; ss << mnem[r_id & 7] << " " << rm_str << ", 0x" << std::hex << (int)(uint8_t)imm;
+                res.text = ss.str();
+            } else if (op == 0x81 && offset + 4 <= max_len) {
+                uint32_t imm = read32_le(code + offset); offset += 4;
+                std::ostringstream ss; ss << mnem[r_id & 7] << " " << rm_str << ", 0x" << std::hex << imm;
+                res.text = ss.str();
+            }
+        }
+    } else if (op == 0xC7) {
+        std::string rm_str, reg_str;
+        uint8_t r_id = 0, rm_id = 0;
+        if (decode_modrm(rex_w, has_66, false, rm_str, reg_str, r_id, rm_id) && offset + 4 <= max_len) {
+            uint32_t imm = read32_le(code + offset); offset += 4;
+            std::ostringstream ss; ss << "mov " << rm_str << ", 0x" << std::hex << imm;
+            res.text = ss.str();
+        }
+    } else if (op >= 0xB8 && op <= 0xBF) {
+        uint8_t r = (op - 0xB8) | (rex_b ? 8 : 0);
+        if (rex_w && offset + 8 <= max_len) {
+            uint64_t imm = read64_le(code + offset); offset += 8;
+            std::ostringstream ss; ss << "movabs " << r64[r] << ", 0x" << std::hex << imm;
+            res.text = ss.str();
+        } else if (offset + 4 <= max_len) {
+            uint32_t imm = read32_le(code + offset); offset += 4;
+            std::ostringstream ss; ss << "mov " << r32[r] << ", 0x" << std::hex << imm;
+            res.text = ss.str();
+        }
+    } else if (op == 0x0F && offset < max_len) {
+        uint8_t op2 = code[offset++];
+        if (op2 == 0x05) res.text = "syscall";
+        else if (op2 == 0x0B) res.text = "ud2";
+        else if (op2 == 0x1F) {
+            std::string rm_str, reg_str;
+            uint8_t r_id = 0, rm_id = 0;
+            decode_modrm(false, false, false, rm_str, reg_str, r_id, rm_id);
+            res.text = "nop " + rm_str;
+        } else if (op2 >= 0x80 && op2 <= 0x8F && offset + 4 <= max_len) {
+            static const char* jcc[] = { "jo", "jno", "jb", "jnb", "jz", "jnz", "jbe", "ja",
+                                         "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg" };
+            int32_t rel = 0; std::memcpy(&rel, &code[offset], 4); offset += 4;
+            uint64_t target = rip + offset + rel;
+            std::ostringstream ss; ss << jcc[op2 - 0x80] << " 0x" << std::hex << target;
+            res.text = ss.str();
+        } else {
+            std::ostringstream ss; ss << "db 0x0f, 0x" << std::hex << (int)op2;
+            res.text = ss.str();
+        }
+    } else {
+        std::ostringstream ss; ss << ".byte 0x" << std::hex << std::setw(2) << std::setfill('0') << (int)op;
+        res.text = ss.str();
+    }
+
+    res.length = offset;
+    return res;
+}
+
+void disassemble_section(const SectionInfo& s, const DumpReport& report) {
+    if (s.data.empty()) return;
+
+    std::unordered_map<uint64_t, std::string> sym_map;
+    for (const auto& sym : report.symbols) {
+        if (sym.section_name == s.name || (sym.section_index > 0 && sym.value >= s.virtual_address && sym.value < s.virtual_address + s.virtual_size)) {
+            sym_map[sym.value] = sym.name;
+        }
+    }
+
+    uint64_t cur_rip = s.virtual_address;
+    size_t off = 0;
+    const uint8_t* p = s.data.data();
+    const size_t sz = s.data.size();
+
+    while (off < sz) {
+        if (sym_map.contains(cur_rip)) {
+            std::cout << "\n" << std::hex << std::setw(16) << std::setfill('0') << cur_rip << " <" << sym_map[cur_rip] << ">:\n" << std::dec;
+        }
+
+        DisasmInstr instr = decode_x86_instruction(p + off, sz - off, cur_rip);
+        std::cout << "  " << std::hex << std::setw(8) << std::setfill('0') << cur_rip << ": ";
+
+        for (size_t b = 0; b < 7; ++b) {
+            if (b < instr.length) {
+                std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)p[off + b] << " ";
+            } else {
+                std::cout << "   ";
+            }
+        }
+        std::cout << "    " << instr.text << "\n" << std::dec;
+
+        off += instr.length;
+        cur_rip += instr.length;
+    }
+}
+
 void print_hex_dump(const uint8_t* data, size_t size, uint64_t base_addr) {
     for (size_t i = 0; i < size; i += 16) {
         std::cout << "  " << std::hex << std::setw(8) << std::setfill('0') << (base_addr + i) << ": ";
@@ -832,10 +1154,23 @@ int dgtl_objdump_tool_main(std::span<const std::string_view> raw_args, std::stri
         case dgtl::objdump::BinaryFormat::MachO64: std::cout << "mach-o-" << report.arch; break;
         case dgtl::objdump::BinaryFormat::WASM:    std::cout << "wasm-binary"; break;
         case dgtl::objdump::BinaryFormat::Archive: std::cout << "archive"; break;
+        case dgtl::objdump::BinaryFormat::SMT:     std::cout << "smt2-formal-verification-script"; break;
         default: std::cout << "unknown"; break;
     }
     std::cout << "\narchitecture: " << report.arch << ", flags: 0x00000000\n";
     std::cout << "start address: 0x" << std::hex << std::setw(16) << std::setfill('0') << report.entry_point << std::dec << "\n\n";
+
+    if (report.format == dgtl::objdump::BinaryFormat::SMT) {
+        std::cout << "SMT-LIB2 FORMAL VERIFICATION SCRIPT:\n";
+        if (!report.sections.empty()) {
+            std::cout << "  Script Size: " << report.sections.front().data.size() << " bytes\n";
+            std::cout << "--------------------------------------------------------------------------------\n";
+            std::string smt_str(reinterpret_cast<const char*>(report.sections.front().data.data()), report.sections.front().data.size());
+            std::cout << smt_str << "\n";
+            std::cout << "--------------------------------------------------------------------------------\n";
+        }
+        return 0;
+    }
 
     if ((show_file_header || show_all) && report.format == dgtl::objdump::BinaryFormat::PE_COFF && report.image_base > 0) {
         std::cout << "PE/COFF Header & Data Directories:\n";
@@ -936,12 +1271,18 @@ int dgtl_objdump_tool_main(std::span<const std::string_view> raw_args, std::stri
 
     if (show_disasm || show_contents) {
         for (const auto& s : report.sections) {
-            if (show_disasm && !s.is_code) continue;
+            if (show_disasm && !s.is_code && !show_contents) continue;
             if (s.data.empty()) continue;
 
-            std::cout << "Contents of section " << s.name << ":\n";
-            print_hex_dump(s.data.data(), s.data.size(), s.virtual_address);
-            std::cout << "\n";
+            if (show_disasm && s.is_code) {
+                std::cout << "Disassembly of section " << s.name << ":\n";
+                disassemble_section(s, report);
+                std::cout << "\n";
+            } else {
+                std::cout << "Contents of section " << s.name << ":\n";
+                print_hex_dump(s.data.data(), s.data.size(), s.virtual_address);
+                std::cout << "\n";
+            }
         }
     }
 

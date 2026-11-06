@@ -81,6 +81,8 @@ namespace spirv_op {
     inline constexpr uint32_t FOrdGreaterThan    = 186;
     inline constexpr uint32_t FOrdLessThanEqual  = 188;
     inline constexpr uint32_t FOrdGreaterThanEqual = 190;
+    inline constexpr uint32_t ConvertFToS        = 110;
+    inline constexpr uint32_t ConvertSToF        = 111;
     inline constexpr uint32_t ShiftRightArithmetic = 195;
     inline constexpr uint32_t ShiftLeftLogical   = 196;
     inline constexpr uint32_t BitwiseOr          = 197;
@@ -192,9 +194,16 @@ public:
                 break;
             case MachineForm::Move:
                 if (def && !uses.empty()) {
-                    // In SSA SPIR-V, a copy can be represented as OpBitcast or integer add with 0
                     const uint32_t src_id = uses[0]->reg.id + 100u;
-                    emit_raw(spirv_op::IAdd, {type_i32, def_id, src_id, src_id}); // simple SSA alias
+                    const bool dst_is_fp = (def->reg.reg_class == RegisterClassKind::FloatingPoint);
+                    const bool src_is_fp = (uses[0]->reg.reg_class == RegisterClassKind::FloatingPoint);
+                    if (dst_is_fp && !src_is_fp) {
+                        emit_raw(spirv_op::ConvertSToF, {type_f64, def_id, src_id});
+                    } else if (!dst_is_fp && src_is_fp) {
+                        emit_raw(spirv_op::ConvertFToS, {type_i64, def_id, src_id});
+                    } else {
+                        emit_raw(spirv_op::IAdd, {type_i32, def_id, src_id, src_id}); // simple SSA alias
+                    }
                 }
                 break;
             case MachineForm::LoadImmediate:

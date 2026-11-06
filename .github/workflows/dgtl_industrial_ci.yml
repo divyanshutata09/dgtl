@@ -1,0 +1,129 @@
+name: DGTL Sovereign Cross-Platform Industrial CI/CD
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-industrial:
+    name: Windows Sovereign Build (.dll / .lib / .a)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Sovereign Repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 UCRT64 Toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+
+      - name: Verify Sovereign Toolchain
+        shell: msys2 {0}
+        run: |
+          gcc --version
+          g++ --version
+          ar --version
+          strip --version
+
+      - name: Bootstrap DGTL Sovereign Build Orchestrator
+        shell: msys2 {0}
+        run: |
+          g++ -std=c++20 -O2 -pipe tools/cpp/dgtl_main.cpp -o dgtl.exe
+          ./dgtl.exe --version
+
+      - name: Build All Sovereign Libraries (.dll, .lib, .a)
+        shell: msys2 {0}
+        run: |
+          ./dgtl.exe build-all-libs
+          ./dgtl.exe build-tools
+
+      - name: Package & Verify Sovereign SDK Distribution
+        shell: msys2 {0}
+        run: |
+          ./dgtl.exe package --verify
+
+      - name: Run 12-Tier Test Suite (Static Link)
+        shell: pwsh
+        run: |
+          .\newtest\run_newtest.ps1 -Target all -LinkType static -JUnitXml test-results-static.xml
+
+      - name: Run Diagnostic Oracle (Dynamic Shared Link against dgtl.dll)
+        shell: pwsh
+        run: |
+          .\newtest\run_newtest.ps1 -Target oracle -LinkType shared -JUnitXml test-results-shared.xml
+
+      - name: Archive Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dgtl-windows-test-results
+          path: test-results*.xml
+
+      - name: Archive Production SDK Distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: dgtl-windows-sdk
+          path: build/*.zip
+
+  linux-industrial:
+    name: Linux Sovereign Build (libdgtl.so / libdgtl.a)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Sovereign Repository
+        uses: actions/checkout@v4
+
+      - name: Install Compiler Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential g++ binutils
+
+      - name: Bootstrap DGTL Sovereign Build Orchestrator
+        run: |
+          g++ -std=c++20 -O2 -pipe tools/cpp/dgtl_main.cpp -o dgtl
+          ./dgtl --version
+
+      - name: Build All Sovereign Libraries (libdgtl.so / libdgtl.a)
+        run: |
+          ./dgtl build-all-libs
+          ./dgtl build-tools
+
+      - name: Verify Linux Artifacts
+        run: |
+          ls -la build/DGTL_SDK/lib/x64/
+          file build/DGTL_SDK/lib/x64/libdgtl.a
+          file build/DGTL_SDK/lib/x64/libdgtl.so.2.1.0
+
+  macos-industrial:
+    name: macOS Sovereign Build (libdgtl.dylib / libdgtl.a)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Sovereign Repository
+        uses: actions/checkout@v4
+
+      - name: Bootstrap DGTL Sovereign Build Orchestrator
+        run: |
+          clang++ -std=c++20 -O2 tools/cpp/dgtl_main.cpp -o dgtl
+          ./dgtl --version
+
+      - name: Build All Sovereign Libraries (libdgtl.dylib / libdgtl.a)
+        run: |
+          ./dgtl build-all-libs
+          ./dgtl build-tools
+
+      - name: Verify macOS Artifacts
+        run: |
+          ls -la build/DGTL_SDK/lib/x64/ || ls -la build/DGTL_SDK/lib/

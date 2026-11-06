@@ -1,0 +1,48 @@
+# Auto-detect text files and perform LF normalization
+* text=auto
+
+# Custom command golden output LF constraint
+docs/My_Docs/commands/golden/*.txt text eol=lf
+
+# Shell scripts must always use LF
+*.sh text eol=lf
+dgtl text eol=lf
+
+# Windows batch files
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# C++ and Assembly Sources
+*.cpp text
+*.ixx text
+*.h text
+*.hpp text
+*.asm text
+
+# DGTL DSL Specifications & Contracts
+*.dgtl text
+*.dgtl_def text
+*.dgtl_isel text
+*.dgtl_contract text
+
+# Sovereign Package & Configuration Manifests
+*.toml text
+*.pkg text
+*.ps1 text
+*.md text
+*.txt text
+*.yml text
+*.yaml text
+
+# Binary Formats
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.a binary
+*.lib binary
+*.zip binary
+*.mzp binary
+*.png binary
+*.jpg binary
+*.ico binary

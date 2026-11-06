@@ -20,8 +20,8 @@ export module dgtl.isa.riscv64.isel_rules;
 export namespace dgtl::isa::riscv64::generated {
 inline constexpr std::string_view kGeneratedTarget = "riscv64";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0x63C16B61409C9AD5";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0xE9E7B06D0B1D9127";
 inline constexpr std::string_view kRuleDslSource = "defs/isel/riscv64_core.dgtl_isel";
 inline constexpr std::size_t kRuleDslCount = 10;
 inline constexpr std::array<std::string_view, 10> kRuleDslLines = {

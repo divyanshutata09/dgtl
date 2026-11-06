@@ -72,21 +72,20 @@ public:
         out_bytes.push_back(0x00);
         out_bytes.push_back(0x00); // version 1
 
-        // 2. Extract Code Sections (.text)
-        const auto* text_sec = obj.find_section(".text");
-        if (!text_sec || text_sec->bytes.empty()) {
-            for (const auto& s : obj.sections()) {
-                if (s.is_code() && !s.bytes.empty()) {
-                    text_sec = &s;
-                    break;
+        // 2. Extract and Consolidate Code Sections (.text, .text.*)
+        std::vector<uint8_t> code_bytes;
+        std::vector<uint32_t> section_code_offsets(obj.sections().size(), 0);
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& s = obj.sections()[i];
+            if (s.is_code() || s.name == ".text" || s.name.starts_with(".text.")) {
+                if (!s.bytes.empty()) {
+                    section_code_offsets[i] = static_cast<uint32_t>(code_bytes.size());
+                    code_bytes.insert(code_bytes.end(), s.bytes.begin(), s.bytes.end());
                 }
             }
         }
 
-        std::vector<uint8_t> code_bytes;
-        if (text_sec && !text_sec->bytes.empty()) {
-            code_bytes = text_sec->bytes;
-        } else {
+        if (code_bytes.empty()) {
             // Default minimal function: i32.const 0; end
             code_bytes = {0x41, 0x00, 0x0B};
         }
@@ -155,7 +154,13 @@ public:
                                     stripped == "fabs" || stripped == "fabsf" || stripped == "floor" || stripped == "floorf" ||
                                     stripped == "ceil" || stripped == "ceilf" || stripped == "round" || stripped == "roundf" ||
                                     stripped == "trunc" || stripped == "truncf" || stripped == "memcpy" || stripped == "memset" ||
-                                    stripped == "memcmp" || stripped == "memmove" || stripped == "chkstk" || stripped == "alloca";
+                                    stripped == "memcmp" || stripped == "memmove" || stripped == "chkstk" || stripped == "alloca" ||
+                                    stripped == "pow" || stripped == "i64_pow" || stripped == "ipow" ||
+                                    stripped == "fmod" || stripped == "fmodf" ||
+                                    stripped == "bits_to_f64" || stripped == "f64_to_bits" ||
+                                    stripped == "bits_to_f32" || stripped == "f32_to_bits" ||
+                                    stripped == "relu" || stripped == "reluf" ||
+                                    stripped == "fma_f32" || stripped == "fma_f64";
                 if (options.sovereign && is_intrinsic) {
                     if (seen_imports.insert(rel.symbol_name).second) {
                         sovereign_intrinsics.push_back(rel.symbol_name);
@@ -209,27 +214,36 @@ public:
         // Type 4: (f64) -> f64 (f64 unary math)
         // Type 5: (f32) -> f32 (f32 unary math)
         // Type 6: (i32, i32, i32) -> i32 (memcpy / memset / memmove / memcmp)
+        // Type 7: (i64, i64) -> i64 (pow / i64_pow)
+        // Type 8: (f64, f64) -> f64 (fmod)
+        // Type 9: (f32, f32) -> f32 (fmodf)
+        // Type 10: (i64) -> f64 (bits_to_f64)
+        // Type 11: (f64) -> i64 (f64_to_bits)
+        // Type 12: (i32) -> f32 (bits_to_f32)
+        // Type 13: (f32) -> i32 (f32_to_bits)
+        // Type 14: (f64, f64, f64) -> f64 (fma_f64)
+        // Type 15: (f32, f32, f32) -> f32 (fma_f32)
         std::vector<uint8_t> type_payload;
-        encode_u32_leb(type_payload, 7); // 7 signatures
+        encode_u32_leb(type_payload, 16); // 16 signatures
 
         // Type 0: () -> i32
         type_payload.push_back(kFuncTypeTag);
-        encode_u32_leb(type_payload, 0); // 0 params
-        encode_u32_leb(type_payload, 1); // 1 result
+        encode_u32_leb(type_payload, 0);
+        encode_u32_leb(type_payload, 1);
         type_payload.push_back(kValTypeI32);
 
         // Type 1: (i32) -> ()
         type_payload.push_back(kFuncTypeTag);
-        encode_u32_leb(type_payload, 1); // 1 param
+        encode_u32_leb(type_payload, 1);
         type_payload.push_back(kValTypeI32);
-        encode_u32_leb(type_payload, 0); // 0 results
+        encode_u32_leb(type_payload, 0);
 
         // Type 2: (i32, i32) -> i32
         type_payload.push_back(kFuncTypeTag);
-        encode_u32_leb(type_payload, 2); // 2 params
+        encode_u32_leb(type_payload, 2);
         type_payload.push_back(kValTypeI32);
         type_payload.push_back(kValTypeI32);
-        encode_u32_leb(type_payload, 1); // 1 result
+        encode_u32_leb(type_payload, 1);
         type_payload.push_back(kValTypeI32);
 
         // Type 3: () -> ()
@@ -260,6 +274,76 @@ public:
         encode_u32_leb(type_payload, 1);
         type_payload.push_back(kValTypeI32);
 
+        // Type 7: (i64, i64) -> i64
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 2);
+        type_payload.push_back(kValTypeI64);
+        type_payload.push_back(kValTypeI64);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeI64);
+
+        // Type 8: (f64, f64) -> f64
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 2);
+        type_payload.push_back(kValTypeF64);
+        type_payload.push_back(kValTypeF64);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF64);
+
+        // Type 9: (f32, f32) -> f32
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 2);
+        type_payload.push_back(kValTypeF32);
+        type_payload.push_back(kValTypeF32);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF32);
+
+        // Type 10: (i64) -> f64
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeI64);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF64);
+
+        // Type 11: (f64) -> i64
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF64);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeI64);
+
+        // Type 12: (i32) -> f32
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeI32);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF32);
+
+        // Type 13: (f32) -> i32
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF32);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeI32);
+
+        // Type 14: (f64, f64, f64) -> f64
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 3);
+        type_payload.push_back(kValTypeF64);
+        type_payload.push_back(kValTypeF64);
+        type_payload.push_back(kValTypeF64);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF64);
+
+        // Type 15: (f32, f32, f32) -> f32
+        type_payload.push_back(kFuncTypeTag);
+        encode_u32_leb(type_payload, 3);
+        type_payload.push_back(kValTypeF32);
+        type_payload.push_back(kValTypeF32);
+        type_payload.push_back(kValTypeF32);
+        encode_u32_leb(type_payload, 1);
+        type_payload.push_back(kValTypeF32);
+
         encode_section(out_bytes, kSectionType, type_payload);
 
         // 7. Section 2: Import Section
@@ -285,16 +369,37 @@ public:
                 std::string_view name = fn_name;
                 if (name.starts_with("__dgtl_rt_")) name.remove_prefix(10);
                 else if (name.starts_with("dgtl_rt_")) name.remove_prefix(8);
+                else if (name.starts_with("__myzon_")) name.remove_prefix(8);
+                else if (name.starts_with("myzon_")) name.remove_prefix(6);
                 else if (name.starts_with("__")) name.remove_prefix(2);
+                else if (name.starts_with("_")) name.remove_prefix(1);
 
                 if (name == "sqrtf" || name == "absf" || name == "fabsf" ||
-                    name == "floorf" || name == "ceilf" || name == "truncf" || name == "roundf") {
+                    name == "floorf" || name == "ceilf" || name == "truncf" || name == "roundf" || name == "reluf") {
                     type_idx = 5; // Type 5: (f32) -> f32
                 } else if (name == "sqrt" || name == "abs" || name == "fabs" ||
-                           name == "floor" || name == "ceil" || name == "trunc" || name == "round") {
+                           name == "floor" || name == "ceil" || name == "trunc" || name == "round" || name == "relu") {
                     type_idx = 4; // Type 4: (f64) -> f64
                 } else if (name == "memcpy" || name == "memset" || name == "memmove" || name == "memcmp") {
                     type_idx = 6; // Type 6: (i32, i32, i32) -> i32
+                } else if (name == "pow" || name == "i64_pow" || name == "ipow") {
+                    type_idx = 7; // Type 7: (i64, i64) -> i64
+                } else if (name == "fmod") {
+                    type_idx = 8; // Type 8: (f64, f64) -> f64
+                } else if (name == "fmodf") {
+                    type_idx = 9; // Type 9: (f32, f32) -> f32
+                } else if (name == "bits_to_f64") {
+                    type_idx = 10; // Type 10: (i64) -> f64
+                } else if (name == "f64_to_bits") {
+                    type_idx = 11; // Type 11: (f64) -> i64
+                } else if (name == "bits_to_f32") {
+                    type_idx = 12; // Type 12: (i32) -> f32
+                } else if (name == "f32_to_bits") {
+                    type_idx = 13; // Type 13: (f32) -> i32
+                } else if (name == "fma_f64") {
+                    type_idx = 14; // Type 14: (f64, f64, f64) -> f64
+                } else if (name == "fma_f32") {
+                    type_idx = 15; // Type 15: (f32, f32, f32) -> f32
                 }
             }
             encode_u32_leb(func_payload, type_idx);
@@ -381,6 +486,10 @@ public:
         for (const auto& rel : obj.relocations()) {
             if (rel.symbol_name.empty()) continue;
 
+            const uint32_t rel_code_offset = (rel.section_index < section_code_offsets.size())
+                ? (section_code_offsets[rel.section_index] + static_cast<uint32_t>(rel.offset))
+                : static_cast<uint32_t>(rel.offset);
+
             // Function call relocation
             auto it_fn = func_index_map.find(rel.symbol_name);
             if (it_fn == func_index_map.end()) {
@@ -391,8 +500,8 @@ public:
             }
             if (it_fn != func_index_map.end()) {
                 const uint32_t target_idx = it_fn->second;
-                if (rel.offset + 5 <= code_bytes.size()) {
-                    WasmRelocationApplier::patch_u32_leb_5(code_bytes.data() + rel.offset, target_idx);
+                if (rel_code_offset + 5 <= code_bytes.size()) {
+                    WasmRelocationApplier::patch_u32_leb_5(code_bytes.data() + rel_code_offset, target_idx);
                 }
                 continue;
             }
@@ -407,8 +516,19 @@ public:
             }
             if (it_data != data_symbol_addresses.end()) {
                 const uint32_t target_addr = it_data->second + static_cast<uint32_t>(rel.addend);
-                if (rel.offset + 5 <= code_bytes.size()) {
-                    WasmRelocationApplier::patch_u32_leb_5(code_bytes.data() + rel.offset, target_addr);
+                if (rel_code_offset + 5 <= code_bytes.size()) {
+                    WasmRelocationApplier::patch_u32_leb_5(code_bytes.data() + rel_code_offset, target_addr);
+                }
+            } else if (rel.symbol_name.starts_with("__str_") || rel.symbol_name.starts_with(".rdata") || rel.symbol_name.starts_with(".rodata")) {
+                uint32_t eff_val = 0;
+                if (rel.symbol_name.starts_with("__str_")) {
+                    try {
+                        eff_val = static_cast<uint32_t>(std::stoull(rel.symbol_name.substr(6)));
+                    } catch (...) {}
+                }
+                const uint32_t target_addr = options.data_base_address + eff_val + static_cast<uint32_t>(rel.addend);
+                if (rel_code_offset + 5 <= code_bytes.size()) {
+                    WasmRelocationApplier::patch_u32_leb_5(code_bytes.data() + rel_code_offset, target_addr);
                 }
             }
         }
@@ -422,20 +542,17 @@ public:
             const auto* sym = obj.find_symbol(fn_name);
 
             std::vector<uint8_t> func_body;
-            encode_u32_leb(func_body, 0); // 0 local declarations
+            encode_u32_leb(func_body, 0); // Default: 0 local declarations
 
             bool sliced = false;
             std::string_view int_name = fn_name;
             if (int_name.starts_with("__dgtl_rt_")) int_name.remove_prefix(10);
             else if (int_name.starts_with("dgtl_rt_")) int_name.remove_prefix(8);
-            else if (int_name.starts_with("__myzon_")) int_name.remove_prefix(8);
-            else if (int_name.starts_with("myzon_")) int_name.remove_prefix(6);
             else if (int_name.starts_with("__")) int_name.remove_prefix(2);
             else if (int_name.starts_with("_")) int_name.remove_prefix(1);
 
             bool is_sovereign_intrin = options.sovereign && (
                 fn_name.starts_with("__dgtl_rt_") || fn_name.starts_with("dgtl_rt_") ||
-                fn_name.starts_with("__myzon_") || fn_name.starts_with("myzon_") ||
                 int_name == "memcpy" || int_name == "memset" || int_name == "memmove" || int_name == "memcmp" ||
                 int_name == "chkstk" || int_name == "_chkstk_ms" || int_name == "chkstk_ms" || int_name == "alloca" ||
                 int_name == "sqrt" || int_name == "sqrtf" || int_name == "abs" || int_name == "absf" ||
@@ -443,12 +560,15 @@ public:
                 int_name == "ceil" || int_name == "ceilf" || int_name == "round" || int_name == "roundf" ||
                 int_name == "trunc" || int_name == "truncf" ||
                 int_name == "relu" || int_name == "reluf" ||
-                int_name == "fma_f32" || int_name == "fma_f64"
+                int_name == "fma_f32" || int_name == "fma_f64" ||
+                int_name == "pow" || int_name == "i64_pow" || int_name == "ipow" ||
+                int_name == "fmod" || int_name == "fmodf" ||
+                int_name == "bits_to_f64" || int_name == "f64_to_bits" ||
+                int_name == "bits_to_f32" || int_name == "f32_to_bits"
             );
 
             if (is_sovereign_intrin) {
                 if (int_name == "chkstk" || int_name == "_chkstk_ms" || int_name == "chkstk_ms" || int_name == "alloca") {
-                    // WASM linear memory requires no guard page probing; return 0 / end
                     func_body.insert(func_body.end(), { 0x41, 0x00, 0x0B }); // i32.const 0, end
                 } else if (int_name == "sqrt") {
                     func_body.insert(func_body.end(), { 0x20, 0x00, 0x9F, 0x0B }); // local.get 0, f64.sqrt, end
@@ -486,6 +606,48 @@ public:
                 } else if (int_name == "fma_f64") {
                     // local.get 0, local.get 1, f64.mul, local.get 2, f64.add, end
                     func_body.insert(func_body.end(), { 0x20, 0x00, 0x20, 0x01, 0xA2, 0x20, 0x02, 0xA0, 0x0B });
+                } else if (int_name == "bits_to_f64") {
+                    // local.get 0, f64.reinterpret_i64, end
+                    func_body.insert(func_body.end(), { 0x20, 0x00, 0xBD, 0x0B });
+                } else if (int_name == "f64_to_bits") {
+                    // local.get 0, i64.reinterpret_f64, end
+                    func_body.insert(func_body.end(), { 0x20, 0x00, 0xBC, 0x0B });
+                } else if (int_name == "bits_to_f32") {
+                    // local.get 0, f32.reinterpret_i32, end
+                    func_body.insert(func_body.end(), { 0x20, 0x00, 0xBE, 0x0B });
+                } else if (int_name == "f32_to_bits") {
+                    // local.get 0, i32.reinterpret_f32, end
+                    func_body.insert(func_body.end(), { 0x20, 0x00, 0xBF, 0x0B });
+                } else if (int_name == "fmod") {
+                    // a - trunc(a / b) * b
+                    func_body.insert(func_body.end(), { 0x20, 0x00, 0x20, 0x00, 0x20, 0x01, 0xA3, 0x9D, 0x20, 0x01, 0xA2, 0xA1, 0x0B });
+                } else if (int_name == "fmodf") {
+                    // a - trunc(a / b) * b
+                    func_body.insert(func_body.end(), { 0x20, 0x00, 0x20, 0x00, 0x20, 0x01, 0x95, 0x8F, 0x20, 0x01, 0x94, 0x93, 0x0B });
+                } else if (int_name == "pow" || int_name == "i64_pow" || int_name == "ipow") {
+                    // Discrete binary exponentiation loop with 1 i64 local (res = 1)
+                    func_body.clear();
+                    encode_u32_leb(func_body, 1);     // 1 local declaration vector
+                    encode_u32_leb(func_body, 1);     // 1 local of type i64
+                    func_body.push_back(kValTypeI64); // i64 (local index 2: res)
+                    func_body.insert(func_body.end(), {
+                        0x42, 0x01,                   // i64.const 1
+                        0x21, 0x02,                   // local.set 2 (res = 1)
+                        0x02, 0x40,                   // block
+                        0x03, 0x40,                   // loop
+                        0x20, 0x01, 0x50, 0x0D, 0x01, // local.get 1, i64.eqz, br_if 1
+                        0x20, 0x01, 0x42, 0x01, 0x83, // local.get 1, i64.const 1, i64.and
+                        0x04, 0x40,                   // if
+                        0x20, 0x02, 0x20, 0x00, 0x7E, 0x21, 0x02, // local.get 2, local.get 0, i64.mul, local.set 2
+                        0x0B,                         // end if
+                        0x20, 0x00, 0x20, 0x00, 0x7E, 0x21, 0x00, // local.get 0, local.get 0, i64.mul, local.set 0
+                        0x20, 0x01, 0x42, 0x01, 0x88, 0x21, 0x01, // local.get 1, i64.const 1, i64.shr_u, local.set 1
+                        0x0C, 0x00,                   // br 0
+                        0x0B,                         // end loop
+                        0x0B,                         // end block
+                        0x20, 0x02,                   // local.get 2
+                        0x0B                          // end
+                    });
                 } else if (int_name == "memcpy" || int_name == "memmove") {
                     // local.get 0, local.get 1, local.get 2, memory.copy 0 0, local.get 0, end
                     func_body.insert(func_body.end(), { 0x20, 0x00, 0x20, 0x01, 0x20, 0x02, 0xFC, 0x0A, 0x00, 0x00, 0x20, 0x00, 0x0B });
@@ -521,28 +683,57 @@ public:
                 sliced = true;
             } else if (num_defined == 1) {
                 if (!code_bytes.empty()) {
+                    if (code_bytes[0] == 0x00 && code_bytes.size() > 1 &&
+                        (code_bytes[1] == 0x20 || code_bytes[1] == 0x41 || code_bytes[1] == 0x42 ||
+                         code_bytes[1] == 0x43 || code_bytes[1] == 0x44 || code_bytes[1] == 0x01 ||
+                         code_bytes[1] == 0x02 || code_bytes[1] == 0x03 || code_bytes[1] == 0x0B ||
+                         code_bytes[1] == 0x0F || code_bytes[1] == 0x10 || code_bytes[1] == 0x28 ||
+                         code_bytes[1] == 0x36)) {
+                        func_body.clear();
+                    } else if (code_bytes.size() >= 3 && code_bytes[0] == 0x01 && (code_bytes[2] == 0x7F || code_bytes[2] == 0x7E || code_bytes[2] == 0x7D || code_bytes[2] == 0x7C)) {
+                        func_body.clear();
+                    }
                     func_body.insert(func_body.end(), code_bytes.begin(), code_bytes.end());
                     sliced = true;
                 }
-            } else if (sym && sym->value < code_bytes.size()) {
-                size_t start = static_cast<size_t>(sym->value);
-                size_t len = 0;
-                if (sym->size > 0 && start + sym->size <= code_bytes.size()) {
-                    len = static_cast<size_t>(sym->size);
-                } else {
-                    size_t next_start = code_bytes.size();
-                    for (const auto& other_name : defined_functions) {
-                        if (const auto* other = obj.find_symbol(other_name)) {
-                            if (other->value > sym->value && other->value < next_start) {
-                                next_start = static_cast<size_t>(other->value);
+            } else if (sym) {
+                const size_t sec_off = (sym->section_index < section_code_offsets.size())
+                    ? section_code_offsets[sym->section_index]
+                    : 0;
+                const size_t start = sec_off + static_cast<size_t>(sym->value);
+                if (start < code_bytes.size()) {
+                    size_t len = 0;
+                    if (sym->size > 0 && start + sym->size <= code_bytes.size()) {
+                        len = static_cast<size_t>(sym->size);
+                    } else {
+                        size_t next_start = code_bytes.size();
+                        for (const auto& other_name : defined_functions) {
+                            if (const auto* other = obj.find_symbol(other_name)) {
+                                const size_t other_sec_off = (other->section_index < section_code_offsets.size())
+                                    ? section_code_offsets[other->section_index]
+                                    : 0;
+                                const size_t other_start = other_sec_off + static_cast<size_t>(other->value);
+                                if (other_start > start && other_start < next_start) {
+                                    next_start = other_start;
+                                }
                             }
                         }
+                        len = next_start - start;
                     }
-                    len = next_start - start;
-                }
-                if (len > 0) {
-                    func_body.insert(func_body.end(), code_bytes.begin() + start, code_bytes.begin() + start + len);
-                    sliced = true;
+                    if (len > 0) {
+                        const uint8_t* p = code_bytes.data() + start;
+                        if (p[0] == 0x00 && len > 1 &&
+                            (p[1] == 0x20 || p[1] == 0x41 || p[1] == 0x42 || p[1] == 0x43 ||
+                             p[1] == 0x44 || p[1] == 0x01 || p[1] == 0x02 || p[1] == 0x03 ||
+                             p[1] == 0x0B || p[1] == 0x0F || p[1] == 0x10 || p[1] == 0x28 ||
+                             p[1] == 0x36)) {
+                            func_body.clear();
+                        } else if (len >= 3 && p[0] == 0x01 && (p[2] == 0x7F || p[2] == 0x7E || p[2] == 0x7D || p[2] == 0x7C)) {
+                            func_body.clear();
+                        }
+                        func_body.insert(func_body.end(), code_bytes.begin() + start, code_bytes.begin() + start + len);
+                        sliced = true;
+                    }
                 }
             }
 
@@ -577,6 +768,32 @@ public:
             data_payload.insert(data_payload.end(), data_bytes.begin(), data_bytes.end());
 
             encode_section(out_bytes, kSectionData, data_payload);
+        }
+
+        // 14. Section 0: Custom Name Section (Standard WebAssembly Stack Tracing)
+        {
+            std::vector<uint8_t> name_sec_payload;
+            encode_string(name_sec_payload, "name");
+
+            // Subsection 1: Function names
+            std::vector<uint8_t> fn_names_payload;
+            const uint32_t total_named_funcs = static_cast<uint32_t>(imported_functions.size() + defined_functions.size());
+            encode_u32_leb(fn_names_payload, total_named_funcs);
+
+            for (uint32_t i = 0; i < imported_functions.size(); ++i) {
+                encode_u32_leb(fn_names_payload, i);
+                encode_string(fn_names_payload, imported_functions[i]);
+            }
+            for (uint32_t i = 0; i < defined_functions.size(); ++i) {
+                encode_u32_leb(fn_names_payload, static_cast<uint32_t>(imported_functions.size() + i));
+                encode_string(fn_names_payload, defined_functions[i]);
+            }
+
+            name_sec_payload.push_back(0x01); // Subsection ID 1: Function Names
+            encode_u32_leb(name_sec_payload, static_cast<uint32_t>(fn_names_payload.size()));
+            name_sec_payload.insert(name_sec_payload.end(), fn_names_payload.begin(), fn_names_payload.end());
+
+            encode_section(out_bytes, kSectionCustom, name_sec_payload);
         }
 
         return true;

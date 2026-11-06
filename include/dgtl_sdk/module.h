@@ -48,6 +48,34 @@ DGTL_NODISCARD DGTL_API dgtl_err_t DGTL_CALL dgtl_module_add_global_data(
     bool is_constant,
     dgtl_linkage_t linkage) DGTL_NOEXCEPT;
 
+/* Explicit Section Emission APIs */
+DGTL_NODISCARD DGTL_API dgtl_symbol_id_t DGTL_CALL dgtl_emit_rdata_cstring(
+    dgtl_module_t mod,
+    const char* str) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_symbol_id_t DGTL_CALL dgtl_emit_rdata_blob(
+    dgtl_module_t mod,
+    const char* symbol_name,
+    const uint8_t* data,
+    size_t size,
+    size_t alignment) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_symbol_id_t DGTL_CALL dgtl_emit_data_global(
+    dgtl_module_t mod,
+    const char* name,
+    const uint8_t* init_data,
+    size_t size,
+    size_t alignment,
+    bool is_constant,
+    dgtl_linkage_t linkage) DGTL_NOEXCEPT;
+
+DGTL_NODISCARD DGTL_API dgtl_symbol_id_t DGTL_CALL dgtl_emit_bss_global(
+    dgtl_module_t mod,
+    const char* name,
+    size_t size,
+    size_t alignment,
+    dgtl_linkage_t linkage) DGTL_NOEXCEPT;
+
 /* Whole-Module Codegen */
 DGTL_NODISCARD DGTL_API dgtl_object_t DGTL_CALL dgtl_module_compile_to_object(
     dgtl_module_t mod,

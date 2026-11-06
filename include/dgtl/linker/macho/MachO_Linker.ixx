@@ -23,6 +23,7 @@ module;
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_map>
 
 export module dgtl.linker.macho;
 
@@ -192,6 +193,28 @@ public:
         }
         if (name == "memmove" || name == "__memmove") {
             return { 0xE3, 0x03, 0x00, 0xAA, 0x82, 0x00, 0x00, 0xB4, 0x24, 0x14, 0x40, 0x38, 0x64, 0x14, 0x00, 0x38, 0x42, 0x04, 0x00, 0xF1, 0xAC, 0xFF, 0xFF, 0x54, 0xC0, 0x03, 0x5F, 0xD6 };
+        }
+        if (name == "__dgtl_rt_bits_to_f64" || name == "dgtl_rt_bits_to_f64" || name == "bits_to_f64") {
+            return { 0x00, 0x00, 0x67, 0x9E, 0xC0, 0x03, 0x5F, 0xD6 }; // fmov d0, x0; ret
+        }
+        if (name == "__dgtl_rt_f64_to_bits" || name == "dgtl_rt_f64_to_bits" || name == "f64_to_bits") {
+            return { 0x00, 0x00, 0x7E, 0x9E, 0xC0, 0x03, 0x5F, 0xD6 }; // fmov x0, d0; ret
+        }
+        if (name == "__dgtl_rt_fmod" || name == "dgtl_rt_fmod" || name == "fmod" || name == "fmodf") {
+            return { 0x02, 0x18, 0x61, 0x1E, 0x42, 0x58, 0x61, 0x1E, 0x02, 0x08, 0x61, 0x1E, 0x00, 0x38, 0x62, 0x1E, 0xC0, 0x03, 0x5F, 0xD6 };
+        }
+        if (name == "__dgtl_rt_i64_pow" || name == "__myzon_i64_pow" || name == "i64_pow" || name == "pow_bits") {
+            return {
+                0xE2, 0x03, 0x00, 0xAA, // mov x2, x0
+                0x20, 0x00, 0x80, 0xD2, // mov x0, #1
+                0x81, 0x00, 0x00, 0xB4, // cbz x1, .done (+16)
+                0x41, 0x00, 0x00, 0x36, // tbz x1, #0, .skip (+8)
+                0x00, 0x7C, 0x02, 0x9B, // mul x0, x0, x2
+                0x42, 0x7C, 0x02, 0x9B, // mul x2, x2, x2
+                0x21, 0x04, 0x41, 0xD3, // lsr x1, x1, #1
+                0xA1, 0xFF, 0xFF, 0x35, // cbnz x1, .loop (-12)
+                0xC0, 0x03, 0x5F, 0xD6  // ret
+            };
         }
         return {};
     }
@@ -378,6 +401,28 @@ public:
                 0xC3                                      // ret
             };
         }
+        if (name == "__dgtl_rt_bits_to_f64" || name == "dgtl_rt_bits_to_f64" || name == "bits_to_f64") {
+            return { 0x66, 0x48, 0x0F, 0x6E, 0xC7, 0xC3 }; // movq xmm0, rdi; ret
+        }
+        if (name == "__dgtl_rt_f64_to_bits" || name == "dgtl_rt_f64_to_bits" || name == "f64_to_bits") {
+            return { 0x66, 0x48, 0x0F, 0x7E, 0xC0, 0xC3 }; // movq rax, xmm0; ret
+        }
+        if (name == "__dgtl_rt_i64_pow" || name == "__myzon_i64_pow" || name == "i64_pow" || name == "pow_bits") {
+            return {
+                0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, // mov rax, 1
+                0x48, 0x85, 0xF6,                         // test rsi, rsi
+                0x74, 0x14,                               // jz .done (+20)
+                // .loop:
+                0x40, 0xF6, 0xC6, 0x01,                   // test sil, 1
+                0x74, 0x04,                               // jz .skip (+4)
+                0x48, 0x0F, 0xAF, 0xC7,                   // imul rax, rdi
+                // .skip:
+                0x48, 0x0F, 0xAF, 0xFF,                   // imul rdi, rdi
+                0x48, 0xD1, 0xEE,                         // shr rsi, 1
+                0x75, 0xEE,                               // jnz .loop (-18)
+                0xC3                                      // ret
+            };
+        }
         return {};
     }
 
@@ -388,11 +433,20 @@ public:
 
         out_bytes.clear();
 
-        // 1. Locate and consolidate code (.text)
+        // 1. Locate and consolidate code (.text, .text.*, __text)
         std::vector<uint8_t> code;
-        for (const auto& sec : obj.sections()) {
-            if (sec.is_code() || sec.name == ".text" || sec.name == "__text") {
-                while ((code.size() % 16) != 0) code.push_back(0x90);
+        std::vector<uint64_t> section_text_offsets(obj.sections().size(), 0);
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (sec.is_code() || sec.name == ".text" || sec.name == "__text" || sec.name.starts_with(".text.")) {
+                while ((code.size() % 16) != 0) {
+                    if (options.cpu_type == CPU_TYPE_ARM64_VAL) {
+                        code.insert(code.end(), { 0x1F, 0x20, 0x03, 0xD5 }); // nop
+                    } else {
+                        code.push_back(0x90);
+                    }
+                }
+                section_text_offsets[i] = code.size();
                 code.insert(code.end(), sec.bytes.begin(), sec.bytes.end());
             }
         }
@@ -463,59 +517,128 @@ public:
             }
         }
 
-        // 2. Locate and consolidate data (.data, .rodata, .bss)
-        std::vector<uint8_t> data;
+        // 2. Locate and consolidate data with strict W^X separation (__DATA_CONST & __DATA)
+        std::vector<uint8_t> const_data;
+        std::vector<uint8_t> mut_data;
+        struct SecDataOff {
+            uint32_t sec_index;
+            std::string name;
+            bool is_const;
+            uint64_t offset;
+        };
+        std::vector<SecDataOff> data_offsets;
         uint64_t total_bss_size = 0;
-        for (const auto& sec : obj.sections()) {
-            if (sec.is_code() || sec.name == ".text" || sec.name == "__text") continue;
+
+        for (size_t i = 0; i < obj.sections().size(); ++i) {
+            const auto& sec = obj.sections()[i];
+            if (sec.is_code() || sec.name == ".text" || sec.name == "__text" || sec.name.starts_with(".text.")) continue;
             if (sec.is_bss() || sec.name == ".bss" || sec.name == "__bss") {
                 total_bss_size += sec.bss_size;
             } else if (!sec.bytes.empty()) {
-                while ((data.size() % 16) != 0) data.push_back(0);
-                data.insert(data.end(), sec.bytes.begin(), sec.bytes.end());
+                const bool is_ro = (sec.name == ".rodata" || sec.name.starts_with(".rodata.") ||
+                                    sec.name == ".rdata" || sec.name.starts_with(".rdata.") ||
+                                    sec.name == "__const" || sec.name == "__cstring" ||
+                                    (!sec.is_writable() && !sec.is_bss()));
+                if (is_ro) {
+                    while ((const_data.size() % 16) != 0) const_data.push_back(0);
+                    data_offsets.push_back({static_cast<uint32_t>(i), sec.name, true, const_data.size()});
+                    const_data.insert(const_data.end(), sec.bytes.begin(), sec.bytes.end());
+                } else {
+                    while ((mut_data.size() % 16) != 0) mut_data.push_back(0);
+                    data_offsets.push_back({static_cast<uint32_t>(i), sec.name, false, mut_data.size()});
+                    mut_data.insert(mut_data.end(), sec.bytes.begin(), sec.bytes.end());
+                }
             }
         }
 
         const uint64_t kPageSize = options.page_size;
         const uint64_t kHeadersSize = kPageSize; // Headers padded to page boundary
 
-        // Compute offsets and virtual addresses
+        // Compute segment offsets and virtual addresses
+        // __TEXT segment (headers + code)
         const uint64_t text_file_off = kHeadersSize;
         const uint64_t text_vmaddr   = options.image_base;
         const uint64_t text_vmsize   = ((kHeadersSize + code.size() + (kPageSize - 1)) & ~(kPageSize - 1));
         const uint64_t text_filesize = text_vmsize;
 
-        const bool has_data = (!data.empty() || total_bss_size > 0);
-        const uint64_t data_file_off = text_file_off + text_filesize;
-        const uint64_t data_vmaddr   = text_vmaddr + text_vmsize;
-        const uint64_t data_vmsize   = has_data ? ((data.size() + total_bss_size + (kPageSize - 1)) & ~(kPageSize - 1)) : 0;
-        const uint64_t data_filesize = has_data ? ((data.size() + (kPageSize - 1)) & ~(kPageSize - 1)) : 0;
+        // __DATA_CONST segment (read-only constants & strings)
+        const bool has_const_data = !const_data.empty();
+        const uint64_t const_data_file_off = text_filesize;
+        const uint64_t const_data_vmaddr   = text_vmaddr + text_vmsize;
+        const uint64_t const_data_filesize = has_const_data ? ((const_data.size() + (kPageSize - 1)) & ~(kPageSize - 1)) : 0;
+        const uint64_t const_data_vmsize   = const_data_filesize;
 
-        const uint64_t linkedit_file_off = data_file_off + data_filesize;
-        const uint64_t linkedit_vmaddr   = data_vmaddr + data_vmsize;
+        // __DATA segment (mutable data and BSS)
+        const bool has_mut_data = (!mut_data.empty() || total_bss_size > 0);
+        const uint64_t mut_data_file_off = has_const_data ? (const_data_file_off + const_data_filesize) : text_filesize;
+        const uint64_t mut_data_vmaddr   = has_const_data ? (const_data_vmaddr + const_data_vmsize) : (text_vmaddr + text_vmsize);
+        const uint64_t mut_data_filesize = has_mut_data ? ((mut_data.size() + (kPageSize - 1)) & ~(kPageSize - 1)) : 0;
+        const uint64_t mut_data_vmsize   = has_mut_data ? ((mut_data.size() + total_bss_size + (kPageSize - 1)) & ~(kPageSize - 1)) : 0;
+
+        // __LINKEDIT segment (symbol table, string table, code signature)
+        const uint64_t linkedit_file_off = has_mut_data ? (mut_data_file_off + mut_data_filesize) : (has_const_data ? (const_data_file_off + const_data_filesize) : text_filesize);
+        const uint64_t linkedit_vmaddr   = has_mut_data ? (mut_data_vmaddr + mut_data_vmsize) : (has_const_data ? (const_data_vmaddr + const_data_vmsize) : (text_vmaddr + text_vmsize));
 
         // Entry point offset within __text
         uint64_t entry_offset = 0;
-        if (const auto* sym = obj.find_symbol(options.entry_symbol)) {
-            entry_offset = sym->value;
-        } else if (const auto* sym1 = obj.find_symbol("_" + options.entry_symbol)) {
-            entry_offset = sym1->value;
-        } else if (const auto* sym2 = obj.find_symbol("DGTL_kernel_entry")) {
-            entry_offset = sym2->value;
-        } else if (const auto* sym3 = obj.find_symbol("_DGTL_kernel_entry")) {
-            entry_offset = sym3->value;
-        } else if (const auto* sym4 = obj.find_symbol("main")) {
-            entry_offset = sym4->value;
-        } else if (const auto* sym5 = obj.find_symbol("_main")) {
-            entry_offset = sym5->value;
+        auto find_entry = [&](const std::string& name) -> const dgtl::object::Symbol* {
+            return obj.find_symbol(name);
+        };
+        const dgtl::object::Symbol* entry_sym = find_entry(options.entry_symbol);
+        if (!entry_sym) entry_sym = find_entry("_" + options.entry_symbol);
+        if (!entry_sym) entry_sym = find_entry("DGTL_kernel_entry");
+        if (!entry_sym) entry_sym = find_entry("_DGTL_kernel_entry");
+        if (!entry_sym) entry_sym = find_entry("main");
+        if (!entry_sym) entry_sym = find_entry("_main");
+
+        if (entry_sym) {
+            if (entry_sym->section_index < section_text_offsets.size()) {
+                entry_offset = section_text_offsets[entry_sym->section_index] + entry_sym->value;
+            } else {
+                entry_offset = entry_sym->value;
+            }
+        }
+
+        // Map data symbols to exact virtual addresses
+        std::unordered_map<std::string, uint64_t> data_symbol_addresses;
+        for (const auto& sym : obj.symbols()) {
+            if (!sym.is_defined() || sym.section_index >= obj.sections().size()) continue;
+            const auto& sec = obj.sections()[sym.section_index];
+            if (sec.is_code() || sec.name == ".text" || sec.name == "__text" || sec.name.starts_with(".text.")) continue;
+            for (const auto& item : data_offsets) {
+                if (item.sec_index == sym.section_index || item.name == sec.name) {
+                    const uint64_t base_addr = item.is_const ? const_data_vmaddr : mut_data_vmaddr;
+                    data_symbol_addresses[sym.name] = base_addr + item.offset + sym.value;
+                    break;
+                }
+            }
         }
 
         // Apply relocations
         for (const auto& rel : obj.relocations()) {
             if (rel.symbol_name.empty()) continue;
             uint64_t target_addr = 0;
-            if (const auto* target_sym = obj.find_symbol(rel.symbol_name); target_sym && target_sym->is_defined()) {
-                target_addr = text_vmaddr + text_file_off + target_sym->value;
+
+            auto it_data = data_symbol_addresses.find(rel.symbol_name);
+            if (it_data != data_symbol_addresses.end()) {
+                target_addr = it_data->second;
+            } else if (const auto* target_sym = obj.find_symbol(rel.symbol_name); target_sym && target_sym->is_defined()) {
+                if (target_sym->section_index < obj.sections().size()) {
+                    const auto& sec = obj.sections()[target_sym->section_index];
+                    if (sec.is_code() || sec.name == ".text" || sec.name == "__text" || sec.name.starts_with(".text.")) {
+                        target_addr = text_vmaddr + text_file_off + section_text_offsets[target_sym->section_index] + target_sym->value;
+                    } else {
+                        for (const auto& item : data_offsets) {
+                            if (item.sec_index == target_sym->section_index || item.name == sec.name) {
+                                const uint64_t base_addr = item.is_const ? const_data_vmaddr : mut_data_vmaddr;
+                                target_addr = base_addr + item.offset + target_sym->value;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    target_addr = text_vmaddr + text_file_off + target_sym->value;
+                }
             } else {
                 for (const auto& synth : synthesized_intrinsics) {
                     if (synth.name == rel.symbol_name) {
@@ -546,8 +669,6 @@ public:
                     std::string_view stripped = rel.symbol_name;
                     if (stripped.starts_with("__dgtl_rt_")) stripped.remove_prefix(10);
                     else if (stripped.starts_with("dgtl_rt_")) stripped.remove_prefix(8);
-                    else if (stripped.starts_with("__myzon_")) stripped.remove_prefix(8);
-                    else if (stripped.starts_with("myzon_")) stripped.remove_prefix(6);
                     else if (stripped.starts_with("__")) stripped.remove_prefix(2);
                     else if (stripped.starts_with("_")) stripped.remove_prefix(1);
                     if (stripped != rel.symbol_name) {
@@ -556,9 +677,7 @@ public:
                             "_" + std::string(stripped),
                             "__" + std::string(stripped),
                             "__dgtl_rt_" + std::string(stripped),
-                            "dgtl_rt_" + std::string(stripped),
-                            "__myzon_" + std::string(stripped),
-                            "myzon_" + std::string(stripped)
+                            "dgtl_rt_" + std::string(stripped)
                         };
                         for (const auto& cand : candidates) {
                             if (const auto* c_sym = obj.find_symbol(cand); c_sym && c_sym->is_defined()) {
@@ -581,64 +700,150 @@ public:
                         target_addr = builtin_addr;
                     }
                 }
+                if (target_addr == 0 && (rel.symbol_name.starts_with("__str_") || rel.symbol_name.starts_with(".rdata") || rel.symbol_name.starts_with("__const"))) {
+                    uint64_t eff_val = 0;
+                    if (rel.symbol_name.starts_with("__str_")) {
+                        try {
+                            eff_val = std::stoull(rel.symbol_name.substr(6));
+                        } catch (...) {}
+                    }
+                    if (has_const_data) {
+                        target_addr = const_data_vmaddr + eff_val;
+                    } else if (has_mut_data) {
+                        target_addr = mut_data_vmaddr + eff_val;
+                    }
+                }
             }
+
+            const uint64_t rel_code_offset = (rel.section_index < section_text_offsets.size())
+                ? (section_text_offsets[rel.section_index] + rel.offset)
+                : rel.offset;
+
             if (target_addr != 0) {
-                const uint64_t pc = text_vmaddr + text_file_off + rel.offset;
+                const uint64_t pc = text_vmaddr + text_file_off + rel_code_offset;
                 if (rel.kind == dgtl::object::RelocationKind::Call26 || rel.kind == dgtl::object::RelocationKind::Branch26) {
-                    if (rel.offset + 4 <= code.size()) {
-                        dgtl::object::RelocationApplier::apply_branch26_arm64(code.data() + rel.offset, pc, target_addr);
+                    if (rel_code_offset + 4 <= code.size()) {
+                        dgtl::object::RelocationApplier::apply_branch26_arm64(code.data() + rel_code_offset, pc, target_addr);
                     }
                 } else if (rel.kind == dgtl::object::RelocationKind::PCRel32) {
-                    if (rel.offset + 4 <= code.size()) {
-                        dgtl::object::RelocationApplier::apply_pc32(code.data() + rel.offset, pc, target_addr, rel.addend);
+                    if (rel_code_offset + 4 <= code.size()) {
+                        dgtl::object::RelocationApplier::apply_pc32(code.data() + rel_code_offset, pc, target_addr, rel.addend);
                     }
                 }
             } else {
                 if (rel.kind == dgtl::object::RelocationKind::PCRel32) {
-                    if (rel.offset > 0 && rel.offset + 4 <= code.size() && code[rel.offset - 1] == 0xE8) {
-                        code[rel.offset - 1] = 0x0F;
-                        code[rel.offset]     = 0x1F;
-                        code[rel.offset + 1] = 0x44;
-                        code[rel.offset + 2] = 0x00;
-                        code[rel.offset + 3] = 0x00;
+                    if (rel_code_offset > 0 && rel_code_offset + 4 <= code.size() && code[rel_code_offset - 1] == 0xE8) {
+                        code[rel_code_offset - 1] = 0x0F;
+                        code[rel_code_offset]     = 0x1F;
+                        code[rel_code_offset + 1] = 0x44;
+                        code[rel_code_offset + 2] = 0x00;
+                        code[rel_code_offset + 3] = 0x00;
+                    }
+                } else if (rel.kind == dgtl::object::RelocationKind::Call26 || rel.kind == dgtl::object::RelocationKind::Branch26) {
+                    if (rel_code_offset + 4 <= code.size()) {
+                        code[rel_code_offset]     = 0x1F;
+                        code[rel_code_offset + 1] = 0x20;
+                        code[rel_code_offset + 2] = 0x03;
+                        code[rel_code_offset + 3] = 0xD5;
                     }
                 }
             }
         }
 
-        // 3. Prepare Load Commands
-        // Segment 0: __PAGEZERO (4GB)
+        // 3. Build Symbol Table and String Table for LC_SYMTAB
+        std::vector<Nlist64> symtab;
+        std::vector<char> strtab;
+        strtab.push_back('\0'); // Index 0 is always null byte
+
+        auto add_string = [&](std::string_view s) -> uint32_t {
+            if (s.empty()) return 0;
+            const uint32_t off = static_cast<uint32_t>(strtab.size());
+            strtab.insert(strtab.end(), s.begin(), s.end());
+            strtab.push_back('\0');
+            return off;
+        };
+
+        const uint8_t text_sect_id  = 1;
+        const uint8_t const_sect_id = has_const_data ? 2 : 0;
+        const uint8_t data_sect_id  = has_mut_data ? (has_const_data ? 3 : 2) : 0;
+
+        for (const auto& sym : obj.symbols()) {
+            if (!sym.is_defined() || sym.name.empty()) continue;
+
+            Nlist64 nl{};
+            nl.n_strx = add_string(sym.name);
+            nl.n_type = N_SECT_TYPE | (sym.is_global() ? N_EXT_FLAG : 0);
+            nl.n_desc = 0;
+
+            if (sym.section_index < obj.sections().size()) {
+                const auto& sec = obj.sections()[sym.section_index];
+                if (sec.is_code() || sec.name == ".text" || sec.name == "__text" || sec.name.starts_with(".text.")) {
+                    nl.n_sect  = text_sect_id;
+                    nl.n_value = text_vmaddr + text_file_off + section_text_offsets[sym.section_index] + sym.value;
+                } else {
+                    bool found = false;
+                    for (const auto& item : data_offsets) {
+                        if (item.sec_index == sym.section_index || item.name == sec.name) {
+                            nl.n_sect  = item.is_const ? const_sect_id : data_sect_id;
+                            const uint64_t base_addr = item.is_const ? const_data_vmaddr : mut_data_vmaddr;
+                            nl.n_value = base_addr + item.offset + sym.value;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        nl.n_sect  = data_sect_id ? data_sect_id : text_sect_id;
+                        nl.n_value = mut_data_vmaddr + sym.value;
+                    }
+                }
+            } else {
+                nl.n_sect  = text_sect_id;
+                nl.n_value = text_vmaddr + text_file_off + sym.value;
+            }
+            symtab.push_back(nl);
+        }
+
+        for (const auto& synth : synthesized_intrinsics) {
+            Nlist64 nl{};
+            nl.n_strx = add_string(synth.name);
+            nl.n_type = N_SECT_TYPE | N_EXT_FLAG;
+            nl.n_sect = text_sect_id;
+            nl.n_desc = 0;
+            nl.n_value = text_vmaddr + text_file_off + synth.text_offset;
+            symtab.push_back(nl);
+        }
+
+        while ((strtab.size() % 16) != 0) strtab.push_back('\0');
+
+        // 4. Prepare Load Commands
         const uint32_t seg_pagezero_size = sizeof(SegmentCommand64);
-        // Segment 1: __TEXT (headers + code)
         const uint32_t seg_text_size = sizeof(SegmentCommand64) + sizeof(Section64);
-        // Segment 2: __DATA (optional)
-        const uint32_t seg_data_size = has_data ? (sizeof(SegmentCommand64) + sizeof(Section64)) : 0;
-        // Segment 3: __LINKEDIT
+        const uint32_t seg_const_data_size = has_const_data ? (sizeof(SegmentCommand64) + sizeof(Section64)) : 0;
+        const uint32_t seg_data_size = has_mut_data ? (sizeof(SegmentCommand64) + sizeof(Section64)) : 0;
         const uint32_t seg_linkedit_size = sizeof(SegmentCommand64);
 
-        // LC_LOAD_DYLINKER
         const uint32_t dylinker_name_padded = ((static_cast<uint32_t>(options.dylinker.size() + 1) + 7) & ~7);
         const uint32_t lc_dylinker_size = sizeof(DylinkerCommand) + dylinker_name_padded;
 
-        // LC_LOAD_DYLIB
         const uint32_t dylib_name_padded = ((static_cast<uint32_t>(options.default_dylib.size() + 1) + 7) & ~7);
         const uint32_t lc_dylib_size = sizeof(DylibCommand) + dylib_name_padded;
 
-        // LC_MAIN
-        const uint32_t lc_main_size = sizeof(EntrypointCommand); // 24 bytes
+        const uint32_t lc_main_size = sizeof(EntrypointCommand);
+        const uint32_t lc_symtab_size = sizeof(SymtabCommand);
+        const uint32_t lc_codesign_size = options.emit_ad_hoc_signature ? sizeof(LinkeditDataCommand) : 0;
 
-        // LC_SYMTAB
-        const uint32_t lc_symtab_size = sizeof(SymtabCommand); // 24 bytes
+        const uint32_t ncmds = 6 + (has_const_data ? 1 : 0) + (has_mut_data ? 1 : 0) + (options.emit_ad_hoc_signature ? 1 : 0);
+        const uint32_t sizeofcmds = seg_pagezero_size + seg_text_size + seg_const_data_size + seg_data_size + seg_linkedit_size +
+                                    lc_dylinker_size + lc_dylib_size + lc_main_size + lc_symtab_size + lc_codesign_size;
 
-        // LC_CODE_SIGNATURE
-        const uint32_t lc_codesign_size = options.emit_ad_hoc_signature ? sizeof(LinkeditDataCommand) : 0; // 16 bytes
+        const uint64_t symoff  = linkedit_file_off;
+        const uint32_t nsyms   = static_cast<uint32_t>(symtab.size());
+        const uint64_t stroff  = symoff + nsyms * sizeof(Nlist64);
+        const uint32_t strsize = static_cast<uint32_t>(strtab.size());
+        const uint64_t linkedit_table_end = stroff + strsize;
 
-        uint32_t ncmds = 6 + (has_data ? 1 : 0) + (options.emit_ad_hoc_signature ? 1 : 0);
-        uint32_t sizeofcmds = seg_pagezero_size + seg_text_size + seg_data_size + seg_linkedit_size +
-                              lc_dylinker_size + lc_dylib_size + lc_main_size + lc_symtab_size + lc_codesign_size;
-
-        // Reserve entire executable buffer
-        const uint64_t initial_file_size = linkedit_file_off;
+        // Reserve executable buffer for headers, code, data, and symtab
+        const uint64_t initial_file_size = linkedit_table_end;
         out_bytes.assign(initial_file_size, 0);
 
         auto write_u32 = [&](size_t off, uint32_t val) {
@@ -704,26 +909,53 @@ public:
         write_u32(sec_text_off + 64, S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
         cmd_off += seg_text_size;
 
-        // Command 3: __DATA (optional)
-        if (has_data) {
+        // Command 3: __DATA_CONST (read-only constants/strings)
+        if (has_const_data) {
+            write_u32(cmd_off + 0,  LC_SEGMENT_64_CMD);
+            write_u32(cmd_off + 4,  seg_const_data_size);
+            write_string_padded(cmd_off + 8, "__DATA_CONST", 16);
+            write_u64(cmd_off + 24, const_data_vmaddr);
+            write_u64(cmd_off + 32, const_data_vmsize);
+            write_u64(cmd_off + 40, const_data_file_off);
+            write_u64(cmd_off + 48, const_data_filesize);
+            write_u32(cmd_off + 56, 3); // maxprot = R
+            write_u32(cmd_off + 60, 1); // initprot = R
+            write_u32(cmd_off + 64, 1); // nsects = 1 (__const)
+            write_u32(cmd_off + 68, 0);
+
+            const size_t sec_const_off = cmd_off + sizeof(SegmentCommand64);
+            write_string_padded(sec_const_off + 0,  "__const", 16);
+            write_string_padded(sec_const_off + 16, "__DATA_CONST", 16);
+            write_u64(sec_const_off + 32, const_data_vmaddr);
+            write_u64(sec_const_off + 40, const_data.size());
+            write_u32(sec_const_off + 48, static_cast<uint32_t>(const_data_file_off));
+            write_u32(sec_const_off + 52, 4);
+            write_u32(sec_const_off + 56, 0);
+            write_u32(sec_const_off + 60, 0);
+            write_u32(sec_const_off + 64, 0);
+            cmd_off += seg_const_data_size;
+        }
+
+        // Command 4: __DATA (mutable data and BSS)
+        if (has_mut_data) {
             write_u32(cmd_off + 0,  LC_SEGMENT_64_CMD);
             write_u32(cmd_off + 4,  seg_data_size);
             write_string_padded(cmd_off + 8, "__DATA", 16);
-            write_u64(cmd_off + 24, data_vmaddr);
-            write_u64(cmd_off + 32, data_vmsize);
-            write_u64(cmd_off + 40, data_file_off);
-            write_u64(cmd_off + 48, data_filesize);
+            write_u64(cmd_off + 24, mut_data_vmaddr);
+            write_u64(cmd_off + 32, mut_data_vmsize);
+            write_u64(cmd_off + 40, mut_data_file_off);
+            write_u64(cmd_off + 48, mut_data_filesize);
             write_u32(cmd_off + 56, 3); // maxprot = R+W
             write_u32(cmd_off + 60, 3); // initprot = R+W
             write_u32(cmd_off + 64, 1); // nsects = 1 (__data)
-            write_u32(cmd_off + 68, 0); // flags
+            write_u32(cmd_off + 68, 0);
 
             const size_t sec_data_off = cmd_off + sizeof(SegmentCommand64);
             write_string_padded(sec_data_off + 0,  "__data", 16);
             write_string_padded(sec_data_off + 16, "__DATA", 16);
-            write_u64(sec_data_off + 32, data_vmaddr);
-            write_u64(sec_data_off + 40, data.size());
-            write_u32(sec_data_off + 48, static_cast<uint32_t>(data_file_off));
+            write_u64(sec_data_off + 32, mut_data_vmaddr);
+            write_u64(sec_data_off + 40, mut_data.size());
+            write_u32(sec_data_off + 48, static_cast<uint32_t>(mut_data_file_off));
             write_u32(sec_data_off + 52, 4);
             write_u32(sec_data_off + 56, 0);
             write_u32(sec_data_off + 60, 0);
@@ -731,7 +963,7 @@ public:
             cmd_off += seg_data_size;
         }
 
-        // Command 4: __LINKEDIT
+        // Command 5: __LINKEDIT
         const size_t linkedit_cmd_off = cmd_off;
         write_u32(cmd_off + 0,  LC_SEGMENT_64_CMD);
         write_u32(cmd_off + 4,  seg_linkedit_size);
@@ -746,14 +978,14 @@ public:
         write_u32(cmd_off + 68, 0);
         cmd_off += seg_linkedit_size;
 
-        // Command 5: LC_LOAD_DYLINKER
+        // Command 6: LC_LOAD_DYLINKER
         write_u32(cmd_off + 0, LC_LOAD_DYLINKER_CMD);
         write_u32(cmd_off + 4, lc_dylinker_size);
         write_u32(cmd_off + 8, sizeof(DylinkerCommand)); // name offset
         write_string_padded(cmd_off + sizeof(DylinkerCommand), options.dylinker, dylinker_name_padded);
         cmd_off += lc_dylinker_size;
 
-        // Command 6: LC_LOAD_DYLIB
+        // Command 7: LC_LOAD_DYLIB
         write_u32(cmd_off + 0,  LC_LOAD_DYLIB_CMD);
         write_u32(cmd_off + 4,  lc_dylib_size);
         write_u32(cmd_off + 8,  sizeof(DylibCommand));
@@ -763,24 +995,24 @@ public:
         write_string_padded(cmd_off + sizeof(DylibCommand), options.default_dylib, dylib_name_padded);
         cmd_off += lc_dylib_size;
 
-        // Command 7: LC_MAIN
+        // Command 8: LC_MAIN
         write_u32(cmd_off + 0,  LC_MAIN_CMD);
         write_u32(cmd_off + 4,  lc_main_size);
         write_u64(cmd_off + 8,  text_file_off + entry_offset); // entryoff
         write_u64(cmd_off + 16, 0);                            // stacksize
         cmd_off += lc_main_size;
 
-        // Command 8: LC_SYMTAB
+        // Command 9: LC_SYMTAB
         const size_t symtab_cmd_off = cmd_off;
         write_u32(cmd_off + 0,  LC_SYMTAB_CMD);
         write_u32(cmd_off + 4,  lc_symtab_size);
-        write_u32(cmd_off + 8,  static_cast<uint32_t>(linkedit_file_off)); // symoff
-        write_u32(cmd_off + 12, 0); // nsyms
-        write_u32(cmd_off + 16, static_cast<uint32_t>(linkedit_file_off)); // stroff
-        write_u32(cmd_off + 20, 0); // strsize
+        write_u32(cmd_off + 8,  static_cast<uint32_t>(symoff));  // symoff
+        write_u32(cmd_off + 12, nsyms);                         // nsyms
+        write_u32(cmd_off + 16, static_cast<uint32_t>(stroff));  // stroff
+        write_u32(cmd_off + 20, strsize);                        // strsize
         cmd_off += lc_symtab_size;
 
-        // Command 9: LC_CODE_SIGNATURE (optional)
+        // Command 10: LC_CODE_SIGNATURE (optional)
         size_t codesign_cmd_off = 0;
         if (options.emit_ad_hoc_signature) {
             codesign_cmd_off = cmd_off;
@@ -793,12 +1025,28 @@ public:
 
         // Copy code and data into position
         std::copy(code.begin(), code.end(), out_bytes.begin() + text_file_off);
-        if (has_data && !data.empty()) {
-            std::copy(data.begin(), data.end(), out_bytes.begin() + data_file_off);
+        if (has_const_data && !const_data.empty()) {
+            std::copy(const_data.begin(), const_data.end(), out_bytes.begin() + const_data_file_off);
+        }
+        if (has_mut_data && !mut_data.empty()) {
+            std::copy(mut_data.begin(), mut_data.end(), out_bytes.begin() + mut_data_file_off);
         }
 
-        // 4. In-Memory Sovereign Code Signing (Apple Silicon Ad-Hoc SuperBlob)
+        // Copy symbol table and string table into position in __LINKEDIT
+        if (!symtab.empty()) {
+            std::memcpy(out_bytes.data() + symoff, symtab.data(), symtab.size() * sizeof(Nlist64));
+        }
+        if (!strtab.empty()) {
+            std::memcpy(out_bytes.data() + stroff, strtab.data(), strtab.size());
+        }
+
+        // 5. In-Memory Sovereign Code Signing (Apple Silicon Ad-Hoc SuperBlob)
         if (options.emit_ad_hoc_signature) {
+            // Align signature start offset to 16 bytes
+            while ((out_bytes.size() % 16) != 0) {
+                out_bytes.push_back(0);
+            }
+
             const size_t binary_data_size = out_bytes.size();
             const uint32_t page_count = static_cast<uint32_t>((binary_data_size + 4095) / 4096);
 
@@ -875,7 +1123,7 @@ public:
 
             superblob.insert(superblob.end(), cd.begin(), cd.end());
 
-            // Append SuperBlob to out_bytes (at linkedit_file_off)
+            // Append SuperBlob to out_bytes
             const uint64_t sig_data_off = out_bytes.size();
             out_bytes.insert(out_bytes.end(), superblob.begin(), superblob.end());
             const uint64_t sig_data_size = superblob.size();
@@ -890,6 +1138,15 @@ public:
             write_u32(codesign_cmd_off + 12, static_cast<uint32_t>(sig_data_size));
 
             // Update __LINKEDIT segment command
+            const uint64_t linkedit_filesize = out_bytes.size() - linkedit_file_off;
+            const uint64_t linkedit_vmsize   = (linkedit_filesize + (kPageSize - 1)) & ~(kPageSize - 1);
+            write_u64(linkedit_cmd_off + 32, linkedit_vmsize);
+            write_u64(linkedit_cmd_off + 48, linkedit_filesize);
+        } else {
+            // Align total file size to page boundary
+            while ((out_bytes.size() % kPageSize) != 0) {
+                out_bytes.push_back(0);
+            }
             const uint64_t linkedit_filesize = out_bytes.size() - linkedit_file_off;
             const uint64_t linkedit_vmsize   = (linkedit_filesize + (kPageSize - 1)) & ~(kPageSize - 1);
             write_u64(linkedit_cmd_off + 32, linkedit_vmsize);

@@ -215,7 +215,7 @@ enum class MachineSemanticKind : std::uint16_t {
 
 namespace generated {
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
 template <typename TargetForm>
 [[nodiscard]] constexpr MachineForm canonicalize_machine_form(TargetForm form) noexcept {
     static_assert(std::is_enum_v<TargetForm>);

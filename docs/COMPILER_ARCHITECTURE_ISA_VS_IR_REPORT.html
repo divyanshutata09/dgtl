@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DGTL Architectural Whitepaper: Hardware ISA Reality vs. IR Opcode Design</title>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #121826;
+            --bg-card: #182234;
+            --bg-hover: #1f2c42;
+            --border: #223249;
+            --border-highlight: #3b82f6;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-cyan: #06b6d4;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --glow-blue: rgba(59, 130, 246, 0.25);
+            --glow-cyan: rgba(6, 182, 212, 0.25);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.75;
+            padding: 2.5rem 1.5rem;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        /* Header Styling */
+        header {
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.9) 100%);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 3rem 2.5rem;
+            margin-bottom: 2.5rem;
+            box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5), 0 0 30px var(--glow-blue);
+            position: relative;
+            overflow: hidden;
+        }
+
+        header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue), var(--accent-purple), var(--accent-emerald));
+        }
+
+        .badge-bar {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            padding: 0.35rem 0.85rem;
+            border-radius: 9999px;
+            border: 1px solid transparent;
+        }
+
+        .badge-cyan { background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.3); }
+        .badge-purple { background: rgba(139, 92, 246, 0.15); color: var(--accent-purple); border-color: rgba(139, 92, 246, 0.3); }
+        .badge-emerald { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.3); }
+        .badge-amber { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border-color: rgba(245, 158, 11, 0.3); }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            background: linear-gradient(90deg, #ffffff 0%, #cbd5e1 50%, var(--accent-cyan) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1rem;
+        }
+
+        .header-desc {
+            font-size: 1.15rem;
+            color: var(--text-secondary);
+            max-width: 950px;
+            text-align: justify;
+            text-justify: inter-word;
+        }
+
+        /* Verdict Banner */
+        .verdict-banner {
+            background: linear-gradient(90deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 182, 212, 0.08) 100%);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-left: 6px solid var(--accent-emerald);
+            border-radius: 12px;
+            padding: 1.75rem 2rem;
+            margin-bottom: 2.5rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 1.5rem;
+        }
+
+        .verdict-icon {
+            font-size: 2.5rem;
+            line-height: 1;
+        }
+
+        .verdict-content h2 {
+            font-size: 1.4rem;
+            color: var(--accent-emerald);
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+        }
+
+        .verdict-content p {
+            color: var(--text-primary);
+            text-align: justify;
+            text-justify: inter-word;
+        }
+
+        /* Dynamic Interactive Tabs */
+        .tabs-header {
+            display: flex;
+            gap: 0.5rem;
+            border-bottom: 2px solid var(--border);
+            margin-bottom: 2rem;
+            overflow-x: auto;
+            padding-bottom: 0.25rem;
+        }
+
+        .tab-btn {
+            background: transparent;
+            color: var(--text-secondary);
+            border: none;
+            padding: 0.85rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 8px 8px 0 0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+        }
+
+        .tab-btn.active {
+            color: var(--accent-cyan);
+            background: var(--bg-secondary);
+            border-bottom: 3px solid var(--accent-cyan);
+        }
+
+        .tab-pane {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Content Sections */
+        .section-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2.25rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.2s ease;
+        }
+
+        .section-card:hover {
+            border-color: rgba(59, 130, 246, 0.4);
+        }
+
+        .section-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: #ffffff;
+        }
+
+        .section-title .indicator {
+            width: 10px;
+            height: 24px;
+            border-radius: 4px;
+        }
+
+        p, li {
+            text-align: justify;
+            text-justify: inter-word;
+            color: #cbd5e1;
+            font-size: 1.02rem;
+            margin-bottom: 1rem;
+        }
+
+        ul {
+            padding-left: 1.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        li {
+            margin-bottom: 0.75rem;
+        }
+
+        /* Data Tables */
+        .table-responsive {
+            overflow-x: auto;
+            margin: 1.5rem 0;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95rem;
+            text-align: left;
+        }
+
+        th {
+            background: var(--bg-card);
+            color: #f8fafc;
+            padding: 1rem 1.25rem;
+            font-weight: 700;
+            border-bottom: 2px solid var(--border);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.82rem;
+        }
+
+        td {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            color: #cbd5e1;
+            vertical-align: top;
+            text-align: justify;
+            text-justify: inter-word;
+        }
+
+        tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.015);
+        }
+
+        tr:hover td {
+            background: var(--bg-hover);
+        }
+
+        .mono {
+            font-family: 'Cascadia Code', 'Fira Code', Consolas, Monaco, monospace;
+            background: rgba(0, 0, 0, 0.35);
+            padding: 0.2rem 0.45rem;
+            border-radius: 5px;
+            font-size: 0.88em;
+            color: var(--accent-cyan);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* Callout Boxes */
+        .callout {
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border-left: 5px solid;
+            background: var(--bg-card);
+        }
+
+        .callout-amber {
+            border-color: var(--accent-amber);
+            background: rgba(245, 158, 11, 0.06);
+        }
+
+        .callout-rose {
+            border-color: var(--accent-rose);
+            background: rgba(244, 63, 94, 0.06);
+        }
+
+        .callout-cyan {
+            border-color: var(--accent-cyan);
+            background: rgba(6, 182, 212, 0.06);
+        }
+
+        .callout h4 {
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .callout-amber h4 { color: var(--accent-amber); }
+        .callout-rose h4 { color: var(--accent-rose); }
+        .callout-cyan h4 { color: var(--accent-cyan); }
+
+        /* Pipeline Visualizer */
+        .pipeline-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1.25rem;
+            margin: 2rem 0;
+        }
+
+        .pipeline-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            position: relative;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .pipeline-box:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px -8px var(--glow-blue);
+            border-color: var(--accent-blue);
+        }
+
+        .pipeline-tag {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            font-weight: 800;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            display: inline-block;
+            margin-bottom: 0.75rem;
+        }
+
+        .pipeline-box h3 {
+            font-size: 1.15rem;
+            margin-bottom: 0.5rem;
+            color: #ffffff;
+        }
+
+        .pipeline-box p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        /* Footer */
+        footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .highlight-bold {
+            font-weight: 700;
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div class="badge-bar">
+            <span class="badge badge-cyan">Compiler Engineering</span>
+            <span class="badge badge-purple">DGTL v2.1 Sovereign</span>
+            <span class="badge badge-emerald">Industry Verified</span>
+            <span class="badge badge-amber">Hardware ISA Conformance</span>
+        </div>
+        <h1>The Architecture of Sovereign Computation</h1>
+        <p class="header-desc">
+            An authoritative technical treatise on Intermediate Representation (IR) design, Silicon ISA boundaries, 
+            and runtime intrinsic specialization. Examining why production compilers—from LLVM, GCC, and CUDA to 
+            DGTL—strictly preserve clean separation between elementary machine opcodes and high-order library intrinsics.
+        </p>
+    </header>
+
+    <!-- Verdict Banner -->
+    <div class="verdict-banner">
+        <div class="verdict-icon">🛡️</div>
+        <div class="verdict-content">
+            <h2>Architectural Verdict: 100% Industry-Grade Standard</h2>
+            <p>
+                In high-velocity compiler design, reserving first-class IR opcodes strictly for hardware-mappable instructions 
+                and optimizable/fusible graph patterns while routing high-order transcendentals (Bessel functions, Gamma distributions, 
+                and Gaussian CDFs) through sovereign runtime intrinsics via <span class="mono">DGTL_OP_CALL</span> is the undisputed industry gold standard. 
+                Any alternative approach represents an anti-pattern that causes opcode table bloat, breaks compiler phase separation, and introduces dead-weight ISel lowering code.
+            </p>
+        </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="tabs-header">
+        <button class="tab-btn active" onclick="switchTab('tab-silicon')">1. Hardware Silicon Reality</button>
+        <button class="tab-btn" onclick="switchTab('tab-industry')">2. Global Compilers (LLVM/CUDA/GCC)</button>
+        <button class="tab-btn" onclick="switchTab('tab-antipattern')">3. The 3 Architectural Sins</button>
+        <button class="tab-btn" onclick="switchTab('tab-dgtl')">4. DGTL Sovereign Architecture</button>
+    </div>
+
+    <!-- Tab 1: Silicon Reality -->
+    <div id="tab-silicon" class="tab-pane active">
+        <div class="section-card">
+            <div class="section-title">
+                <div class="indicator" style="background: var(--accent-cyan);"></div>
+                What Hardware Silicon Actually Implements
+            </div>
+            <p>
+                No commercial microarchitecture in existence—from Intel Xeon, AMD EPYC, and Apple M-Series to NVIDIA Blackwell/Hopper 
+                and AMD Instinct CDNA—possesses silicon hardware instructions for high-order polynomials, Bessel functions, or Gaussian probability distributions. 
+                Microprocessors are engineered with Arithmetic Logic Units (ALUs), Floating-Point Units (FPUs), Vector/SIMD execution pipelines, 
+                and limited Special Function Units (SFUs).
+            </p>
+
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Hardware Architecture</th>
+                            <th>Native Hardware Machine Instructions</th>
+                            <th>High-Order Functions ($J_0, J_1, \Gamma, \beta, \text{Normal CDF}$)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="highlight-bold">x86_64 (AVX-512 / AVX2 / FMA)</span></td>
+                            <td><span class="mono">vaddps</span>, <span class="mono">vmulps</span>, <span class="mono">vdivps</span>, <span class="mono">vsqrtps</span>, <span class="mono">vfmadd213ps</span>, <span class="mono">vrsqrt14ps</span>, <span class="mono">vroundps</span></td>
+                            <td><span class="highlight-bold" style="color: var(--accent-rose);">Zero hardware instructions.</span> Always computed via software polynomial approximations (Chebyshev, Remez, or Padé rational models) executed on FMA units.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">ARM64 (NEON / SVE2)</span></td>
+                            <td><span class="mono">fadd</span>, <span class="mono">fmul</span>, <span class="mono">fdiv</span>, <span class="mono">fsqrt</span>, <span class="mono">fmla</span>, <span class="mono">frsqrte</span>, <span class="mono">frecpe</span></td>
+                            <td><span class="highlight-bold" style="color: var(--accent-rose);">Zero hardware instructions.</span> Evaluated through software mathematical runtime routines using fused multiply-accumulate chains.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">NVIDIA CUDA (PTX / SASS)</span></td>
+                            <td>Special Function Units (SFU) handle only: <span class="mono">sin.approx</span>, <span class="mono">cos.approx</span>, <span class="mono">ex2.approx</span>, <span class="mono">lg2.approx</span>, <span class="mono">rsqrt.approx</span></td>
+                            <td><span class="highlight-bold" style="color: var(--accent-rose);">Zero PTX/SASS instructions.</span> Functions such as <span class="mono">normcdf()</span>, <span class="mono">j0f()</span>, and <span class="mono">lgamma()</span> are implemented purely as software bitcode in <span class="mono">libdevice</span>.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">AMDGPU (CDNA / RDNA)</span></td>
+                            <td><span class="mono">v_sin_f32</span>, <span class="mono">v_cos_f32</span>, <span class="mono">v_exp_f32</span>, <span class="mono">v_log_f32</span>, <span class="mono">v_rsq_f32</span>, <span class="mono">v_fma_f32</span></td>
+                            <td><span class="highlight-bold" style="color: var(--accent-rose);">Zero hardware instructions.</span> Lowered to ROCm math library software routines.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="callout callout-cyan">
+                <h4>💡 Key Takeaway on Silicon Limits</h4>
+                <p>
+                    Silicon real-estate is constrained by thermal design power (TDP) and transistor budgets. Hardware vendors dedicate die space 
+                    to wide vector registers and tensor cores (matrix multiply units), leaving complex special mathematical polynomials to be 
+                    synthesized using high-throughput FMA pipelines at runtime.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 2: Global Compilers -->
+    <div id="tab-industry" class="tab-pane">
+        <div class="section-card">
+            <div class="section-title">
+                <div class="indicator" style="background: var(--accent-purple);"></div>
+                How The World's Leading Compilers Are Built
+            </div>
+            <p>
+                Every top-tier compiler infrastructure across academia and enterprise computing implements this identical architectural boundary. 
+                Below is a precise survey of LLVM, NVIDIA CUDA, GCC, and Intel SVML.
+            </p>
+
+            <div class="pipeline-container">
+                <div class="pipeline-box">
+                    <span class="pipeline-tag" style="background: rgba(59, 130, 246, 0.2); color: var(--accent-blue);">LLVM / Clang / Rust</span>
+                    <h3>The LLVM Standard</h3>
+                    <p>
+                        LLVM IR does <strong>not</strong> contain opcodes for <span class="mono">llvm.bessel</span> or <span class="mono">llvm.normal_cdf</span>. 
+                        LLVM provides intrinsics strictly for elementary operations (<span class="mono">llvm.sin</span>, <span class="mono">llvm.sqrt</span>, <span class="mono">llvm.fma</span>). 
+                        All advanced math is emitted as canonical <span class="mono">call</span> instructions targeting standard runtime libraries (<span class="mono">libm</span>, <span class="mono">compiler-rt</span>).
+                    </p>
+                </div>
+
+                <div class="pipeline-box">
+                    <span class="pipeline-tag" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald);">NVIDIA NVCC</span>
+                    <h3>CUDA & libdevice</h3>
+                    <p>
+                        When a CUDA developer executes <span class="mono">j0(x)</span> or <span class="mono">normcdf(x)</span> in a high-performance GPU kernel, 
+                        the compiler does not emit a PTX instruction. It links against <span class="mono">libdevice.10.bc</span>, which implements the function 
+                        in bitcode via Chebyshev expansions and Horner's scheme.
+                    </p>
+                </div>
+
+                <div class="pipeline-box">
+                    <span class="pipeline-tag" style="background: rgba(245, 158, 11, 0.2); color: var(--accent-amber);">GNU GCC</span>
+                    <h3>GCC Built-in Engine</h3>
+                    <p>
+                        GCC provides <span class="mono">__builtin_j0</span> and <span class="mono">__builtin_gamma</span>, but lowers them during GIMPLE/RTL generation 
+                        into direct library calls to <span class="mono">libm</span>. No internal machine description (.md) file defines a target instruction pattern for these functions.
+                    </p>
+                </div>
+
+                <div class="pipeline-box">
+                    <span class="pipeline-tag" style="background: rgba(139, 92, 246, 0.2); color: var(--accent-purple);">Intel OneAPI</span>
+                    <h3>Intel SVML</h3>
+                    <p>
+                        Intel's Short Vector Math Library (SVML) achieves world-record speeds by providing vectorized runtime library implementations 
+                        (e.g., <span class="mono">__svml_erff16</span>) that are invoked by the vectorizer through standard function call ABIs rather than custom x86 machine opcodes.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 3: The 3 Anti-Patterns -->
+    <div id="tab-antipattern" class="tab-pane">
+        <div class="section-card">
+            <div class="section-title">
+                <div class="indicator" style="background: var(--accent-rose);"></div>
+                The 3 Deadly Sins of Creating Special Math IR Opcodes
+            </div>
+            <p>
+                If an engineering team were to create dedicated IR opcodes for functions like Bessel $J_0$, Log-Gamma, or Gaussian CDF, 
+                it would commit three critical compiler design errors:
+            </p>
+
+            <div class="callout callout-rose">
+                <h4>1. Opcode Space Explosion</h4>
+                <p>
+                    There are hundreds of mathematical distributions and polynomials: Bessel functions ($J_n, Y_n, I_n, K_n$), 
+                    Incomplete Gamma, Beta, Riemann Zeta, Hypergeometric, Voigt, and Student's t-distributions. 
+                    Assigning fixed 16-bit bytecode opcodes to each creates unbounded schema bloat, destabilizes binary IR caching, 
+                    and dilutes the core opcode dispatch switch statements.
+                </p>
+            </div>
+
+            <div class="callout callout-amber">
+                <h4>2. Breakdown of Compiler Phase Separation</h4>
+                <p>
+                    Intermediate Representations exist exclusively to expose opportunities for algebraic simplification, dead code elimination (DCE), 
+                    loop invariant code motion (LICM), and common subexpression elimination (CSE). High-order polynomials have no algebraic folding identity 
+                    in hardware (e.g., you cannot algebraically simplify $\text{bessel}(x) + \text{bessel}(y)$ into a single operation). 
+                    Therefore, representing them as unique IR opcodes provides exactly zero optimization advantage over a standard function call.
+                </p>
+            </div>
+
+            <div class="callout callout-rose">
+                <h4>3. Massive Redundant Lowering Waste</h4>
+                <p>
+                    Because target hardware silicon lacks instructions for these operations, every single backend Instruction Selector (x86_64, ARM64, AMDGPU, PTX, RISC-V) 
+                    would be forced to implement an identical dummy ISel rule whose only purpose is to expand the opcode right back into a function call:
+                </p>
+                <div style="background: rgba(0,0,0,0.4); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.9rem; margin-top: 0.75rem;">
+                    ISel: GM_BESSEL_Y1 -> TargetLowering::Expand -> Call to "__dgtl_rt_bessel_y1"
+                </div>
+                <p style="margin-top: 0.75rem;">
+                    This introduces unnecessary code duplication and compilation overhead for zero technical benefit.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 4: DGTL Architecture -->
+    <div id="tab-dgtl" class="tab-pane">
+        <div class="section-card">
+            <div class="section-title">
+                <div class="indicator" style="background: var(--accent-emerald);"></div>
+                DGTL Sovereign Architecture: Clean Tier Separation
+            </div>
+            <p>
+                DGTL adheres strictly to production-grade compiler principles through a dual-tiered architecture:
+            </p>
+
+            <div class="pipeline-container">
+                <div class="pipeline-box" style="border-top: 4px solid var(--accent-cyan);">
+                    <span class="pipeline-tag badge-cyan">Tier 1: Core IR Opcodes</span>
+                    <h3>Hardware & Graph Primitives</h3>
+                    <p style="margin-bottom: 0.75rem;">
+                        <strong>Includes:</strong> <span class="mono">GELU_F32</span>, <span class="mono">SILU_F32</span>, <span class="mono">SIGMOID_F32</span>, <span class="mono">SWIGLU_F32</span>, <span class="mono">RMS_NORM_F32</span>, <span class="mono">TENSOR_RELU</span>, <span class="mono">FAST_INV_SQRT</span>, <span class="mono">FMA_F32</span>.
+                    </p>
+                    <p>
+                        <strong>Architectural Rationale:</strong> These operations participate directly in graph-level fusion passes (e.g. fusing GELU into preceding GEMM kernels in <span class="mono">MLoptimization.cpp</span>) or map directly to hardware vector sequences (e.g. <span class="mono">vrsqrtss</span> / <span class="mono">vfmadd213ps</span>).
+                    </p>
+                </div>
+
+                <div class="pipeline-box" style="border-top: 4px solid var(--accent-purple);">
+                    <span class="pipeline-tag badge-purple">Tier 2: Sovereign Runtime Intrinsics</span>
+                    <h3>Mathematical & Statistical Library</h3>
+                    <p style="margin-bottom: 0.75rem;">
+                        <strong>Includes:</strong> <span class="mono">__dgtl_rt_bessel_i0</span>, <span class="mono">__dgtl_rt_log_gamma</span>, <span class="mono">__dgtl_rt_normal_pdf</span>, <span class="mono">__dgtl_rt_beta</span>, <span class="mono">__dgtl_rt_sinc</span>.
+                    </p>
+                    <p>
+                        <strong>Architectural Rationale:</strong> Implemented in <span class="mono">Runtime_Maths.ixx</span> as high-accuracy rational and polynomial algorithms. In IR, they are cleanly invoked using <span class="mono">DGTL_OP_CALL</span> (0x6E) and resolved with zero overhead by the JIT Orchestrator and AOT Linker.
+                    </p>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Subsystem</th>
+                            <th>File Path</th>
+                            <th>Architectural Responsibility</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="highlight-bold">Canonical IR Definition</span></td>
+                            <td><span class="mono">defs/ir/phase1_core_ops.dgtl_def</span></td>
+                            <td>Defines the stable 16-bit opcode space, traits, and interface constraints.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">Public C-ABI SDK Header</span></td>
+                            <td><span class="mono">include/dgtl_sdk/dgtl.h</span></td>
+                            <td>Exposes official <span class="mono">DGTL_OP_*</span> constants, Graph SSA builder, and marshalled runners.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">Public Math Header</span></td>
+                            <td><span class="mono">include/dgtl_sdk/math.h</span></td>
+                            <td>Declares sovereign C-ABI runtime signatures and zero-overhead C++ overloaded abstractions.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">Runtime Math Implementation</span></td>
+                            <td><span class="mono">include/dgtl/runtime/Runtime_Maths.ixx</span></td>
+                            <td>Full C++26 implementations of all transcendentals, special functions, and distributions.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">AOT Linker Resolver</span></td>
+                            <td><span class="mono">include/dgtl/linker/Symbol_Resolver.ixx</span></td>
+                            <td>Direct static symbol resolution for relocatable PE, COFF, ELF, and Mach-O targets.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="highlight-bold">JIT Engine Orchestrator</span></td>
+                            <td><span class="mono">include/dgtl/jit/JIT_Orchestrator.ixx</span></td>
+                            <td>Instant dynamic function pointer mapping for in-memory JIT execution.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>© 2026 TataG Systems. All rights reserved. DGTL Sovereign Architecture & Compiler Infrastructure.</p>
+        <p>Standards: C++26 / Clang 18+ / MSVC 19.40+ / GCC 14+ | Author: Divyanshu Tata</p>
+    </footer>
+</div>
+
+<script>
+    function switchTab(tabId) {
+        // Hide all tabs
+        const panes = document.querySelectorAll('.tab-pane');
+        panes.forEach(pane => pane.classList.remove('active'));
+
+        // Deactivate all buttons
+        const buttons = document.querySelectorAll('.tab-btn');
+        buttons.forEach(btn => btn.classList.remove('active'));
+
+        // Activate selected tab and button
+        const targetPane = document.getElementById(tabId);
+        if (targetPane) {
+            targetPane.classList.add('active');
+        }
+
+        // Highlight matching button
+        const activeBtn = Array.from(buttons).find(btn => btn.getAttribute('onclick').includes(tabId));
+        if (activeBtn) {
+            activeBtn.classList.add('active');
+        }
+    }
+</script>
+
+</body>
+</html>

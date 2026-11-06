@@ -714,6 +714,27 @@ public:
                     if (form == MachineForm::StoreStack) {
                         emit_mov_rax_from_slot(node.op_b);
                         emit_store_rax_to_slot(node.op_a);
+                    } else if (form == MachineForm::Move) {
+                        const bool dst_is_fp = (result_is_floating.find(node.result_id) != result_is_floating.end()) && result_is_floating[node.result_id];
+                        const bool src_is_fp = (result_is_floating.find(node.op_a) != result_is_floating.end()) && result_is_floating[node.op_a];
+                        if (dst_is_fp && !src_is_fp) {
+                            // cvtsi2sd xmm0, [rbp + slot(node.op_a)] (F2 48 0F 2A 85 ...)
+                            write_u8(0xF2); write_u8(0x48); write_u8(0x0F); write_u8(0x2A); write_u8(0x85);
+                            write_i32(slot_disp(node.op_a));
+                            // movsd [rbp + slot(node.result_id)], xmm0 (F2 0F 11 85 ...)
+                            write_u8(0xF2); write_u8(0x0F); write_u8(0x11); write_u8(0x85);
+                            write_i32(slot_disp(node.result_id));
+                        } else if (!dst_is_fp && src_is_fp) {
+                            // movsd xmm0, [rbp + slot(node.op_a)] (F2 0F 10 85 ...)
+                            write_u8(0xF2); write_u8(0x0F); write_u8(0x10); write_u8(0x85);
+                            write_i32(slot_disp(node.op_a));
+                            // cvttsd2si rax, xmm0 (F2 48 0F 2C C0)
+                            write_u8(0xF2); write_u8(0x48); write_u8(0x0F); write_u8(0x2C); write_u8(0xC0);
+                            emit_store_rax_to_slot(node.result_id);
+                        } else {
+                            emit_mov_rax_from_slot(node.op_a);
+                            emit_store_rax_to_slot(node.result_id);
+                        }
                     } else {
                         emit_mov_rax_from_slot(node.op_a);
                         emit_store_rax_to_slot(node.result_id);

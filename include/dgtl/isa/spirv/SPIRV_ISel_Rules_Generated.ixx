@@ -20,8 +20,8 @@ export module dgtl.isa.spirv.isel_rules;
 export namespace dgtl::isa::spirv::generated {
 inline constexpr std::string_view kGeneratedTarget = "spirv";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0x358A87A848AA2716";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0x93FA41C28DF03260";
 inline constexpr std::string_view kRuleDslSource = "defs/isel/spirv_core.dgtl_isel";
 inline constexpr std::size_t kRuleDslCount = 3;
 inline constexpr std::array<std::string_view, 3> kRuleDslLines = {

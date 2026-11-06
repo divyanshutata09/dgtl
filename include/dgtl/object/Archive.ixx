@@ -632,7 +632,10 @@ public:
     }
 
     [[nodiscard]] bool has_symbol(std::string_view sym) const {
-        return symbol_to_member_offset_.contains(std::string(sym));
+        if (symbol_to_member_offset_.contains(std::string(sym))) return true;
+        if (sym.starts_with("_") && symbol_to_member_offset_.contains(std::string(sym.substr(1)))) return true;
+        std::string pref = "_" + std::string(sym);
+        return symbol_to_member_offset_.contains(pref);
     }
 
     [[nodiscard]] const std::unordered_map<std::string, uint32_t>& symbol_map() const noexcept {
@@ -645,6 +648,13 @@ public:
 
     [[nodiscard]] std::optional<std::span<const uint8_t>> extract_member_for_symbol(std::string_view sym) const {
         auto it = symbol_to_member_offset_.find(std::string(sym));
+        if (it == symbol_to_member_offset_.end() && sym.starts_with("_")) {
+            it = symbol_to_member_offset_.find(std::string(sym.substr(1)));
+        }
+        if (it == symbol_to_member_offset_.end()) {
+            std::string pref = "_" + std::string(sym);
+            it = symbol_to_member_offset_.find(pref);
+        }
         if (it == symbol_to_member_offset_.end()) return std::nullopt;
 
         const uint32_t header_off = it->second;
@@ -775,12 +785,9 @@ private:
                     m.header_offset = static_cast<uint32_t>(cursor);
                     m.data_offset = static_cast<uint32_t>(data_offset);
                     m.data.assign(raw_bytes_.data() + data_offset, raw_bytes_.data() + data_offset + member_size);
-                    if (symbol_to_member_offset_.empty()) {
-                        // Fallback for un-indexed archives only
-                        extract_universal_symbols(m.data, m.symbols);
-                        for (const auto& sym : m.symbols) {
-                            symbol_to_member_offset_.try_emplace(sym, m.header_offset);
-                        }
+                    extract_universal_symbols(m.data, m.symbols);
+                    for (const auto& sym : m.symbols) {
+                        symbol_to_member_offset_.try_emplace(sym, m.header_offset);
                     }
                     members_.push_back(std::move(m));
                 }

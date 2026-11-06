@@ -47,11 +47,19 @@ struct LinkerContext {
             out_address = it->second;
             return true;
         }
+        if (name.starts_with('_')) {
+            it = symbols.find(std::string(name.substr(1)));
+            if (it != symbols.end()) {
+                out_address = it->second;
+                return true;
+            }
+        }
         return SymbolResolver::resolve_builtin_runtime_symbol(name, out_address);
     }
 
     bool has_symbol(std::string_view name) const noexcept {
         if (symbols.find(std::string(name)) != symbols.end()) return true;
+        if (name.starts_with('_') && symbols.find(std::string(name.substr(1))) != symbols.end()) return true;
         uint64_t dummy = 0;
         return SymbolResolver::resolve_builtin_runtime_symbol(name, dummy);
     }

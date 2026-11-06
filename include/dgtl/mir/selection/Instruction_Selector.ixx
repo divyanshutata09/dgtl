@@ -81,6 +81,7 @@ struct SelectedInstruction {
     std::vector<uint32_t> overflow_operands{};
     machine::RegisterClassKind result_class = machine::RegisterClassKind::General;
     std::vector<machine::RegisterClassKind> call_arg_classes{};
+    std::vector<machine::RegisterClassKind> operand_classes{};
 };
 
 /* ============================================================================
@@ -115,6 +116,7 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
     bind(OpCode::LOAD_IMM, GM_IMMEDIATE);
     bind(OpCode::IMMEDIATE, GM_IMMEDIATE);
     bind(OpCode::CONST, GM_IMMEDIATE);
+    bind(OpCode::STRING_CONST, GM_COPY);
 
     // 32-bit Integer Arithmetic & Bitwise
     bind(OpCode::ADD_I32, GM_IADD32);
@@ -436,6 +438,9 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
                 selection.operands.push_back(op);
             }
         }
+    } else if (selected.node.opcode == ir::OpCode::STRING_CONST) {
+        selection.operands.push_back(
+            machine::MachineSelectionOperand::symbol_ref(selected.node.op_a, machine::OperandRole::Use));
     } else if (selected.form == MachineForm::LoadImmediate ||
                selected.node.opcode == ir::OpCode::CONST ||
                selected.node.opcode == ir::OpCode::LOAD_IMM ||
@@ -465,23 +470,42 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
                 machine::MachineSelectionOperand::block_ref(selected.node.op_b));
         }
     } else if (selected.form == MachineForm::Compare32) {
+        const bool is_fp_cmp = ((selected.node.flags & 0x0400u) != 0); // DGTL_FLAG_IS_SPEC_CONST
         if (selected.node.op_a != ir::INVALID_SLOT) {
-            selection.operands.push_back(
-                machine::MachineSelectionOperand::value_ref(selected.node.op_a, machine::OperandRole::Use));
+            auto op_a = machine::MachineSelectionOperand::value_ref(selected.node.op_a, machine::OperandRole::Use);
+            if (is_fp_cmp) {
+                op_a.reg_class = machine::RegisterClassKind::FloatingPoint;
+            }
+            selection.operands.push_back(op_a);
         }
         if (selected.node.op_b != ir::INVALID_SLOT) {
-            selection.operands.push_back(
-                machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use));
+            auto op_b = machine::MachineSelectionOperand::value_ref(selected.node.op_b, machine::OperandRole::Use);
+            if (is_fp_cmp) {
+                op_b.reg_class = machine::RegisterClassKind::FloatingPoint;
+            }
+            selection.operands.push_back(op_b);
         }
         machine::ComparisonPredicate pred = machine::ComparisonPredicate::Equal;
-        switch (selected.node.opcode) {
-            case ir::OpCode::CMP_EQ_I32: pred = machine::ComparisonPredicate::Equal; break;
-            case ir::OpCode::CMP_NE_I32: pred = machine::ComparisonPredicate::NotEqual; break;
-            case ir::OpCode::CMP_LT_I32: pred = machine::ComparisonPredicate::SignedLessThan; break;
-            case ir::OpCode::CMP_LE_I32: pred = machine::ComparisonPredicate::SignedLessEqual; break;
-            case ir::OpCode::CMP_GT_I32: pred = machine::ComparisonPredicate::SignedGreaterThan; break;
-            case ir::OpCode::CMP_GE_I32: pred = machine::ComparisonPredicate::SignedGreaterEqual; break;
-            default: break;
+        if (is_fp_cmp) {
+            switch (selected.node.op_c) {
+                case 0: pred = machine::ComparisonPredicate::Equal; break; // DGTL_FCMP_OEQ
+                case 1: pred = machine::ComparisonPredicate::NotEqual; break; // DGTL_FCMP_ONE
+                case 2: pred = machine::ComparisonPredicate::SignedLessThan; break; // DGTL_FCMP_OLT
+                case 3: pred = machine::ComparisonPredicate::SignedLessEqual; break; // DGTL_FCMP_OLE
+                case 4: pred = machine::ComparisonPredicate::SignedGreaterThan; break; // DGTL_FCMP_OGT
+                case 5: pred = machine::ComparisonPredicate::SignedGreaterEqual; break; // DGTL_FCMP_OGE
+                default: pred = machine::ComparisonPredicate::Equal; break;
+            }
+        } else {
+            switch (selected.node.opcode) {
+                case ir::OpCode::CMP_EQ_I32: pred = machine::ComparisonPredicate::Equal; break;
+                case ir::OpCode::CMP_NE_I32: pred = machine::ComparisonPredicate::NotEqual; break;
+                case ir::OpCode::CMP_LT_I32: pred = machine::ComparisonPredicate::SignedLessThan; break;
+                case ir::OpCode::CMP_LE_I32: pred = machine::ComparisonPredicate::SignedLessEqual; break;
+                case ir::OpCode::CMP_GT_I32: pred = machine::ComparisonPredicate::SignedGreaterThan; break;
+                case ir::OpCode::CMP_GE_I32: pred = machine::ComparisonPredicate::SignedGreaterEqual; break;
+                default: break;
+            }
         }
         selection.semantic_provenance = static_cast<std::uint32_t>(pred);
         machine::MachineSelectionOperand pred_op = machine::MachineSelectionOperand::imm(static_cast<std::int64_t>(pred));
@@ -496,7 +520,9 @@ inline constexpr auto kOpCodeToGenericMachineTable = []() constexpr {
             if (operands[i] != ir::INVALID_SLOT) {
                 auto op = machine::MachineSelectionOperand::value_ref(
                     operands[i], machine::OperandRole::Use);
-                if (is_fp_op) {
+                if (i < selected.operand_classes.size()) {
+                    op.reg_class = selected.operand_classes[i];
+                } else if (is_fp_op) {
                     op.reg_class = machine::RegisterClassKind::FloatingPoint;
                 }
                 selection.operands.push_back(op);
@@ -1279,6 +1305,11 @@ public:
         selected.matched_rule = replacement.matched;
         selected.form = classify_machine_form_with_fallback(target, selected.node);
         selected.semantic_kind = dgtl::mir::semantic_kind(target, selected.semantic_opcode);
+        if (selected.node.opcode == ir::OpCode::STRING_CONST) {
+            selected.form = MachineForm::Move;
+            selected.semantic_kind = machine::MachineSemanticKind::Move;
+            selected.result_class = machine::RegisterClassKind::General;
+        }
 
         if (selected.node.result_id != ir::INVALID_SLOT) {
             const auto tc = stream.get_result_type_code(selected.node.result_id);
@@ -1290,6 +1321,24 @@ public:
             selected.form == MachineForm::FloatBinary64 ||
             selected.form == MachineForm::FloatTernaryFma32) {
             selected.result_class = machine::RegisterClassKind::FloatingPoint;
+        }
+
+        const uint32_t raw_ops[3] = { selected.node.op_a, selected.node.op_b, selected.node.op_c };
+        for (size_t i = 0; i < 3; ++i) {
+            if (raw_ops[i] != ir::INVALID_SLOT) {
+                const auto tc = stream.get_result_type_code(raw_ops[i]);
+                if (ir::is_floating_type_code(tc)) {
+                    selected.operand_classes.push_back(machine::RegisterClassKind::FloatingPoint);
+                } else if (tc != ir::TypeCode::VOID_T) {
+                    selected.operand_classes.push_back(machine::RegisterClassKind::General);
+                } else if (selected.result_class == machine::RegisterClassKind::FloatingPoint) {
+                    selected.operand_classes.push_back(machine::RegisterClassKind::FloatingPoint);
+                } else {
+                    selected.operand_classes.push_back(machine::RegisterClassKind::General);
+                }
+            } else {
+                selected.operand_classes.push_back(machine::RegisterClassKind::General);
+            }
         }
 
         if (selected.form == MachineForm::Call) {

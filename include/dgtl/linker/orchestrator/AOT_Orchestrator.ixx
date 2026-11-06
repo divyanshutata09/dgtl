@@ -315,6 +315,13 @@ public:
             last_report_.target_format = "PE_EXE";
             success = linker_.build_pe_executable(output_path, stream);
         }
+        else if (ext == ".elf") {
+            last_report_.target_format = "ELF_EXE";
+            dgtl::linker::elf::ELFLinker elf_linker;
+            std::vector<uint8_t> bytes;
+            success = elf_linker.link_executable(stream, bytes, entry_symbol);
+            if (success) success = write_file(output_path, bytes);
+        }
         else if (ext == ".o") {
             last_report_.target_format = "ELF_OBJ";
             std::vector<uint8_t> bytes;
@@ -337,12 +344,8 @@ public:
         else if (ext == ".macho" || ext == ".dylib") {
             last_report_.target_format = "MACHO_BINARY";
             dgtl::object::writers::MachOObjectWriter writer;
-            std::vector<uint8_t> obj_bytes;
-            if (writer.write_machine_function(stream, obj_bytes, entry_symbol)) {
-                dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
-                auto& text_sec = obj.get_text_section();
-                text_sec.bytes = std::move(obj_bytes);
-                obj.add_function_symbol(std::string(entry_symbol), 0, text_sec.bytes.size(), true);
+            dgtl::object::ObjectFile obj(dgtl::object::ObjectFormat::MachO);
+            if (writer.build_object_file(stream, obj, entry_symbol)) {
                 dgtl::linker::macho::SovereignMachOLinker macho_linker;
                 std::vector<uint8_t> bytes;
                 success = macho_linker.link_executable(obj, bytes);

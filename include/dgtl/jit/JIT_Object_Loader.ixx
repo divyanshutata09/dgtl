@@ -132,24 +132,50 @@ public:
 
         const std::size_t text_size = text_sec->size();
 
-        // 2. Identify GOT slots needed for external relocations
+        // Locate .rdata / .rodata section
+        const dgtl::object::Section* rdata_sec = object.find_section(".rdata");
+        if (!rdata_sec) rdata_sec = object.find_section(".rodata");
+        if (!rdata_sec) rdata_sec = object.find_section("__const");
+        const std::size_t rdata_size = (rdata_sec && !rdata_sec->empty()) ? rdata_sec->size() : 0u;
+
+        // Locate .data section
+        const dgtl::object::Section* data_sec = object.find_section(".data");
+        if (!data_sec) data_sec = object.find_section("__data");
+        const std::size_t data_size = (data_sec && !data_sec->empty()) ? data_sec->size() : 0u;
+
+        // Locate .bss section
+        const dgtl::object::Section* bss_sec = object.find_section(".bss");
+        if (!bss_sec) bss_sec = object.find_section("__bss");
+        const std::size_t bss_size = bss_sec ? (bss_sec->bss_size > 0 ? bss_sec->bss_size : bss_sec->size()) : 0u;
+
+        // 2. Identify GOT slots needed for external relocations (Internal .rdata, constants and literals never use GOT)
         std::unordered_map<std::string, std::size_t> got_slot_map;
         for (const auto& rel : object.relocations()) {
             const auto* sym = object.find_symbol(rel.symbol_name);
-            const bool is_external = rel.symbol_name.starts_with("__imp_") ||
-                                     (sym == nullptr) || !sym->is_defined();
+            const bool is_data_sym = rel.symbol_name.starts_with("__str_") ||
+                                     rel.symbol_name.starts_with("__myzon_str_") ||
+                                     rel.symbol_name.starts_with(".rdata") ||
+                                     rel.symbol_name.starts_with(".rodata") ||
+                                     rel.symbol_name.starts_with(".data") ||
+                                     rel.symbol_name.starts_with(".bss");
+            const bool is_external = !is_data_sym &&
+                                     (rel.symbol_name.starts_with("__imp_") ||
+                                      (sym == nullptr) || !sym->is_defined());
             if (is_external && got_slot_map.find(rel.symbol_name) == got_slot_map.end()) {
                 const std::size_t slot_idx = got_slot_map.size();
                 got_slot_map[rel.symbol_name] = slot_idx;
             }
         }
 
-        // 3. Compute layout: .text + .plt + .got
+        // 3. Compute layout: .text + .rdata + .data + .bss + .plt + .got
         constexpr std::size_t kPltEntrySize = 16u;
         const std::size_t text_alloc = (text_size + 15u) & ~std::size_t(15u);
+        const std::size_t rdata_alloc = (rdata_size + 15u) & ~std::size_t(15u);
+        const std::size_t data_alloc = (data_size + 15u) & ~std::size_t(15u);
+        const std::size_t bss_alloc = (bss_size + 15u) & ~std::size_t(15u);
         const std::size_t plt_alloc = (got_slot_map.size() * kPltEntrySize + 15u) & ~std::size_t(15u);
         const std::size_t got_alloc = (got_slot_map.size() * sizeof(std::uintptr_t) + 15u) & ~std::size_t(15u);
-        const std::size_t total_payload = text_alloc + plt_alloc + got_alloc;
+        const std::size_t total_payload = text_alloc + rdata_alloc + data_alloc + bss_alloc + plt_alloc + got_alloc;
         const std::size_t total_alloc = (total_payload + 4095u) & ~std::size_t(4095u);
 
         // 4. Allocate RW memory
@@ -167,7 +193,22 @@ public:
         std::uint8_t* text_base = static_cast<std::uint8_t*>(mem);
         std::memcpy(text_base, text_sec->bytes.data(), text_size);
 
-        std::uint8_t* plt_base = text_base + text_alloc;
+        std::uint8_t* rdata_base = text_base + text_alloc;
+        if (rdata_sec && rdata_size > 0) {
+            std::memcpy(rdata_base, rdata_sec->bytes.data(), rdata_size);
+        }
+
+        std::uint8_t* data_base = rdata_base + rdata_alloc;
+        if (data_sec && data_size > 0) {
+            std::memcpy(data_base, data_sec->bytes.data(), data_size);
+        }
+
+        std::uint8_t* bss_base = data_base + data_alloc;
+        if (bss_alloc > 0) {
+            std::memset(bss_base, 0, bss_alloc);
+        }
+
+        std::uint8_t* plt_base = bss_base + bss_alloc;
         auto* got_base = reinterpret_cast<std::uintptr_t*>(plt_base + plt_alloc);
 
         // 5. Populate GOT & PLT Trampolines
@@ -197,6 +238,16 @@ public:
                 }
                 if (dgtl::linker::SymbolResolver::resolve_builtin_runtime_symbol(lookup_name, builtin_addr)) {
                     addr = static_cast<std::uintptr_t>(builtin_addr);
+                }
+                if (addr == 0 && lookup_name.starts_with('_')) {
+                    std::string_view un_name = lookup_name;
+                    while (un_name.starts_with('_')) un_name.remove_prefix(1);
+                    auto it_un = host_symbols.find(std::string(un_name));
+                    if (it_un != host_symbols.end()) {
+                        addr = it_un->second;
+                    } else if (dgtl::linker::SymbolResolver::resolve_builtin_runtime_symbol(un_name, builtin_addr)) {
+                        addr = static_cast<std::uintptr_t>(builtin_addr);
+                    }
                 }
             }
             if (addr == 0) {
@@ -246,7 +297,32 @@ public:
                 // Point external call relocations to the executable PLT trampoline stub
                 target_dest = reinterpret_cast<std::uint64_t>(plt_base + got_it->second * kPltEntrySize);
             } else if (const auto* sym = object.find_symbol(rel.symbol_name); sym && sym->is_defined()) {
-                target_dest = reinterpret_cast<std::uint64_t>(text_base + sym->value);
+                if (sym->section_index < object.sections().size()) {
+                    const auto& sname = object.sections()[sym->section_index].name;
+                    if (sname.starts_with(".rdata") || sname.starts_with(".rodata") || sname == "__const") {
+                        target_dest = reinterpret_cast<std::uint64_t>(rdata_base + sym->value);
+                    } else if (sname.starts_with(".data") || sname == "__data") {
+                        target_dest = reinterpret_cast<std::uint64_t>(data_base + sym->value);
+                    } else if (sname.starts_with(".bss") || sname == "__bss") {
+                        target_dest = reinterpret_cast<std::uint64_t>(bss_base + sym->value);
+                    } else {
+                        target_dest = reinterpret_cast<std::uint64_t>(text_base + sym->value);
+                    }
+                } else if (rdata_sec && (rel.symbol_name.starts_with("__str_") || rel.symbol_name.starts_with("__myzon_str_") || rel.symbol_name.starts_with(".rdata") || rel.symbol_name.starts_with(".rodata") || rel.symbol_name.starts_with("__const"))) {
+                    target_dest = reinterpret_cast<std::uint64_t>(rdata_base + sym->value);
+                } else if (data_sec && (rel.symbol_name.starts_with(".data") || rel.symbol_name.starts_with("__data"))) {
+                    target_dest = reinterpret_cast<std::uint64_t>(data_base + sym->value);
+                } else if (bss_sec && (rel.symbol_name.starts_with(".bss") || rel.symbol_name.starts_with("__bss"))) {
+                    target_dest = reinterpret_cast<std::uint64_t>(bss_base + sym->value);
+                } else {
+                    target_dest = reinterpret_cast<std::uint64_t>(text_base + sym->value);
+                }
+            } else if (rdata_sec && (rel.symbol_name.starts_with("__str_") || rel.symbol_name.starts_with("__myzon_str_") || rel.symbol_name.starts_with(".rdata") || rel.symbol_name.starts_with(".rodata") || rel.symbol_name.starts_with("__const"))) {
+                target_dest = reinterpret_cast<std::uint64_t>(rdata_base);
+            } else if (data_sec && (rel.symbol_name.starts_with(".data") || rel.symbol_name.starts_with("__data"))) {
+                target_dest = reinterpret_cast<std::uint64_t>(data_base);
+            } else if (bss_sec && (rel.symbol_name.starts_with(".bss") || rel.symbol_name.starts_with("__bss"))) {
+                target_dest = reinterpret_cast<std::uint64_t>(bss_base);
             }
 
             if (rel.kind == dgtl::object::RelocationKind::PCRel32 ||
@@ -275,19 +351,21 @@ public:
             }
         }
 
-        // 7. Enforce W^X: Switch from PAGE_READWRITE to PAGE_EXECUTE_READ
+        // 7. Enforce W^X: Switch from PAGE_READWRITE to PAGE_EXECUTE_READ (or RXW if mutable data present)
 #if defined(_WIN32) || defined(_WIN64)
         DWORD old_protect;
-        if (!VirtualProtect(mem, total_alloc, PAGE_EXECUTE_READ, &old_protect)) {
+        const DWORD target_prot = (data_size > 0 || bss_size > 0) ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ;
+        if (!VirtualProtect(mem, total_alloc, target_prot, &old_protect)) {
             VirtualFree(mem, 0, MEM_RELEASE);
-            result.error_message = "VirtualProtect failed to set PAGE_EXECUTE_READ";
+            result.error_message = "VirtualProtect failed to set executable memory protection";
             return result;
         }
         FlushInstructionCache(GetCurrentProcess(), mem, total_alloc);
 #else
-        if (mprotect(mem, total_alloc, PROT_READ | PROT_EXEC) != 0) {
+        const int target_prot = (data_size > 0 || bss_size > 0) ? (PROT_READ | PROT_WRITE | PROT_EXEC) : (PROT_READ | PROT_EXEC);
+        if (mprotect(mem, total_alloc, target_prot) != 0) {
             munmap(mem, total_alloc);
-            result.error_message = "mprotect failed to set PROT_READ | PROT_EXEC";
+            result.error_message = "mprotect failed to set executable memory protection";
             return result;
         }
 #endif

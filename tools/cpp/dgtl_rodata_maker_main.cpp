@@ -4,20 +4,12 @@
  * Project:     DGTL (Deep General-purpose Transformation Layer)
  * Owner:       Divyanshu Tata
  * Repository:  github.com/TataG-Systems/DGTL
- */
-
-/**
- * @file dgtl_rodata_maker_main.cpp
- * @brief dgtl-rodata-maker: Production-grade .rodata section generation tool
  *
- * USAGE:
- *   dgtl-rodata-maker [--input <strings.txt>] [--output-cpp <file.cpp>] [--output-h <file.h>] [--output-bin <file.bin>]
+ * Component:   DGTL Sovereign .rodata Section Generator (dgtl-rodata-maker)
+ * Standards:   C++26 / Clang 18+ / MSVC 19.40+ / GCC 14+
  *
- * DESIGN:
- *   - Parses raw string pools, format literals, and binary constants.
- *   - Computes FNV-1a string handles for zero-latency runtime string resolution.
- *   - Deduplicates string data and aligns bytes to 64-byte cache-line boundaries.
- *   - Emits C++ string handle registries, header constants, and binary .rodata blobs.
+ * This software is the proprietary property of TataG Systems.
+ * Unauthorized copying, modification, or distribution is strictly prohibited.
  */
 
 #include <algorithm>
@@ -31,16 +23,32 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <span>
+
+import dgtl.object.file;
+import dgtl.object.section;
+import dgtl.object.symbol;
+import dgtl.linker.driver_api;
+import dgtl.tools.common;
 
 namespace fs = std::filesystem;
 
-namespace {
+namespace dgtl::rodata {
 
 struct Options {
     fs::path input_file;
     fs::path output_cpp;
     fs::path output_h;
     fs::path output_bin;
+    fs::path output_obj;
+    dgtl::object::ObjectFormat format =
+#if defined(_WIN32) || defined(_WIN64)
+        dgtl::object::ObjectFormat::COFF;
+#elif defined(__APPLE__)
+        dgtl::object::ObjectFormat::MachO;
+#else
+        dgtl::object::ObjectFormat::ELF;
+#endif
     size_t alignment = 64;
     bool verbose = false;
 };
@@ -56,40 +64,23 @@ constexpr uint32_t fnv1a_32(std::string_view str) noexcept {
 }
 
 void print_usage(std::string_view prog_name) {
-    std::cout << "DGTL .rodata Section Maker Tool (dgtl-rodata-maker)\n"
+    using Terminal = dgtl::tools::Terminal;
+    std::cout << Terminal::bold() << Terminal::cyan()
+              << "DGTL Sovereign .rodata Section Generator (dgtl-rodata-maker) v2.1.0\n"
+              << Terminal::reset()
               << "\nUSAGE:\n"
-              << "  " << prog_name << " [OPTIONS]\n"
-              << "\nOPTIONS:\n"
+              << "  " << Terminal::bold() << prog_name << " [OPTIONS]\n\n"
+              << Terminal::reset()
+              << "OPTIONS:\n"
               << "  --input <file>        Input text file containing string literals (one per line)\n"
               << "  --output-cpp <file>   Emit C++ string handle registration file (.cpp)\n"
               << "  --output-h <file>     Emit C++ string handle header file (.h)\n"
               << "  --output-bin <file>   Emit raw binary .rodata section blob (.bin)\n"
+              << "  --output-obj <file>   Emit sovereign relocatable object file (.obj/.o)\n"
+              << "  --format <fmt>        Object format (coff, elf, macho, wasm; default: auto)\n"
               << "  --align <bytes>       Alignment boundary in bytes (default: 64)\n"
-              << "  --verbose             Enable verbose diagnostic logging\n"
-              << "  --help                Display this message\n";
-}
-
-bool parse_args(int argc, char** argv, Options& opts) {
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg(argv[i]);
-        if (arg == "--input" && i + 1 < argc) {
-            opts.input_file = argv[++i];
-        } else if (arg == "--output-cpp" && i + 1 < argc) {
-            opts.output_cpp = argv[++i];
-        } else if (arg == "--output-h" && i + 1 < argc) {
-            opts.output_h = argv[++i];
-        } else if (arg == "--output-bin" && i + 1 < argc) {
-            opts.output_bin = argv[++i];
-        } else if (arg == "--align" && i + 1 < argc) {
-            opts.alignment = std::stoull(argv[++i]);
-        } else if (arg == "--verbose") {
-            opts.verbose = true;
-        } else if (arg == "--help") {
-            print_usage(argv[0]);
-            return false;
-        }
-    }
-    return true;
+              << "  -v, --verbose         Enable verbose diagnostic logging\n"
+              << "  -h, --help            Display this message\n";
 }
 
 std::vector<std::string> read_input_strings(const fs::path& path) {
@@ -169,7 +160,7 @@ bool emit_bin_blob(const fs::path& path, const std::vector<std::pair<uint32_t, s
         buffer.insert(buffer.end(), str.begin(), str.end());
         buffer.push_back(0); // null terminator
 
-        // Align each entry boundary
+        // Align each entry boundary to 8 bytes
         while (buffer.size() % 8 != 0) {
             buffer.push_back(0);
         }
@@ -184,20 +175,130 @@ bool emit_bin_blob(const fs::path& path, const std::vector<std::pair<uint32_t, s
     return out.good();
 }
 
-} // namespace
+bool emit_object_file(const fs::path& path, const std::vector<std::pair<uint32_t, std::string>>& entries, dgtl::object::ObjectFormat format, size_t align_bytes) {
+    dgtl::object::ObjectFile obj(format);
+    auto& rdata_sec = obj.get_rdata_section();
+    rdata_sec.alignment = align_bytes;
 
-int main(int argc, char** argv) {
-    Options opts;
-    if (!parse_args(argc, argv, opts)) {
-        return 1;
+    auto sec_idx_opt = obj.find_section_index(rdata_sec.name);
+    uint32_t sec_idx = sec_idx_opt.value_or(0);
+
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const auto& [handle, str] = entries[i];
+
+        while (rdata_sec.bytes.size() % 8 != 0) {
+            rdata_sec.bytes.push_back(0);
+        }
+
+        uint64_t sym_offset = rdata_sec.bytes.size();
+
+        const uint32_t len = static_cast<uint32_t>(str.size());
+        const uint8_t* h_ptr = reinterpret_cast<const uint8_t*>(&handle);
+        const uint8_t* l_ptr = reinterpret_cast<const uint8_t*>(&len);
+
+        rdata_sec.bytes.insert(rdata_sec.bytes.end(), h_ptr, h_ptr + 4);
+        rdata_sec.bytes.insert(rdata_sec.bytes.end(), l_ptr, l_ptr + 4);
+        rdata_sec.bytes.insert(rdata_sec.bytes.end(), str.begin(), str.end());
+        rdata_sec.bytes.push_back(0);
+
+        std::stringstream sym_name;
+        sym_name << "__dgtl_str_" << std::hex << handle;
+        obj.add_data_symbol(sym_name.str(), sec_idx, sym_offset, str.size() + 9, /*is_global=*/true);
+
+        std::string indexed_sym = "__dgtl_rodata_" + std::to_string(i);
+        obj.add_data_symbol(indexed_sym, sec_idx, sym_offset, str.size() + 9, /*is_global=*/true);
     }
 
-    std::vector<std::string> raw_strings = read_input_strings(opts.input_file);
-    if (raw_strings.empty()) {
-        // Provide canonical default string table if no input file supplied
+    while (rdata_sec.bytes.size() % align_bytes != 0) {
+        rdata_sec.bytes.push_back(0);
+    }
+
+    std::vector<uint8_t> out_bytes;
+    dgtl::linker::LinkerDriver driver;
+    dgtl::linker::OutputFormat driver_fmt = dgtl::linker::OutputFormat::COFFObject;
+    if (format == dgtl::object::ObjectFormat::ELF) {
+        driver_fmt = dgtl::linker::OutputFormat::ELFObject;
+    } else if (format == dgtl::object::ObjectFormat::MachO) {
+        driver_fmt = dgtl::linker::OutputFormat::MachOObject;
+    } else if (format == dgtl::object::ObjectFormat::WASM) {
+        driver_fmt = dgtl::linker::OutputFormat::WASMBinary;
+    }
+
+    if (!driver.emit(driver_fmt, obj, out_bytes)) {
+        return false;
+    }
+
+    fs::path out_p(path);
+    if (out_p.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_p.parent_path(), ec);
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(reinterpret_cast<const char*>(out_bytes.data()), static_cast<std::streamsize>(out_bytes.size()));
+    return out.good();
+}
+
+} // namespace dgtl::rodata
+
+int dgtl_rodata_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
+    std::vector<std::string> expanded = dgtl::tools::ArgExpander::expand(raw_args);
+    dgtl::rodata::Options opts;
+
+    for (size_t i = 0; i < expanded.size(); ++i) {
+        const auto& arg = expanded[i];
+        if (arg == "-h" || arg == "--help") {
+            dgtl::rodata::print_usage(invoked_as);
+            return 0;
+        } else if (arg == "-v" || arg == "--verbose") {
+            opts.verbose = true;
+        } else if (arg == "--input" && i + 1 < expanded.size()) {
+            opts.input_file = expanded[++i];
+        } else if (arg.starts_with("--input=")) {
+            opts.input_file = arg.substr(8);
+        } else if (arg == "--output-cpp" && i + 1 < expanded.size()) {
+            opts.output_cpp = expanded[++i];
+        } else if (arg.starts_with("--output-cpp=")) {
+            opts.output_cpp = arg.substr(13);
+        } else if (arg == "--output-h" && i + 1 < expanded.size()) {
+            opts.output_h = expanded[++i];
+        } else if (arg.starts_with("--output-h=")) {
+            opts.output_h = arg.substr(11);
+        } else if (arg == "--output-bin" && i + 1 < expanded.size()) {
+            opts.output_bin = expanded[++i];
+        } else if (arg.starts_with("--output-bin=")) {
+            opts.output_bin = arg.substr(13);
+        } else if (arg == "--output-obj" && i + 1 < expanded.size()) {
+            opts.output_obj = expanded[++i];
+        } else if (arg.starts_with("--output-obj=")) {
+            opts.output_obj = arg.substr(13);
+        } else if (arg == "--format" && i + 1 < expanded.size()) {
+            std::string fmt = std::string(expanded[++i]);
+            if (fmt == "coff" || fmt == "pe") opts.format = dgtl::object::ObjectFormat::COFF;
+            else if (fmt == "elf") opts.format = dgtl::object::ObjectFormat::ELF;
+            else if (fmt == "macho") opts.format = dgtl::object::ObjectFormat::MachO;
+            else if (fmt == "wasm") opts.format = dgtl::object::ObjectFormat::WASM;
+        } else if (arg.starts_with("--format=")) {
+            std::string fmt = std::string(arg.substr(9));
+            if (fmt == "coff" || fmt == "pe") opts.format = dgtl::object::ObjectFormat::COFF;
+            else if (fmt == "elf") opts.format = dgtl::object::ObjectFormat::ELF;
+            else if (fmt == "macho") opts.format = dgtl::object::ObjectFormat::MachO;
+            else if (fmt == "wasm") opts.format = dgtl::object::ObjectFormat::WASM;
+        } else if (arg == "--align" && i + 1 < expanded.size()) {
+            opts.alignment = std::stoull(expanded[++i]);
+        } else if (arg.starts_with("--align=")) {
+            opts.alignment = std::stoull(arg.substr(8));
+        } else if (opts.input_file.empty() && !arg.starts_with("-")) {
+            opts.input_file = arg;
+        }
+    }
+
+    std::vector<std::string> raw_strings = dgtl::rodata::read_input_strings(opts.input_file);
+    if (raw_strings.empty() && opts.input_file.empty()) {
         raw_strings = {
-            "Hello, MYZON!",
-            "DGTL Sovereign Execution Engine v1.2.0",
+            "DGTL Sovereign System Platform",
+            "DGTL Sovereign Execution Engine v2.1.0",
             "Sovereign JIT Kernel Initialized",
             "JIT Compile Success"
         };
@@ -208,7 +309,7 @@ int main(int argc, char** argv) {
     std::vector<std::pair<uint32_t, std::string>> entries;
 
     for (const auto& str : raw_strings) {
-        uint32_t h = fnv1a_32(str);
+        uint32_t h = dgtl::rodata::fnv1a_32(str);
         if (unique_entries.find(h) == unique_entries.end()) {
             unique_entries[h] = str;
             entries.emplace_back(h, str);
@@ -221,29 +322,49 @@ int main(int argc, char** argv) {
     }
 
     if (!opts.output_cpp.empty()) {
-        if (!emit_cpp_registry(opts.output_cpp, entries)) {
-            std::cerr << "Error writing C++ registry: " << opts.output_cpp << "\n";
+        if (!dgtl::rodata::emit_cpp_registry(opts.output_cpp, entries)) {
+            std::cerr << "error[dgtl-rodata-maker]: failed writing C++ registry to " << opts.output_cpp.string() << "\n";
             return 1;
         }
-        if (opts.verbose) std::cout << "[dgtl-rodata-maker] Emitted C++ registry to: " << opts.output_cpp << "\n";
+        if (opts.verbose) std::cout << "[dgtl-rodata-maker] Emitted C++ registry to: " << opts.output_cpp.string() << "\n";
     }
 
     if (!opts.output_h.empty()) {
-        if (!emit_h_header(opts.output_h, entries)) {
-            std::cerr << "Error writing header file: " << opts.output_h << "\n";
+        if (!dgtl::rodata::emit_h_header(opts.output_h, entries)) {
+            std::cerr << "error[dgtl-rodata-maker]: failed writing header file to " << opts.output_h.string() << "\n";
             return 1;
         }
-        if (opts.verbose) std::cout << "[dgtl-rodata-maker] Emitted header to: " << opts.output_h << "\n";
+        if (opts.verbose) std::cout << "[dgtl-rodata-maker] Emitted header to: " << opts.output_h.string() << "\n";
     }
 
     if (!opts.output_bin.empty()) {
-        if (!emit_bin_blob(opts.output_bin, entries, opts.alignment)) {
-            std::cerr << "Error writing binary blob: " << opts.output_bin << "\n";
+        if (!dgtl::rodata::emit_bin_blob(opts.output_bin, entries, opts.alignment)) {
+            std::cerr << "error[dgtl-rodata-maker]: failed writing binary blob to " << opts.output_bin.string() << "\n";
             return 1;
         }
         if (opts.verbose) std::cout << "[dgtl-rodata-maker] Emitted .rodata blob (" 
-                                    << opts.alignment << "-byte aligned) to: " << opts.output_bin << "\n";
+                                    << opts.alignment << "-byte aligned) to: " << opts.output_bin.string() << "\n";
+    }
+
+    if (!opts.output_obj.empty()) {
+        if (!dgtl::rodata::emit_object_file(opts.output_obj, entries, opts.format, opts.alignment)) {
+            std::cerr << "error[dgtl-rodata-maker]: failed writing sovereign object file to " << opts.output_obj.string() << "\n";
+            return 1;
+        }
+        if (opts.verbose) std::cout << "[dgtl-rodata-maker] Emitted sovereign object file to: " << opts.output_obj.string() << "\n";
     }
 
     return 0;
 }
+
+#if defined(DGTL_RODATA_MAKER_STANDALONE)
+int main(int argc, char* argv[]) {
+    dgtl::tools::Terminal::init(true);
+    std::vector<std::string_view> raw_args;
+    raw_args.reserve(argc > 1 ? static_cast<size_t>(argc - 1) : 0);
+    for (int i = 1; i < argc; ++i) {
+        raw_args.push_back(argv[i]);
+    }
+    return dgtl_rodata_tool_main(raw_args, argv[0]);
+}
+#endif

@@ -39,6 +39,9 @@ import dgtl.target;
 import dgtl.codegen.driver;
 import dgtl.linker.driver;
 import dgtl.linker.driver_api;
+import dgtl.linker.elf;
+import dgtl.linker.macho;
+import dgtl.linker.wasm;
 import dgtl.object.writers.pe;
 import dgtl.object.writers.elf;
 import dgtl.formal;
@@ -231,6 +234,15 @@ public:
             if (fmt == dgtl::linker::OutputFormat::PEExecutable) {
                 dgtl::backend::aot::DGTLAOTLinker linker;
                 return linker.build_pe_executable_from_object(*cached_object_file_, out_bytes) && !out_bytes.empty();
+            } else if (fmt == dgtl::linker::OutputFormat::ELFExecutable) {
+                dgtl::linker::elf::ELFLinker elf_l;
+                return elf_l.link_executable(*cached_object_file_, out_bytes) && !out_bytes.empty();
+            } else if (fmt == dgtl::linker::OutputFormat::MachOExecutable) {
+                dgtl::linker::macho::SovereignMachOLinker macho_l;
+                return macho_l.link_executable(*cached_object_file_, out_bytes) && !out_bytes.empty();
+            } else if (fmt == dgtl::linker::OutputFormat::WASMBinary) {
+                dgtl::linker::wasm::WASMBinaryLink wasm_l;
+                return wasm_l.link(*cached_object_file_, out_bytes) && !out_bytes.empty();
             }
             return false;
         }

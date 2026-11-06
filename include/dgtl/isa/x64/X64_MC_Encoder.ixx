@@ -318,6 +318,26 @@ private:
         emit_u8(sec, static_cast<std::uint8_t>(0xC0u | ((xmm_reg & 7u) << 3) | (gpr_reg & 7u)));
     }
 
+    // cvtsi2sd xmm, r64 (F2 REX.W 0F 2A /r)
+    static void emit_cvtsi2sd(Section& sec, std::uint8_t xmm_reg, std::uint8_t gpr_reg) {
+        emit_u8(sec, 0xF2);
+        const std::uint8_t rex = make_rex(true, xmm_reg, 0, gpr_reg);
+        emit_u8(sec, rex);
+        emit_u8(sec, 0x0F);
+        emit_u8(sec, 0x2A);
+        emit_u8(sec, static_cast<std::uint8_t>(0xC0u | ((xmm_reg & 7u) << 3) | (gpr_reg & 7u)));
+    }
+
+    // cvttsd2si r64, xmm (F2 REX.W 0F 2C /r)
+    static void emit_cvttsd2si(Section& sec, std::uint8_t gpr_reg, std::uint8_t xmm_reg) {
+        emit_u8(sec, 0xF2);
+        const std::uint8_t rex = make_rex(true, gpr_reg, 0, xmm_reg);
+        emit_u8(sec, rex);
+        emit_u8(sec, 0x0F);
+        emit_u8(sec, 0x2C);
+        emit_u8(sec, static_cast<std::uint8_t>(0xC0u | ((gpr_reg & 7u) << 3) | (xmm_reg & 7u)));
+    }
+
     // Reg-Mem or Mem-Reg 2-byte 0F opcode: REX [0x0F] [Opcode2] [ModR/M] [SIB]? [Disp]?
     static void emit_rm_or_mr_0f(
         Section& sec,
@@ -573,7 +593,7 @@ private:
                     return true;
                 }
 
-                // Register-from-symbol
+                // Register-from-symbol: emit lea reg, [rip + disp32] with PCRel32 relocation and -4 addend
                 if (dst.is_register() && src.kind == MachineOperandKind::Symbol) {
                     std::string sym_name;
                     auto it = symbol_table.find(src.symbol);
@@ -583,12 +603,13 @@ private:
                         sym_name = "sym_" + std::to_string(src.symbol);
                     }
                     const std::uint8_t reg = static_cast<std::uint8_t>(dst.reg.id);
-                    const std::uint8_t rex = make_rex(true, 0, 0, reg);
+                    const std::uint8_t rex = make_rex(true, reg, 0, 0);
                     emit_u8(text, rex);
-                    emit_u8(text, static_cast<std::uint8_t>(0xB8u + (reg & 7u)));
+                    emit_u8(text, 0x8D);
+                    emit_u8(text, static_cast<std::uint8_t>(0x05u | ((reg & 7u) << 3)));
                     const std::size_t reloc_offset = text.size();
-                    emit_u64(text, 0);
-                    object.add_relocation(reloc_offset, std::move(sym_name), 0, 1, dgtl::object::RelocationKind::Absolute64);
+                    emit_u32(text, 0);
+                    object.add_relocation(reloc_offset, std::move(sym_name), -4, 4, dgtl::object::RelocationKind::PCRel32);
                     return true;
                 }
 
@@ -655,12 +676,13 @@ private:
                         } else {
                             sym_name = "sym_" + std::to_string(inst.operands[i].symbol);
                         }
-                        const std::uint8_t rex = make_rex(true, 0, 0, reg);
+                        const std::uint8_t rex = make_rex(true, reg, 0, 0);
                         emit_u8(text, rex);
-                        emit_u8(text, static_cast<std::uint8_t>(0xB8u + (reg & 7u)));
+                        emit_u8(text, 0x8D);
+                        emit_u8(text, static_cast<std::uint8_t>(0x05u | ((reg & 7u) << 3)));
                         const std::size_t reloc_offset = text.size();
-                        emit_u64(text, 0);
-                        object.add_relocation(reloc_offset, std::move(sym_name), 0, 1, dgtl::object::RelocationKind::Absolute64);
+                        emit_u32(text, 0);
+                        object.add_relocation(reloc_offset, std::move(sym_name), -4, 4, dgtl::object::RelocationKind::PCRel32);
                         return true;
                     }
                 }

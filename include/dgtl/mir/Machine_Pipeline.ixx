@@ -174,8 +174,12 @@ public:
                     if (next_inst && next_inst->form == MachineForm::Move && next_inst->operands.size() >= 2) {
                         if (inst->operands[0].is_register() && inst->operands[1].is_register() &&
                             next_inst->operands[0].is_register() && next_inst->operands[1].is_register()) {
+                            // If rA and rB are in the same register class and valid:
+                            // inst:     rA = rB   (rA now holds rB's value)
+                            // next_inst: rB = rA   (rB already holds this value; redundant)
                             if (inst->operands[0].reg == next_inst->operands[1].reg &&
-                                inst->operands[1].reg == next_inst->operands[0].reg) {
+                                inst->operands[1].reg == next_inst->operands[0].reg &&
+                                inst->operands[0].reg.reg_class == inst->operands[1].reg.reg_class) {
                                 next_inst->form = MachineForm::NoOp;
                                 next_inst->semantic_kind = MachineSemanticKind::Other;
                                 next_inst->opcode = GM_NOOP;
@@ -393,6 +397,12 @@ public:
 
             (void)active_selector.append_to_machine_function(
                 builder, current_block_id, selected, selected.result_class);
+
+            if (selected.form == dgtl::mir::MachineForm::BranchCond || selected.form == dgtl::mir::MachineForm::BranchCompare) {
+                const BlockId prev_block_id = current_block_id;
+                current_block_id = function.create_block(false).id;
+                function.connect_blocks(prev_block_id, current_block_id);
+            }
         }
 
         // Connect CFG edges and resolve IR labels in BasicBlock operands

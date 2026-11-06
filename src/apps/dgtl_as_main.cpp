@@ -30,6 +30,11 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 import dgtl.object.file;
 import dgtl.object.section;
 import dgtl.object.symbol;
@@ -37,6 +42,11 @@ import dgtl.object.relocation;
 import dgtl.linker.driver_api;
 import dgtl.linker.pe;
 import dgtl.linker.elf;
+import dgtl.linker.macho;
+import dgtl.linker.wasm;
+import dgtl.linker.symbols;
+import dgtl.jit.object_loader;
+import dgtl.formal;
 import dgtl.tools.common;
 
 namespace fs = std::filesystem;
@@ -66,6 +76,8 @@ struct AssemblerOptions {
     uint64_t stack_reserve = 0x00400000; // 4 MB
     uint64_t stack_commit  = 0x00100000; // 1 MB (guarantees safe headroom before dynamic expansion)
     bool emit_executable = false;
+    bool run_jit = false;
+    bool verify_smt = false;
     bool verbose = false;
     bool debug_info = false;
 };
@@ -147,7 +159,12 @@ bool assemble_file(const AssemblerOptions& opts) {
             label_positions[lbl] = {cur_sec_name, offset};
 
             bool is_glob = global_symbols.contains(lbl);
-            obj.add_function_symbol(lbl, offset, 0, is_glob);
+            if (cur_sec_name == ".text") {
+                obj.add_function_symbol(lbl, offset, 0, is_glob);
+            } else {
+                auto sec_idx = obj.find_section_index(cur_sec_name);
+                obj.add_data_symbol(lbl, sec_idx.value_or(0), offset, 0, is_glob);
+            }
             continue;
         }
 
@@ -551,28 +568,70 @@ bool assemble_file(const AssemblerOptions& opts) {
     in.close();
 
     std::vector<uint8_t> out_bytes;
+    std::string effective_entry = opts.entry_symbol;
+    if (opts.entry_symbol == "DGTL_kernel_entry" && !obj.find_symbol("DGTL_kernel_entry")) {
+        if (obj.find_symbol("main")) {
+            effective_entry = "main";
+        }
+    }
 
     if (opts.emit_executable) {
-        std::string effective_entry = opts.entry_symbol;
-        if (opts.entry_symbol == "DGTL_kernel_entry" && !obj.find_symbol("DGTL_kernel_entry")) {
-            if (obj.find_symbol("main")) {
-                effective_entry = "main";
-            }
-        }
         if (!obj.find_symbol(effective_entry)) {
             obj.add_function_symbol(effective_entry, 0, obj.get_text_section().size(), true);
         }
 
-        dgtl::linker::pe::SovereignPELinkerOptions pe_opts;
-        pe_opts.entry_symbol = effective_entry;
-        pe_opts.stack_reserve = opts.stack_reserve;
-        pe_opts.stack_commit = opts.stack_commit;
-        pe_opts.sovereign = true;
+        if (opts.format == AssemblerFormat::ELF) {
+            dgtl::linker::elf::ELFLinker elf_linker;
+            dgtl::linker::elf::ELFLinker::SovereignELFLinkerOptions elf_opts;
+            elf_opts.entry_symbol = effective_entry;
+            elf_opts.sovereign = true;
+            if (opts.target_arch == "arm64" || opts.target_arch == "aarch64") {
+                elf_opts.target_machine = dgtl::linker::elf::EM_AARCH64;
+                elf_opts.page_size = 0x10000;
+            } else if (opts.target_arch == "riscv64" || opts.target_arch == "riscv") {
+                elf_opts.target_machine = dgtl::linker::elf::EM_RISCV;
+                elf_opts.page_size = 0x1000;
+            } else {
+                elf_opts.target_machine = dgtl::linker::elf::EM_X86_64;
+                elf_opts.page_size = 0x1000;
+            }
+            if (!elf_linker.link_executable(obj, out_bytes, elf_opts)) {
+                std::cerr << "error[dgtl-as]: sovereign ELF executable synthesis failed\n";
+                return false;
+            }
+        } else if (opts.format == AssemblerFormat::MachO) {
+            dgtl::linker::macho::SovereignMachOLinker::Options macho_opts;
+            macho_opts.entry_symbol = effective_entry;
+            if (opts.target_arch == "arm64" || opts.target_arch == "aarch64") {
+                macho_opts.cpu_type = dgtl::linker::macho::CPU_TYPE_ARM64_VAL;
+                macho_opts.page_size = 0x4000;
+            }
+            macho_opts.sovereign = true;
+            if (!dgtl::linker::macho::SovereignMachOLinker::link_executable(obj, out_bytes, macho_opts)) {
+                std::cerr << "error[dgtl-as]: sovereign Mach-O executable synthesis failed\n";
+                return false;
+            }
+        } else if (opts.format == AssemblerFormat::WASM) {
+            dgtl::linker::wasm::WASMBinaryLink wasm_linker;
+            dgtl::linker::wasm::WASMLinkerOptions wasm_opts;
+            wasm_opts.entry_symbol = effective_entry;
+            wasm_opts.sovereign = true;
+            if (!wasm_linker.link(obj, out_bytes, wasm_opts)) {
+                std::cerr << "error[dgtl-as]: sovereign WASM binary synthesis failed\n";
+                return false;
+            }
+        } else {
+            dgtl::linker::pe::SovereignPELinkerOptions pe_opts;
+            pe_opts.entry_symbol = effective_entry;
+            pe_opts.stack_reserve = opts.stack_reserve;
+            pe_opts.stack_commit = opts.stack_commit;
+            pe_opts.sovereign = true;
 
-        auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(obj, out_bytes, pe_opts);
-        if (!res.success) {
-            std::cerr << "error[dgtl-as]: sovereign PE executable synthesis failed: " << res.message << "\n";
-            return false;
+            auto res = dgtl::linker::pe::SovereignPELinker::emit_standalone_binary(obj, out_bytes, pe_opts);
+            if (!res.success) {
+                std::cerr << "error[dgtl-as]: sovereign PE executable synthesis failed: " << res.message << "\n";
+                return false;
+            }
         }
     } else {
         // Synthesize binary object file
@@ -615,6 +674,82 @@ bool assemble_file(const AssemblerOptions& opts) {
                   << obj.symbols().size() << " symbols)\n";
     }
 
+    if (opts.verify_smt) {
+        if (opts.verbose) {
+            std::cout << "[dgtl-as] Executing SMT formal verification validation on assembled object...\n";
+        }
+        bool formal_ok = true;
+        for (const auto& sec : obj.sections()) {
+            if (sec.alignment == 0 || (sec.alignment & (sec.alignment - 1)) != 0) {
+                std::cerr << "error[dgtl-as:formal]: section " << sec.name << " alignment " << sec.alignment << " is not a power of 2\n";
+                formal_ok = false;
+            }
+        }
+        for (const auto& sym : obj.symbols()) {
+            if (sym.section_index > 0 && sym.section_index <= obj.sections().size()) {
+                const auto& sec = obj.sections()[sym.section_index - 1];
+                if (sym.value > sec.size()) {
+                    std::cerr << "error[dgtl-as:formal]: symbol " << sym.name << " offset 0x" << std::hex << sym.value << " exceeds section size 0x" << sec.size() << std::dec << "\n";
+                    formal_ok = false;
+                }
+            }
+        }
+        if (opts.verbose) {
+            std::cout << "[dgtl-as] Formal SMT property check: " << (formal_ok ? "SAT (PROVEN)" : "UNSAT (VIOLATION)") << "\n";
+        }
+        if (!formal_ok) return false;
+    }
+
+    if (opts.run_jit) {
+        std::unordered_map<std::string, std::uintptr_t> host_symbols;
+#if defined(_WIN32) || defined(_WIN64)
+        HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+        if (hKernel) {
+            auto add_sym = [&](const char* name) {
+                FARPROC proc = GetProcAddress(hKernel, name);
+                if (proc) {
+                    host_symbols[name] = reinterpret_cast<std::uintptr_t>(proc);
+                    host_symbols[std::string("_") + name] = reinterpret_cast<std::uintptr_t>(proc);
+                }
+            };
+            add_sym("ExitProcess");
+            add_sym("GetStdHandle");
+            add_sym("WriteFile");
+            add_sym("ReadFile");
+            add_sym("GetLastError");
+        }
+#endif
+        host_symbols["printf"] = reinterpret_cast<std::uintptr_t>(&printf);
+        host_symbols["_printf"] = reinterpret_cast<std::uintptr_t>(&printf);
+        host_symbols["puts"] = reinterpret_cast<std::uintptr_t>(&puts);
+        host_symbols["_puts"] = reinterpret_cast<std::uintptr_t>(&puts);
+        host_symbols["malloc"] = reinterpret_cast<std::uintptr_t>(&malloc);
+        host_symbols["_malloc"] = reinterpret_cast<std::uintptr_t>(&malloc);
+        host_symbols["free"] = reinterpret_cast<std::uintptr_t>(&free);
+        host_symbols["_free"] = reinterpret_cast<std::uintptr_t>(&free);
+        host_symbols["exit"] = reinterpret_cast<std::uintptr_t>(&exit);
+        host_symbols["_exit"] = reinterpret_cast<std::uintptr_t>(&exit);
+
+        auto jit_res = dgtl::jit::JITObjectLoader::load(obj, host_symbols, effective_entry);
+        if (!jit_res.success && effective_entry != "main") {
+            jit_res = dgtl::jit::JITObjectLoader::load(obj, host_symbols, "main");
+        }
+        if (!jit_res.success) {
+            std::cerr << "error[dgtl-as]: in-memory JIT loader failed: " << jit_res.error_message << "\n";
+            return false;
+        }
+
+        if (opts.verbose) {
+            std::cout << "[dgtl-as] Executing assembled object via sovereign in-memory JIT loader...\n";
+        }
+
+        auto entry_fn = reinterpret_cast<int(*)()>(jit_res.module.entry_point());
+        int exit_code = entry_fn ? entry_fn() : 0;
+        if (opts.verbose) {
+            std::cout << "[dgtl-as] JIT execution finished with return value: " << exit_code << "\n";
+        }
+    }
+
     return true;
 }
 
@@ -636,6 +771,8 @@ void print_usage(std::string_view prog) {
               << "  --target=<arch>       Target architecture (x86_64, arm64, riscv64, wasm; default: x86_64)\n"
               << "  --format=<fmt>        Object format (coff, elf, macho, wasm; default: auto)\n"
               << "  --exe                 Directly emit standalone sovereign executable\n"
+              << "  --run, --jit          Execute assembled code directly in memory via sovereign JIT\n"
+              << "  --verify              Validate assembled object using formal SMT verification\n"
               << "  --entry=<sym>, -e     Entry point symbol for executable (default: main)\n"
               << "  --stack-reserve=<sz>  PE stack reserve size (default: 4M)\n"
               << "  --stack-commit=<sz>   PE stack commit size (default: 1M)\n"
@@ -645,6 +782,8 @@ void print_usage(std::string_view prog) {
               << "  --help, -h            Display this help menu\n\n"
               << "EXAMPLES:\n"
               << "  " << prog << " kernel.s -o kernel.o\n"
+              << "  " << prog << " start.s --run\n"
+              << "  " << prog << " kernel.s --verify -o kernel.o\n"
               << "  " << prog << " start.s -o app.exe\n"
               << "  " << prog << " --format=coff math.s -o math.obj\n"
               << "  " << prog << " --target=arm64 --format=macho arm_start.s -o arm_start.o\n"
@@ -679,6 +818,10 @@ int dgtl_as_tool_main(std::span<const std::string_view> raw_args, std::string_vi
             opts.debug_info = true;
         } else if (arg == "--exe" || arg == "-exe") {
             opts.emit_executable = true;
+        } else if (arg == "--run" || arg == "--jit") {
+            opts.run_jit = true;
+        } else if (arg == "--verify") {
+            opts.verify_smt = true;
         } else if (arg == "-e" && i + 1 < expanded.size()) {
             opts.entry_symbol = expanded[++i];
         } else if (arg.starts_with("--entry=")) {

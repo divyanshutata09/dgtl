@@ -38,6 +38,7 @@ int dgtl_inspect_tool_main(std::span<const std::string_view> raw_args, std::stri
 int dgtl_debugger_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as);
 int dgtl_verify_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as);
 int dgtl_engine_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as);
+int dgtl_rodata_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as);
 
 // Sovereign FileCheck Entry Point
 int dgtl_filecheck_tool_main(std::span<const std::string_view> raw_args, std::string_view invoked_as) {
@@ -135,6 +136,7 @@ const std::vector<ToolDescriptor>& get_tool_registry() {
         {"debugger",  {"dgtl-debugger", "debug", "trace"},              dgtl_debugger_tool_main,  "DGTL Enterprise Native Process & Forensic Debugger"},
         {"verify",    {"dgtl-verify", "smt", "formal"},                 dgtl_verify_tool_main,    "DGTL Mathematical Equivalence & SMT-LIB2 Verifier"},
         {"engine",    {"dgtl-engine", "jit", "runner"},                 dgtl_engine_tool_main,    "DGTL Sovereign JIT Engine & Native Code Runner"},
+        {"rodata",    {"dgtl-rodata-maker", "dgtl-rodata", "rodata-maker"}, dgtl_rodata_tool_main, "DGTL Sovereign .rodata Section Generator & String Interner"},
         {"filecheck", {"dgtl-filecheck", "check"},                      dgtl_filecheck_tool_main, "DGTL FileCheck-Style IR Verification Framework"}
     };
     return registry;

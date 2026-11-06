@@ -29,8 +29,8 @@ namespace generated {
 
 inline constexpr std::string_view kGeneratedTarget = "amdgpu";
 inline constexpr std::string_view kGeneratorVersion = "3.2.0";
-inline constexpr std::string_view kContractFingerprint = "0x92271097484F7D45";
-inline constexpr std::string_view kTargetContractFingerprint = "0x3548E5756C9E88F";
+inline constexpr std::string_view kContractFingerprint = "0xA257DF2382145524";
+inline constexpr std::string_view kTargetContractFingerprint = "0xCD686325B8D37251";
 
 // Target capabilities declared in targets.dgtl_contract
 inline constexpr std::size_t kCapabilityCount = 6;

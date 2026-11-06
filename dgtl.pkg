@@ -1,0 +1,40 @@
+[package]
+name = "dgtl"
+version = "2.1.0"
+edition = "2026"
+license = "Proprietary-Sovereign"
+description = "Deep General-purpose Transformation Layer Compiler & JIT Engine"
+
+[lib]
+name = "dgtl"
+crate-type = ["staticlib", "cdylib"]
+
+[target.x86_64-pc-windows-gnu]
+static-lib = "lib/x64/dgtl.lib"
+static-lib-alt = "lib/x64/libdgtl.a"
+shared-lib = "bin/dgtl.dll"
+import-lib = "lib/x64/libdgtl.dll.a"
+include = "include"
+
+[target.x86_64-unknown-linux-gnu]
+static-lib = "lib/x64/libdgtl.a"
+shared-lib = "lib/x64/libdgtl.so"
+include = "include"
+
+[target.aarch64-unknown-linux-gnu]
+static-lib = "lib/arm64/libdgtl.a"
+shared-lib = "lib/arm64/libdgtl.so"
+include = "include"
+
+[target.x86_64-apple-darwin]
+static-lib = "lib/libdgtl.a"
+shared-lib = "lib/libdgtl.dylib"
+include = "include"
+
+[target.aarch64-apple-darwin]
+static-lib = "lib/libdgtl.a"
+shared-lib = "lib/libdgtl.dylib"
+include = "include"
+
+[dependencies]
+# Zero third-party runtime dependencies (100% sovereign)

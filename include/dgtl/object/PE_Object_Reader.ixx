@@ -35,6 +35,19 @@ import dgtl.object.relocation;
 
 export namespace dgtl::object::readers {
 
+namespace coff_reloc_amd64 {
+    inline constexpr uint16_t ADDR64   = 0x0001; // IMAGE_REL_AMD64_ADDR64
+    inline constexpr uint16_t ADDR32   = 0x0002; // IMAGE_REL_AMD64_ADDR32
+    inline constexpr uint16_t ADDR32NB = 0x0003; // IMAGE_REL_AMD64_ADDR32NB
+    inline constexpr uint16_t REL32    = 0x0004; // IMAGE_REL_AMD64_REL32
+    inline constexpr uint16_t REL32_1  = 0x0005; // IMAGE_REL_AMD64_REL32_1
+    inline constexpr uint16_t REL32_2  = 0x0006; // IMAGE_REL_AMD64_REL32_2
+    inline constexpr uint16_t REL32_3  = 0x0007; // IMAGE_REL_AMD64_REL32_3
+    inline constexpr uint16_t REL32_4  = 0x0008; // IMAGE_REL_AMD64_REL32_4
+    inline constexpr uint16_t REL32_5  = 0x0009; // IMAGE_REL_AMD64_REL32_5
+    inline constexpr uint16_t SECREL   = 0x000B; // IMAGE_REL_AMD64_SECREL
+}
+
 class PEObjectReader {
 public:
     PEObjectReader() = default;
@@ -403,34 +416,37 @@ private:
                     }
 
                     dgtl::object::RelocationKind kind = dgtl::object::RelocationKind::PCRel32;
+                    int64_t universal_addend = in_place_addend;
+
                     switch (rtype) {
-                        case 0x0001: // IMAGE_REL_AMD64_ADDR64
+                        case coff_reloc_amd64::ADDR64:
                             kind = dgtl::object::RelocationKind::Absolute64;
                             break;
-                        case 0x0002: // IMAGE_REL_AMD64_ADDR32
+                        case coff_reloc_amd64::ADDR32:
                             kind = dgtl::object::RelocationKind::Absolute32;
                             break;
-                        case 0x0003: // IMAGE_REL_AMD64_ADDR32NB
-                        case 0x000B: // IMAGE_REL_AMD64_SECREL
+                        case coff_reloc_amd64::ADDR32NB:
+                        case coff_reloc_amd64::SECREL:
                             kind = dgtl::object::RelocationKind::SecRel32;
                             break;
-                        case 0x0004: // IMAGE_REL_AMD64_REL32
-                        case 0x0005: // IMAGE_REL_AMD64_REL32_1
-                        case 0x0006: // IMAGE_REL_AMD64_REL32_2
-                        case 0x0007: // IMAGE_REL_AMD64_REL32_3
-                        case 0x0008: // IMAGE_REL_AMD64_REL32_4
-                        case 0x0009: // IMAGE_REL_AMD64_REL32_5
+                        case coff_reloc_amd64::REL32:
+                        case coff_reloc_amd64::REL32_1:
+                        case coff_reloc_amd64::REL32_2:
+                        case coff_reloc_amd64::REL32_3:
+                        case coff_reloc_amd64::REL32_4:
+                        case coff_reloc_amd64::REL32_5: {
                             kind = dgtl::object::RelocationKind::PCRel32;
+                            // COFF REL32 displacements are relative to the end of the instruction:
+                            // PC = (Place + 4 + extra). DGTL resolves PCRel32 via:
+                            //   delta = target_rva + addend - Place
+                            // Therefore: addend = in_place_addend - (4 + extra)
+                            const int32_t extra = static_cast<int32_t>(rtype - coff_reloc_amd64::REL32);
+                            universal_addend -= (4 + extra);
                             break;
+                        }
                         default:
                             kind = dgtl::object::RelocationKind::PCRel32;
                             break;
-                    }
-
-                    int64_t universal_addend = in_place_addend;
-                    if (rtype >= 0x0004 && rtype <= 0x0009) {
-                        const int32_t extra = static_cast<int32_t>(rtype - 0x0004);
-                        universal_addend -= (4 + extra);
                     }
 
                     dgtl::object::Relocation rel(rva, std::move(target_sym), universal_addend, rtype, kind, static_cast<uint32_t>(sec_idx));

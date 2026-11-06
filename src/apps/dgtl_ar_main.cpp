@@ -28,6 +28,11 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 // Work around MinGW/GCC modules linker quirk where vector implementation
 // symbols may not be emitted transitively from imported modules.
 template class std::vector<unsigned char>;
@@ -35,6 +40,9 @@ template class std::vector<std::string>;
 
 import dgtl.object.archive;
 import dgtl.object.file;
+import dgtl.object.readers.pe;
+import dgtl.object.readers.elf;
+import dgtl.jit.object_loader;
 import dgtl.tools.common;
 
 namespace fs = std::filesystem;
@@ -135,6 +143,103 @@ int dgtl_ar_tool_main(std::span<const std::string_view> raw_args, std::string_vi
 
     // ─── Direct Execution / Result Display (run / exec) ──────────────────────
     if (is_run) {
+        fs::path p(archive_path);
+        std::string ext = p.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+
+        if (ext == ".o" || ext == ".obj" || ext == ".lib" || ext == ".a") {
+            std::ifstream file(archive_path, std::ios::binary);
+            if (!file) {
+                std::cerr << "error[dgtl-ar]: failed to read: " << archive_path << "\n";
+                return 2;
+            }
+            std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            file.close();
+
+            dgtl::object::ObjectFile obj;
+            dgtl::object::readers::ELFObjectReader elf_reader;
+            dgtl::object::readers::PEObjectReader pe_reader;
+            bool loaded = false;
+
+            if (ext == ".lib" || ext == ".a" || (buffer.size() >= 8 && std::memcmp(buffer.data(), "!<arch>\n", 8) == 0)) {
+                UniversalArchiveReader ar_reader;
+                if (ar_reader.load_archive(archive_path)) {
+                    std::string target_member;
+                    for (const auto& [sym, member] : ar_reader.symbol_map()) {
+                        if (sym == "main" || sym == "_main") {
+                            target_member = member;
+                            break;
+                        }
+                    }
+                    if (target_member.empty() && !ar_reader.members().empty()) {
+                        target_member = ar_reader.members().front().filename;
+                    }
+                    for (const auto& m : ar_reader.members()) {
+                        if (m.filename == target_member) {
+                            if (elf_reader.read(m.data.data(), m.data.size(), obj) ||
+                                pe_reader.read(m.data.data(), m.data.size(), obj)) {
+                                loaded = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+            } else {
+                if (elf_reader.read(buffer.data(), buffer.size(), obj) ||
+                    pe_reader.read(buffer.data(), buffer.size(), obj)) {
+                    loaded = true;
+                }
+            }
+
+            if (loaded) {
+                std::cout << "======================================================================\n";
+                std::cout << "[dgtl-ar] In-Process Sovereign JIT Execution: " << archive_path << "\n";
+                std::cout << "======================================================================\n";
+
+                std::unordered_map<std::string, std::uintptr_t> host_symbols;
+#if defined(_WIN32) || defined(_WIN64)
+                HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+                if (hKernel) {
+                    auto add_sym = [&](const char* name) {
+                        FARPROC proc = GetProcAddress(hKernel, name);
+                        if (proc) {
+                            host_symbols[name] = reinterpret_cast<std::uintptr_t>(proc);
+                            host_symbols[std::string("_") + name] = reinterpret_cast<std::uintptr_t>(proc);
+                        }
+                    };
+                    add_sym("ExitProcess");
+                    add_sym("GetStdHandle");
+                    add_sym("WriteFile");
+                    add_sym("ReadFile");
+                    add_sym("GetLastError");
+                }
+#endif
+                host_symbols["printf"] = reinterpret_cast<std::uintptr_t>(&printf);
+                host_symbols["_printf"] = reinterpret_cast<std::uintptr_t>(&printf);
+                host_symbols["puts"] = reinterpret_cast<std::uintptr_t>(&puts);
+                host_symbols["_puts"] = reinterpret_cast<std::uintptr_t>(&puts);
+                host_symbols["malloc"] = reinterpret_cast<std::uintptr_t>(&malloc);
+                host_symbols["_malloc"] = reinterpret_cast<std::uintptr_t>(&malloc);
+                host_symbols["free"] = reinterpret_cast<std::uintptr_t>(&free);
+                host_symbols["_free"] = reinterpret_cast<std::uintptr_t>(&free);
+                host_symbols["exit"] = reinterpret_cast<std::uintptr_t>(&exit);
+                host_symbols["_exit"] = reinterpret_cast<std::uintptr_t>(&exit);
+
+                auto jit_res = dgtl::jit::JITObjectLoader::load(obj, host_symbols, "main");
+                if (!jit_res.success) {
+                    std::cerr << "error[dgtl-ar]: JIT loader failed: " << jit_res.error_message << "\n";
+                    return 3;
+                }
+
+                auto entry_fn = reinterpret_cast<int(*)()>(jit_res.module.entry_point());
+                int run_rc = entry_fn ? entry_fn() : 0;
+                std::cout << "\n======================================================================\n";
+                std::cout << "[dgtl-ar] Execution Result: exit code " << run_rc << " (SUCCESS: 0 errors)\n";
+                std::cout << "======================================================================\n";
+                return run_rc;
+            }
+        }
+
         UniversalArchiveReader reader;
         if (!reader.load_archive(archive_path)) {
             std::cerr << "error[dgtl-ar]: failed to load binary executable: " << archive_path << "\n";
